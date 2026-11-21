@@ -668,6 +668,14 @@ pub struct GraphStore {
     /// PlayScript actions the server runs (Chase Variable `1CCC` plays
     /// `1CCF` on each target player).
     workshop_actions: BTreeSet<u32>,
+    /// The hero ability graphs (an `STUStatescriptStateAbility`) and the
+    /// logical button their ability state names as a constant
+    /// (`m_A5F1A77B`, else `m_A368407D`, `STUConfigVarLogicalButton`):
+    /// Rocket Punch `0D06` 29, Soundwave `0776` 29, Rising Uppercut
+    /// `0DD8` 35. Their PlayScript actions play on other bodies
+    /// (`vm/play.rs`), and the button is the Workshop's Event Ability of
+    /// what those plays do.
+    ability_buttons: BTreeMap<u32, i64>,
     /// The Workshop's values (`054/0162`) as the client evaluates them:
     /// `1B4A`'s state `STU_25CBEFB0`, `m_108E51DD`, each value's `01C`
     /// identifier with its config ([`GraphStore::workshop_value`]).
@@ -737,6 +745,10 @@ impl GraphStore {
             .filter(|(_, graph)| graph.nodes.iter().any(|node| node.class == "STU_1E93FE1F"))
             .map(|(&index, _)| index)
             .collect();
+        let ability_buttons = graphs
+            .iter()
+            .filter_map(|(&index, graph)| Some((index, ability_button(graph)?)))
+            .collect();
         Ok(Self {
             graphs,
             bodies: keyed_by_guid(bundle.bodies)?,
@@ -752,6 +764,7 @@ impl GraphStore {
             auras,
             aura_graphs,
             workshop_actions,
+            ability_buttons,
             workshop_values,
         })
     }
@@ -769,6 +782,12 @@ impl GraphStore {
     /// Whether `graph` is one of the Workshop's actions.
     pub fn is_workshop_action(&self, graph: u32) -> bool {
         self.workshop_actions.contains(&graph)
+    }
+
+    /// The logical button of `graph`'s ability state, if it is a hero
+    /// ability graph whose ability state names one as a constant.
+    pub fn ability_button(&self, graph: u32) -> Option<i64> {
+        self.ability_buttons.get(&graph).copied()
     }
 
     /// The config the client evaluates for Workshop value `value` (its
@@ -1221,6 +1240,21 @@ fn played_closure(
 /// The graph whose state holds the Workshop's value table: `0CBB` (every
 /// mode entity's shared subgraph) plays it from its entry.
 const WORKSHOP_VALUES_GRAPH: u32 = 0x1b4a;
+
+/// The constant logical button of `graph`'s ability state
+/// ([`GraphStore::ability_button`]).
+fn ability_button(graph: &Graph) -> Option<i64> {
+    let ability = graph
+        .nodes
+        .iter()
+        .find(|node| node.class == "STUStatescriptStateAbility")?;
+    ["m_A5F1A77B", "m_A368407D"].iter().find_map(|name| {
+        let config = ability.fields.get(*name)?;
+        (config.get("$")?.as_str()? == "STUConfigVarLogicalButton")
+            .then(|| config.get("m_logicalButton")?.as_i64())
+            .flatten()
+    })
+}
 
 /// `1B4A`'s `STU_25CBEFB0` map (`m_108E51DD`): each Workshop value's `01C`
 /// GUID and the config the client evaluates for it

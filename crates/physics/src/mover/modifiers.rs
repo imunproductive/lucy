@@ -54,6 +54,8 @@ use orpheus_wire::commands::{FRAME_HALF, frame_distance};
 pub const JUMP_INTENT: u8 = 20;
 pub const CROUCH_INTENT: u8 = 21;
 pub const LAND_LIMIT: u8 = 36;
+/// The knockback scale ([`super::Mover::knockback_scale`]).
+pub const KNOCKBACK_SCALE: u8 = 26;
 /// Not a client mod id: a channel-2 vector mod of a MovementMod (the
 /// mover's list at +0x7D0, entries of type 2, op +0x2C, vector +0x30) as
 /// the heading it sets, `atan2(x, z)` in radians of its flat part

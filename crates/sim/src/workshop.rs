@@ -143,6 +143,7 @@ pub struct WorkshopView {
 pub struct WorkshopPlayer<'w> {
     /// His controller entity: the Workshop's player.
     pub controller: u32,
+    /// His slot within his team (Slot Of, Players In Slot).
     pub slot: usize,
     /// The room's team: 0 Team 1, 1 Team 2.
     pub team: u8,
@@ -215,13 +216,27 @@ impl WorkshopRun {
     ///   another" (`DoomfistRolloutsKingsRow_1_0_0`). A bot's or a
     ///   placeable's blow fires no Player Dealt Damage, and its Attacker
     ///   is Null.
-    /// - Assumption: a health pack's heal is the healee's own (Healer =
-    ///   Healee), since Event Was Health Pack belongs to Player Dealt
-    ///   Healing as well as Received; another placeable's or a bot's heal
-    ///   fires only Player Received Healing, with no Healer.
-    /// - Not known on the server: Event Ability (the hit doesn't say which
-    ///   ability dealt it; Null), and knockback that isn't an explosion's
-    ///   push between players (a graph's knockback rings).
+    /// - Healer is the player whose heal it was, a health pack's too: the
+    ///   pack's heal (`0046` rid0 st0) names `#6396e` as its instigator,
+    ///   which only Sombra's hack writes (`0B1B`, her ultimate `0B31`), so
+    ///   a hacked pack's heal is her Player Dealt Healing with Event Was
+    ///   Health Pack (why the value belongs to both healing events), and
+    ///   an unhacked pack's has no Healer and fires only Player Received
+    ///   Healing, as a bot's or another placeable's heal.
+    /// - Event Ability is the button of the loadout the hit, heal or push
+    ///   carries (the health change's `m_loadout`, the kill feed's icon;
+    ///   `STU_AFBB59E9`'s for a graph's knockback report): the loadout's
+    ///   input action's logical button ([`Catalog::loadout_button`]) as
+    ///   the Workshop's button table names it ([`BUTTONS`]). `054/0162`
+    ///   describes it as "the ability … associated by button"; `1B4A`
+    ///   reads it as the event context's `#24540`, whatever the server put
+    ///   there, so taking it from the loadout is an assumption. Null for a
+    ///   hit without one (an environment kill, a health pack's heal).
+    /// - Knockback: an explosion's push between players, a ModifyHealth's
+    ///   push vector (Soundwave's, `orpheus_script::vm::HealthChange::knockback`)
+    ///   and the knockbacks the bodies' graphs report (`STU_AFBB59E9`:
+    ///   Rocket Punch's victim graph `0D07`). A ModifyHealth's knockback
+    ///   rings (uppercut, slam, quick melee) push nobody yet.
     pub fn player_events(&mut self, happened: &[PlayerEvent]) {
         for event in happened {
             match *event {
@@ -233,6 +248,7 @@ impl WorkshopRun {
                     environment,
                     direction,
                     killed,
+                    loadout,
                 } => {
                     let context = Context {
                         attacker,
@@ -241,6 +257,7 @@ impl WorkshopRun {
                         event_was_critical_hit: critical,
                         event_was_environment: environment,
                         event_direction: direction.unwrap_or_default(),
+                        event_ability: self.ability(loadout),
                         ..Context::default()
                     };
                     if let Some(attacker) = attacker {
@@ -269,13 +286,14 @@ impl WorkshopRun {
                     healee,
                     healed,
                     health_pack,
+                    loadout,
                 } => {
-                    let healer = if health_pack { Some(healee) } else { healer };
                     let context = Context {
                         healer,
                         healee: Some(healee),
                         event_healing: healed,
                         event_was_health_pack: health_pack,
+                        event_ability: self.ability(loadout),
                         ..Context::default()
                     };
                     if let Some(healer) = healer {
@@ -287,6 +305,7 @@ impl WorkshopRun {
                     attacker,
                     victim,
                     push,
+                    loadout,
                 } => {
                     let length = push.iter().map(|axis| axis * axis).sum::<f64>().sqrt();
                     let context = Context {
@@ -297,6 +316,7 @@ impl WorkshopRun {
                         } else {
                             [0.0; 3]
                         },
+                        event_ability: self.ability(loadout),
                         ..Context::default()
                     };
                     self.fire(events::PLAYER_DEALT_KNOCKBACK, attacker, &context);
@@ -304,6 +324,15 @@ impl WorkshopRun {
                 }
             }
         }
+    }
+
+    /// The Workshop button of the ability `loadout`, if it has one.
+    fn ability(&self, loadout: Option<u64>) -> Option<Id> {
+        let button = self.catalog.loadout_button(loadout?)?;
+        BUTTONS
+            .iter()
+            .find(|&&(_, _, logical)| logical == button)
+            .map(|&(id, _, _)| id)
     }
 
     /// Event `kind` for `player`, in `context`.

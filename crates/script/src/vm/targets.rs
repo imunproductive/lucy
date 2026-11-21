@@ -34,9 +34,17 @@
 //!   A body in the sphere is in the cone when the point of its axis
 //!   nearest the sphere's diameter along the direction is within half the
 //!   angle of it, or that diameter crosses the axis ahead of the centre
-//!   (`0x7FF789B9E660`). The half-angle scales `m_B9BEAC7F`/`m_3119AD61`
-//!   (horizontal and vertical), the inner cone `m_544C3E6F` and the other
-//!   mode `m_E474FFD6` are not modelled.
+//!   (`0x7FF789B9E660`). The half-angle scales `m_B9BEAC7F` (horizontal)
+//!   and `m_3119AD61` (vertical, unset: 1) narrow or widen the cone
+//!   (`0x7FF789BAA430` @0x7FF789BABB45: the cosines of the half-angle times
+//!   each, clamped to `[0, π]`); the test takes the cosine between the two
+//!   by how far the line to the body's axis point rises (its unit `|y|`).
+//!   With `m_E474FFD6` (Rocket Punch's searches, `0D06` st6 and st72) the
+//!   shape is a cylinder along the diameter instead: a body passes when its
+//!   axis point is ahead of the centre and within `sin(half) × radius ×
+//!   scale` of the diameter (`m_8862A75D`, the radius it lerps to, unset),
+//!   the scale again between the two by the rise between the points
+//!   (clamped to 1 m). The inner cone `m_544C3E6F` is not modelled.
 //! - `m_84E5DE4E`: the targets' score, lowest first (`0x7FF789BA6E10`):
 //!   `STU_B61DA2A5` sums its entries' terms, each with its `m_weight` (a
 //!   weight within 0.004 of 0 counts nothing); a `STU_0BCD3EFA` term maps
@@ -126,8 +134,11 @@
 //!   are the frame's `targets` list, so it is empty without it. Not
 //!   modelled (finds nothing when set).
 //! - `m_43478CAD`: the targets' order without a scoring (`0x7FF789BB9570`
-//!   reads it only then); 0 keeps them in the order found. Others are not
-//!   modelled (find nothing). With a scoring it changes nothing.
+//!   reads it only then): 0 keeps them in the order found, 1 puts the
+//!   nearest to the centre first and 2 the nearest to the searcher's own
+//!   position (the squared distance of each body's position; Rocket
+//!   Punch's `0D06` st6 with one target). 3 (the view's) is not modelled
+//!   (finds nothing). With a scoring it changes nothing.
 //! - `m_95FFC3C5`: a line-of-sight test of each new body (and, with
 //!   `m_32AFE9AA`, the found ones), `0x7FF789BB3570` (its arguments from
 //!   the search `0x7FF789BBE3B0`): a body is seen when one of its rays
@@ -202,15 +213,12 @@ const CLASS: &str = "STUStatescriptStateTrackTargets";
 /// nothing.
 const UNMODELLED: &[&str] = &[
     "m_47AB1887",
-    "m_3119AD61",
-    "m_B9BEAC7F",
     "m_2F88C5F2",
     "m_544C3E6F",
     "m_762A56C0",
     "m_B3A77CD0",
     "m_16BDE607",
     "m_8862A75D",
-    "m_E474FFD6",
     "m_48837057",
     "m_294660A6",
     "m_229DD034",
@@ -283,6 +291,10 @@ const CONE_ANGLE: &str = "m_A30B383E";
 const CONE_YAW: &str = "m_D45E22FA";
 const CONE_PITCH: &str = "m_E46A19A3";
 const FOLLOW_AIM: &str = "m_08285CD6";
+/// The half-angle's horizontal and vertical scales, and the cylinder
+/// shape (the module notes).
+const CONE_SCALES: [&str; 2] = ["m_B9BEAC7F", "m_3119AD61"];
+const CYLINDER: &str = "m_E474FFD6";
 /// The scoring, the order without one, and the most targets kept.
 const SCORING: &str = "m_84E5DE4E";
 const ORDER: &str = "m_43478CAD";
@@ -310,13 +322,23 @@ struct Search {
     offset: [f64; 3],
     radius: f64,
     filter: BodyFilter,
-    /// The cone's unit direction and the cosine of its half-angle; None:
-    /// the whole sphere.
-    cone: Option<([f64; 3], f64)>,
+    /// The cone (the module notes); None: the whole sphere.
+    cone: Option<Cone>,
     /// The scoring's terms (`m_84E5DE4E`): the lowest total comes first.
     scoring: Vec<ScoreTerm>,
+    /// The order without a scoring (`m_43478CAD`).
+    order: Order,
     /// The most targets kept (`m_C39691D9`).
     limit: Option<usize>,
+}
+
+/// A search's order without a scoring (`m_43478CAD`, see the module
+/// notes).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Order {
+    Found,
+    NearCentre,
+    NearSearcher,
 }
 
 /// What a `STU_0BCD3EFA` scoring term measures (`0x7FF789BA6E10`).
@@ -705,9 +727,10 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         let mut entities = Vec::new();
         for candidate in bodies.iter().filter(|candidate| {
             candidate.distance(centre) <= search.radius
-                && search.cone.is_none_or(|(direction, cos)| {
-                    in_cone(candidate, centre, direction, cos, search.radius)
-                })
+                && search
+                    .cone
+                    .as_ref()
+                    .is_none_or(|cone| in_cone(candidate, centre, cone, search.radius))
         }) {
             if self.filter_admits(id, node, filter_config, &search.filter, candidate.entity)? {
                 entities.push(candidate.entity);
@@ -737,6 +760,29 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             found.scores = bodies
                 .iter()
                 .map(|body| (body.entity, score(&search.scoring, body, centre, view)))
+                .collect();
+            let mut ranked = std::mem::take(&mut found.entities);
+            ranked.sort_by(|a, b| found.score(*a).total_cmp(&found.score(*b)));
+            found.entities = ranked;
+        } else if search.order != Order::Found {
+            // Nearest first (`0x7FF789BB9570` cases 1 and 2: the squared
+            // distance of each body's position from the centre, or from
+            // the searcher's own).
+            let from = match search.order {
+                Order::NearSearcher => bodies
+                    .iter()
+                    .find(|body| body.entity == site.entity)
+                    .map(|body| body.feet)
+                    .or_else(|| self.world.entity_position(site, site.entity))
+                    .ok_or(Gap::Field(ORDER))?,
+                _ => centre,
+            };
+            found.scores = bodies
+                .iter()
+                .map(|body| {
+                    let offset = sub(body.feet, from);
+                    (body.entity, dot(offset, offset))
+                })
                 .collect();
             let mut ranked = std::mem::take(&mut found.entities);
             ranked.sort_by(|a, b| found.score(*a).total_cmp(&found.score(*b)));
@@ -947,11 +993,15 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             .ok_or(Gap::Field("m_radius"))?;
         let cone = self.cone(id, node, entity)?;
         let mut scoring = Vec::new();
+        let mut order = Order::Found;
         match field(fields, SCORING) {
             Json::Null => {
-                if is_set(field(fields, ORDER)) {
-                    return Err(Gap::Field(ORDER));
-                }
+                order = match field(fields, ORDER).as_i64().unwrap_or(0) {
+                    0 => Order::Found,
+                    1 => Order::NearCentre,
+                    2 => Order::NearSearcher,
+                    _ => return Err(Gap::Field(ORDER)),
+                };
             }
             // No body can pass (no any-of mask nor include word: the
             // capture point `0E8E` st5's search for its floor ring by tag
@@ -977,6 +1027,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             filter,
             cone,
             scoring,
+            order,
             limit,
         })
     }
@@ -994,14 +1045,8 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         }
     }
 
-    /// The cone (see the module notes): its unit direction and the cosine of
-    /// its half-angle, or None for the whole sphere.
-    fn cone(
-        &mut self,
-        id: u16,
-        node: &Node,
-        entity: Option<u32>,
-    ) -> Result<Option<([f64; 3], f64)>, Gap> {
+    /// The cone (see the module notes), or None for the whole sphere.
+    fn cone(&mut self, id: u16, node: &Node, entity: Option<u32>) -> Result<Option<Cone>, Gap> {
         let angle = match field(&node.fields, CONE_ANGLE) {
             Json::Null => return Ok(None),
             config => self
@@ -1030,15 +1075,37 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 .ok_or(Gap::Field(FOLLOW_AIM))?;
             pitch -= f64::from(aim) * TURN;
         }
-        let half = (angle.max(0.0) * 0.5)
-            .to_radians()
-            .min(std::f64::consts::PI);
+        // The half-angle unclamped for the cylinder's sine, each scaled
+        // one clamped to `[0, π]` for its cosine (`0x7FF789BAA430`).
+        let half = (angle * 0.5).to_radians();
+        let mut scales = [1.0; 2];
+        for (scale, name) in scales.iter_mut().zip(CONE_SCALES) {
+            let config = field(&node.fields, name);
+            if !config.is_null() {
+                *scale = self
+                    .evaluate_quietly(id, node, config)
+                    .map(|value| expr::to_float(&value))
+                    .filter(|value| value.is_finite())
+                    .ok_or(Gap::Field(name))?;
+            }
+        }
+        let cylinder = match field(&node.fields, CYLINDER) {
+            Json::Null => false,
+            config => self
+                .evaluate_quietly(id, node, config)
+                .map(|value| expr::truthy(&value))
+                .ok_or(Gap::Field(CYLINDER))?,
+        };
         let direction = [
             yaw.sin() * pitch.cos(),
             pitch.sin(),
             yaw.cos() * pitch.cos(),
         ];
-        Ok(Some((direction, half.cos())))
+        Ok(Some(Cone {
+            direction,
+            cos: scales.map(|scale| (half * scale).clamp(0.0, std::f64::consts::PI).cos()),
+            cylinder: cylinder.then(|| scales.map(|scale| half.sin() * scale)),
+        }))
     }
 
     /// The terms of the scoring `config` (`0x7FF789BA6E10`): a list
@@ -1186,7 +1253,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             reads: Vec::new(),
             foreign_reads: Vec::new(),
             parameters: self.parameters.as_deref(),
-            candidate: self.candidate.as_ref(),
+            candidate: self.candidate.clone(),
             sender: self.sender,
             watcher: None,
             read_native: false,
@@ -1266,17 +1333,32 @@ fn closest_points(p1: [f64; 3], q1: [f64; 3], p2: [f64; 3], q2: [f64; 3]) -> [[f
     [along(p1, d1, s), along(p2, d2, t)]
 }
 
+/// A search's cone (see the module notes): its unit direction, the cosines
+/// of its half-angle scaled horizontally and vertically, and for the
+/// cylinder shape (`m_E474FFD6`) the sine of the half-angle times each
+/// scale (times the radius, the most a body's axis may lie off the
+/// diameter).
+struct Cone {
+    direction: [f64; 3],
+    cos: [f64; 2],
+    cylinder: Option<[f64; 2]>,
+}
+
 /// Whether a body within the sphere is in the cone (the client's shape test
 /// `0x7FF789B9E660`): the point of its axis nearest the sphere's diameter
-/// along the cone's `direction` is within the half-angle (`cos`) of it, or
-/// that diameter crosses the axis ahead of the centre.
-fn in_cone(
-    body: &TargetCandidate,
-    centre: [f64; 3],
-    direction: [f64; 3],
-    cos: f64,
-    radius: f64,
-) -> bool {
+/// along the cone's direction is within the half-angle of it, the cosine
+/// taken between the horizontal and the vertical one by the unit line's
+/// `|y|`, or that diameter crosses the axis ahead of the centre; for the
+/// cylinder, the point is ahead of the centre and within the sine's share
+/// of the radius of the diameter, taken between the two by the rise
+/// between the points (clamped to 1).
+fn in_cone(body: &TargetCandidate, centre: [f64; 3], cone: &Cone, radius: f64) -> bool {
+    // The client's test of a half-angle wider than the whole sphere.
+    const WHOLE: f64 = -0.9999;
+    if cone.cos.iter().all(|&cos| cos <= WHOLE) {
+        return true;
+    }
+    let direction = cone.direction;
     let [x, y, z] = body.feet;
     let low = y + body.radius.min(body.height * 0.5);
     let high = y + (body.height - body.radius).max(body.height * 0.5);
@@ -1287,8 +1369,18 @@ fn in_cone(
         along(centre, direction, -radius),
     );
     let offset = sub(axis, centre);
-    if sub(axis, diameter) == [0.0; 3] && dot(offset, direction) > 0.0 {
+    let off = sub(axis, diameter);
+    let ahead = dot(offset, direction);
+    if off == [0.0; 3] && ahead > 0.0 {
         return true;
+    }
+    if let Some([horizontal, vertical]) = cone.cylinder {
+        if ahead < 0.0 {
+            return false;
+        }
+        let rise = off[1].abs().clamp(0.0, 1.0);
+        let most = (horizontal + (vertical - horizontal) * rise) * radius;
+        return dot(off, off).sqrt() <= most;
     }
     let length = dot(offset, offset).sqrt();
     let unit = if length < 1e-18 {
@@ -1296,7 +1388,8 @@ fn in_cone(
     } else {
         offset.map(|value| value / length)
     };
-    dot(unit, direction) >= cos
+    let [horizontal, vertical] = cone.cos;
+    dot(unit, direction) >= horizontal + (vertical - horizontal) * unit[1].abs().clamp(0.0, 1.0)
 }
 
 /// A body's score: each term's measure mapped onto `[0, 1]` times its

@@ -74,7 +74,7 @@ impl<W: World> Context for InstanceContext<'_, W> {
     }
 
     fn parameter(&mut self, id: u32) -> Value {
-        if let Some(candidate) = self.candidate {
+        if let Some(candidate) = &self.candidate {
             return candidate.clone();
         }
         match self.sender {
@@ -85,6 +85,10 @@ impl<W: World> Context for InstanceContext<'_, W> {
                 .cloned()
                 .unwrap_or(Value::Null),
         }
+    }
+
+    fn bind_candidate(&mut self, candidate: Option<Value>) -> Option<Option<Value>> {
+        Some(std::mem::replace(&mut self.candidate, candidate))
     }
 
     fn owner(&mut self) -> Value {

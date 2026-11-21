@@ -451,6 +451,91 @@ fn movement_sample_updates_only_changed_authored_outputs() {
     ));
 }
 
+/// The client's sampler (`0x7FF789C4D420`) follows the landing plug and then
+/// the takeoff plug when the body was airborne at both samples but landed
+/// and left again in between (air ticks back at 0), and neither while it
+/// just stays airborne or a gap repeats the record.
+#[test]
+fn movement_sample_follows_both_plugs_when_the_body_lands_and_leaves_between_samples() {
+    struct SampleWorld {
+        sample: u16,
+        restarted: bool,
+    }
+    impl World for SampleWorld {
+        fn movement_sample(&self, _: Site) -> Option<u16> {
+            Some(self.sample)
+        }
+        fn movement_restarted(&self, _: Site) -> bool {
+            self.restarted
+        }
+    }
+    let set = |position, identifier, value: i64| {
+        node(
+            position,
+            "STUStatescriptActionSetVar",
+            None,
+            json!({"m_out_Var":var(identifier,true), "m_value":value}),
+        )
+    };
+    let fixture = graph(
+        42,
+        vec![
+            node(
+                0,
+                "STUStatescriptEntry",
+                None,
+                json!({"m_outPlug":plug(&[(1,"m_beginPlug")], &[])}),
+            ),
+            node(
+                1,
+                "STU_96F1DBCF",
+                Some(0),
+                json!({
+                    "m_49F4B33C":var(100,true),
+                    "m_2102C541":plug(&[(2,"m_inPlug")], &[]),
+                    "m_E37BC6C2":plug(&[(3,"m_inPlug")], &[])
+                }),
+            ),
+            set(2, 200, 1),
+            set(3, 200, 2),
+        ],
+        json!([1]),
+        json!([0]),
+    );
+    let graphs = Arc::new(store(vec![fixture]));
+    let mut world = SampleWorld {
+        sample: 1,
+        restarted: false,
+    };
+    let mut component = Component::start(
+        Arc::clone(&graphs),
+        42,
+        Variables::new(),
+        vec![Root::new(1, 42)],
+        0,
+        &mut world,
+        MAX_INIT_WORK,
+    )
+    .unwrap();
+    let mark = |component: &Component| component.snapshot().unwrap().variables.get(&200).cloned();
+    component.advance_frame(1, &mut world).unwrap();
+    assert_eq!(mark(&component), None, "airborne, still in the air");
+
+    world.restarted = true;
+    component.advance_frame(2, &mut world).unwrap();
+    assert_eq!(
+        mark(&component),
+        Some(Value::Integer(2)),
+        "landing, then takeoff"
+    );
+
+    component.advance_frame(3, &mut world).unwrap();
+    world.sample = 2;
+    world.restarted = false;
+    component.advance_frame(4, &mut world).unwrap();
+    assert_eq!(mark(&component), Some(Value::Integer(1)), "landed");
+}
+
 #[test]
 fn instance_exit_drains_in_order_and_finishes_the_linked_parent() {
     let entry = |links: &[(u16, &str)]| {
@@ -5238,6 +5323,51 @@ fn a_target_search_filters_by_team_and_the_searcher_as_authored() {
             vec!["STUStatescriptStateTrackTargets m_filter.m_9C7BD8B8".to_owned()]
         )
     );
+}
+
+/// Rocket Punch's searches (`0D06` st6, st72) set `m_E474FFD6`: a cylinder
+/// along the diameter instead of a cone (`0x7FF789B9E660`). With a 60°
+/// angle and a 3 m radius a body is found when its axis is ahead of the
+/// centre and within sin 30° × 3 = 1.5 m of the line: the enemy 1.2 m to
+/// the side 1 m ahead (outside the 30° cone) is found, the one 2 m to the
+/// side and the one behind are not. The vertical scale `m_3119AD61` (1.21
+/// on the punch) changes nothing for bodies level with the centre.
+#[test]
+fn a_cylinder_search_finds_the_bodies_near_its_line_ahead() {
+    const THIRD_ENEMY: u32 = 0xa000_0303;
+    let enemies = json!({"$":"STUConfigVarFilter","m_84065FD1":1,"m_1E14CCA8":0,
+        "m_4EA686DB":16,"m_27CF71D5":0,"m_66747E7D":0,"m_89831602":1,"m_condition":null});
+    let found_with = |cylinder: u64| {
+        let graphs = Arc::new(search_fixture(
+            enemies.clone(),
+            json!({
+                "m_radius":{"$":"STUConfigVarInt","m_value":3},
+                "m_A30B383E":{"$":"STUConfigVarInt","m_value":60},
+                "m_3119AD61":{"$":"STUConfigVarFloat","m_value":1.21},
+                "m_E474FFD6":{"$":"STUConfigVarBool","m_value":cylinder},
+                "m_08285CD6":0,
+            }),
+        ));
+        let mut world = Bodies(vec![
+            body(SEARCHER, 0, [0.0; 3]),
+            body(ENEMY, 1, [1.2, 0.0, 1.0]),
+            body(SECOND_ENEMY, 1, [2.0, 0.0, 1.5]),
+            body(THIRD_ENEMY, 1, [0.5, 0.0, -1.0]),
+        ]);
+        let component = Component::start(
+            graphs,
+            SEARCHER,
+            Variables::new(),
+            vec![Root::new(1, 42)],
+            0,
+            &mut world,
+            MAX_INIT_WORK,
+        )
+        .unwrap();
+        found(&component).0
+    };
+    assert_eq!(found_with(1), [ENEMY]);
+    assert_eq!(found_with(0), Vec::<u32>::new());
 }
 
 /// A form with a part the server doesn't model (here the scoring

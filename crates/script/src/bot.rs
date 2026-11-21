@@ -20,8 +20,8 @@ use crate::{
     vitals::PoolKind,
     vm::{
         AiMoveRequest, AuraChange, BodyEffects, CombatMod, Component, HealthChange, InitFault,
-        MAX_INIT_WORK, MapRays, Motion, RaisedCriteria, Scaled, SeenBodies, ShotEvent, Site,
-        Snapshot, TargetCandidate, TargetTagEffect, Unknowns, World, body_roots,
+        Knockback, MAX_INIT_WORK, MapRays, Motion, PlayRequest, RaisedCriteria, Scaled, SeenBodies,
+        ShotEvent, Site, Snapshot, TargetCandidate, TargetTagEffect, Unknowns, World, body_roots,
     },
     weapons::DamageTags,
     wire::{Value, Variables},
@@ -177,6 +177,9 @@ pub struct BotWorld {
     /// The auras the body's ApplyAura states put on bodies or took off,
     /// for the match to apply.
     pub aura_changes: Vec<AuraChange>,
+    /// The knockbacks the body's graphs reported (`STU_AFBB59E9`: a
+    /// punch's `0D07` played on it), for the match.
+    pub knockbacks: Vec<Knockback>,
     /// The statuses and combat modifiers its states hold.
     pub effects: BodyEffects,
     /// The tags its own states add and suppress (Biotic Grenade's enemy
@@ -193,6 +196,12 @@ impl World for BotWorld {
 
     fn map_rays(&self) -> Option<&dyn MapRays> {
         self.map_rays.as_deref()
+    }
+
+    /// As a player's body ([`crate::player::PlayerWorld`]).
+    fn knockback(&mut self, _site: Site, knockback: Knockback) -> bool {
+        self.knockbacks.push(knockback);
+        true
     }
 
     fn assumption(&self, class: &str) -> Option<&'static str> {
@@ -364,6 +373,12 @@ impl World for BotWorld {
 
     fn native(&mut self, site: Site, config: &Json) -> Option<Value> {
         let class = config.get("$")?.as_str()?;
+        // The bot's knockback scale (mover mod 26) for Rocket Punch's victim
+        // graph `0D07` on it: a Training Bot's graphs hold no movement mod
+        // 26, so its default 1 (`orpheus_physics::mover::Mover::knockback_scale`).
+        if class == "STU_ABE57332" && is_owner(config.get("m_entity")) {
+            return Some(Value::Float(1.0));
+        }
         if class == "STU_AC829876"
             && self.mode == PRACTICE_RANGE_MODE
             && PRACTICE_BOT_HEROES.contains(&self.hero)
@@ -617,6 +632,7 @@ impl BotBody {
             movement_sample: BOT_MOVEMENT_SAMPLE,
             health_changes: Vec::new(),
             aura_changes: Vec::new(),
+            knockbacks: Vec::new(),
             effects: BodyEffects::default(),
             target_tags: TargetTags::default(),
             map_rays: spawn.map_rays.cloned(),
@@ -946,6 +962,28 @@ impl BotBody {
     /// The aura changes the body's graphs made since the last call.
     pub fn take_aura_changes(&mut self) -> Vec<AuraChange> {
         std::mem::take(&mut self.world.aura_changes)
+    }
+
+    /// Another body's ability graph played `request.graph` on the live
+    /// body at `frame` (Rocket Punch's `0D07`, `vm/play.rs`
+    /// `Plays::Others`): played as its PlayScript would. False on a dead
+    /// body.
+    pub fn play_script(&mut self, frame: u32, request: &PlayRequest) -> Result<bool, BotError> {
+        if self.component.owner_dead() {
+            return Ok(false);
+        }
+        let before = frame.saturating_sub(1);
+        if before > self.frame {
+            self.frame = before;
+            self.component.advance_frame(before, &mut self.world)?;
+        }
+        self.component.play_script(request, &mut self.world)?;
+        Ok(true)
+    }
+
+    /// The knockbacks the body's graphs reported since the last call.
+    pub fn take_knockbacks(&mut self) -> Vec<Knockback> {
+        std::mem::take(&mut self.world.knockbacks)
     }
 
     /// Whether the live body has something to run by the end of `frame`: a
@@ -1407,6 +1445,7 @@ mod tests {
             movement_sample: BOT_MOVEMENT_SAMPLE,
             health_changes: Vec::new(),
             aura_changes: Vec::new(),
+            knockbacks: Vec::new(),
             effects: BodyEffects::default(),
             target_tags: TargetTags::default(),
             map_rays: None,

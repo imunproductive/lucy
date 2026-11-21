@@ -42,10 +42,10 @@ use orpheus_script::{
     timeline::FRAME_MS,
     vitals::Vitals,
     vm::{
-        AssistLink, AuraChange, BodyEffects, Component, GameMessage, MAX_INIT_WORK, MapRays,
-        Motion, MoveRequest, ParentWrite, Pickup, RaisedCriteria, Root, Scaled, ScopeChange,
-        ScopeSource, Site, Snapshot, StateKind, TargetCandidate, TrackedStat, Unknowns,
-        VoiceRequest, World,
+        AssistLink, AuraChange, BodyEffects, Component, GameMessage, Knockback, MAX_INIT_WORK,
+        MapRays, Motion, MoveRequest, ParentWrite, Pickup, PlayRequest, RaisedCriteria, Root,
+        Scaled, ScopeChange, ScopeSource, Site, Snapshot, StateKind, TargetCandidate, TrackedStat,
+        Unknowns, VoiceRequest, World,
     },
     weapons::{DamageTags, HitDefinition, ProjectileBallistics, pellet_rings, ray_profile},
     wire::{Value, Variables},
@@ -285,6 +285,7 @@ impl PlayerBodyFactory {
         world.movement = spawn.pose;
         // A new mover's (`Mover::speed_scale`): no move yet.
         world.speed_scale = Some(1.0);
+        world.knockback_scale = Some(1.0);
         // A new body stands: its eye before the first move (graphs that
         // start a search from it at once, Wrecking Ball's `1566` st9).
         world.eye_height = Some(self.combat.eyes.height(false));
@@ -464,6 +465,7 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
         let speed_scale = Some(mover.speed_scale());
         let speed_changed = self.world.speed_scale != speed_scale;
         self.world.speed_scale = speed_scale;
+        self.world.knockback_scale = Some(mover.knockback_scale());
         self.world.trial = Some(mover.trial());
         self.world.eye_height = Some(self.combat.eyes.height(mover.crouched()));
         // Its own body, as the target searches see it, stands where it moved.
@@ -478,6 +480,7 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
             own.feet = pose.position;
         }
         // Command gaps and timer advances retain the last movement record.
+        self.world.movement_fresh = step == BodyStep::Posed;
         if step == BodyStep::Posed {
             self.world.movement = pose;
         }
@@ -609,6 +612,22 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
 
     fn scope_opened(&mut self, source: ScopeSource, target: u32, instance: u16) {
         self.component.scope_opened(source, target, instance);
+    }
+
+    fn take_play_requests(&mut self) -> Vec<PlayRequest> {
+        self.world.take_play_requests()
+    }
+
+    fn play_script(&mut self, request: &PlayRequest) -> io::Result<bool> {
+        self.component
+            .play_script(request, &mut self.world)
+            .map_err(unsupported)?;
+        self.log_assumptions();
+        Ok(true)
+    }
+
+    fn take_knockbacks(&mut self) -> Vec<Knockback> {
+        self.world.take_knockbacks()
     }
 
     fn take_parent_writes(&mut self) -> Vec<ParentWrite> {

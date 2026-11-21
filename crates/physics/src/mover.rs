@@ -84,8 +84,8 @@ use crate::{
     mover::ground::{GroundProbe, ProbePose, pogo, standing_body},
     mover::kinematics::{Ground, MotionInput, Poses, VelocityStep, poses},
     mover::modifiers::{
-        ActiveModifiers, Modifier, ModifierKey, ModifierTimeline, TAKE_OFF, VelocityChange,
-        VelocityElement, change_velocity, narrow,
+        ActiveModifiers, KNOCKBACK_SCALE, Modifier, ModifierKey, ModifierTimeline, TAKE_OFF,
+        VelocityChange, VelocityElement, change_velocity, narrow,
     },
     mover::posture::{
         CROUCHED, FELL, IN_AIR, JUMPED, NOT_GROUND_UNDER, Posture, PostureStep, TOUCHING, snap,
@@ -141,6 +141,13 @@ pub fn sample_movement_flags(pose: &Movement) -> Option<u16> {
     )
 }
 
+/// The record landed and left the ground within its own move: airborne with
+/// its air ticks at 0 (the client's sampler `0x7FF789C4D420` reads the
+/// mover state's `+0x10` for this).
+pub fn movement_restarted(pose: &Movement) -> bool {
+    pose.flags & IN_AIR != 0 && pose.air_ticks == 0
+}
+
 /// The spring steps of a body on `base` at rest (spring offsets 0), for the
 /// movement records of a body the server places without a mover (a training
 /// bot on its patrol). Not 0: see `Posture::spring_steps`.
@@ -176,6 +183,8 @@ pub struct Mover {
     velocity_changes: Vec<(f64, VelocityChange)>,
     /// The move-speed scale of the last move (mover `+0x4D8`).
     speed_scale: f64,
+    /// The knockback scale of the last move (mod 26, mover `+0x4DC`).
+    knockback_scale: f64,
 }
 
 impl Mover {
@@ -214,6 +223,7 @@ impl Mover {
             once: Vec::new(),
             velocity_changes: Vec::new(),
             speed_scale: 1.0,
+            knockback_scale: 1.0,
         })
     }
 
@@ -232,6 +242,16 @@ impl Mover {
     /// mover keeps it at `+0x4D8` (`STU_ED807E07`); 1 before the first.
     pub fn speed_scale(&self) -> f64 {
         self.speed_scale
+    }
+
+    /// The knockback scale (mod 26, the client's mover `+0x4DC`, written
+    /// only by its update `0x7FF789B4CBA0`, default 1, at least 0) its last
+    /// move used: what `STU_ABE57332` answers for its body (Rocket Punch's
+    /// victim graph `0D07` scales its push by it). The abilities that hold
+    /// mod 26 at 0 (Mei's Cryo-Freeze, D.Va's Defense Matrix:
+    /// OwnerPrediction.md "DaySpawnRoom2") make it 0.
+    pub fn knockback_scale(&self) -> f64 {
+        self.knockback_scale
     }
 
     pub fn crouched(&self) -> bool {
@@ -415,6 +435,7 @@ impl Mover {
         let active = self.modifiers.at(command.frame).with_once(&once);
         let settings = active.settings(&self.base);
         self.speed_scale = active.speed_scale();
+        self.knockback_scale = active.intent(KNOCKBACK_SCALE, 1.0).max(0.0);
         let input = MotionInput::new(&command, &active);
         let normal = if driven {
             // Kind 1's slot 8: no ground probe and no transitions, the up

@@ -482,6 +482,7 @@ impl State {
                 spawn_effect: false,
                 spawn_scope: Vec::new(),
                 hold_to_sprint_delivered: orpheus_script::wire::Value::Null,
+                workshop: Vec::new(),
             })
             .collect();
         for (connection, peer) in &self.peers {
@@ -509,6 +510,13 @@ impl State {
             body.spawn_effect = peer.world.body_state_active(0x265f, 21);
             body.spawn_scope = peer.world.body_scope_hits(0x265f, 20);
             body.hold_to_sprint_delivered = peer.world.body_delivered(0x01cf, 117, 0x1ddc).1;
+            body.workshop = (0..12)
+                .map(|index| {
+                    peer.world
+                        .workshop_variable(index)
+                        .unwrap_or(orpheus_script::wire::Value::Null)
+                })
+                .collect();
         }
         bodies
     }
@@ -626,4 +634,6 @@ pub(crate) struct BodyState {
     /// its targets (the new partner's body) and the instance its frame
     /// record names on each.
     pub spawn_scope: Vec<(u32, Option<u16>)>,
+    /// His Workshop player variables 0-11, as his controller holds them.
+    pub workshop: Vec<orpheus_script::wire::Value>,
 }

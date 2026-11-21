@@ -1494,6 +1494,18 @@ impl PreparedScene {
         self.bot_scripts.change_aura(change, tick);
     }
 
+    /// Another body's ability graph played `request.graph` on a live bot
+    /// at world tick `tick` (Rocket Punch's `0D07`). Whether a bot took it.
+    pub fn play_on_bot(&mut self, request: &orpheus_script::vm::PlayRequest, tick: u32) -> bool {
+        self.bot_scripts.play_script(request, tick)
+    }
+
+    /// The knockbacks the bots' graphs reported since the last call
+    /// (`STU_AFBB59E9`).
+    pub fn take_bot_knockbacks(&mut self) -> Vec<orpheus_script::vm::Knockback> {
+        self.bot_scripts.take_knockbacks()
+    }
+
     /// The aura changes the bots' graphs made since the last call.
     pub fn take_bot_aura_changes(&mut self) -> Vec<orpheus_script::vm::AuraChange> {
         self.bot_scripts.take_aura_changes()

@@ -24,15 +24,17 @@ use crate::{
     vitals::{PoolKind, Vitals},
     vm::{
         AssistLink, AuraChange, BodyEffects, CombatMod, DEAD_FILTER_BIT, DummyBot,
-        EnvironmentCredit, GameMessage, HealthChange, MapRays, ParentWrite, Pickup, RaisedCriteria,
-        ScopeChange, SeenBodies, SeenBody, Site, TargetCandidate, TargetTagEffect, TrackedStat,
-        Unknowns, VoiceRequest, World,
+        EnvironmentCredit, GameMessage, HealthChange, Knockback, MapRays, ParentWrite, Pickup,
+        PlayRequest, RaisedCriteria, ScopeChange, SeenBodies, SeenBody, Site, TargetCandidate,
+        TargetTagEffect, TrackedStat, Unknowns, VoiceRequest, World,
     },
     wheel::{Cosmetic, Cosmetics},
     wire::{Value, Variables},
 };
 use orpheus_content::maps::TUTORIAL_MODE;
-use orpheus_physics::mover::{landing::LandingSearch, sample_movement_flags, trial::TrialMove};
+use orpheus_physics::mover::{
+    landing::LandingSearch, movement_restarted, sample_movement_flags, trial::TrialMove,
+};
 use orpheus_wire::entity::{GAME_MODE_ENTITY, Movement};
 
 /// The hero body graphs that raise the body's voice reactions: `01CA` and
@@ -65,9 +67,15 @@ pub struct PlayerWorld {
     /// when the match doesn't say.
     pub eye_height: Option<f64>,
     pub movement: Movement,
+    /// `movement` came from this frame's move (not retained over a command
+    /// gap or a timer advance).
+    pub movement_fresh: bool,
     /// The move-speed scale the body's mover used on its last move (mover
     /// `+0x4D8`, `STU_ED807E07`); none: the match doesn't say.
     pub speed_scale: Option<f64>,
+    /// The knockback scale (mover mod 26, `+0x4DC`) the body's mover used
+    /// on its last move, `STU_ABE57332`; none: the match doesn't say.
+    pub knockback_scale: Option<f64>,
     /// The body as its mover stands after its last move, for the wall
     /// checks' trial moves ([`World::trial_turn`]); none: the match
     /// doesn't say.
@@ -165,6 +173,11 @@ pub struct PlayerWorld {
     /// instances (`STU_D49BBD03`: the console's `#940` on a re-pick), for
     /// the match.
     parent_writes: Vec<ParentWrite>,
+    /// The graphs the body's ability graphs played on other bodies (a
+    /// punch's victim graph), for the match.
+    plays: Vec<PlayRequest>,
+    /// The knockbacks the body's graphs reported (`STU_AFBB59E9`).
+    knockbacks: Vec<Knockback>,
     /// The statuses and combat modifiers its states hold.
     pub effects: BodyEffects,
 }
@@ -365,6 +378,27 @@ impl World for PlayerWorld {
         true
     }
 
+    /// A hero ability's graph played on another body (Rocket Punch's
+    /// `0D07`, Soundwave's `0ECA`, `vm/play.rs` `Plays::Others`): queued
+    /// for the match, which plays it in that body's script.
+    fn play_script(&mut self, site: Site, request: PlayRequest) -> bool {
+        if site.entity != self.entity {
+            return false;
+        }
+        self.plays.push(request);
+        true
+    }
+
+    /// A knockback the body's graphs reported (`STU_AFBB59E9`: a punch's
+    /// `0D07` on this body, a self boost), for the match.
+    fn knockback(&mut self, site: Site, knockback: Knockback) -> bool {
+        if site.entity != self.entity {
+            return false;
+        }
+        self.knockbacks.push(knockback);
+        true
+    }
+
     /// The pickup of `kind` whose sphere touches the body's capsule as the
     /// match placed it this tick, for its team (or any team).
     fn touched_pickup(&mut self, site: Site, entity: u32, kind: i64) -> Option<Option<u32>> {
@@ -446,6 +480,10 @@ impl World for PlayerWorld {
             return None;
         }
         sample_movement_flags(&self.movement)
+    }
+
+    fn movement_restarted(&self, site: Site) -> bool {
+        self.movement_fresh && self.is_player_site(site) && movement_restarted(&self.movement)
     }
 
     fn body_scale(&mut self, site: Site, target: u32, override_value: &Value) -> Option<f64> {
@@ -802,6 +840,13 @@ impl World for PlayerWorld {
                 let [x, y, z] = self.position;
                 self.eye_height.map(|eye| Value::Vector([x, y + eye, z]))
             }
+            // The body's knockback scale (the mover's mod 26, as the match
+            // gives it): Rocket Punch's victim graph `0D07` scales its
+            // push by it (rid54's velocity action, after rid46/rid61;
+            // `refs/reports/UpstreamPort.md` A7).
+            "STU_ABE57332" if self.is_player_site(site) && is_owner(config.get("m_entity")) => {
+                self.knockback_scale.map(Value::Float)
+            }
             "STU_310D6529" => {
                 const THROTTLE_UNIT: f32 = 1.0 / 127.0;
                 let [right, forward] = self
@@ -858,7 +903,9 @@ impl PlayerWorld {
             position: [0.0; 3],
             eye_height: None,
             movement: Movement::default(),
+            movement_fresh: false,
             speed_scale: None,
+            knockback_scale: None,
             trial: None,
             throttles: [0; 2],
             mode,
@@ -894,6 +941,8 @@ impl PlayerWorld {
             dummies: Vec::new(),
             scopes: Vec::new(),
             parent_writes: Vec::new(),
+            plays: Vec::new(),
+            knockbacks: Vec::new(),
             effects: BodyEffects::default(),
         }
     }
@@ -949,6 +998,18 @@ impl PlayerWorld {
     /// instances since the last call, in order, for the match to set.
     pub fn take_parent_writes(&mut self) -> Vec<ParentWrite> {
         std::mem::take(&mut self.parent_writes)
+    }
+
+    /// The graphs the body's ability graphs played on other bodies since
+    /// the last call, in order, for the match to play in their scripts.
+    pub fn take_play_requests(&mut self) -> Vec<PlayRequest> {
+        std::mem::take(&mut self.plays)
+    }
+
+    /// The knockbacks the body's graphs reported since the last call, in
+    /// order, for the match's knockback credit.
+    pub fn take_knockbacks(&mut self) -> Vec<Knockback> {
+        std::mem::take(&mut self.knockbacks)
     }
 
     /// The game messages the body sent other entities since the last call,
