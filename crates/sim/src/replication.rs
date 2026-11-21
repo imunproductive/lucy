@@ -1881,6 +1881,10 @@ pub struct WorldDelivery {
     /// the body keeps no correction history, until a frame carries it to
     /// the owner as a correction ([`Self::apply_body_moves`]).
     teleported: Option<Movement>,
+    /// The scope instances the controller's scope states opened or closed
+    /// on entities other than his current body, for the match
+    /// ([`Self::take_scope_changes`]).
+    controller_scopes: Vec<ScopeChange>,
     multikill_due: bool,
     /// The notices of the changes his body's modifiers made to the hits on
     /// it (`orpheus_script::vm::MODIFIED`), and what the sources of his
@@ -2053,6 +2057,7 @@ impl WorldDelivery {
             hurt: Vec::new(),
             controller_script: None,
             teleported: None,
+            controller_scopes: Vec::new(),
             multikill_due: false,
             modified: Vec::new(),
             placement: None,
@@ -2422,7 +2427,56 @@ impl WorldDelivery {
             eprintln!("controller script of {:08X} stopped ({error})", self.owner);
             self.controller_script = None;
         }
+        self.after_controller();
+    }
+
+    /// What the controller's graphs did outside the controller, after each
+    /// run: the scopes they opened or closed ([`Self::apply_controller_scopes`])
+    /// and the body moves ([`Self::apply_body_moves`]).
+    fn after_controller(&mut self) {
+        self.apply_controller_scopes();
         self.apply_body_moves();
+    }
+
+    /// The controller's scope states opened or closed scope instances: on
+    /// his current body at once (the Workshop's Set … Enabled stacks
+    /// `#9535e`, `#9538e`, `#9743e` … there, `1D42`/`1D43`/`1F30`), the
+    /// opened instance going back to its scope state for its frame record;
+    /// on another entity through the match ([`Self::take_scope_changes`]).
+    /// A body whose script hasn't started yet takes none: the scope state
+    /// asks again each tick until one opens.
+    fn apply_controller_scopes(&mut self) {
+        let Some(script) = &mut self.controller_script else {
+            return;
+        };
+        let changes = script.take_scope_changes();
+        for change in changes {
+            let target = change.target();
+            if self.current_body() != Some(target) {
+                self.controller_scopes.push(change);
+                continue;
+            }
+            if !self.takes_body_message(target) {
+                continue;
+            }
+            let opened = self
+                .body_script
+                .as_mut()
+                .map(|script| script.runtime.change_scope(&change));
+            let instance = match opened {
+                Some(Ok(Some(instance))) => instance,
+                Some(Err(error)) => {
+                    self.drop_failed_script(&error.to_string());
+                    continue;
+                }
+                _ => continue,
+            };
+            if let (ScopeChange::Open { source, .. }, Some(script)) =
+                (&change, &mut self.controller_script)
+            {
+                script.scope_opened(*source, target, instance);
+            }
+        }
     }
 
     /// The controller's graphs put the current body somewhere (a Workshop
@@ -4625,7 +4679,7 @@ impl WorldDelivery {
                 None
             }
         };
-        self.apply_body_moves();
+        self.after_controller();
         opened
     }
 
@@ -4692,7 +4746,7 @@ impl WorldDelivery {
             eprintln!("controller script of {:08X} stopped ({error})", self.owner);
             self.controller_script = None;
         }
-        self.apply_body_moves();
+        self.after_controller();
     }
 
     /// The mode entity played `request.graph` on this player's controller
@@ -4714,7 +4768,7 @@ impl WorldDelivery {
             eprintln!("controller script of {:08X} stopped ({error})", self.owner);
             self.controller_script = None;
         }
-        self.apply_body_moves();
+        self.after_controller();
         true
     }
 
@@ -4736,17 +4790,26 @@ impl WorldDelivery {
 
     /// The scope instances the current body's scope states opened or
     /// closed on their targets since the last call (the Training Partner
-    /// console's scope 197 on a re-picked dummy), for the match.
+    /// console's scope 197 on a re-picked dummy), and the controller's on
+    /// entities other than his body, for the match.
     pub fn take_scope_changes(&mut self) -> Vec<ScopeChange> {
-        self.body_script
-            .as_mut()
-            .map_or_else(Vec::new, |script| script.runtime.take_scope_changes())
+        let mut changes = std::mem::take(&mut self.controller_scopes);
+        if let Some(script) = &mut self.body_script {
+            changes.extend(script.runtime.take_scope_changes());
+        }
+        changes
     }
 
     /// The match opened the scope instance `instance` on `target` for the
-    /// scope state `source` of this player's current body.
+    /// scope state `source` of this player's current body or controller.
     pub fn scope_opened(&mut self, source: ScopeSource, target: u32, instance: u16) {
-        if let Some(script) = &mut self.body_script {
+        if let Some(script) = self
+            .controller_script
+            .as_mut()
+            .filter(|script| script.entity() == source.entity)
+        {
+            script.scope_opened(source, target, instance);
+        } else if let Some(script) = &mut self.body_script {
             script.runtime.scope_opened(source, target, instance);
         }
     }

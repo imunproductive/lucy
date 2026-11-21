@@ -12,6 +12,7 @@ use std::{collections::BTreeMap, sync::Arc};
 use serde_json::Value as Json;
 
 use crate::{
+    expr::EntityRelation,
     graph::GraphStore,
     map_tags::MapTags,
     placed::{Gaps, MapEntityWorld, PlacedEntity},
@@ -238,6 +239,34 @@ impl World for ModeWorld {
 
     fn ruleset(&mut self, id: u32) -> Option<Value> {
         self.graphs.ruleset_value(id, 0, self.mode, self.ruleset)
+    }
+
+    /// The players' controllers and bodies relate as a player's world
+    /// answers for his own (`ControllerWorld`): a controller possesses
+    /// his current body (entity 0 while he has none, `STU_0AC15F78`) and
+    /// is his own controller once he has one; a body's controller and
+    /// current possessor is its player's controller. The Workshop's
+    /// Respawn `1383` sends `06B6` to `STU_0AC15F78` of each player, a dead
+    /// body included. Others: unknown.
+    fn related_entity(
+        &mut self,
+        _site: Site,
+        relation: EntityRelation,
+        entity: u32,
+    ) -> Option<u32> {
+        let player = self.player_of(entity)?;
+        let possessing = player.body.map(|_| player.controller);
+        if entity == player.controller {
+            return match relation {
+                EntityRelation::PossessedBody => Some(player.body.unwrap_or(0)),
+                EntityRelation::Controller => Some(possessing.unwrap_or(0)),
+                _ => None,
+            };
+        }
+        match relation {
+            EntityRelation::Controller | EntityRelation::CurrentPossessor => possessing,
+            _ => None,
+        }
     }
 
     fn mode_random(&self) -> Option<f64> {

@@ -38,7 +38,7 @@ use crate::{
     graph::GraphStore,
     vm::{
         BodyMove, Component, GameMessage, InitFault, MAX_INIT_WORK, PlayRequest, Root, ScopeChange,
-        Site, Snapshot, StateKind, TrackedStat, Unknowns, VoiceRequest, World,
+        ScopeSource, Site, Snapshot, StateKind, TrackedStat, Unknowns, VoiceRequest, World,
     },
     wire::{Value, Variables},
 };
@@ -172,6 +172,10 @@ pub struct ControllerWorld {
     /// The bodies the graphs put somewhere (`STU_CFCE55DC`: a Workshop
     /// Teleport's scope on this controller).
     body_moves: Vec<BodyMove>,
+    /// The scope instances the graphs' scope states opened or closed on
+    /// their targets (a Workshop Set Ability 1 Enabled's `1D42` scope on
+    /// the possessed body).
+    scopes: Vec<ScopeChange>,
 }
 
 impl ControllerWorld {
@@ -193,6 +197,7 @@ impl ControllerWorld {
             voices: Vec::new(),
             tracked_stats: Vec::new(),
             body_moves: Vec::new(),
+            scopes: Vec::new(),
         }
     }
 
@@ -419,6 +424,16 @@ impl World for ControllerWorld {
             return false;
         }
         self.body_moves.push(body_move);
+        true
+    }
+
+    /// A scope state's instances on its targets go to the match, which
+    /// opens them in the targets' components (as `player.rs`): the
+    /// Workshop's Set … Enabled graphs (`1D42`, `1D43`, `1F30`) stack
+    /// their entity variables on `STU_69DBE90D(owner())`, the possessed
+    /// body, from a scope instance there.
+    fn change_scope(&mut self, _site: Site, change: ScopeChange) -> bool {
+        self.scopes.push(change);
         true
     }
 }
@@ -688,6 +703,19 @@ impl ControllerScript {
     /// Teleport on this player), for the match to move.
     pub fn take_body_moves(&mut self) -> Vec<BodyMove> {
         std::mem::take(&mut self.world.body_moves)
+    }
+
+    /// The scope instances the graphs' scope states opened or closed on
+    /// their targets since the last call, in order, for the match to carry
+    /// out in the targets' components.
+    pub fn take_scope_changes(&mut self) -> Vec<ScopeChange> {
+        std::mem::take(&mut self.world.scopes)
+    }
+
+    /// The match opened the scope instance `instance` on `target` for the
+    /// scope state `source` of this controller: its frame record names it.
+    pub fn scope_opened(&mut self, source: ScopeSource, target: u32, instance: u16) {
+        self.component.scope_opened(source, target, instance);
     }
 
     /// Workshop player variable `index` of this player: the controller's
