@@ -193,7 +193,6 @@ fn run() {
         "==== owprobe on 127.0.0.1:{}, image {:#X}+{:#X}, code {:#X}..{:#X}, {} ====",
         probe.port, probe.base, probe.image_size, probe.text.0, probe.text.1, probe.exe
     ));
-    game::start_scanner(probe);
     server::serve(probe);
 }
 

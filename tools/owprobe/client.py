@@ -209,6 +209,11 @@ class Probe:
         """[{component, entity, id}] of the components with this vtable (an ORPHEUS VA is converted)."""
         return self.request("components", vtable=self.addr(vtable), max=max)
 
+    def component(self, entity_id, kind):
+        """{entity, component}: the entity with this id and its component `kind`, found as the client's own
+        lookup does (None when missing; needs the frame sampler's player entity)."""
+        return self.request("component", id=entity_id, kind=kind)
+
     def disasm(self, addr, count=16):
         return self.request("disasm", addr=self.addr(addr), count=count)
 

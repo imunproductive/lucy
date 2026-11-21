@@ -35,9 +35,28 @@ use compiled::{Config, Program};
 pub const EPSILON: f64 = 1.192_092_895_507_812_5e-5;
 const MAX_CONFIG_DEPTH: usize = 64;
 pub const MAX_EXPRESSION_STEPS: usize = 4096;
-/// The parameter a mapped array's expression reads its item's index as
-/// (`STU_6C846FF5`; the item is every other).
-const MAPPED_INDEX: u32 = 12;
+/// The parameter a mapped array's or a fold's expression reads its item's
+/// index as (`STU_6C846FF5`, `STU_A6B80C63`).
+const FRAME_INDEX: u32 = 12;
+/// A fold's item count, accumulator and item (`STU_A6B80C63`'s frame,
+/// 0x7FF78AA86A60).
+const FOLD_COUNT: u32 = 1050;
+const FOLD_ACCUMULATOR: u32 = 1293;
+const FOLD_ITEM: u32 = 1294;
+
+/// A parameter frame an array expression pushes while it evaluates its
+/// item expressions ([`Evaluator::parameter`]).
+enum Frame {
+    /// A mapped or filtered array's item and its index: every parameter
+    /// but the index reads the item.
+    Mapped(i64, Value),
+    /// A fold's state: other parameters are the outer frames'.
+    Fold {
+        index: usize,
+        items: Vec<Value>,
+        accumulator: Value,
+    },
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Scope {
@@ -1348,9 +1367,9 @@ struct Evaluator<'t> {
     /// The parameters of the Workshop values being evaluated, innermost
     /// last ([`Self::workshop_tree`]).
     workshop_parameters: Vec<Vec<Value>>,
-    /// The items of the mapped arrays being evaluated, innermost last, with
-    /// their index (`STU_6C846FF5`): parameter reads take them.
-    mapped: Vec<(i64, Value)>,
+    /// The parameter frames of the array expressions being evaluated,
+    /// innermost last ([`Frame`]).
+    frames: Vec<Frame>,
 }
 
 impl<'t> Evaluator<'t> {
@@ -1361,8 +1380,73 @@ impl<'t> Evaluator<'t> {
             table,
             reference: None,
             workshop_parameters: Vec::new(),
-            mapped: Vec::new(),
+            frames: Vec::new(),
         }
+    }
+
+    /// The fold on top of [`Self::frames`] (`STU_A6B80C63`) of `count`
+    /// items: its result.
+    fn fold(
+        &mut self,
+        config: &Json,
+        context: &mut impl Context,
+        depth: usize,
+        count: usize,
+    ) -> Result<Value, EvalError> {
+        let set = |frames: &mut Vec<Frame>, at: usize, value: Option<Value>| {
+            if let Some(Frame::Fold {
+                index, accumulator, ..
+            }) = frames.last_mut()
+            {
+                *index = at;
+                if let Some(value) = value {
+                    *accumulator = value;
+                }
+            }
+        };
+        if count > 0 {
+            let first = self.config(child(config, "m_418D9D9D"), context, depth)?;
+            set(&mut self.frames, 0, Some(first));
+            for at in 0..count {
+                set(&mut self.frames, at, None);
+                let next = self.config(child(config, "m_C239F989"), context, depth)?;
+                set(&mut self.frames, at, Some(next));
+            }
+        }
+        set(&mut self.frames, count, None);
+        let result = child(config, "m_8054375D");
+        if !result.is_null() {
+            return self.config(result, context, depth);
+        }
+        match self.frames.last_mut() {
+            Some(Frame::Fold { accumulator, .. }) => {
+                Ok(std::mem::replace(accumulator, Value::Null))
+            }
+            _ => unreachable!("the fold pushed its frame"),
+        }
+    }
+
+    /// Parameter `id` (expression opcode 13): from the innermost frame
+    /// that has it ([`Frame`]), else the context's.
+    fn parameter(&self, id: u32, context: &mut impl Context) -> Value {
+        for frame in self.frames.iter().rev() {
+            match frame {
+                Frame::Mapped(index, _) if id == FRAME_INDEX => return Value::Integer(*index),
+                Frame::Mapped(_, item) => return item.clone(),
+                Frame::Fold {
+                    index,
+                    items,
+                    accumulator,
+                } => match id {
+                    FRAME_INDEX => return Value::Integer(*index as i64),
+                    FOLD_COUNT => return Value::Integer(items.len() as i64),
+                    FOLD_ACCUMULATOR => return accumulator.clone(),
+                    FOLD_ITEM if *index < items.len() => return items[*index].clone(),
+                    _ => {}
+                },
+            }
+        }
+        context.parameter(id)
     }
 
     /// A Workshop value tree as the client evaluates it
@@ -1762,9 +1846,11 @@ impl Evaluator<'_> {
                     into_array(self.config(child(config, "m_814F8EC3"), context, nested)?);
                 let mut kept = Vec::new();
                 for (index, item) in (0..).zip(items) {
-                    self.mapped.push((index, item));
+                    self.frames.push(Frame::Mapped(index, item));
                     let pass = self.config(child(config, "m_condition"), context, nested);
-                    let (_, item) = self.mapped.pop().expect("pushed above");
+                    let Some(Frame::Mapped(_, item)) = self.frames.pop() else {
+                        unreachable!("pushed above")
+                    };
                     if truthy(&pass?) {
                         kept.push(item);
                     }
@@ -1789,9 +1875,9 @@ impl Evaluator<'_> {
                     into_array(self.config(child(config, "m_814F8EC3"), context, nested)?);
                 let mut mapped = Vec::with_capacity(items.len());
                 for (index, item) in (0..).zip(items) {
-                    self.mapped.push((index, item));
+                    self.frames.push(Frame::Mapped(index, item));
                     let value = self.config(child(config, "m_260A4690"), context, nested);
-                    self.mapped.pop();
+                    self.frames.pop();
                     mapped.push(value?);
                 }
                 Value::Array(mapped)
@@ -1801,6 +1887,13 @@ impl Evaluator<'_> {
             }
             "STU_B70476F3" => literal_asset(config, class, "m_548E5344", 0x0a90)
                 .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?,
+            // A target tag literal (`06C`) as a value: `0FA8` st6's
+            // `m_targetTags` picks one of two by the wall's team (#1777).
+            "STU_357DABBB" => match target_tag_config(config) {
+                Some(0) => Value::Null,
+                Some(tag) => Value::Asset(tag),
+                None => return Err(EvalError::UnsupportedConfig(class.into())),
+            },
             // An aura (`053`): ApplyAura's `m_A76A8CF6`, ModifyHealth's
             // `m_277A4ECA` (`vm/auras.rs`).
             "STU_0E766B33" => literal_asset(config, class, "m_A76A8CF6", 0x04a0)
@@ -1832,16 +1925,30 @@ impl Evaluator<'_> {
             // Assumption: the level picks a base mode, and each mode the
             // server runs is its own base.
             "STU_F4C77F4A" => return self.config(child(config, "m_value"), context, nested),
-            // A pick from the list `m_814F8EC3` (between `m_8054375D` and
-            // `m_418D9D9D` of them, `m_C239F989` a count; `01CA` rid23 sends
-            // `00BC.025` to the hero's allies near his victim). Only its
-            // empty form is known: an empty or unset list picks none (as
-            // when the server's `STU_ED45C5E8` query finds nobody).
-            "STU_A6B80C63" => match self.config(child(config, "m_814F8EC3"), context, nested)? {
-                Value::Null => Value::Array(Vec::new()),
-                Value::Array(items) if items.is_empty() => Value::Array(Vec::new()),
-                _ => return Err(EvalError::UnsupportedConfig(class.into())),
-            },
+            // A fold (`Eval_STU_A6B80C63` 0x7FF78AA87D80): the items of
+            // `m_814F8EC3` (a non-array as one) in a frame (0x7FF78AA86A60)
+            // of index #12, count #1050, accumulator #1293 and the item at
+            // the index #1294 (none once the index reaches the count). With
+            // items, `m_418D9D9D` (at index 0) gives the first accumulator
+            // and `m_C239F989` the next for each item; the result is
+            // `m_8054375D` (index at the count), else the accumulator (null
+            // for no items). `0B8B` rid72 and `1566` sum the `#499` of the
+            // `3EBB` rows, `180A` rid45 adds up the teams' scores, `01CA`
+            // rid23 keeps the ally nearest the owner. leafall903/ORPHEUS
+            // (MIT) `fold_array` in `play.py`.
+            "STU_A6B80C63" => {
+                let items =
+                    into_array(self.config(child(config, "m_814F8EC3"), context, nested)?);
+                let count = items.len();
+                self.frames.push(Frame::Fold {
+                    index: 0,
+                    items,
+                    accumulator: Value::Null,
+                });
+                let result = self.fold(config, context, nested, count);
+                self.frames.pop();
+                result?
+            }
             "STU_7757D403" => authored_pairs(self, config, context, nested)?,
             // An authored identifier map (`STU_7042F028`, 104319 1B78C00;
             // leafall903/ORPHEUS (MIT) `authored_map` in `play.py`): each
@@ -3502,11 +3609,7 @@ impl Evaluator<'_> {
                 }
                 13 => {
                     let id = step.parameter()?;
-                    match self.mapped.last() {
-                        Some(&(index, _)) if id == MAPPED_INDEX => Value::Integer(index),
-                        Some((_, item)) => item.clone(),
-                        None => context.parameter(id),
-                    }
+                    self.parameter(id, context)
                 }
                 14 => {
                     let configs = *configs.get_or_insert_with(|| {

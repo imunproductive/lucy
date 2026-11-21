@@ -1076,3 +1076,46 @@ fn compiled_configs_evaluate_as_their_json_does() {
     assert!(table.get(&fields["list"][2]).is_none());
     assert!(table.get(&fields["bad_tables"]).is_none());
 }
+
+/// `STU_A6B80C63` folds its items (0x7FF78AA87D80): the first accumulator
+/// is `m_418D9D9D` with item 0 bound, each item's `m_C239F989` the next,
+/// and `m_8054375D` reads the frame with the index at the count. As
+/// `0B8B` rid72 sums its rows' `#499`; no items: null.
+#[test]
+fn a_fold_accumulates_its_items_in_its_frame() {
+    let param = |id: u32| json!({"m_identifier": id});
+    let item = expression(json!([13, 0]), &[param(1294)], &[], &[]);
+    let add =
+        |a: u32, b: u32| expression(json!([13, 0, 13, 1, 23]), &[param(a), param(b)], &[], &[]);
+    let fold = |result: Option<Json>| {
+        let mut config = json!({
+            "$": "STU_A6B80C63",
+            "m_814F8EC3": variable(16100, Scope::Instance),
+            "m_418D9D9D": item,
+            "m_C239F989": add(1293, 1294),
+        });
+        if let Some(result) = result {
+            config["m_8054375D"] = result;
+        }
+        config
+    };
+    let mut vars = Vars::default();
+    vars.instance.insert(
+        16100,
+        Value::Array(vec![
+            Value::Float(2.0),
+            Value::Float(3.0),
+            Value::Float(5.0),
+        ]),
+    );
+    // 2 (item 0) + 2 + 3 + 5.
+    let sum = evaluate(&fold(None), &mut vars).unwrap();
+    assert_eq!(to_float(&sum), 12.0);
+    // The index is the count (3) once the items are done.
+    let with_index = evaluate(&fold(Some(add(1293, 12))), &mut vars).unwrap();
+    assert_eq!(to_float(&with_index), 15.0);
+    let count = evaluate(&fold(Some(add(1050, 1050))), &mut vars).unwrap();
+    assert_eq!(to_float(&count), 6.0);
+    vars.instance.insert(16100, Value::Array(Vec::new()));
+    assert_eq!(evaluate(&fold(None), &mut vars), Ok(Value::Null));
+}

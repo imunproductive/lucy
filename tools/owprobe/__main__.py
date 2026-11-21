@@ -103,6 +103,13 @@ def cmd_components(args):
         print(f"{c['component']:016X} entity {c['entity']:016X} id {c['id']:08X}")
 
 
+def cmd_component(args):
+    from .statescript import resolve_entity
+    p = connect(args)
+    found = p.component(resolve_entity(p, args.entity), args.kind)
+    print(f"entity {hx(found['entity'])} component {args.kind} {hx(found['component'])}")
+
+
 def cmd_entity_vars(args):
     from .statescript import entity_vars, variable_name
     p = connect(args)
@@ -333,6 +340,9 @@ def main(argv=None):
     c.add_argument("--max", type=int, default=1000)
     c = command("components", cmd_components, "components with a vtable (or compN) and their entities")
     c.add_argument("vtable")
+    c = command("component", cmd_component, "an entity's component N, as the client's own lookup finds it")
+    c.add_argument("entity", help="the entity id in hex (A0000101), player or body")
+    c.add_argument("kind", type=int, help="the component id (44)")
     c = command("entity-vars", cmd_entity_vars, "an entity's statescript entity variables (#Ne)")
     c.add_argument("entity", help="the entity id in hex (A0000100), player or body")
     c.add_argument("ids", nargs="*", help="variable ids (2438 or 2438e; default all)")

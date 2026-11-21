@@ -476,6 +476,7 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
             own.feet = pose.position;
         }
         // Command gaps and timer advances retain the last movement record.
+        self.world.movement_fresh = step == BodyStep::Posed;
         if step == BodyStep::Posed {
             self.world.movement = pose;
         }
@@ -703,6 +704,10 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
 
     fn take_tracked_stats(&mut self) -> Vec<TrackedStat> {
         self.world.take_tracked_stats()
+    }
+
+    fn take_environment_credits(&mut self) -> Vec<orpheus_script::vm::EnvironmentCredit> {
+        self.world.take_environment_credits()
     }
 
     fn move_requests(&self) -> Vec<MoveRequest> {

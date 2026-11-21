@@ -90,7 +90,8 @@ class Session:
         on the first start (minutes, before the game starts). rust_log: the server's RUST_LOG, e.g.
         `info,orpheus::pose=debug` for the per-frame poses `compare` reads from `state/play.log`. team_lock: take
         the agents' game lock (`tools/gamelock.py`, in turn, as `owner`) for the session and release it
-        at its end; False when the caller holds it already. play_args: more `orpheus play` options, e.g.
+        at its end; False when the caller holds it already (as `owner`, else the session refuses). play_args: more
+        `orpheus play` options, e.g.
         ("--workshop", FILE)."""
         self.seed_state = Path(seed_state) if seed_state else USER_STATE
         self.rust_log = rust_log
@@ -122,6 +123,12 @@ class Session:
     def __enter__(self):
         if self.team_lock:
             self._take_team_lock()
+        else:
+            from tools import gamelock
+            held = gamelock.holder()
+            if not held or held[0] != self.owner:
+                raise RuntimeError(f"team_lock=False but {self.owner} does not hold the game lock "
+                                   f"(holder: {held and held[0]}); take it with tools/gamelock.py acquire")
         try:
             self._lock.acquire()
             self.start()
@@ -370,9 +377,7 @@ class Session:
             shot = self.state / "no-pick.png"
             screenshot(self.pid, shot)
             raise RuntimeError(f"hero select: no pick taken; see {shot}")
-        # The body the player possesses (component 44, from the probe's component scan) with its mover. The
-        # client makes the player's component 44 late: 100-115 s after the pick in the Range (2026-11-20), while
-        # it already shows the body.
+        # The body the player possesses (his component 44, through the client's own lookup) with its mover.
         end = time.monotonic() + 240
         while time.monotonic() < end:
             info = self.probe.info()

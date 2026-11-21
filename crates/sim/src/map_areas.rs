@@ -97,6 +97,31 @@
 //! player and the mode. Their scripts (each one's definition, position and
 //! statescript instance data, [`PlacedScript`]) run on the server in
 //! `crate::placed_script`.
+//!
+//! Team walls (`server_placeables` with `collision`): the server placeables
+//! running graph `0FA8` (definitions `1C90`, `1C91`) stand in pairs in the
+//! PvP spawn doorways, and their models' meshes stop one team's mover each
+//! (masks 0x88, 0x90; `orpheus_assets` `map_areas`). `0FA8` turns a wall on
+//! for the team in its v1777 (the same team as the mask, in every wall's
+//! data) with state 3 (remote 1), which begins on game message `0845`
+//! when its entry condition `#10768 == (attacking team != #1777)` holds;
+//! before the message, and when the condition fails, state 2 (remote 0)
+//! runs, which sets `STU_33A46033`'s `m_7E42F868` for everyone, as st3
+//! does for the other team. So `m_7E42F868` set means off: two walls of
+//! one doorway, one per team, can't both stop their team for the whole
+//! match, or no one would leave that spawn room. The server's mover takes
+//! a wall while its placed script runs state 3 and is complete, so that
+//! the clients get the same state in its frames ([`team_wall_on`];
+//! `orpheus_physics` `ContactWorld::switch`); the wall's mask leaves the
+//! other team out. Assumption: `m_7E42F868`'s flags (component 1, scene
+//! node `0x8000` and `0x200000000000`, refs `OwnerPrediction.md` §12.4)
+//! take the model's physics out with its drawing; not read in the client.
+//! The mode graphs send `0845` (`0F4A` st60, `0D76` st19); the Rust match
+//! flow that stands in for them in normal matches doesn't, so there every
+//! wall stays off, on the server as on the clients. Where `0845` comes,
+//! state 3 begins with state 6 (`STU_E56BA8D8`), whose target tags are a
+//! conditional the VM refuses ("target tag literal"), so that script is
+//! incomplete and its wall stays off too (docs/dev/loose-ends.md).
 
 use std::{
     collections::{BTreeSet, HashMap},
@@ -106,11 +131,21 @@ use std::{
 };
 
 use orpheus_content::maps::{GameMap, SpawnChoice};
-use orpheus_physics::collision::index::SceneTriangle;
+use orpheus_physics::{
+    collision::{
+        cache::{Mesh, Triangle},
+        index::SceneTriangle,
+    },
+    contact::{
+        math::ContactFrame,
+        mesh::ContactMesh,
+        world::{ContactWorldError, StaticGeometry, StaticShape},
+    },
+};
 use orpheus_script::{
     graph::{GraphBinding, GraphStore},
     map_tags::{MapTags, TaggedEntity},
-    placed::{EntityVolumes, Placement},
+    placed::{EntityVolumes, PlacedEntity, Placement},
     wire::{Value as ScriptValue, Variables},
 };
 use serde::Deserialize;
@@ -136,6 +171,10 @@ pub const LETHAL_DAMAGE: f64 = 100.0;
 /// A ground triangle whose surface has this bit is not ground
 /// (`orpheus_physics::mover::ground::NOT_GROUND`).
 const NOT_GROUND: u16 = 1;
+/// The team walls' graph and its state that turns a wall on (see the module
+/// notes).
+const TEAM_WALL_GRAPH: u32 = 0x0FA8;
+const TEAM_WALL_ON: u16 = 3;
 
 /// One spawn room: the team the map gives it, if any, and its area.
 #[derive(Clone, Debug, PartialEq)]
@@ -305,6 +344,55 @@ impl PlacedScript {
     }
 }
 
+/// A team wall (see the module notes): its placeable and its model's
+/// meshes (each with its holder mask) where the map puts it.
+#[derive(Debug)]
+pub struct TeamWall {
+    pub placeable: MapPlaceable,
+    frame: ContactFrame,
+    scale: [f32; 3],
+    meshes: Vec<(u16, Arc<Mesh>)>,
+}
+
+impl TeamWall {
+    /// The entity the client makes of it ([`PlacedScript::entity`]).
+    pub fn entity(&self) -> u32 {
+        0x8000_0000 | self.placeable.placeable
+    }
+
+    /// Its shapes in the world, as the movement cache places a prop's
+    /// (`ContactWorld::from_movement_cache`): each mesh in the placeable's
+    /// frame times its scale.
+    pub fn shapes(&self) -> Result<Vec<StaticShape>, ContactWorldError> {
+        self.meshes
+            .iter()
+            .map(|(mask, mesh)| {
+                let mesh = ContactMesh::new(Arc::clone(mesh), self.scale, *mask)?;
+                StaticShape::new(StaticGeometry::Mesh(Arc::new(mesh)), Some(self.frame))
+            })
+            .collect()
+    }
+}
+
+/// Whether a team wall stands in the world now: `0FA8`'s state 3 is active
+/// in its placed script (`entity`, none once it is gone), and the script is
+/// complete, so its frames tell the clients the same (a script with gaps
+/// sends none, `crate::placed_script`, and their walls stay as they were).
+pub fn team_wall_on(entity: Option<&PlacedEntity>) -> bool {
+    entity
+        .filter(|entity| entity.complete())
+        .and_then(PlacedEntity::snapshot)
+        .is_some_and(|snapshot| {
+            snapshot.instances.values().any(|instance| {
+                instance.graph == TEAM_WALL_GRAPH
+                    && instance
+                        .states
+                        .get(&TEAM_WALL_ON)
+                        .is_some_and(|state| state.active)
+            })
+        })
+}
+
 /// One map's areas.
 #[derive(Debug)]
 struct MapAreas {
@@ -313,6 +401,8 @@ struct MapAreas {
     server_placeables: Vec<MapPlaceable>,
     /// The server placeables' script data, in the same order.
     scripts: Vec<Arc<PlacedScript>>,
+    /// The server placeables that are team walls, in placeable order.
+    walls: Vec<TeamWall>,
     kill_volumes: Arc<[CaptureBox]>,
     /// The entities with target tags, with the placeable each is.
     tagged: Vec<(MapPlaceable, TaggedEntity)>,
@@ -380,6 +470,52 @@ struct RawServerPlaceable {
     moving: bool,
     #[serde(default)]
     second_identifier: Option<String>,
+    /// A team wall's rotation, scale and model meshes.
+    #[serde(default)]
+    rotation: Option<[f32; 4]>,
+    #[serde(default)]
+    scale: Option<[f32; 3]>,
+    #[serde(default)]
+    collision: Vec<RawMesh>,
+}
+
+/// A team wall's mesh: its holder mask, vertices and triangles (corners,
+/// wings, mask, surface).
+#[derive(Deserialize)]
+struct RawMesh {
+    mask: u16,
+    vertices: Vec<[f32; 3]>,
+    triangles: Vec<[i32; 8]>,
+}
+
+impl RawMesh {
+    fn read(self) -> Result<(u16, Arc<Mesh>), &'static str> {
+        let count = self.vertices.len();
+        let vertex = |index: i32| usize::try_from(index).is_ok_and(|index| index < count);
+        let triangles = self
+            .triangles
+            .into_iter()
+            .map(|[a, b, c, wa, wb, wc, mask, surface]| {
+                let (corners, wings) = ([a, b, c], [wa, wb, wc]);
+                if !corners.into_iter().all(vertex)
+                    || !wings.into_iter().all(|wing| wing == -1 || vertex(wing))
+                {
+                    return Err("a triangle's vertex is out of range");
+                }
+                Ok(Triangle {
+                    corners,
+                    wings,
+                    mask: u16::try_from(mask).map_err(|_| "a triangle's mask")?,
+                    surface: u16::try_from(surface).map_err(|_| "a triangle's surface")?,
+                })
+            })
+            .collect::<Result<_, _>>()?;
+        let mesh = Mesh {
+            vertices: self.vertices,
+            triangles,
+        };
+        Ok((self.mask, Arc::new(mesh)))
+    }
 }
 
 #[derive(Default, Deserialize)]
@@ -474,6 +610,7 @@ impl MapAreaData {
                 .collect::<io::Result<_>>()?;
             let mut server_placeables = Vec::new();
             let mut scripts = Vec::new();
+            let mut walls = Vec::new();
             for raw in raw.server_placeables {
                 let placeable = raw.placeable.read(&key)?;
                 let guid = |what: &str, text: Option<String>| {
@@ -489,6 +626,32 @@ impl MapAreaData {
                 };
                 let definition = guid("definition", raw.definition)?.unwrap_or_default();
                 let second_identifier = guid("second identifier", raw.second_identifier)?;
+                if !raw.collision.is_empty() {
+                    let wall_error = |what: &str| {
+                        invalid(format!(
+                            "{FILE}: map {key}: team wall {}: {what}",
+                            placeable.placeable
+                        ))
+                    };
+                    let (Some(rotation), Some(scale)) = (raw.rotation, raw.scale) else {
+                        return Err(wall_error("no rotation or scale"));
+                    };
+                    let meshes = raw
+                        .collision
+                        .into_iter()
+                        .map(RawMesh::read)
+                        .collect::<Result<_, _>>()
+                        .map_err(wall_error)?;
+                    walls.push(TeamWall {
+                        placeable,
+                        frame: ContactFrame {
+                            translation: raw.position.map(|axis| axis as f32),
+                            rotation,
+                        },
+                        scale,
+                        meshes,
+                    });
+                }
                 scripts.push(Arc::new(PlacedScript {
                     placeable: placeable.placeable,
                     definition,
@@ -533,6 +696,7 @@ impl MapAreaData {
                     damage_areas,
                     server_placeables,
                     scripts,
+                    walls,
                     kill_volumes: raw.kill_volumes.into(),
                     tagged,
                 },
@@ -593,6 +757,21 @@ impl MapAreaData {
                     .zip(&areas.scripts)
                     .filter(|(placeable, _)| placeable.in_mode(identifiers))
                     .map(|(_, script)| Arc::clone(script))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The map's team walls that exist in a mode that lists `identifiers`,
+    /// in placeable order (see the module notes).
+    pub fn team_walls(&self, map: &GameMap, identifiers: &BTreeSet<u64>) -> Vec<&TeamWall> {
+        self.maps
+            .get(&map.map_guid)
+            .map(|areas| {
+                areas
+                    .walls
+                    .iter()
+                    .filter(|wall| wall.placeable.in_mode(identifiers))
                     .collect()
             })
             .unwrap_or_default()

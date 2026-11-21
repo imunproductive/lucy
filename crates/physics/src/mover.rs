@@ -141,6 +141,13 @@ pub fn sample_movement_flags(pose: &Movement) -> Option<u16> {
     )
 }
 
+/// The record landed and left the ground within its own move: airborne with
+/// its air ticks at 0 (the client's sampler `0x7FF789C4D420` reads the
+/// mover state's `+0x10` for this).
+pub fn movement_restarted(pose: &Movement) -> bool {
+    pose.flags & IN_AIR != 0 && pose.air_ticks == 0
+}
+
 /// The spring steps of a body on `base` at rest (spring offsets 0), for the
 /// movement records of a body the server places without a mover (a training
 /// bot on its patrol). Not 0: see `Posture::spring_steps`.

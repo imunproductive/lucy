@@ -76,11 +76,12 @@ fn spawn_rooms_belong_to_their_team_or_hold_its_spawn_point() {
     );
 }
 
-/// The derived file: a map's rooms, damage areas, door barriers and kill
-/// volumes, and a map whose rooms' derivation failed has no rooms. Damage
-/// areas of 100 and more kill, an area of 0 doesn't; an area or server placeable with
-/// an identifier exists only in the modes that list it; kill volumes exist
-/// in every mode.
+/// The derived file: a map's rooms, damage areas, door barriers, team walls
+/// and kill volumes, and a map whose rooms' derivation failed has no rooms.
+/// Damage areas of 100 and more kill, an area of 0 doesn't; an area or
+/// server placeable with an identifier exists only in the modes that list
+/// it; a team wall's mesh stands where the map turns, scales and puts it;
+/// kill volumes exist in every mode.
 #[test]
 fn the_area_file_reads_rooms_damage_areas_placeables_kill_volumes_and_failures() {
     let data = MapAreaData::read(
@@ -97,7 +98,11 @@ fn the_area_file_reads_rooms_damage_areas_placeables_kill_volumes_and_failures()
                 "server_placeables": [{"placeable": 340, "definition": "0x0400000000001307",
                     "position": [1.5, 2, -3], "script": {"overrides": [{"graph": 246,
                     "m_1EB5A024": [], "m_75408640": 0}], "extra": []}},
-                    {"placeable": 341, "definition": "0x0400000000001307", "identifier": "0x0D80000000002962"}],
+                    {"placeable": 341, "definition": "0x0400000000001307", "identifier": "0x0D80000000002962"},
+                    {"placeable": 342, "definition": "0x0400000000001C90", "identifier": "0x0D80000000002962",
+                     "position": [10, 0, 0], "rotation": [0, 0.7071068, 0, 0.7071068], "scale": [2, 1, 1],
+                     "collision": [{"mask": 136, "vertices": [[0, 0, 0], [1, 0, 0], [0, 2, 0]],
+                         "triangles": [[0, 1, 2, -1, -1, -1, 136, 0]]}]}],
                 "kill_volumes": [{"centre": [10, -30, 0], "half": [20, 2, 5],
                     "rotation": [0, 0.7071068, 0, 0.7071068]}]},
             "0x0800000000000002": {"error": "a room's area is not a box"}
@@ -130,7 +135,20 @@ fn the_area_file_reads_rooms_damage_areas_placeables_kill_volumes_and_failures()
             .collect()
     };
     assert_eq!(placed(&none), [340]);
-    assert_eq!(placed(&listed), [340, 341]);
+    assert_eq!(placed(&listed), [340, 341, 342]);
+    assert!(data.team_walls(&map, &none).is_empty());
+    let walls = data.team_walls(&map, &listed);
+    assert_eq!(walls.len(), 1);
+    assert_eq!(walls[0].entity(), 0x8000_0156);
+    let shapes = walls[0].shapes().unwrap();
+    assert_eq!(shapes.len(), 1);
+    assert_eq!(shapes[0].geometry().mask(), 0x88);
+    // Its 1 m edge along x, scaled to 2 m and turned a quarter about y,
+    // runs from x 10 along -z.
+    let bounds = shapes[0].fat_bounds().unwrap();
+    assert!((bounds.low[2] - -2.0).abs() < 0.2 && (bounds.high[2] - 0.0).abs() < 0.2);
+    assert!((bounds.low[0] - 10.0).abs() < 0.2 && (bounds.high[0] - 10.0).abs() < 0.2);
+    assert!((bounds.high[1] - 2.0).abs() < 0.2);
     let door = &data.placed_scripts(&map, &none)[0];
     assert_eq!(door.entity(), 0x8000_0154);
     assert_eq!(door.definition, 0x0400_0000_0000_1307);

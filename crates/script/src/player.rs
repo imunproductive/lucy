@@ -23,16 +23,18 @@ use crate::{
     target_tags::{TargetTagLists, TargetTags},
     vitals::{PoolKind, Vitals},
     vm::{
-        AssistLink, AuraChange, BodyEffects, CombatMod, DEAD_FILTER_BIT, DummyBot, GameMessage,
-        HealthChange, Knockback, MapRays, ParentWrite, Pickup, PlayRequest, RaisedCriteria,
-        ScopeChange, SeenBodies, SeenBody, Site, TargetCandidate, TargetTagEffect, TrackedStat,
-        Unknowns, VoiceRequest, World,
+        AssistLink, AuraChange, BodyEffects, CombatMod, DEAD_FILTER_BIT, DummyBot,
+        EnvironmentCredit, GameMessage, HealthChange, Knockback, MapRays, ParentWrite, Pickup,
+        PlayRequest, RaisedCriteria, ScopeChange, SeenBodies, SeenBody, Site, TargetCandidate,
+        TargetTagEffect, TrackedStat, Unknowns, VoiceRequest, World,
     },
     wheel::{Cosmetic, Cosmetics},
     wire::{Value, Variables},
 };
 use orpheus_content::maps::TUTORIAL_MODE;
-use orpheus_physics::mover::{landing::LandingSearch, sample_movement_flags, trial::TrialMove};
+use orpheus_physics::mover::{
+    landing::LandingSearch, movement_restarted, sample_movement_flags, trial::TrialMove,
+};
 use orpheus_wire::entity::{GAME_MODE_ENTITY, Movement};
 
 /// The hero body graphs that raise the body's voice reactions: `01CA` and
@@ -65,6 +67,9 @@ pub struct PlayerWorld {
     /// when the match doesn't say.
     pub eye_height: Option<f64>,
     pub movement: Movement,
+    /// `movement` came from this frame's move (not retained over a command
+    /// gap or a timer advance).
+    pub movement_fresh: bool,
     /// The move-speed scale the body's mover used on its last move (mover
     /// `+0x4D8`, `STU_ED807E07`); none: the match doesn't say.
     pub speed_scale: Option<f64>,
@@ -140,6 +145,9 @@ pub struct PlayerWorld {
     aura_changes: Vec<AuraChange>,
     /// The stats the body's graphs counted, for the match's stat table.
     tracked_stats: Vec<TrackedStat>,
+    /// Who the body's graphs named an environment kill of the body
+    /// credits (`STU_545AB3B8`), for the match.
+    environment_credits: Vec<EnvironmentCredit>,
     /// A graph revived the body (`0C8E`'s `STU_621AF478` on the
     /// Workshop's Resurrect), for the match to bring it back.
     revive: bool,
@@ -319,6 +327,17 @@ impl World for PlayerWorld {
         true
     }
 
+    /// The body's own graph names who its environment kill credits
+    /// ([`Self::take_environment_credits`]); another entity's isn't this
+    /// player's.
+    fn credit_environment(&mut self, site: Site, credit: EnvironmentCredit) -> bool {
+        if site.entity != self.entity || credit.body != self.entity {
+            return false;
+        }
+        self.environment_credits.push(credit);
+        true
+    }
+
     /// The body's own revival waits for the match
     /// ([`Self::take_revive`]), which brings it back where it lies.
     fn revive(&mut self, _site: Site, body: u32) -> bool {
@@ -446,6 +465,10 @@ impl World for PlayerWorld {
             return None;
         }
         sample_movement_flags(&self.movement)
+    }
+
+    fn movement_restarted(&self, site: Site) -> bool {
+        self.movement_fresh && self.is_player_site(site) && movement_restarted(&self.movement)
     }
 
     fn body_scale(&mut self, site: Site, target: u32, override_value: &Value) -> Option<f64> {
@@ -859,6 +882,7 @@ impl PlayerWorld {
             position: [0.0; 3],
             eye_height: None,
             movement: Movement::default(),
+            movement_fresh: false,
             speed_scale: None,
             knockback_scale: None,
             trial: None,
@@ -888,6 +912,7 @@ impl PlayerWorld {
             health_changes: Vec::new(),
             aura_changes: Vec::new(),
             tracked_stats: Vec::new(),
+            environment_credits: Vec::new(),
             revive: false,
             next_dummy: None,
             dummies: Vec::new(),
@@ -920,6 +945,12 @@ impl PlayerWorld {
     /// The stats the body's graphs counted since the last call, in order.
     pub fn take_tracked_stats(&mut self) -> Vec<TrackedStat> {
         std::mem::take(&mut self.tracked_stats)
+    }
+
+    /// Who the body's graphs named its environment kill credits since the
+    /// last call (`STU_545AB3B8`), in order.
+    pub fn take_environment_credits(&mut self) -> Vec<EnvironmentCredit> {
+        std::mem::take(&mut self.environment_credits)
     }
 
     /// Whether a graph revived the body since the last call.
