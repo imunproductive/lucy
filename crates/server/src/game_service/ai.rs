@@ -502,7 +502,7 @@ impl State {
                 117,
                 orpheus_content::hero_settings::ALLIED_HEALTH_BARS as u32,
             );
-            body.picker = peer.world.controller_scope_instance(126);
+            body.picker = peer.world.controller_scope_instances(126).first().copied();
             body.console_button = peer.world.body_delivered(0x265f, 9, 25456).0;
             body.picker_raised = peer.world.body_delivered(0x265f, 17, 25456).0;
             body.picker_hides_hud = peer.world.controller_frame_state(0x265f, 33);

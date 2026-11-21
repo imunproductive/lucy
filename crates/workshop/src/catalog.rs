@@ -338,7 +338,7 @@ impl Catalog {
         }
         for (name, index) in raw.maps {
             catalog.map_names.insert(index, name.clone());
-            catalog.maps.insert(fold(&name), index);
+            catalog.maps.insert(map_key(&name, true), index);
         }
         for (name, guid) in raw.game_modes {
             let guid = parse_guid(&guid)?;
@@ -435,8 +435,13 @@ impl Catalog {
         self.hero_names.get(&guid).map(String::as_str)
     }
 
+    /// The map a settings block's map line names. The client's importer
+    /// (`sub_7FF789A88940` → `sub_7FF789A8A710`) compares case-insensitively,
+    /// skips whitespace on both sides and the characters the writer leaves
+    /// out ([`UNWRITTEN`]) in the map's name only, and takes the longest
+    /// name that matches: "Hanamura Winter" is "Hanamura (Winter)".
     pub fn map(&self, name: &str) -> Option<u32> {
-        self.maps.get(&fold(name)).copied()
+        self.maps.get(&map_key(name, false)).copied()
     }
 
     pub fn map_name(&self, index: u32) -> Option<&str> {
@@ -484,6 +489,21 @@ pub(crate) fn fold(name: &str) -> String {
     name.to_lowercase()
 }
 
+/// The characters the writer leaves out of names (`sub_7FF789CA11E0`'s
+/// table, used by `sub_7FF789CA4490`, the rule writer and the name matcher
+/// `sub_7FF789A8A710`): "Visible To, Position, and Radius" is written
+/// "Visible To Position and Radius".
+pub(crate) const UNWRITTEN: &[char] = &['(', ')', '{', '|', '}', '"', ';', '/', '\\', ','];
+
+/// A map name as [`Catalog::map`] compares it: lower case without
+/// whitespace, and for the catalog's own `name`s without [`UNWRITTEN`].
+fn map_key(name: &str, name_side: bool) -> String {
+    name.chars()
+        .filter(|&c| !c.is_whitespace() && !(name_side && UNWRITTEN.contains(&c)))
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
 fn parse_guid(text: &str) -> io::Result<u64> {
     text.strip_prefix("0x")
         .and_then(|digits| u64::from_str_radix(digits, 16).ok())
@@ -492,4 +512,23 @@ fn parse_guid(text: &str) -> io::Result<u64> {
 
 fn invalid(message: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The archive's "Hanamura Winter" (7E6PK) and "King's Row Winter"
+    /// (A3A4G) are the catalog's "Hanamura (Winter)" and "King's Row
+    /// (Winter)"; the client skips the brackets in the map's name only.
+    #[test]
+    fn map_lines_match_names_without_their_brackets_and_spaces() {
+        let name = map_key("King's Row (Winter)", true);
+        assert_eq!(map_key("King's Row Winter", false), name);
+        assert_eq!(
+            map_key("kingsrow  WINTER", false),
+            map_key("Kings Row Winter", true)
+        );
+        assert_ne!(map_key("King's Row (Winter)", false), name);
+    }
 }
