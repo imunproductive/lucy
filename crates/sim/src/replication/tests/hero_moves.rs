@@ -851,15 +851,11 @@ fn off_heading(dx: f64, dz: f64, yaw: i32) -> f64 {
 }
 
 impl Player {
-    /// Whether the owner gets his body's records now, and whether a pose
-    /// of the last frame waits to go to him.
-    fn records(&self) -> (bool, bool) {
+    /// Whether a pose of the last frame waits to go to the owner.
+    fn pose_waits(&self) -> bool {
         let script = self.world.body_script.as_ref().unwrap();
         let history = script.corrections.as_ref().unwrap();
-        (
-            script.runtime.owner_needs_records(),
-            history.candidate(self.frame, true).is_some(),
-        )
+        history.candidate(self.frame, true).is_some()
     }
 
     /// Graph `0D06`'s state `raw` (Rocket Punch) is on.
@@ -1117,14 +1113,15 @@ fn doomfists_tapped_airborne_slam_flies_from_the_press_frame() {
 /// 45 m/s) along the facing at the release (`STU_09F9B1FE`, #2083) however
 /// the view turns, with the registration st67 (`STU_4773DA56`) on. His
 /// client predicts none of the dash and draws his view from the records
-/// meanwhile, so he gets them from the charge to 250 ms after the punch,
-/// and not before or after.
+/// meanwhile; Doomfist is corrected (`CORRECTED_HEROES`), so his owner gets
+/// his body's pose at every frame: before the charge, through the charge
+/// and the dash, and after the punch.
 #[test]
 #[ignore = "requires the derived 104319 data and the Practice Range collision"]
-fn doomfists_rocket_punch_dashes_along_its_release_facing_with_records_to_its_owner() {
+fn doomfists_rocket_punch_dashes_along_its_release_facing_with_each_pose_to_its_owner() {
     let mut doomfist = Player::spawn(DOOMFIST);
     let (open, _) = open_and_walled(&doomfist.scene);
-    assert_eq!(doomfist.records(), (false, false));
+    assert!(doomfist.pose_waits());
     let hold = |doomfist: &mut Player, buttons, yaw| {
         doomfist.step(Command {
             yaw,
@@ -1136,7 +1133,7 @@ fn doomfists_rocket_punch_dashes_along_its_release_facing_with_records_to_its_ow
     for _ in 0..32 {
         hold(&mut doomfist, orpheus_wire::commands::SECONDARY, open);
         assert!(doomfist.punch_state(11), "charging");
-        assert_eq!(doomfist.records(), (true, true));
+        assert!(doomfist.pose_waits());
     }
     let start = doomfist.position();
     // Released, then the view turns a quarter turn at once.
@@ -1169,7 +1166,7 @@ fn doomfists_rocket_punch_dashes_along_its_release_facing_with_records_to_its_ow
     );
     for _ in 0..6 {
         hold(&mut doomfist, 0, turned);
-        assert_eq!(doomfist.records(), (true, true));
+        assert!(doomfist.pose_waits());
     }
     let moved = horizontal(start, doomfist.position());
     // Game session s3 (D:/Temp/df5, `refs/reports/Doomfist.md` §12), the
@@ -1183,22 +1180,14 @@ fn doomfists_rocket_punch_dashes_along_its_release_facing_with_records_to_its_ow
     let [dx, _, dz] = std::array::from_fn(|axis| doomfist.position()[axis] - start[axis]);
     let off = off_heading(dx, dz, open);
     assert!(off.abs() < 0.01, "the dash turned by {off} rad");
-    let mut last = None;
     for _ in 0..90 {
         hold(&mut doomfist, 0, turned);
-        if doomfist.records().0 {
-            last = Some(doomfist.frame);
-        }
+        assert!(doomfist.pose_waits());
     }
-    let last = last.expect("records through the dash");
     assert!(
         !doomfist.punch_state(42) && !doomfist.punch_state(11),
         "the punch ended"
     );
-    // The window closed 250 ms (16 frames) after the last frame that needed
-    // records: no pose waits for him.
-    assert!(doomfist.frame > last + 16);
-    assert_eq!(doomfist.records(), (false, false));
 }
 
 /// A Rocket Punch into a wall ends there: the wall check (`0D06` st7,
@@ -1250,6 +1239,53 @@ fn doomfists_rocket_punch_ends_at_a_wall_with_the_impact() {
     );
     let moved = horizontal(start, doomfist.position());
     assert!(moved < 6.0, "{moved}");
+}
+
+/// Reinhardt's Charge (graph `007D`) crashes into the wall ahead where his
+/// client's does: the wall check st3 (`STU_FBFF5DE7` in its velocity form,
+/// 4 steps, 45°) writes #559 once the trial move ahead is stopped, and the
+/// crash (st4) ends the 16.5 m/s charge. Game session r1 (Practice Range
+/// spawn, `refs/reports/Doomfist.md` §23), his client's feet equal to the
+/// server's at every frame: Shift for 3 frames at 4492, the charge (st2)
+/// from 4529, at yaw 0 the crash at 4534 with his feet at z 43.2197265625,
+/// resting at 43.283203125 after one slower frame; then at yaw 90 from
+/// there, Shift at 5260, the charge at 5297, the crash at 5314 at x
+/// 58.8017578125, resting at 58.865234375.
+#[test]
+#[ignore = "requires the derived 104319 data and the Practice Range collision"]
+fn reinhardts_charge_crashes_into_the_wall_where_his_client_did() {
+    const REINHARDT: u64 = 0x02e0_0000_0000_0007;
+    let mut reinhardt = Player::spawn(REINHARDT);
+    assert_eq!(reinhardt.position(), [54.5654296875, 1.0, 42.1474609375]);
+    // From the press: the charge 37 frames later, the crash `crash` after it.
+    let charge = |reinhardt: &mut Player, yaw: i32, crash: u32| {
+        for _ in 0..3 {
+            reinhardt.step(Command {
+                yaw,
+                buttons: ABILITY_1,
+                ..Command::default()
+            });
+        }
+        reinhardt.idle(34, yaw);
+        assert!(!reinhardt.graph_state(0x007d, 2), "the charge's wind-up");
+        reinhardt.idle(1, yaw);
+        assert!(reinhardt.graph_state(0x007d, 2), "charging");
+        reinhardt.idle(crash - 1, yaw);
+        assert!(!reinhardt.graph_state(0x007d, 4), "no crash yet");
+        reinhardt.idle(1, yaw);
+        assert!(reinhardt.graph_state(0x007d, 4), "the crash");
+        let crashed = reinhardt.position();
+        reinhardt.idle(2, yaw);
+        (crashed, reinhardt.position())
+    };
+    let (crashed, rest) = charge(&mut reinhardt, 0, 5);
+    assert_eq!(crashed, [54.5654296875, 1.0, 43.2197265625]);
+    assert_eq!(rest, [54.5654296875, 1.0, 43.283203125]);
+    // His Charge's cooldown runs out before the next press (12 s apart).
+    reinhardt.idle(720, 16384);
+    let (crashed, rest) = charge(&mut reinhardt, 16384, 17);
+    assert_eq!(crashed, [58.8017578125, 1.0, 43.283203125]);
+    assert_eq!(rest, [58.865234375, 1.0, 43.283203125]);
 }
 
 /// Seismic Slam on the ground (graph `0B27`, ABILITY_2): the leap (`rid67`
@@ -1316,6 +1352,47 @@ fn doomfists_grounded_slam_leaps_lands_and_ends() {
     for (got, want) in rises[rise..].iter().zip(expected) {
         assert!((got - want).abs() < 0.005, "{:?}", &rises[rise..]);
     }
+}
+
+/// Seismic Slam onto the crates by the Range's Training Bot lands where his
+/// client did. Game session u2 (`refs/reports/Doomfist.md` §23; the run
+/// DoomfistMoves14 saw end 1.26 m off had a 0.8 s client stall in its
+/// leap): from (48.9921875, 1.0, 20.1044921875) facing -30183, E at 4678,
+/// the leap's first frame at (48.9208984375, 1.0869140625, 19.822265625)
+/// moving (-4.4638671875, 5.4599609375, -17.642578125), over a crate's
+/// edge onto the crate top, at rest at (45.630859375, 2.0, 12.806640625)
+/// on both sides (his client one frame behind from 4694 to the landing,
+/// a frame his client skipped, then equal).
+#[test]
+#[ignore = "requires the derived 104319 data and the Practice Range collision"]
+fn doomfists_slam_onto_the_range_crates_rests_where_his_client_did() {
+    const YAW: i32 = -30183;
+    let mut doomfist = Player::spawn(DOOMFIST);
+    let body = doomfist.scene.heroes().get(DOOMFIST).unwrap().body;
+    let feet = [48.9921875, 1.0, 20.1044921875];
+    doomfist.world.mover = Some(doomfist.scene.player_mover_at(body, 0, feet, YAW).unwrap());
+    doomfist.idle(60, YAW);
+    let slam = |doomfist: &mut Player| {
+        doomfist.step(Command {
+            yaw: YAW,
+            buttons: ABILITY_2,
+            ..Command::default()
+        });
+    };
+    slam(&mut doomfist);
+    assert_eq!(doomfist.position(), feet);
+    slam(&mut doomfist);
+    assert_eq!(
+        doomfist.position(),
+        [48.9208984375, 1.0869140625, 19.822265625]
+    );
+    assert_eq!(
+        doomfist.velocity(),
+        [-4.4638671875, 5.4599609375, -17.642578125]
+    );
+    slam(&mut doomfist);
+    doomfist.idle(60, YAW);
+    assert_eq!(doomfist.position(), [45.630859375, 2.0, 12.806640625]);
 }
 
 /// Seismic Slam's shockwave (`0B27` st44, `vm/shockwave.rs`): at the
