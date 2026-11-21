@@ -27,6 +27,7 @@ mod pickups;
 mod play;
 mod rays;
 mod scopes;
+mod shockwave;
 mod state_kinds;
 mod stats;
 mod statuses;
@@ -1325,6 +1326,12 @@ pub enum StateKind {
     /// least pitch, greatest yaw and greatest pitch, in radians.
     ViewLimits {
         radians: [u32; 6],
+    },
+    /// A shockwave (`STUStatescriptStateShockwave`, `vm/shockwave.rs`):
+    /// the f32 bits of the seconds its wave takes to reach its radius; it
+    /// finishes on the first update at or past them.
+    Shockwave {
+        seconds: u32,
     },
     /// A health change (`vm/health.rs`): a rate keeps when it last applied
     /// its share.

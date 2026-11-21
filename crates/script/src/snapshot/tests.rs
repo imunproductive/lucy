@@ -409,7 +409,7 @@ fn the_searches_the_owners_client_runs_go_out_in_its_frames() {
             8,
         ),
         (
-            StateKind::Plain,
+            StateKind::Shockwave { seconds: 0 },
             "shockwave",
             json!([{"op": "bits", "n": 1, "f": "has_list"}, {"op": "if", "c": "has_list",
                 "then": [{"op": "w_u16", "f": "n"}, {"op": "repeat", "count": "n", "f": "items",
@@ -1260,6 +1260,11 @@ fn a_timed_chase_keeps_its_begin_payload_and_binding_until_it_arrives() {
 /// sent the falling value unbound (Python's choice), so every frame listed
 /// the variable, unbound the client's link and rolled it back: about 90
 /// rollbacks per 100 frames for the 6 s after Doomfist's slam (df8 s1).
+/// At the fall's end the ability's update (`0x7FF789B95560`, its timer 2)
+/// finds the linked value at 0 and unlinks it, leaving the variable at 0:
+/// the owner gets it unbound at 0, as his client has it. With the link kept
+/// and the variable at its own value, Doomfist's client used each ability
+/// once (df10 s1: his `#61` stayed near the full cooldown).
 #[test]
 fn an_abilitys_cooldown_goes_bound_and_its_fall_sends_nothing() {
     use crate::vm::Component;
@@ -1356,6 +1361,12 @@ fn an_abilitys_cooldown_goes_bound_and_its_fall_sends_nothing() {
             .unwrap();
         assert!(chunk.is_none(), "frame {frame}");
     }
+    component.advance_frame(1015, &mut world).unwrap();
+    let owner = encoder
+        .project(component.snapshot().unwrap(), View::Owner)
+        .unwrap();
+    assert!(!owner.variables.bindings.contains_key(&61));
+    assert_eq!(owner.entity_variable(61), Some(&Value::Float(0.0)));
 }
 
 /// The owner's chunks list a weapon volley's ammunition variable at the

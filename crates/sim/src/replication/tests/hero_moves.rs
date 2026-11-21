@@ -873,6 +873,16 @@ impl Player {
             .any(|instance| instance.states.get(&raw).is_some_and(|state| state.active))
     }
 
+    /// How many times state `raw` of the first instance of `graph` began.
+    fn graph_activation(&self, graph: u32, raw: u16) -> u16 {
+        self.snapshot()
+            .instances
+            .values()
+            .find(|instance| instance.graph == graph)
+            .and_then(|instance| instance.states.get(&raw))
+            .map_or(0, |state| state.activation)
+    }
+
     /// Instance variable `var` of the first instance of `graph`.
     fn graph_variable(&self, graph: u32, var: u32) -> Option<&ScriptValue> {
         self.snapshot()
@@ -1246,7 +1256,9 @@ fn doomfists_grounded_slam_leaps_lands_and_ends() {
             landed = Some(frame);
             moved = horizontal(start, doomfist.position());
         }
-        if shockwave.is_none() && doomfist.graph_state(0x0b27, 44) {
+        if shockwave.is_none() && doomfist.graph_activation(0x0b27, 44) > 0 {
+            // It finishes in the frame it begins in, as on his client.
+            assert!(!doomfist.graph_state(0x0b27, 44));
             shockwave = Some(frame);
         }
     }
@@ -1256,7 +1268,8 @@ fn doomfists_grounded_slam_leaps_lands_and_ends() {
     // facing 157.5°, the leap's first frame 7820 (`press` runs both, so the
     // loop's frame k is 7820 + k), the landing at 7847 at (57.292, 1.010,
     // 35.683), 7.0918 m away on the same flat floor, and the shockwave
-    // (st44) at 7855.
+    // (st44) begun at 7855 (by the server; his client never shows st44 at
+    // the end of a frame: s4's slams, df10 s1 cp10_slam).
     let landed = landed.expect("he lands");
     assert_eq!(landed, 27);
     assert!((moved - 7.0918).abs() < 0.002, "{moved}");
@@ -1484,5 +1497,63 @@ fn doomfists_airborne_slam_flight_stops_at_the_step_edge_where_his_client_did() 
     assert!(
         (0..3).all(|axis| (rest[axis] - corner[axis]).abs() < 0.01),
         "{rest:?} vs {corner:?}"
+    );
+}
+
+/// Doomfist's slam cooldown `#61` (`0B27` st0's `m_out_CooldownVar`) as his
+/// client keeps it (the Ability's update `0x7FF789B95560`): unlinked at 0
+/// until the slam's end writes the cooldown (`rid70`, `#61 = #472`, 6 s),
+/// linked from that write's frame (restart `0x7FF789BBB110`: the write
+/// tries the update at once) and unlinked at 0 again by the update its
+/// timer runs 6 s later; then he slams again. Kept linked at its own 6.0,
+/// his client used each ability once (df10 s1).
+#[test]
+#[ignore = "requires the derived 104319 data and the Practice Range collision"]
+fn doomfists_slam_cooldown_links_for_its_fall_and_he_slams_again() {
+    let mut doomfist = Player::spawn(DOOMFIST);
+    let (open, _) = open_and_walled(&doomfist.scene);
+    let id = doomfist.instance_of(0x0b27);
+    let cooldown = |player: &Player| {
+        let snapshot = player.snapshot();
+        let instance = &snapshot.instances[&id];
+        (
+            instance.variables.get(&61).cloned(),
+            snapshot.bindings.contains_key(&(id, 61)),
+            instance.states[&0]
+                .ability_cooldown
+                .map(|cooldown| cooldown.last_ms),
+            snapshot.now_ms,
+        )
+    };
+    let (value, bound, ..) = cooldown(&doomfist);
+    assert_eq!((value, bound), (Some(ScriptValue::Float(0.0)), false));
+    doomfist.press(ABILITY_2, open);
+    let mut frames = Vec::new();
+    for _ in 0..500 {
+        doomfist.idle(1, open);
+        frames.push(cooldown(&doomfist));
+    }
+    let first = frames.iter().position(|frame| frame.1).expect("linked");
+    let last = first + frames[first..].iter().position(|frame| !frame.1).unwrap() - 1;
+    let restart = frames[first].2.unwrap();
+    // The write's frame: the restart happened in it.
+    assert!(frames[first - 1].3 < restart && restart <= frames[first].3);
+    for frame in &frames[first..=last] {
+        assert_eq!(frame.0, Some(ScriptValue::Float(6.0)));
+        assert_eq!(frame.2, Some(restart));
+    }
+    // Unlinked at 0 in the frame its 6 s end in.
+    let end = restart + 6000;
+    assert!(frames[last].3 < end && end <= frames[last + 1].3);
+    assert!(
+        frames[last + 1..]
+            .iter()
+            .all(|frame| (frame.0.clone(), frame.1) == (Some(ScriptValue::Float(0.0)), false))
+    );
+    doomfist.press(ABILITY_2, open);
+    let [vx, vy, vz] = doomfist.velocity();
+    assert!(
+        (vx.hypot(vz).hypot(vy) - 19.0).abs() < 0.01,
+        "{vx} {vy} {vz}"
     );
 }

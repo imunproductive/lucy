@@ -182,6 +182,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             .graph(key.instance)
             .state(usize::from(key.raw))
             .expect("ability state");
+        self.settle_cooldown(key, node, depth)?;
         if self.machine.owner_dead {
             return self.stop_ability(key, node, depth);
         }
@@ -198,6 +199,48 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         } else {
             self.try_start_ability(key, node, flags, buttons, depth)
         }
+    }
+
+    /// The update's cooldown check (client 0x7FF789B95560, before the
+    /// start and keep): with the cooldown linked to this state, a value at
+    /// or below 0 ends the link and leaves the variable at 0
+    /// (0x7FF78AA84610 slot 0, 0.0); unlinked, a value above 0 restarts the
+    /// cooldown from it (0x7FF789BBB110). So the link lasts from a restart
+    /// to the end of its fall, and the owner's client, which unlinks there
+    /// itself, gets the variable at 0 and unbound, as it has it. The
+    /// client's other branch, taken when its entity's component 25 has
+    /// bit 10 of `+88` (0x7FF789B2D860) and `m_F6BF1466` is true, clears
+    /// the cooldown; the server keeps no such status.
+    fn settle_cooldown(
+        &mut self,
+        key: StateKey,
+        node: &Node,
+        depth: usize,
+    ) -> Result<(), InitFault> {
+        let Ok(Some(target)) = expr::lvalue(field(&node.fields, "m_out_CooldownVar")) else {
+            return Ok(());
+        };
+        let target = source_key(key.instance, target);
+        let value = expr::to_float(&self.machine.value(target, None)) as f32;
+        let linked = self.machine.links.get(&target).is_some_and(|entries| {
+            entries
+                .iter()
+                .any(|entry| entry.state == key && matches!(entry.output, LinkValue::Cooldown))
+        });
+        if !linked {
+            return if value > 0.0 {
+                self.restart_cooldown(key, node, depth)
+            } else {
+                Ok(())
+            };
+        }
+        if value <= 0.0 {
+            if let Some(state) = self.state_mut(key) {
+                state.linked_variable = None;
+            }
+            self.remove_link(key, target, Some(Value::Float(0.0)), depth)?;
+        }
+        Ok(())
     }
 
     pub(super) fn keep_ability(

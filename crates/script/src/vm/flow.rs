@@ -108,7 +108,11 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
     }
 
     /// A completion check a join asked for (upstream's `CHECK` event): an
-    /// active state that is not ending tries to complete.
+    /// active state that is not ending tries to complete. An Ability runs
+    /// its update instead (its event handler 0x7FF789B946D0 takes kinds 1
+    /// and 2 to the update 0x7FF789B95560 and nothing else), so a write
+    /// its conditions read, such as its cooldown variable's, takes effect
+    /// in the same frame.
     pub(super) fn check(&mut self, key: StateKey) -> Result<(), InitFault> {
         let Some(state) = self.state_mut(key) else {
             return Ok(());
@@ -116,6 +120,9 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         state.pending_check = false;
         if !state.active || state.ending {
             return Ok(());
+        }
+        if matches!(state.kind, StateKind::Ability { .. }) {
+            return self.activate_ability(key, 0);
         }
         let node = self
             .graph(key.instance)
