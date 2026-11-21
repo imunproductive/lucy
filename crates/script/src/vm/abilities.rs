@@ -211,7 +211,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
     /// client's other branch, taken when its entity's component 25 has
     /// bit 10 of `+88` (0x7FF789B2D860) and `m_F6BF1466` is true, clears
     /// the cooldown; the server keeps no such status.
-    fn settle_cooldown(
+    pub(super) fn settle_cooldown(
         &mut self,
         key: StateKey,
         node: &Node,

@@ -1503,8 +1503,8 @@ fn doomfists_airborne_slam_flight_stops_at_the_step_edge_where_his_client_did() 
 /// Doomfist's slam cooldown `#61` (`0B27` st0's `m_out_CooldownVar`) as his
 /// client keeps it (the Ability's update `0x7FF789B95560`): unlinked at 0
 /// until the slam's end writes the cooldown (`rid70`, `#61 = #472`, 6 s),
-/// linked from that write's frame (restart `0x7FF789BBB110`: the write
-/// tries the update at once) and unlinked at 0 again by the update its
+/// linked from that write's frame (restart `0x7FF789BBB110`: the write's
+/// event 2 runs the update's cooldown check at once) and unlinked at 0 again by the update its
 /// timer runs 6 s later; then he slams again. Kept linked at its own 6.0,
 /// his client used each ability once (df10 s1).
 #[test]
