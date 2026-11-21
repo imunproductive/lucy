@@ -47,7 +47,10 @@ use orpheus_script::{
         Scaled, ScopeChange, ScopeSource, Site, Snapshot, StateKind, TargetCandidate, TrackedStat,
         Unknowns, VoiceRequest, World,
     },
-    weapons::{DamageTags, HitDefinition, ProjectileBallistics, pellet_rings, ray_profile},
+    weapons::{
+        DamageTags, HitDefinition, ProjectileBallistics, launch_direction, pellet_rings,
+        ray_profile,
+    },
     wire::{Value, Variables},
 };
 use orpheus_wire::{
@@ -779,10 +782,10 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
         rewind.seen(command, self.world.seen.get_or_insert_with(Vec::new));
     }
 
-    /// A hero setting is an entity variable no graph writes. A changed one
-    /// queues a re-evaluation of the states that watch it (`01CF`
-    /// st115/st116), which runs now, so the next frame carries the result.
-    fn set_hero_settings(&mut self, variables: &Variables) -> io::Result<()> {
+    /// A changed variable (a hero setting, a kept ultimate charge) queues a
+    /// re-evaluation of the states that watch it (`01CF` st115/st116, `0B8B`
+    /// st6), which runs now, so the next frame carries the result.
+    fn set_entity_variables(&mut self, variables: &Variables) -> io::Result<()> {
         for (&id, value) in variables {
             self.component
                 .set_entity_variable(id, value.clone(), &mut self.world)
@@ -829,6 +832,14 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                     self.component
                         .evaluate_shot_config(&shot, config, &mut self.world)
                 };
+                // The volley's own direction replaces the aim where its
+                // launch gives one (the Tactical Visor's target), as the
+                // shooter's client aims it; a launch the server can't
+                // evaluate keeps the aim.
+                let aim = launch_direction(node, &mut evaluate)
+                    .ok()
+                    .flatten()
+                    .unwrap_or(aim);
                 // The volley's growing spread turns the aim (a guessed seed;
                 // `weapon_spread::shot_direction`).
                 let spread = shot_direction(&shot, node, aim, &mut evaluate).ok()?;
