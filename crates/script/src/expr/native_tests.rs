@@ -149,6 +149,22 @@ fn a_ruleset_value_is_its_variable_else_the_default() {
     assert_eq!(evaluate(&direct, &mut world), Ok(Value::Integer(5)));
 }
 
+/// `STU_43CFA23F` (Custom String `5C14` in `1B4A`): the template with each
+/// `{i}` replaced by its argument's text; a `{i}` with no argument stays.
+#[test]
+fn a_formatted_string_puts_its_arguments_text_in() {
+    let mut world = World::default();
+    world
+        .variables
+        .insert(1, Value::String("Level {0}: {1} s {2}".into()));
+    let config = json!({"$":"STU_43CFA23F","m_6C54C35C":var(1),
+        "m_367CCBF5":[int(3), float(1.5)],"m_EE729DCB":0});
+    assert_eq!(
+        evaluate(&config, &mut world),
+        Ok(Value::String("Level 3: 1.50 s {2}".into()))
+    );
+}
+
 fn var(id: u32) -> Json {
     json!({"$":"STUConfigVarDynamic","m_identifier":id,"m_60DB8F99":0,"m_EE729DCB":0})
 }

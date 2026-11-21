@@ -671,6 +671,13 @@ pub trait World {
         None
     }
 
+    /// Every entity that has target tags (component 76), each once, in
+    /// this world's order (a tag query with no tag, `STU_EB216A0B`); None:
+    /// this world can't list them.
+    fn tagged_entities(&self, _site: Site) -> Option<Vec<u32>> {
+        None
+    }
+
     fn set_target_tag_effect(
         &mut self,
         _site: Site,
@@ -3935,7 +3942,7 @@ fn is_networked_for_code_synced(node: &Node) -> bool {
     node.is_networked()
         && node.remote >= 0
         && field(&node.fields, "m_DC897C87").as_u64() == Some(1)
-        && field(&node.fields, "m_598E32D5").as_u64() == Some(0)
+        && matches!(field(&node.fields, "m_598E32D5").as_u64(), Some(0 | 1))
         && field(&node.fields, "m_0582B0E4").as_u64() == Some(0)
         && field(&node.fields, "m_0B1AA8CA").is_null()
         && field(&node.fields, "m_values")
@@ -3947,6 +3954,17 @@ fn is_networked_for_code_synced(node: &Node) -> bool {
                             && field(field(value, "m_value"), "$").as_str().is_some()
                     })
             })
+}
+
+/// A ForCodeSynced whose rows also go through its transport step: after
+/// begin (0x7FF789C54D00) the client calls 0x7FF789C5F690 when the
+/// component's host takes it (its vtable +8) and `m_598E32D5` (slot 57,
+/// state +0xFC) or `m_0582B0E4` (slot 58) is set. What that step does on
+/// the retail server was not read; `0CBB`'s phase rows (identifier `2123`:
+/// `2297` waiting, `2124` setup, `2298` round, `2125` round end, `2126`
+/// match end) use it.
+fn for_code_transport(node: &Node) -> bool {
+    node.class == FOR_CODE_SYNCED && field(&node.fields, "m_598E32D5").as_u64() == Some(1)
 }
 
 fn is_base_health_pool(node: &Node) -> bool {

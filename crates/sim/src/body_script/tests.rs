@@ -1661,6 +1661,7 @@ fn a_dead_body_counts_its_respawn_down_in_the_mode_body_script() {
         quanta: RETAIL_QUANTA,
         mode_random: 0.5,
         ai: None,
+        respawn_held: false,
     };
     let factory = PlayerBodyFactory::prepare(
         Arc::clone(&graphs),
@@ -1912,6 +1913,7 @@ fn hero_body(
         quanta: RETAIL_QUANTA,
         mode_random: 0.5,
         ai,
+        respawn_held: false,
     };
     let factory = PlayerBodyFactory::prepare(
         graphs,

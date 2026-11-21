@@ -237,6 +237,13 @@ pub trait Context {
         None
     }
 
+    /// Every entity that has target tags (component 76), each once, in the
+    /// world's order: a tag query with no tag (`STU_EB216A0B`); None: the
+    /// world can't list them.
+    fn tagged_entities(&mut self) -> Option<Vec<u32>> {
+        None
+    }
+
     /// None leaves candidate flags unknown. A known absence can report zero.
     fn entity_filter_flags(&mut self, _entity: u32) -> Option<u64> {
         None
@@ -1493,15 +1500,27 @@ impl<'t> Evaluator<'t> {
             filter_tag_list(child(filter, field)).ok_or_else(unsupported)
         };
         let (filter_any, filter_all) = (filter_tags("m_9C7BD8B8")?, filter_tags("m_B486603E")?);
-        let listed: &[u64] = [&any, &all, &filter_any, &filter_all]
+        let listed: Option<&[u64]> = [&any, &all, &filter_any, &filter_all]
             .into_iter()
             .zip([usize::MAX, 1, usize::MAX, 1])
             .find(|(tags, _)| !tags.is_empty())
-            .map(|(tags, take)| &tags[..tags.len().min(take)])
-            .ok_or_else(unsupported)?;
+            .map(|(tags, take)| &tags[..tags.len().min(take)]);
+        // The candidates: those of the first tag list that names a tag. With
+        // no tag at all the client (0x7FF789CC32E0) walks its whole pool of
+        // tagged entities (component 76, 0x7FF789BA15F0), and an empty
+        // "any" list lets each through (0x7FF789CC5310): `0F4A` rid146 and
+        // rid277 ask so while their objective's tags (#20031, #12736) are
+        // unset.
+        let candidates: Vec<Vec<u32>> = match listed {
+            Some(listed) => listed
+                .iter()
+                .map(|&tag| context.entities_with_tag(tag).ok_or_else(unsupported))
+                .collect::<Result<_, _>>()?,
+            None => vec![context.tagged_entities().ok_or_else(unsupported)?],
+        };
         let mut found = Vec::new();
-        for &tag in listed {
-            for entity in context.entities_with_tag(tag).ok_or_else(unsupported)? {
+        for entities in candidates {
+            for entity in entities {
                 if found.contains(&entity) {
                     continue;
                 }
@@ -1596,6 +1615,12 @@ impl Evaluator<'_> {
             {
                 Value::Null
             }
+            // Its text (`m_value`, a teString; the client's evaluate
+            // 0x7FF789840A00 copies it): a map objective's name in its
+            // `0E8E` binding (#7643, `1DDB`).
+            "STU_92CA44CC" if !json_truthy(child(config, "m_EE729DCB")) && value.is_string() => {
+                Value::String(value.as_str().unwrap_or_default().into())
+            }
             "STU_58AA0A3B" => {
                 // The authored weapon-manager defaults take the false branch on an unset value.
                 // Populated input still lacks a verified predicate.
@@ -1634,6 +1659,22 @@ impl Evaluator<'_> {
             "STU_903EAF27" => Value::String(workshop_text(&self.config(value, context, nested)?)),
             "STU_2566340D" => {
                 return self.config(child(config, "m_string"), context, nested);
+            }
+            // A formatted string (`Eval_STU_43CFA23F`, Custom String `5C14`
+            // in `1B4A`, `refs/reports/Workshop.md` "WorkshopRuntime"): the
+            // template `m_6C54C35C` with each `{i}` replaced by the text of
+            // `m_367CCBF5[i]` ([`workshop_text`]).
+            "STU_43CFA23F" => {
+                let template =
+                    workshop_text(&self.config(child(config, "m_6C54C35C"), context, nested)?);
+                let mut text = template;
+                if let Some(args) = child(config, "m_367CCBF5").as_array() {
+                    for (index, arg) in args.iter().enumerate() {
+                        let part = workshop_text(&self.config(arg, context, nested)?);
+                        text = text.replace(&format!("{{{index}}}"), &part);
+                    }
+                }
+                Value::String(text)
             }
             // A Workshop parameter as the action graphs read it from
             // `#18739` (391 uses in 177 graphs): `m_35547D6E` within
@@ -1679,21 +1720,6 @@ impl Evaluator<'_> {
             // Local Player (`Eval_STU_8985E00A`: the client's own player
             // entity): the server has none.
             "STU_8985E00A" => Value::Null,
-            // A console variable's value by its hash `m_74A2248F` (slot 5
-            // `sub_7FF789C04A60`: the getters of the client's 1601 console
-            // variables, a table at 0x7FF78B574A90 by hash; `0CBB` rid122
-            // reads `0FE1E03E`, DevFeatures). A hash not in that table
-            // leaves the evaluate's value as it starts, integer 0
-            // (`sub_7FF78AA88550`, type 2), a value. Custom String `5C14`
-            // in `1B4A` tests `A3AAEC43`, which no 1.74 console variable
-            // has (`owsearch cvar`, the table), so it writes its text. The
-            // server knows no other console variable's value.
-            "STU_A753DC79"
-                if child(config, "m_74A2248F").as_i64().map(|hash| hash as u32)
-                    == Some(0xA3AA_EC43) =>
-            {
-                Value::Integer(0)
-            }
             // A copy of a reevaluated Workshop parameter (Create HUD Text's
             // scope `1D8A` rid6 and five more Create graphs). Server-only:
             // the client's evaluate is the base config's `xor al, al`; the
@@ -3196,11 +3222,15 @@ impl Evaluator<'_> {
                     // Reaper's server-only `0075` rid25/26: 0xD645EF78 a bool
                     // (#48, getter 0x7FF789BFA5C0), false, and 0xA3E1FE20 a
                     // double (#49, getter 0x7FF789C05E20 writes it as a
-                    // float), 1.0. The others' values are not known.
+                    // float), 1.0. Custom String `5C14`'s test in `1B4A`:
+                    // 0xA3AB2FC3 (#645) a bool, false (`owsearch cvar`; an
+                    // earlier note named it `A3AAEC43`, a misread hash), so
+                    // the string writes its text. The others' values are
+                    // not known.
                     "STU_A753DC79" => {
                         match child(config, "m_74A2248F").as_i64().map(|hash| hash as u32) {
                             Some(0xE1C1_E402) => Value::Integer(128),
-                            Some(0x0FE1_E03E | 0xD645_EF78) => Value::Bool(false),
+                            Some(0x0FE1_E03E | 0xD645_EF78 | 0xA3AB_2FC3) => Value::Bool(false),
                             Some(0xA3E1_FE20) => Value::Float(1.0),
                             _ => return Err(EvalError::UnsupportedConfig(class.into())),
                         }

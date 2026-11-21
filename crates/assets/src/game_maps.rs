@@ -991,8 +991,11 @@ const MAX_CONFIG_DEPTH: usize = 16;
 /// then its fields. The layout is TankLib's: after the instance's 8-byte
 /// header the
 /// fields of the root ancestor first, each at its size's alignment
-/// (asset references 16 bytes, embedded instances 8). A field kind the
-/// layout can't place (arrays, strings, inline instances) ends the object:
+/// (asset references 16 bytes, embedded instances and strings 8: a string
+/// is the offset of its record, as `MapChunk::string` reads it; the
+/// objective names, `STU_92CA44CC` `m_value` at +16, [`config_value`]).
+/// A field kind the layout can't place (arrays, inline instances) ends the
+/// object:
 /// it and the fields after it are left out, so the evaluator refuses the
 /// config instead of reading a wrong value.
 fn stu_v1_json(stu: &StuV1<'_>, at: usize, depth: usize) -> Value {
@@ -1020,7 +1023,7 @@ fn stu_v1_json(stu: &StuV1<'_>, at: usize, depth: usize) -> Value {
             Kind::F32 => (4, 4),
             Kind::F64 => (8, 8),
             Kind::Guid => (16, 8),
-            Kind::Embed => (8, 8),
+            Kind::Embed | Kind::String => (8, 8),
             _ => break,
         };
         offset = offset.next_multiple_of(align);
@@ -1051,6 +1054,7 @@ fn stu_v1_json(stu: &StuV1<'_>, at: usize, depth: usize) -> Value {
             Kind::Embed if depth < MAX_CONFIG_DEPTH => stu
                 .embedded(at + offset)
                 .map_or(Value::Null, |inner| stu_v1_json(stu, inner, depth + 1)),
+            Kind::String => stu.string(at + offset).map_or(Value::Null, Value::String),
             _ => Value::Null,
         };
         out.insert(field.name.into(), value);

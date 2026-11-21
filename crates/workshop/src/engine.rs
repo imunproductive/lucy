@@ -672,10 +672,10 @@ impl Engine {
                 self.jump(at, next + skip);
                 Step::Continue
             }
-            actions::ABORT => Step::Done,
+            actions::ABORT => self.abort(at),
             actions::ABORT_IF => {
                 if self.evaluate(&context, &*host, &arg(0)).truthy() {
-                    Step::Done
+                    self.abort(at)
                 } else {
                     self.jump(at, next);
                     Step::Continue
@@ -684,7 +684,7 @@ impl Engine {
             actions::ABORT_IF_CONDITION_IS_TRUE | actions::ABORT_IF_CONDITION_IS_FALSE => {
                 let holds = self.conditions(root, &context, &*host);
                 if holds == (action.index == actions::ABORT_IF_CONDITION_IS_TRUE) {
-                    Step::Done
+                    self.abort(at)
                 } else {
                     self.jump(at, next);
                     Step::Continue
@@ -840,6 +840,22 @@ impl Engine {
                     Step::Blocked
                 }
             }
+        }
+    }
+
+    /// Abort ends the action list it is in: a called subroutine's returns
+    /// to its caller, as the end of its list does. OverPy, the Workshop's
+    /// community compiler, writes a subroutine's `return` as Abort, and
+    /// C32S2's GenerateMap relies on it: its MLVLicons ends each level's
+    /// icon with Abort, and GenerateMap goes on to the level's text and
+    /// the level select's checkpoint list.
+    fn abort(&mut self, at: usize) -> Step {
+        let frames = &mut self.executions[at].frames;
+        frames.pop();
+        if frames.is_empty() {
+            Step::Done
+        } else {
+            Step::Continue
         }
     }
 
