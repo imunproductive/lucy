@@ -19,9 +19,13 @@
 //!
 //! The room routes what its entities sent since the last tick once a tick
 //! ([`deliver`]), at most [`MAX_MESSAGES`]; a message to an entity no graph
-//! runs takes no place. A message an entity sends while it takes one goes
-//! the next tick (the client's receivers pick a send up at their own next
-//! update: the same frame or the next).
+//! runs takes no place. The messages over that wait, in order, for the next
+//! tick ([`Backlog`]): the first tick of a Workshop match on Hanamura has
+//! `0F4A` send 286 to the map's tagged placeables before the objectives'
+//! `0F4C` report (`0813`), which a drop lost, so its round never counted
+//! down (`refs/reports/Workshop.md` "ParkourMatch7"). A message an entity
+//! sends while it takes one goes the next tick (the client's receivers pick
+//! a send up at their own next update: the same frame or the next).
 
 use orpheus_script::{
     mode::EVERY_ENTITY,
@@ -35,6 +39,15 @@ use crate::{
 
 /// The room's messages per tick (match.py `MAX_BODY_MESSAGES`).
 pub const MAX_MESSAGES: usize = 256;
+
+/// What a tick's [`deliver`] left for the next: the messages over its
+/// [`MAX_MESSAGES`], and the tick's ends behind them (an end never goes
+/// before the message it ends).
+#[derive(Default)]
+pub struct Backlog {
+    messages: Vec<GameMessage>,
+    ends: Vec<MessageEnd>,
+}
 
 /// Some of the room's entities that run graphs.
 pub trait Recipients {
@@ -121,23 +134,29 @@ pub fn deliver_held(
     }
 }
 
-/// Hand the room's `messages`, then its message `ends`, to the entities
-/// they name (see the module notes).
+/// Hand the `backlog` and the room's `messages`, then its message `ends`,
+/// to the entities they name (see the module notes); what goes over
+/// [`MAX_MESSAGES`] stays in the `backlog` for the next tick.
 pub fn deliver(
-    mut messages: Vec<GameMessage>,
+    backlog: &mut Backlog,
+    messages: Vec<GameMessage>,
     ends: Vec<MessageEnd>,
     recipients: &mut [&mut dyn Recipients],
 ) {
-    messages.retain(|message| {
+    let mut queue = std::mem::take(&mut backlog.messages);
+    queue.extend(messages);
+    queue.retain(|message| {
         message.target == EVERY_ENTITY || recipients.iter().any(|group| group.runs(message.target))
     });
-    if messages.len() > MAX_MESSAGES {
+    backlog.ends.extend(ends);
+    if queue.len() > MAX_MESSAGES {
+        backlog.messages = queue.split_off(MAX_MESSAGES);
         eprintln!(
-            "match message queue reached {MAX_MESSAGES}; {} dropped",
-            messages.len() - MAX_MESSAGES
+            "match message queue reached {MAX_MESSAGES}; {} wait for the next tick",
+            backlog.messages.len()
         );
     }
-    for message in messages.iter().take(MAX_MESSAGES) {
+    for message in &queue {
         if message.target == EVERY_ENTITY {
             for group in recipients.iter_mut() {
                 group.receive(message);
@@ -149,9 +168,12 @@ pub fn deliver(
             group.receive(message);
         }
     }
-    for end in &ends {
+    if !backlog.messages.is_empty() {
+        return;
+    }
+    for end in std::mem::take(&mut backlog.ends) {
         if let Some(group) = recipients.iter_mut().find(|group| group.runs(end.target)) {
-            group.end(end);
+            group.end(&end);
         }
     }
 }
@@ -390,8 +412,8 @@ mod tests {
     /// A message to every entity reaches each entity of every group once,
     /// but its sender; one to an entity reaches it alone; one to an entity
     /// no graph runs goes nowhere and takes no place in the tick's
-    /// MAX_MESSAGES, of which the first go, in order. Ends go to their
-    /// entity.
+    /// MAX_MESSAGES, of which the first go, in order. The rest go first the
+    /// next tick, and the tick's ends after them, each to its entity.
     #[test]
     fn messages_reach_the_named_entity_or_every_entity_but_the_sender() {
         const NOBODY: u32 = 0x99;
@@ -408,13 +430,33 @@ mod tests {
             target: 2,
             message: 9,
         }];
-        deliver(messages, ends, &mut [&mut players, &mut bots, &mut mode]);
+        let mut backlog = Backlog::default();
+        deliver(
+            &mut backlog,
+            messages,
+            ends,
+            &mut [&mut players, &mut bots, &mut mode],
+        );
         assert_eq!(players.taken, [(1, 7), (2, 7), (2, 8)]);
         assert_eq!(mode.taken, [(0x20, 8)]);
-        let to_bots: Vec<_> = [(10, 7), (11, 7), (10, 8), (11, 8)]
+        let mut to_bots: Vec<_> = [(10, 7), (11, 7), (10, 8), (11, 8)]
             .into_iter()
             .chain((0..MAX_MESSAGES as u64 - 2).map(|message| (11, message)))
             .collect();
+        assert_eq!(bots.taken, to_bots);
+        assert!(players.ended.is_empty(), "the end waits for its message");
+        // The next tick: the two left over, then this tick's own.
+        deliver(
+            &mut backlog,
+            vec![mail(0x20, 10, 99)],
+            Vec::new(),
+            &mut [&mut players, &mut bots, &mut mode],
+        );
+        to_bots.extend([
+            (11, MAX_MESSAGES as u64 - 2),
+            (11, MAX_MESSAGES as u64 - 1),
+            (10, 99),
+        ]);
         assert_eq!(bots.taken, to_bots);
         assert_eq!(players.ended, [(2, 9)]);
         assert!(bots.ended.is_empty() && mode.ended.is_empty());

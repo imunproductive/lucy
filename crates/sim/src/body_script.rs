@@ -95,6 +95,10 @@ pub struct OwnerBodySpawn {
     /// The AI entity that possesses an AI hero's body (none for a human's):
     /// the body's graphs read their AI damage from its profile.
     pub ai: Option<AiControl>,
+    /// The mode graph holds `06FD` to every entity now (`ModeRunner::held`),
+    /// so the body takes it from there and the factory leaves its copy
+    /// ([`ModeBody::respawn_seconds`]) out.
+    pub respawn_held: bool,
 }
 
 /// What the game mode adds to each player body: its team's body script
@@ -318,7 +322,11 @@ impl PlayerBodyFactory {
         component
             .advance_frame(spawn.frame, &mut world)
             .map_err(unsupported)?;
-        let counted = mode_script.zip(self.mode_body.respawn_seconds);
+        let seconds = self
+            .mode_body
+            .respawn_seconds
+            .filter(|_| !spawn.respawn_held);
+        let counted = mode_script.zip(seconds);
         if let Some((_, seconds)) = counted {
             component
                 .receive_message(
@@ -973,6 +981,7 @@ pub fn fixture_body_factory() -> (PlayerBodyFactory, OwnerBodySpawn) {
         quanta: RETAIL_QUANTA,
         mode_random: 0.5,
         ai: None,
+        respawn_held: false,
     };
     let factory = PlayerBodyFactory::prepare(
         graphs,

@@ -207,6 +207,11 @@ impl<W: World> Context for InstanceContext<'_, W> {
         self.world.entities_with_tag(self.site, tag)
     }
 
+    fn tagged_entities(&mut self) -> Option<Vec<u32>> {
+        self.read_native = true;
+        self.world.tagged_entities(self.site)
+    }
+
     fn entity_filter_flags(&mut self, entity: u32) -> Option<u64> {
         self.read_native = true;
         self.world.entity_filter_flags(self.site, entity)

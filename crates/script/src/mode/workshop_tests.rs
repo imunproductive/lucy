@@ -50,11 +50,13 @@ fn host() -> ModeScript {
         ModePlayer {
             controller: PLAYER,
             body: Some(0x200),
+            hero: None,
             team: 0,
         },
         ModePlayer {
             controller: OTHER_PLAYER,
             body: Some(0x201),
+            hero: None,
             team: 0,
         },
     ];

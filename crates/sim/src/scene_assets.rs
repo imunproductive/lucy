@@ -1758,6 +1758,7 @@ mod tests {
             .map(|team| ModePlayer {
                 controller: 0x1001 + team as u32,
                 body: None,
+                hero: None,
                 team,
             })
             .collect();
@@ -1821,6 +1822,7 @@ mod tests {
             quanta: RETAIL_QUANTA,
             mode_random: scene.mode_random(),
             ai: None,
+            respawn_held: false,
         };
         assert!(
             scene.owner_body_runtime(pharah, spawn).unwrap().is_some(),
@@ -1884,6 +1886,7 @@ mod tests {
             quanta: RETAIL_QUANTA,
             mode_random: scene.mode_random(),
             ai: None,
+            respawn_held: false,
         };
         let mut runtime = scene.owner_body_runtime(hero, spawn).unwrap().unwrap();
         // (frames, forward throttle, buttons held)
@@ -2068,6 +2071,7 @@ mod tests {
             quanta: RETAIL_QUANTA,
             mode_random: scene.mode_random(),
             ai: None,
+            respawn_held: false,
         };
         let [x, y, z] = spawn.pose.position;
         let body = |entity, team, dx: f64| TargetCandidate {
@@ -2173,6 +2177,7 @@ mod tests {
             quanta: RETAIL_QUANTA,
             mode_random: scene.mode_random(),
             ai: None,
+            respawn_held: false,
         };
         let [x, y, z] = spawn.pose.position;
         // Yaw 0 looks along +z.
@@ -2290,6 +2295,7 @@ mod tests {
             quanta: RETAIL_QUANTA,
             mode_random: scene.mode_random(),
             ai: None,
+            respawn_held: false,
         };
         let swing_frame = spawn.frame + 31;
         let enemies: Vec<u32> = (2..6).map(|slot| 0xa000_0001 | slot << 8).collect();

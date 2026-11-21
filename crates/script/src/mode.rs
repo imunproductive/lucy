@@ -75,12 +75,14 @@ pub fn team_size(entries: &[(u8, u8)], team: i64) -> Option<i64> {
 }
 
 /// A player of the match as the mode graph knows him: his controller, his
-/// current body (none while he has none) and his team as the client reads
-/// it from the entity's filter bits (a free-for-all player is on team 4).
+/// current body and its hero (none while he has none) and his team as the
+/// client reads it from the entity's filter bits (a free-for-all player is
+/// on team 4).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ModePlayer {
     pub controller: u32,
     pub body: Option<u32>,
+    pub hero: Option<u64>,
     pub team: i64,
 }
 
@@ -227,10 +229,9 @@ impl World for ModeWorld {
             // As `PlayerWorld`: the tunable's authored value, not scaled
             // for the entity.
             "STU_082FA44E" => Some("the tunable's authored value"),
-            "STU_81A9AB10" => Some("the server's own start condition (server-only)"),
-            "STU_21A5BB52" => Some("false (server-only)"),
             "STU_AFC074B3" => Some("the game's heroes"),
             "STU_A90795E2" => Some("the team's players (server-only)"),
+            "STU_BD2D717B" => Some("the players' controllers (1) or bodies (0)"),
             _ => None,
         }
     }
@@ -278,7 +279,33 @@ impl World for ModeWorld {
         self.map_tags.as_ref()?.with_tag(tag)
     }
 
-    fn has_target_tag(&self, _site: Site, entity: u32, tag: u64) -> Option<bool> {
+    /// The map's tagged placeables, then the players' bodies (every hero
+    /// body's definition has a target tag component, the bundle's
+    /// `bodies`). Assumption (as `crate::map_tags`): no other entity
+    /// carries a tag.
+    fn tagged_entities(&self, _site: Site) -> Option<Vec<u32>> {
+        let mut entities: Vec<u32> = self.map_tags.as_ref()?.entities().collect();
+        entities.extend(self.players.iter().filter_map(|player| player.body));
+        Some(entities)
+    }
+
+    /// A map placeable's tags; a player's body's are its definition's
+    /// (the bundle's `bodies`), as the victim's tags at a kill
+    /// (`orpheus_sim::replication`). Assumption: its states add or remove
+    /// none the mode graph asks about.
+    fn has_target_tag(&self, site: Site, entity: u32, tag: u64) -> Option<bool> {
+        if let Some(player) = self.player_of(entity)
+            && player.body == Some(entity)
+        {
+            let definition = self.hero_body(site, player.hero?)?;
+            let tags = self
+                .graphs
+                .bodies()
+                .get(&definition)?
+                .target_tags
+                .as_ref()?;
+            return Some(tags.contains(&tag));
+        }
         let placed = self.map_tags.as_ref()?.get(entity)?;
         Some(placed.tags.contains(&tag))
     }
@@ -393,7 +420,14 @@ impl World for ModeWorld {
     /// play, whether the payload's random speed factor #29093 comes from
     /// message `11BA` (`0F4A` uid 1299); `0F60` and `0F73` read it in
     /// `STU_F7216D4F`. It is server-only (no client code); the server
-    /// answers false, its own rule.
+    /// answers false, its own rule: it sends no `11BA` (`0F4A` rid504
+    /// would keep its `08CF` in #29093), so it has no carried value to
+    /// pick, and in `0F4A` both answers give `STU_B182C5C9` while #29093
+    /// is unset (rid503: `valueOr(#29093, STU_B182C5C9())`).
+    ///
+    /// Neither is an assumption: no client code evaluates them, so they are
+    /// the server's rules, as the retail server's were
+    /// ([`World::assumption`] leaves them out).
     ///
     /// `STU_A90795E2` (`m_6CE7A900`, a team) is server-only too (the base
     /// config's evaluate). Its uses read it as the team's players: `1061`
@@ -401,6 +435,18 @@ impl World for ModeWorld {
     /// less it in AI heroes, `0D44` holds a count to it, and Elimination
     /// (`0D0B` rid181) gives the round to team 0 when it has players and
     /// team 1 none. The server answers [`ModeWorld::players`]' count.
+    ///
+    /// `STU_BD2D717B` (`m_B257A3A4`, a byte) is every player: its
+    /// evaluate (slot 5 0x7FF789BF2E40) walks the game's participant list
+    /// (`sub_7FF7895BC390`, the list `STU_A5B9EAAD` counts, on the same
+    /// dependency channel 2) and gives one entity each, from one of two
+    /// lookups by the byte (set: 0x7FF789CB7460, the entity at `+8` of what
+    /// it finds; clear: 0x7FF789CB5E40). Which is the controller and which
+    /// the body was not read: the voice audiences (`0686`, `0F4A`, `0EC2`
+    /// Criteria and VoiceStimulus, all 0) speak to bodies, and the
+    /// controller's `0215` filters with 1, so 1 = the players'
+    /// controllers, 0 = their bodies [inference]. `0F4A` rid76 keeps the
+    /// players in #7300 at a round's start.
     ///
     /// `STU_AFC074B3` is the Workshop's All Heroes (`1B4A` `53C9`; Set
     /// Player Allowed Heroes `1D57` and Preload Hero `1D3B` read it): the
@@ -438,6 +484,26 @@ impl World for ModeWorld {
                     .map(|&(hero, _)| Value::Asset(hero))
                     .collect(),
             )),
+            "STU_BD2D717B" => {
+                let controllers = match config.get("m_B257A3A4")?.as_u64()? {
+                    0 => false,
+                    1 => true,
+                    _ => return None,
+                };
+                Some(Value::Array(
+                    self.players
+                        .iter()
+                        .filter_map(|player| {
+                            if controllers {
+                                Some(player.controller)
+                            } else {
+                                player.body
+                            }
+                        })
+                        .map(Value::Entity)
+                        .collect(),
+                ))
+            }
             _ => None,
         }
     }
@@ -1119,6 +1185,7 @@ mod tests {
             .map(|team| ModePlayer {
                 controller: 0x100 + team as u32,
                 body: Some(0x200 + team as u32),
+                hero: None,
                 team,
             })
             .collect()

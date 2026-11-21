@@ -134,7 +134,23 @@ const ASSUMED_INERT_STATES: &[&str] = &[
 /// body at `0687`'s spawn point after a hero change; a generic state on the
 /// client, `RespawnFacing.md`; the server makes and possesses the body
 /// itself). HeroSelect runs (`vm/hero_select.rs`).
-const ASSUMED_PLAIN_STATES: &[&str] = &["STU_0C3A5D53", "STU_AB09B113", "STUStatescriptStateHero"];
+///
+/// The mode's `0CBB` has two more with no registration of their own (the
+/// base state: the client does nothing with them), so server-only: `STU_7F488C3E`
+/// (st46-st49, no fields, under the phase stacks #19528e setup, #12113e
+/// round, #19527e round end, #19526e match end) and `STU_54BBC96C` (st35,
+/// no fields, 12 s after a round's end while #8078e is false). What the
+/// retail server did with them is not known. Server-only too: the mode
+/// graphs' `STU_0FAD550D` (`m_41F2FA6C`, a bool; `0F4A` st34 as a round
+/// starts, false, before the ForCodeSynced st33 rows `2271`/`226F`/`2270`).
+const ASSUMED_PLAIN_STATES: &[&str] = &[
+    "STU_0C3A5D53",
+    "STU_AB09B113",
+    "STUStatescriptStateHero",
+    "STU_7F488C3E",
+    "STU_54BBC96C",
+    "STU_0FAD550D",
+];
 
 impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
     pub(super) fn follow(
@@ -817,6 +833,14 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             // player: presentation, as the base presenter's. Codec none.
             // `13C0` st0, `0CB6` st4, `0160` st12.
             "STU_62755D14" => StateKind::Plain,
+            // The controller's `0C90` st82 on the mode's `0692` (setup),
+            // `m_80243D28` = owner: its begin (0x7FF789C20DE0) adds one to a
+            // count at component 74 `+0x100` of that entity and its end
+            // (0x7FF789C21890) takes it away; the count is past the
+            // component's mirror (not networked) and no client code reads it
+            // (`who_reads.py --component 74 +0x100`, ControllerWorld.md).
+            // Codec none. Nothing for the server to keep.
+            "STU_D9498E7C" => StateKind::Plain,
             // The authored zero-valued form inherits the base state reader.
             "STU_D9843704"
                 if node.is_networked() && node.remote == -1 && {
@@ -1241,6 +1265,9 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             }
             StateKind::Plain if ASSUMED_PLAIN_STATES.contains(&node.class.as_str()) => {
                 self.assume(self.site(id, node), &node.class, "plain state");
+            }
+            StateKind::Plain if super::for_code_transport(node) => {
+                self.assume(self.site(id, node), &node.class, "rows without transport");
             }
             StateKind::Plain if ASSUMED_INERT_STATES.contains(&node.class.as_str()) => {
                 self.assume(self.site(id, node), &node.class, "no effect");

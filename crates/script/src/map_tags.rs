@@ -92,6 +92,11 @@ impl MapTags {
         self.body_tags.contains(&tag)
     }
 
+    /// Every listed entity, in placeable order.
+    pub fn entities(&self) -> impl Iterator<Item = u32> + '_ {
+        self.entities.iter().map(|entity| entity.entity)
+    }
+
     /// A listed entity.
     pub fn get(&self, entity: u32) -> Option<&TaggedEntity> {
         self.entities.iter().find(|tagged| tagged.entity == entity)

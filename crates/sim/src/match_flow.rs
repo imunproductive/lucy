@@ -787,6 +787,49 @@ impl MatchFlow {
         std::mem::take(&mut self.events)
     }
 
+    /// Follow the mode's own graph, which drives the match where it runs
+    /// (`ModeRunner::match_state`): its phase and clock now, `seconds`
+    /// after the last step. The flow keeps no timer and plays no objective
+    /// of its own then; the graph holds its phase messages itself, so none
+    /// go from here. A phase change is a [`FlowEvent::Phase`] (a round's
+    /// start counts the round); the match's end is decided by the graph's
+    /// winner (`0F4A` #7525, a team, else a draw) and goes home
+    /// [`MATCH_END`] later, as in [`Self::advance`].
+    pub fn follow(
+        &mut self,
+        seconds: f64,
+        phase: Phase,
+        clock: f64,
+        winner: Option<u8>,
+    ) -> Vec<FlowEvent> {
+        if phase != self.phase {
+            self.phase = phase;
+            match phase {
+                Phase::Round => {
+                    self.round += 1;
+                    self.overtime = None;
+                }
+                Phase::MatchEnd => {
+                    self.standings = standings(winner);
+                    self.events.push(FlowEvent::MatchOver);
+                    self.left = self.scaled(MATCH_END);
+                }
+                _ => {}
+            }
+            self.events.push(FlowEvent::Phase(phase));
+        }
+        if phase == Phase::MatchEnd {
+            self.left -= seconds;
+            if self.left <= 0.0 && !self.events.contains(&FlowEvent::Finished) {
+                self.left = 0.0;
+                self.events.push(FlowEvent::Finished);
+            }
+        } else {
+            self.left = clock;
+        }
+        std::mem::take(&mut self.events)
+    }
+
     fn scaled(&self, seconds: f64) -> f64 {
         seconds * self.timers.scale
     }
@@ -1256,16 +1299,21 @@ impl MatchFlow {
 
     /// The match is decided for the teams: a winner or a draw.
     fn decide(&mut self, winner: Option<u8>) {
-        self.standings = (0..2u8)
-            .map(|team| match winner {
-                None => Standing::Drew,
-                Some(winner) if winner == team => Standing::Won,
-                Some(_) => Standing::Lost,
-            })
-            .collect();
+        self.standings = standings(winner);
         self.events.push(FlowEvent::MatchOver);
         self.enter_round_end();
     }
+}
+
+/// Teams 0 and 1's standings when `winner` won (none: a draw).
+fn standings(winner: Option<u8>) -> Vec<Standing> {
+    (0..2u8)
+        .map(|team| match winner {
+            None => Standing::Drew,
+            Some(winner) if winner == team => Standing::Won,
+            Some(_) => Standing::Lost,
+        })
+        .collect()
 }
 
 #[cfg(test)]
