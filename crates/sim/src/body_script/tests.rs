@@ -1730,6 +1730,7 @@ fn a_dead_body_counts_its_respawn_down_in_the_mode_body_script() {
         yaw: 0.0,
         tags: Some(Arc::new(BTreeSet::new())),
         health: None,
+        hardpoints: None,
         spawned: Vec::new(),
     }]);
     let total = runtime.vitals().unwrap().total();
@@ -2018,6 +2019,7 @@ fn the_charge_graph_charges_soldier_s_ultimate() {
         yaw: 0.0,
         tags: None,
         health: None,
+        hardpoints: None,
         spawned: Vec::new(),
     };
     runtime.set_target_candidates(&[body(ENEMY, 1), body(ALLY, 0)]);
@@ -2164,6 +2166,7 @@ fn standing(entity: u32, team: u8, controller: u32, feet: [f64; 3]) -> TargetCan
         yaw: 0.0,
         tags: None,
         health: None,
+        hardpoints: None,
         spawned: Vec::new(),
     }
 }
@@ -2282,7 +2285,7 @@ fn mercys_guardian_angel_toggles_or_holds_by_her_setting() {
     }]);
     let (mut runtime, spawn) = charge_body(MERCY, None);
     runtime
-        .set_hero_settings(&hero_setting_variables(&settings, MERCY))
+        .set_entity_variables(&hero_setting_variables(&settings, MERCY))
         .unwrap();
     run_frames(&mut runtime, spawn, 2);
     assert_eq!(
@@ -2324,6 +2327,7 @@ fn the_biotic_field_aura_heals_the_body_through_its_own_graph() {
         yaw: 0.0,
         tags: None,
         health: None,
+        hardpoints: None,
         spawned: vec![orpheus_script::vm::OwnedEntity {
             entity: FIELD,
             projectile: false,
@@ -2399,6 +2403,7 @@ fn the_healing_orbs_aura_heals_an_ally_for_its_thrower() {
         yaw: 0.0,
         tags: None,
         health: None,
+        hardpoints: None,
         spawned,
     };
     runtime.set_target_candidates(&[
@@ -2619,4 +2624,89 @@ fn a_hurt_body_on_a_health_pack_asks_it_for_its_heal() {
         "{:?}",
         snapshot.assumptions
     );
+}
+
+/// Soldier: 76's Tactical Visor aims his rifle on the server as on his
+/// client: with a full meter, ABILITY_3 begins `0259`'s ultimate, whose
+/// search st7 (a 45° cone, 45 m, hostile heroes and bots) puts the enemy
+/// 11° off his aim in #2337e, and the rifle's volley (`0254` st10) leaves
+/// along its launch's `m_E2FD6F04`, `norm(STU_FC99C77E(#2337e[0],
+/// 0DC.0001) - STU_21A13145(owner()))`: from his eye to the enemy's chest
+/// hardpoint (the Training Bot's, 1.32 m up its axis). Before, the server
+/// shot along his view, past the enemy, and the visor hit nothing.
+#[test]
+#[ignore = "requires the derived 104319 statescript catalog"]
+fn tactical_visor_shots_leave_toward_the_target_s_chest() {
+    const ABILITY_3: u32 = 0x20;
+    const ENEMY: u32 = 0xa000_0401;
+    const TRAINING_BOT: u64 = 0x0400_0000_0000_1403;
+    const CHEST: u64 = 0x0dc0_0000_0000_0001;
+    let hitboxes = crate::hitboxes::HitboxCatalog::load(
+        orpheus_testkit::runtime_dir().join("data/game_hitboxes_174.json"),
+    )
+    .unwrap();
+    let hardpoints = hitboxes.hardpoints(TRAINING_BOT).unwrap();
+    let full = Variables::from([(13024, Value::Bool(true))]);
+    let (mut runtime, spawn) = hero_body(SOLDIER, Some(full), None);
+    let [x, y, z] = spawn.pose.position;
+    let feet = [x + 2.0, y, z + 10.0];
+    let enemy = TargetCandidate {
+        ai: true,
+        player: None,
+        hardpoints: Some(Arc::clone(&hardpoints)),
+        ..standing(ENEMY, 1, 0xa000_0400, feet)
+    };
+    runtime.set_target_candidates(&[
+        standing(spawn.entity, 0, spawn.controller, spawn.pose.position),
+        enemy,
+    ]);
+    let mover = Mover::new(
+        MoverSettings::default(),
+        Arc::new(ContactWorld::new(Vec::new()).unwrap()),
+        spawn.pose.position,
+        0,
+        0x18,
+    )
+    .unwrap();
+    let mut directions = Vec::new();
+    // The ultimate at frame 30, then fire from frame 91 (he looks along
+    // +z, level).
+    for frame in spawn.frame + 1..=spawn.frame + 120 {
+        let buttons = if frame == spawn.frame + 30 {
+            ABILITY_3
+        } else if frame > spawn.frame + 90 {
+            orpheus_wire::commands::FIRE
+        } else {
+            0
+        };
+        let command = Command {
+            frame,
+            buttons,
+            ..Command::default()
+        };
+        runtime.advance(command, &mover, BodyStep::Posed).unwrap();
+        for shot in runtime.take_shots(Some(command), &mover) {
+            if let PosedShot::Hitscan(shot) = shot {
+                directions.push((shot.origin, shot.direction));
+            }
+        }
+    }
+    let snapshot = runtime.snapshot().unwrap();
+    assert_eq!(
+        snapshot.variables.get(&2337),
+        Some(&Value::Array(vec![Value::Entity(ENEMY)]))
+    );
+    let [cx, cy, cz] = hardpoints[&CHEST];
+    assert!(!directions.is_empty());
+    for (origin, direction) in directions {
+        let to: [f64; 3] =
+            std::array::from_fn(|k| [feet[0] + cx, feet[1] + cy, feet[2] + cz][k] - origin[k]);
+        let length = to.iter().map(|part| part * part).sum::<f64>().sqrt();
+        for k in 0..3 {
+            assert!(
+                (direction[k] - to[k] / length).abs() < 1e-5,
+                "{direction:?} toward {to:?}"
+            );
+        }
+    }
 }

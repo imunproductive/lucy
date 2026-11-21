@@ -91,6 +91,37 @@ fn the_training_bot_hovers_with_its_arms_down_and_a_critical_head() {
     }
 }
 
+/// The hardpoint `0DC.0001` that Soldier: 76's Tactical Visor aims at
+/// (`0254` st10 `m_E2FD6F04`, `STU_FC99C77E`): every body has it, on its
+/// axis at its chest; on the Training Bot the origin of its bone `0x3`,
+/// posed with the shapes (1.32 m up, between the critical head at 2 m and
+/// the feet).
+#[test]
+#[ignore = "requires an Overwatch 1.74 install (just test-game <install>)"]
+fn the_bodies_place_their_hardpoints() {
+    let file = derived();
+    let chest = |body: &str| -> [f64; 3] {
+        let point = &file[body]["hardpoints"]["0x0DC0000000000001"];
+        std::array::from_fn(|axis| point[axis].as_f64().unwrap())
+    };
+    for (body, entry) in file.as_object().unwrap() {
+        let [x, y, z] = chest(body);
+        assert!(x.abs() < 0.01 && z.abs() < 0.2, "{} {x} {z}", entry["name"]);
+        assert!((1.0..1.8).contains(&y), "{} {y}", entry["name"]);
+    }
+    let bot = chest("0x0400000000001403");
+    assert!((bot[1] - 1.3236).abs() < 1e-3, "{bot:?}");
+    assert_eq!(
+        file["0x0400000000001403"]["hardpoints"]
+            .as_object()
+            .unwrap()
+            .len(),
+        23
+    );
+    let soldier = chest("0x04000000000003CF");
+    assert!((soldier[1] - 1.520).abs() < 1e-3, "{soldier:?}");
+}
+
 /// Every bot body is the Training Bot's model with its blend trees, so in
 /// the same pose; the heroes stay at rest (their trees reach no single clip
 /// keying every bone, and players are hit by the capsule).

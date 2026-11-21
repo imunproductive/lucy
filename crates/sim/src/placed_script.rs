@@ -757,6 +757,7 @@ mod tests {
             yaw: 0.0,
             tags: Some(Arc::new(BTreeSet::new())),
             health: None,
+            hardpoints: None,
             spawned: Vec::new(),
         }]);
         // The server routes a tick's messages after the placeables ran
@@ -957,6 +958,7 @@ mod tests {
             yaw: 0.0,
             tags: None,
             health: None,
+            hardpoints: None,
             spawned: Vec::new(),
         }]);
         range.scene.take_scope_changes();
@@ -1170,6 +1172,7 @@ mod tests {
             yaw: 0.0,
             tags: None,
             health: None,
+            hardpoints: None,
             spawned: Vec::new(),
         };
         let outside = [spawn[0] + 60.0, spawn[1], spawn[2] + 60.0];

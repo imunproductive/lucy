@@ -294,7 +294,14 @@ pub struct TargetCandidate {
     /// the owner relation, and the projectiles among them that this body
     /// shot (its Biotic Orbs), for the shooter relation.
     pub spawned: Vec<OwnedEntity>,
+    /// Its body definition's model hardpoints in its frame (feet at the
+    /// origin, +Z forward), which `STU_FC99C77E` reads; None: unknown.
+    pub hardpoints: Option<Arc<Hardpoints>>,
 }
+
+/// A body's model hardpoints: each `0DC` GUID's point in the body's frame
+/// (`orpheus_assets` `hitboxes`: the bots' idle pose, the heroes' rest).
+pub type Hardpoints = BTreeMap<u64, [f64; 3]>;
 
 /// A spawned entity a listed body's controller owns
 /// ([`TargetCandidate::spawned`]).
@@ -738,6 +745,28 @@ pub trait World {
             .iter()
             .find(|body| body.entity == entity)
             .map(|body| body.feet)
+    }
+
+    /// Where `entity`'s model hardpoint `hardpoint` is (`STU_FC99C77E`):
+    /// a listed body's hardpoint, turned by its yaw about its feet, where
+    /// the searcher's player saw it when the world rewinds
+    /// ([`Self::seen_bodies`]), else where it stands. None: unknown.
+    fn hardpoint(&self, site: Site, entity: u32, hardpoint: u64) -> Option<[f64; 3]> {
+        let body = self
+            .target_candidates(site)?
+            .iter()
+            .find(|body| body.entity == entity)?;
+        let [x, y, z] = *body.hardpoints.as_deref()?.get(&hardpoint)?;
+        let (feet, yaw) = match self.seen_bodies(site) {
+            Some(SeenBodies::Rewound(seen)) => seen
+                .iter()
+                .find(|seen| seen.entity == entity)
+                .map_or((body.feet, body.yaw), |seen| (seen.feet, seen.yaw)),
+            _ => (body.feet, body.yaw),
+        };
+        let (sin, cos) = yaw.sin_cos();
+        let [fx, fy, fz] = feet;
+        Some([fx + x * cos + z * sin, fy + y, fz - x * sin + z * cos])
     }
 
     /// A body's yaw and pitch, as [`expr::Context::entity_facing`].

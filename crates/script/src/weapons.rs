@@ -938,6 +938,32 @@ pub fn spread_cone(
     Ok(Some(degrees * (std::f64::consts::PI / 180.0) as f32))
 }
 
+/// The direction a volley's shots leave in, in place of the aim, when its
+/// launch (`m_5EC1EB38`) sets one in `m_E2FD6F04`, normalized. A zero
+/// vector (or none) keeps the aim: Soldier: 76's rifle aims at its Tactical
+/// Visor's target's hardpoint `0DC.0001` from his eye while the visor has
+/// one (`0254` st10: `count(#2337e) > 0 ? norm(STU_FC99C77E(#2337e[0]) -
+/// STU_21A13145(owner())) : (0, 0, 0)`). Others: the Biotic Field
+/// canister's throw ahead and 5 m down (`0257` rid4), straight down or up
+/// (`022A`, `1517`), a random spread (`0044`).
+pub fn launch_direction(
+    node: &Node,
+    mut evaluate: impl FnMut(&Json) -> Result<Value, EvalError>,
+) -> Result<Option<[f64; 3]>, EvalError> {
+    let Some(direction) = node
+        .field("m_5EC1EB38")
+        .and_then(|launch| launch.get("m_E2FD6F04"))
+        .filter(|direction| !direction.is_null())
+    else {
+        return Ok(None);
+    };
+    let Value::Vector(direction) = evaluate(direction)? else {
+        return Ok(None);
+    };
+    let length = direction.iter().map(|part| part * part).sum::<f64>().sqrt();
+    Ok((length > 1e-6 && length.is_finite()).then(|| direction.map(|part| part / length)))
+}
+
 pub fn authored_number(
     config: Option<&Json>,
     default: f64,

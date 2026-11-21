@@ -544,9 +544,11 @@ pub trait OwnerBodyRuntime: Send {
     /// searches that rewind, before the body's script runs the command.
     fn see_targets(&mut self, _rewind: &TargetRewind<'_>, _command: &Command) {}
 
-    /// The player's hero settings that the body's graphs read, as entity
-    /// variables ([`hero_setting_variables`]).
-    fn set_hero_settings(&mut self, _variables: &Variables) -> io::Result<()> {
+    /// Entity variables the server writes onto the body, which no graph
+    /// writes from outside: the player's hero settings
+    /// ([`hero_setting_variables`]) and the ultimate charge a respawn's new
+    /// body keeps ([`WorldDelivery::respawn_due`]).
+    fn set_entity_variables(&mut self, _variables: &Variables) -> io::Result<()> {
         Ok(())
     }
 
@@ -4228,7 +4230,7 @@ impl WorldDelivery {
             .body_script
             .as_mut()
             .filter(|script| script.id == body.id)
-            .and_then(|script| script.runtime.set_hero_settings(&variables).err());
+            .and_then(|script| script.runtime.set_entity_variables(&variables).err());
         if let Some(error) = failure {
             self.drop_failed_script(&error.to_string());
         }
@@ -4293,10 +4295,14 @@ impl WorldDelivery {
         Some(PlayerTarget {
             body: body.id.entity,
             team,
-            pose: scene.player_target(hero, mover.pose().position, mover.crouched()),
+            pose: {
+                let pose = mover.pose();
+                scene.player_target(hero, pose.position, pose.yaw, mover.crouched())
+            },
             dead: self.death.is_some(),
             health: vitals.map(|vitals| [vitals.total(), vitals.maximum()]),
             tags: scene.body_tags(hero.body),
+            hardpoints: scene.body_hardpoints(hero.body),
             ai: self.ai_control(scene.graphs(), body.hero),
             dealt: self.body_effects().map_or_else(Vec::new, |effects| {
                 effects
@@ -4779,7 +4785,7 @@ impl WorldDelivery {
         let mover = self.mover.as_ref()?;
         let hero = scene.heroes().get(body.hero)?;
         let pose = mover.pose();
-        let target = scene.player_target(hero, pose.position, mover.crouched());
+        let target = scene.player_target(hero, pose.position, pose.yaw, mover.crouched());
         let script = self
             .body_script
             .as_ref()
@@ -5067,6 +5073,14 @@ impl WorldDelivery {
     /// `switch_hero`), revived ([`Self::revived`]). While every id of his
     /// body ring is still reserved, he tries again RESPAWN_RETRY later.
     /// True when he respawned.
+    ///
+    /// Retail revives the dead body itself (`STU_621AF478`), whose entity
+    /// variables stay, so the new body that stands for it starts with the
+    /// dead one's ultimate charge #342e (before the revive message, so
+    /// `0B8B` rid66's "spawn with the ultimate" ruleset key still fills
+    /// it). A body of another hero (a pick while dead) starts from 0, as a
+    /// hero change does: `0C90` st131 sends the new body `14F2.025` with
+    /// the share #32319 the mode's #32271 keeps, none by default.
     pub fn respawn_due(
         &mut self,
         scene: &PreparedScene,
@@ -5115,7 +5129,30 @@ impl WorldDelivery {
             .heroes()
             .get(guid)
             .ok_or_else(|| invalid("the dead body's hero is unknown"))?;
+        let charge = self
+            .body_script
+            .as_ref()
+            .filter(|script| guid == body.hero && script.id == body.id)
+            .and_then(|script| script.runtime.snapshot())
+            .and_then(|snapshot| {
+                let charge = snapshot
+                    .variables
+                    .get(&orpheus_script::ultimate::ULT_CHARGE)?;
+                Some(Variables::from([(
+                    orpheus_script::ultimate::ULT_CHARGE,
+                    charge.clone(),
+                )]))
+            });
         self.switch(scene, viewer, tick, quanta, entity, (hero, skin), false)?;
+        if let Some(charge) = charge {
+            let failure = self
+                .body_script
+                .as_mut()
+                .and_then(|script| script.runtime.set_entity_variables(&charge).err());
+            if let Some(error) = failure {
+                self.drop_failed_script(&error.to_string());
+            }
+        }
         self.revived();
         if let Some(feet) = death.revive_at {
             self.teleport_current(feet, None);
@@ -6100,7 +6137,7 @@ impl WorldDelivery {
                 // replaces them.
                 let settings = hero_setting_variables(&self.hero_settings, hero.guid);
                 if settings != hero_setting_variables(&HeroSettings::default(), hero.guid) {
-                    runtime.set_hero_settings(&settings).ok()?;
+                    runtime.set_entity_variables(&settings).ok()?;
                 }
                 Some(runtime)
             })

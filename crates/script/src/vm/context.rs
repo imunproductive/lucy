@@ -263,6 +263,11 @@ impl<W: World> Context for InstanceContext<'_, W> {
         self.world.entity_position(self.site, entity)
     }
 
+    fn hardpoint(&mut self, entity: u32, hardpoint: u64) -> Option<[f64; 3]> {
+        self.read_native = true;
+        self.world.hardpoint(self.site, entity, hardpoint)
+    }
+
     fn entity_facing(&mut self, entity: u32) -> Option<[i32; 2]> {
         self.read_native = true;
         self.world.entity_facing(self.site, entity)

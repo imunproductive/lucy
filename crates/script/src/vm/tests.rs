@@ -4951,6 +4951,7 @@ fn body(entity: u32, team: u8, feet: [f64; 3]) -> TargetCandidate {
         yaw: 0.0,
         tags: None,
         health: None,
+        hardpoints: None,
         spawned: Vec::new(),
     }
 }
