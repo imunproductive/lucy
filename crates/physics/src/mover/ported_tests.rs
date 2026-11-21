@@ -1505,3 +1505,34 @@ fn a_velocity_action_acts_on_the_next_pose_and_takes_the_body_off() {
     held.walk(1, run(21));
     assert!(held.position()[2] > x[2] || held.position()[0] > x[0]);
 }
+
+/// A shockwave's ground walk (`super::ground_walk`, `0x7FF789BAC810`) from a
+/// body to the wave's sight line 1.8 m over the floor: it reaches a body on
+/// the floor 5 m away and one on a 1 m step, not one on a 2 m ledge (the
+/// drop off it is more than the slam's 1.45 m), nor one beyond a pit.
+#[test]
+fn a_shockwave_walks_over_the_floor_and_a_step_not_off_a_ledge_or_over_a_pit() {
+    use super::ground_walk::{GroundWalk, ground_walk};
+
+    let reaches = |triangles: Vec<Corners>, feet: [f64; 3]| {
+        let (_, contacts) = world(&triangles, &[]);
+        let walk = GroundWalk {
+            feet,
+            from: [feet[0], feet[1] + 0.54, feet[2]],
+            to: [0.0, 2.8, 0.0],
+            drop: 1.45,
+            climb: 1.45,
+            probe: 1.45,
+        };
+        ground_walk(&contacts, MOVER, MOVER, &walk).unwrap()
+    };
+    assert!(reaches(floor(), [0.0, 1.0, 5.0]));
+    let raised = |top: f64| joined([floor(), cuboid([-2.0, 2.0], [1.0, top], [3.0, 8.0])]);
+    assert!(reaches(raised(2.0), [0.0, 2.0, 5.0]));
+    assert!(!reaches(raised(3.0), [0.0, 3.0, 5.0]));
+    let pit = joined([
+        cuboid([-30.0, 30.0], [0.0, 1.0], [-30.0, 2.0]),
+        cuboid([-30.0, 30.0], [0.0, 1.0], [4.0, 30.0]),
+    ]);
+    assert!(!reaches(pit, [0.0, 1.0, 5.0]));
+}

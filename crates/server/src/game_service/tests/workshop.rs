@@ -1030,6 +1030,113 @@ fn a_workshop_rule_runs_on_each_player_event() {
     server.stop().unwrap();
 }
 
+/// Create Dummy Bot `203A` makes an AI player in the room's next slot, on
+/// the team its Workshop team names (`STU_382A5949`: Team 2 is the room's
+/// team 1), of its hero, standing where it says; Destroy Dummy Bot `2080`
+/// of that team and slot takes him out again (his body goes).
+#[test]
+#[ignore = "requires an Overwatch 1.74 install (just test-game <install>)"]
+fn a_workshop_dummy_bot_joins_and_leaves() {
+    const ANA: u64 = 0x02e0_0000_0000_013b;
+    const RULES: &str = "rule(\"bot\")\n{\n\tevent\n\t{\n\t\tOngoing - Global;\n\t}\n\n\tactions\n\t{\n\t\tWait(1, Ignore Condition);\n\t\tCreate Dummy Bot(Hero(Ana), Team 2, 0, Vector(-4.265, 1.156, 3.078), Vector(0, 0, 1));\n\t\tWait(2, Ignore Condition);\n\t\tDestroy Dummy Bot(Team 2, 0);\n\t}\n}\n";
+    let runtime = orpheus_testkit::runtime_dir();
+    let data = runtime.join("data");
+    let catalog = Arc::new(orpheus_workshop::Catalog::load(&data).unwrap());
+    let logic = Arc::new(orpheus_workshop::parse(RULES, &catalog).unwrap().logic);
+    let maps = MapCatalog::load(&data)
+        .unwrap()
+        .with_modes(GameModes::load(data.join(MODES_FILE)).unwrap());
+    let hanamura = maps
+        .map_catalog()
+        .into_iter()
+        .find(|listing| listing.name == "Hanamura")
+        .unwrap();
+    let map = maps
+        .game_map(
+            hanamura.guid,
+            orpheus_sim::match_flow::SKIRMISH,
+            "Assault",
+            false,
+            &[1, 1],
+        )
+        .expect("Hanamura in Assault");
+    let mut assets = SceneAssets::load(&runtime)
+        .unwrap()
+        .with_collision_build(collision_build(orpheus_testkit::game_dir()));
+    assets.set_player_unknowns(orpheus_script::vm::Unknowns::Tolerate);
+    let assets = Arc::new(assets);
+    let schemas = Arc::new(Schemas::game());
+    let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
+    let prepare = {
+        let (assets, map) = (Arc::clone(&assets), map.clone());
+        Box::new(move || assets.prepare(map))
+    };
+    let players = vec![WorldPlayer {
+        player: player().remove(0),
+        card: PlayerCard::default(),
+        hero: 0,
+    }];
+    let tickets = server
+        .open_world(MATCH, map, players, None, prepare)
+        .unwrap();
+    assert!(server.attach_workshop(MATCH, logic, catalog).unwrap());
+    server.await_scenes();
+    let mut client = Client::new(&server, &tickets[0]);
+    client.handshake();
+    let mut watcher = Watcher {
+        client,
+        owner: player_entity(0),
+        tick: 0,
+        sequences: HashSet::new(),
+        datagrams: Vec::new(),
+        ticks: Vec::new(),
+    };
+    pump_until(&mut [&mut watcher], &schemas, "the instance", |watchers| {
+        watchers[0]
+            .datagrams
+            .iter()
+            .any(|(messages, _)| messages.iter().any(|message| message.id == 20300))
+    });
+    let loaded = encode(&schemas, 21602, &Fields::new()).unwrap();
+    let mut payload = BitWriter::new();
+    write_channel(&mut payload, &[(0, loaded)], &[]).unwrap();
+    watcher.client.send(ACK, payload.into_bytes());
+    let mut next = watcher.tick + 1;
+    let mut run_until =
+        |server: &Lockstep,
+         what: &str,
+         done: &dyn Fn(&[crate::game_service::ai::BodyState]) -> bool| {
+            let deadline = server.now() + Duration::from_secs(6);
+            loop {
+                let bodies = server.bodies(MATCH).unwrap();
+                if done(&bodies) {
+                    return bodies;
+                }
+                assert!(
+                    server.now() < deadline,
+                    "{what}: {bodies:?}\n{:?}",
+                    server.workshop_report(MATCH)
+                );
+                send_input(&mut watcher, &mut next, 0, 0, 0, false);
+                watcher.pump(&schemas);
+            }
+        };
+    let joined = run_until(&server, "the bot joins", &|bodies| {
+        bodies
+            .get(1)
+            .is_some_and(|bot| bot.ai && bot.team == 1 && bot.hero == Some(ANA))
+    });
+    let feet = joined[1].position.expect("the bot's body");
+    assert!(
+        (feet[0] + 4.265).hypot(feet[2] - 3.078) < 0.5,
+        "the bot at {feet:?}"
+    );
+    run_until(&server, "the bot leaves", &|bodies| {
+        bodies[1].hero.is_none()
+    });
+    server.stop().unwrap();
+}
+
 /// What one of the archive's scripts met in a hosted match
 /// ([`slow_dpk_archive_scripts_run_in_a_hosted_match`]): its map, whether
 /// its rules ran, and what they could not do. Err: no map of its modes
@@ -1189,8 +1296,9 @@ fn survey_script(path: &std::path::Path) -> Result<String, String> {
 /// for 20 s with one player who picks its first allowed hero: its rules
 /// run, its hero spawns, and no value is unsupported nor the engine
 /// faults; the action graph gaps they meet are printed
-/// (`refs/reports/Workshop.md` "WorkshopEvents"). Two name maps the catalog
-/// doesn't know ("Hanamura Winter", "King's Row Winter"), so nothing plays.
+/// (`refs/reports/Workshop.md` "WorkshopEvents", "DpkScripts"). 7E6PK and
+/// A3A4G name "Hanamura Winter" and "King's Row Winter", as the importer
+/// matches the maps "Hanamura (Winter)" and "King's Row (Winter)".
 #[test]
 #[ignore = "slow: requires an Overwatch 1.74 install and the DPK archive (just test-dpk <install> <archive>)"]
 fn slow_dpk_archive_scripts_run_in_a_hosted_match() {
@@ -1218,11 +1326,5 @@ fn slow_dpk_archive_scripts_run_in_a_hosted_match() {
             }
         }
     }
-    assert_eq!(
-        failed,
-        [
-            "workshop.codes/7E6PK_Doomfist_Parkour_map_generator_Beta_by_nanofanes_2272.txt",
-            "workshop.codes/A3A4G_Doom_Park.txt",
-        ]
-    );
+    assert_eq!(failed, [] as [&str; 0]);
 }

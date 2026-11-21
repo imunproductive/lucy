@@ -327,11 +327,9 @@ fn typed_health_queries_read_the_live_distribution_after_damage() {
             Ok(Value::Float(0.0))
         );
     }
-    let mut named = query(current, 0);
-    named["m_7BE02F89"] = json!({"$":"STUConfigVarIdentifier","m_identifier":"0x01"});
     let mut foreign = query(current, 0);
     foreign["m_entity"] = json!({"$":"STU_F76C486C","m_D63CBEC2":{"$":"STU_B5A0CAF0"}});
-    for config in [named, query(current, 3), foreign] {
+    for config in [query(current, 3), foreign] {
         assert_eq!(evaluate(&mut single, &config), unsupported(current));
     }
 }
@@ -2046,6 +2044,145 @@ fn the_charge_graph_charges_soldier_s_ultimate() {
     // The meter stops at the cost.
     deal(&mut runtime, ENEMY, 5000.0, false);
     assert_eq!(charge_of(&runtime), 2310.0);
+}
+
+/// Doomfist's passive The Best Defense (`0DDD`, `vm/play.rs`
+/// `BEST_DEFENSE`): each damage his abilities deal to an enemy hero
+/// (`0012.025` with the slam's tag `245A`) plays `0DF3` on him, whose st0
+/// is a temporary shields pool of 30 named `249D` (component 51 shields
+/// slot, byte 16 set); grants stop at the 150 cap (`0DDD` rid8, `0DF3`
+/// rid3, with the named pool read as the shields' sum). A second after the
+/// last grant `0DDD` st1 drains the named pools 3 a second; a pool that runs
+/// out goes, its `0DF3` instance exiting. Damage takes the temporary pool
+/// first, and heals never refill it.
+#[test]
+#[ignore = "requires the derived 104319 statescript catalog"]
+fn doomfists_passive_grants_temporary_shields_that_drain() {
+    use orpheus_script::{
+        ultimate::dealt_message,
+        vitals::{Death, PoolKind},
+        weapons::DamageTags,
+    };
+    use orpheus_wire::entity::{ComponentValue, POOLS, SHIELDS_POOL};
+
+    const DOOMFIST: u64 = 0x02e0_0000_0000_012f;
+    const ENEMY: u32 = 0xa000_0301;
+    /// Seismic Slam's damage tag (`0B27` st42's first).
+    const SLAM: u64 = 0x0d80_0000_0000_245a;
+    const BEST_DEFENSE: u32 = 0x0ddd;
+    let (mut runtime, spawn) = charge_body(DOOMFIST, None);
+    runtime.set_target_candidates(&[TargetCandidate {
+        entity: ENEMY,
+        team: Some(1),
+        dead: false,
+        controller: None,
+        player: None,
+        ai: false,
+        ai_control: None,
+        feet: [0.0; 3],
+        height: 1.8,
+        radius: 0.4,
+        yaw: 0.0,
+        tags: None,
+        health: None,
+        spawned: Vec::new(),
+    }]);
+    let mover = Mover::new(
+        MoverSettings::default(),
+        Arc::new(ContactWorld::new(Vec::new()).unwrap()),
+        spawn.pose.position,
+        0,
+        0x18,
+    )
+    .unwrap();
+    let mut frame = spawn.frame;
+    let mut run = |runtime: &mut PlayerBodyRuntime, frames: u32| {
+        for _ in 0..frames {
+            frame += 1;
+            runtime
+                .advance(
+                    Command {
+                        frame,
+                        ..Command::default()
+                    },
+                    &mover,
+                    BodyStep::Posed,
+                )
+                .unwrap();
+        }
+    };
+    let deal = |runtime: &mut PlayerBodyRuntime| {
+        let tags: DamageTags = [SLAM].into_iter().collect();
+        let (message, parameters) = dealt_message(ENEMY, 50.0, &tags, false);
+        runtime
+            .receive_message(spawn.entity, message, parameters)
+            .unwrap();
+    };
+    let shields =
+        |runtime: &PlayerBodyRuntime| runtime.world.vitals.amount(Some(PoolKind::Shields), false);
+    let grants = |runtime: &PlayerBodyRuntime| {
+        let snapshot = runtime.snapshot().unwrap();
+        snapshot
+            .instances
+            .values()
+            .filter(|instance| instance.graph == 0x0df3)
+            .count()
+    };
+    run(&mut runtime, 10);
+    assert_eq!(shields(&runtime), 0.0);
+    deal(&mut runtime);
+    run(&mut runtime, 1);
+    assert_eq!(shields(&runtime), 30.0);
+    assert_eq!(grants(&runtime), 1);
+    let record = match &runtime.world.vitals.component().fields[SHIELDS_POOL * POOLS] {
+        Some(ComponentValue::Blob20(record)) => *record,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(record[8..12], 30f32.to_le_bytes());
+    assert_eq!(record[16..], [1, 1, 0, 1]);
+    // Five more grants reach the cap; a seventh grants nothing.
+    for _ in 0..6 {
+        deal(&mut runtime);
+        run(&mut runtime, 1);
+    }
+    assert_eq!(shields(&runtime), 150.0);
+    assert_eq!(grants(&runtime), 5);
+    // Damage takes them first; a heal doesn't refill them.
+    let hit = Death {
+        time: 0.0,
+        frame: spawn.frame,
+        killer: ENEMY,
+    };
+    runtime.world.vitals.damage(40.0, hit);
+    assert_eq!(shields(&runtime), 110.0);
+    assert_eq!(
+        runtime.world.vitals.amount(Some(PoolKind::Health), false),
+        250.0
+    );
+    runtime.world.vitals.heal(100.0);
+    assert_eq!(shields(&runtime), 110.0);
+    // No drain within a second of the last grant (`0DDD` st0, 1 s).
+    run(&mut runtime, 40);
+    assert_eq!(shields(&runtime), 110.0);
+    run(&mut runtime, 63);
+    let draining = shields(&runtime);
+    assert!(draining < 110.0, "{draining}");
+    // Then 3 a second: 125 frames are 2 s.
+    run(&mut runtime, 125);
+    let left = shields(&runtime);
+    assert!((draining - left - 6.0).abs() < 1e-6, "{draining} {left}");
+    assert!(
+        runtime
+            .snapshot()
+            .unwrap()
+            .instances
+            .values()
+            .any(|instance| instance.graph == BEST_DEFENSE)
+    );
+    // All of it drains away, and the grants' instances exit.
+    run(&mut runtime, 63 * 40);
+    assert_eq!(shields(&runtime), 0.0);
+    assert_eq!(grants(&runtime), 0);
 }
 
 /// D.Va's pilot (`040A`, a cost of 319.2) charges by `0B8B`'s loop as

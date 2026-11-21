@@ -29,7 +29,7 @@
 //! ([`NO_OP_ACTIONS`]): the server creates and possesses bodies in Rust
 //! (`replication.rs`), at a pick and at the respawn `0C8E`'s `0685` asks.
 
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use serde_json::Value as Json;
 
@@ -65,6 +65,10 @@ pub const ELIMINATION: u64 = 0x0240_0000_0000_0093;
 /// `0687.025` {`03A1` spawn point, `03D9` camera seconds}: the mode's
 /// respawn hand-off.
 pub const RESPAWN_HERE: u64 = 0x0240_0000_0000_0687;
+/// #18557e: the hero a Workshop Start Forcing Player To Be Hero gives the
+/// controller (`0C90` rid302), for a server frame
+/// ([`ControllerScript::forced_hero`]).
+const FORCED_HERO: u32 = 18557;
 
 /// Target tag `04CE.06C`: a controller with it skips `0687`'s respawn
 /// camera (`0C90` st73).
@@ -154,6 +158,13 @@ pub struct ControllerWorld {
     /// Whether the possessed body is dead: its dead flag #478e, which
     /// `288B` st95 reads (no graph writes it; `orpheus_script::bot::DEAD_FLAG`).
     pub body_dead: bool,
+    /// The possessed body's entity variables the graphs read, as the body's
+    /// script holds them, stacked values included
+    /// ([`ControllerScript::sync_body_variables`]): the Training Partner
+    /// console's scope 126 on the controller (`265F` st13) reads
+    /// `STU_00707E1E(owner()).#25456`, which its scope 12 on the body
+    /// stacks (st17) while the picker is open.
+    body_variables: BTreeMap<u32, Value>,
     /// Whether the player may pick a hero now (`STU_E4C6AAB4`): the
     /// client reads only component 74 field 6 (ControllerWorld.md, "Client
     /// tools pass (2026-11-16)"), which the server writes from
@@ -194,6 +205,7 @@ impl ControllerWorld {
             body: None,
             hero: None,
             body_dead: false,
+            body_variables: BTreeMap::new(),
             may_pick: true,
             players: Vec::new(),
             unknowns,
@@ -263,10 +275,14 @@ impl World for ControllerWorld {
 
     /// The mode entity's variables come from the bundle (`0C5`
     /// `m_3CE93B76` and the game ruleset's over them), as in `ModeWorld`; of
-    /// the possessed body the world knows its dead flag #478e.
+    /// the possessed body the world knows its dead flag #478e and the
+    /// variables its graphs read.
     fn entity_variable(&mut self, entity: u32, id: u32) -> Value {
-        if self.body == Some(entity) && id == BODY_DEAD {
-            return Value::Bool(self.body_dead);
+        if self.body == Some(entity) {
+            if id == BODY_DEAD {
+                return Value::Bool(self.body_dead);
+            }
+            return self.body_variables.get(&id).cloned().unwrap_or(Value::Null);
         }
         if entity != GAME_MODE_ENTITY {
             return Value::Null;
@@ -754,6 +770,20 @@ impl ControllerScript {
             .set_entity_variable(id, value, &mut self.world)
     }
 
+    /// The hero the Workshop's Start Forcing Player To Be Hero (`1A7B`'s
+    /// `0CBC` {`005D`}) makes this player's, while `0C90` holds it: rid302
+    /// takes the hero into #18557e when All Heroes has it; st102 (a test of
+    /// the mode entity's #22368e) then holds `080D` with it alone to
+    /// himself (st90: hero select allows only it) and rid299 sets #940e,
+    /// the hero StateHero (st0) plays, to it; a server frame later rid307
+    /// clears #18557e. The server makes StateHero's bodies itself.
+    pub fn forced_hero(&self) -> Option<u64> {
+        match self.component.entity_value(FORCED_HERO) {
+            Value::Asset(hero) if hero != 0 => Some(hero),
+            _ => None,
+        }
+    }
+
     /// The mode entity played a graph on this controller (a Workshop
     /// Chase Variable's helper `1CCF`, [`World::play_script`]).
     pub fn play_script(&mut self, request: &PlayRequest) -> Result<(), InitFault> {
@@ -766,6 +796,36 @@ impl ControllerScript {
         self.world.body = Some(body);
         self.world.hero = Some(hero);
         self.world.body_dead = false;
+        self.world.body_variables.clear();
+    }
+
+    /// The possessed body's entity variables that the graphs read, from
+    /// `value_of` (what the body's script holds): each changed one
+    /// re-evaluates the states that read it, as on the client, where the
+    /// controller's graphs read the body's variables themselves.
+    pub fn sync_body_variables(
+        &mut self,
+        value_of: impl Fn(u32) -> Value,
+    ) -> Result<(), InitFault> {
+        let Some(body) = self.world.body else {
+            return Ok(());
+        };
+        let changed: Vec<(u32, Value)> = self
+            .component
+            .foreign_reads(body)
+            .filter(|&id| id != BODY_DEAD)
+            .filter_map(|id| {
+                let value = value_of(id);
+                let known = self.world.body_variables.get(&id).unwrap_or(&Value::Null);
+                (*known != value).then_some((id, value))
+            })
+            .collect();
+        for (id, value) in changed {
+            self.world.body_variables.insert(id, value);
+            self.component
+                .foreign_variable_changed(body, id, &mut self.world)?;
+        }
+        Ok(())
     }
 
     /// The possessed body died (or, false, lives again): its dead flag

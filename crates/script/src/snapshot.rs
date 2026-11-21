@@ -2144,11 +2144,13 @@ fn state_payload(
             StatePayload::from([("value".into(), Value::Integer(0))])
         }
         // Shockwave (`STU_01D67FA0`, Doomfist's slam `0B27` st44,
-        // `vm/shockwave.rs`): the VM registers no hits, so its hit list
-        // (8-byte records, `Read_STU_01D67FA0` 0x7FF789BA11B0 replaces the
-        // client's with it) is empty: a 0 bit. Left out, the owner's client
-        // ended the shockwave it predicted at its next rollback.
-        (StateKind::Shockwave { .. }, Some("shockwave")) => StatePayload::new(),
+        // `vm/shockwave.rs`): its block's list (8-byte records,
+        // `Read_STU_01D67FA0` 0x7FF789BA11B0 replaces the client's with it)
+        // is empty: a 0 bit. The hit pass writes its hits to the node's
+        // array variable, not to the list; no form the VM runs fills it.
+        // Left out, the owner's client ended the shockwave it predicted at
+        // its next rollback.
+        (StateKind::Shockwave, Some("shockwave")) => StatePayload::new(),
         // The view limits (`STU_9935FBC8`, `vm/view_limits.rs`): only the
         // owner's full frames carry the block (no entity, the six angles,
         // the entity's yaw 0); deltas the absent link. Left out, the

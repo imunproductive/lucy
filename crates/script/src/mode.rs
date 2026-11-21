@@ -15,11 +15,11 @@ use crate::{
     expr::EntityRelation,
     graph::GraphStore,
     map_tags::MapTags,
-    placed::{Gaps, MapEntityWorld, PlacedEntity},
+    placed::{DummyChange, Gaps, MapEntityWorld, NextDummy, PlacedEntity},
     vm::{
-        ACTION_PARAMETERS, ActionOutcome, Component, EntityCreation, GameMessage, HealthChange,
-        InitFault, MAX_INIT_WORK, MapRays, MessageEnd, PlayRequest, Root, ScopeChange, ScopeSource,
-        Site, Snapshot, Unknowns, World,
+        ACTION_PARAMETERS, ActionOutcome, Component, DummyBot, EntityCreation, GameMessage,
+        HealthChange, InitFault, MAX_INIT_WORK, MapRays, MessageEnd, PlayRequest, Root,
+        ScopeChange, ScopeSource, Site, Snapshot, Unknowns, World,
     },
     wire::{Value, Variables},
 };
@@ -157,6 +157,13 @@ pub struct ModeWorld {
     /// `1482` st0), until the match takes them
     /// ([`ModeScript::take_health_changes`]).
     health_changes: Vec<HealthChange>,
+    /// The player and first body the next dummy bot gets, the match's next
+    /// slot ([`ModeScript::set_next_dummy`]); none: the match takes none.
+    next_dummy: Option<NextDummy>,
+    /// The dummy bots the graphs made or removed (the Workshop's Create and
+    /// Destroy Dummy Bot), until the match takes them
+    /// ([`ModeScript::take_dummy_changes`]).
+    dummies: Vec<DummyChange>,
     outbox: Vec<GameMessage>,
     /// The messages the graphs sent the mode entity itself, until the match
     /// takes them ([`ModeScript::take_own_messages`]).
@@ -204,6 +211,8 @@ impl ModeWorld {
             plays: Vec::new(),
             placeable_removals: Vec::new(),
             health_changes: Vec::new(),
+            next_dummy: None,
+            dummies: Vec::new(),
             outbox: Vec::new(),
             own: Vec::new(),
             held: Vec::new(),
@@ -440,6 +449,34 @@ impl World for ModeWorld {
     fn remove_placeables(&mut self, _site: Site, identifier: u64) -> bool {
         self.placeable_removals.push(identifier);
         true
+    }
+
+    /// The Workshop's Create Dummy Bot (`203A`'s `STU_FC3921B1`), by the
+    /// match as the Training Partner console's in the placed world: the
+    /// match's next slot, his player entity the action's Last Created
+    /// Entity (`#20555e`). Another in the same step gets the slot after it
+    /// (QF189 makes six Winstons in a row).
+    fn create_dummy_bot(&mut self, _site: Site, dummy: DummyBot) -> Option<u32> {
+        let next = self.next_dummy?;
+        self.next_dummy = Some(next.following());
+        self.dummies.push(DummyChange::Create { dummy, next });
+        Some(next.player)
+    }
+
+    /// The Workshop's Destroy Dummy Bot (`2080`'s `STU_C1561031`), by the
+    /// match.
+    fn remove_dummy_bot(&mut self, _site: Site, team: i64, slot: i64) -> bool {
+        self.dummies.push(DummyChange::Remove { team, slot });
+        true
+    }
+
+    /// The Workshop's Start Game Mode (`2FD6`'s `STU_5E019216`): the match
+    /// has left its waiting phase once it is ready (`STU_81A9AB10`); the
+    /// server makes its Workshop matches ready as they open, as "Game Mode
+    /// Start: Immediately" (`orpheus_sim::mode_script`), so there is
+    /// nothing left to start. A match still waiting is not modelled.
+    fn start_game_mode(&mut self, _site: Site) -> bool {
+        self.ready
     }
 
     /// A body the Workshop's Kill (`1482` st0, 1e9 damage) or another
@@ -998,6 +1035,18 @@ impl ModeScript {
     /// match's health code (`orpheus_sim::combat::Combat::modify_health`).
     pub fn take_health_changes(&mut self) -> Vec<HealthChange> {
         std::mem::take(&mut self.world.health_changes)
+    }
+
+    /// The player and first body the next dummy bot the graphs make gets:
+    /// the match's next slot; none: they can make none now.
+    pub fn set_next_dummy(&mut self, next: Option<NextDummy>) {
+        self.world.next_dummy = next;
+    }
+
+    /// The dummy bots the graphs made or removed since the last call, in
+    /// order, for the match to carry out (`game_service::ai`).
+    pub fn take_dummy_changes(&mut self) -> Vec<DummyChange> {
+        std::mem::take(&mut self.world.dummies)
     }
 
     /// The match opened a scope instance of a scope state here (the mode

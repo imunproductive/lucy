@@ -1789,6 +1789,27 @@ impl Evaluator<'_> {
                     value => value,
                 }
             }
+            // A Workshop team as a team index (`Eval_STU_382A5949`
+            // 0x7FF789BFE930, Create/Destroy Dummy Bot `203A`/`2080`): Team 1
+            // (`4D4F`) 0, Team 2 (`4D50`) 1, anything else (All Teams `4D4E`)
+            // -1.
+            "STU_382A5949" => Value::Integer(
+                match self.config(child(config, "m_A66DE11B"), context, nested)? {
+                    Value::Asset(0x0d80_0000_0000_4d4f) => 0,
+                    Value::Asset(0x0d80_0000_0000_4d50) => 1,
+                    _ => -1,
+                },
+            ),
+            // An icon in text (`Eval_STU_69D510F1` 0x7FF789BED630, the
+            // Workshop's Icon String in `1B4A`): `m_texture`'s GUID written
+            // with the format `<tx%16llx>` (decrypted from 0x7FF78BC29874;
+            // `%16llx` pads to 16 with spaces), empty for none.
+            "STU_69D510F1" => Value::String(
+                match self.config(child(config, "m_texture"), context, nested)? {
+                    Value::Asset(texture) if texture != 0 => format!("<tx{texture:16x}>"),
+                    _ => String::new(),
+                },
+            ),
             // A Workshop value's parameters as `1B4A`'s configs read them
             // (slot 5: the parameter array at `+0x370` plus 16 bytes per
             // index; evaluate `sub_7FF78AA88550`, shared).
@@ -3070,18 +3091,23 @@ impl Evaluator<'_> {
             // 0x7FF789C055D0 → 0x7FF7894CFBA0, `Eval_STU_005D99E6`
             // 0x7FF789BDBD10 → 0x7FF7894D01F0; no entity reads 0; BotVoice.md,
             // "Client tools pass (2026-11-16)"). `05AD` rid147 rates the
-            // sender of Need Healing's `0307` by them. `m_7BE02F89` (a named
-            // pool, read as an identifier: 0x7FF789E75540) is not modelled;
-            // an identifier literal of none (Zenyatta's `0176`) reads 0, as
-            // when it is unset (`Eval_STU_783B4CF0` 0x7FF789BEFCC0).
+            // sender of Need Healing's `0307` by them. 783B4CF0 with a named
+            // pool `m_7BE02F89` (read as an identifier: 0x7FF789E75540) reads
+            // the same sum: `Eval_STU_783B4CF0` 0x7FF789BEFCC0 passes kind and
+            // name to `0x7FF789C2AC30`, whose component 51 slot 14
+            // (`0x7FF7894D0530`) sums the current of every pool of the kind
+            // with an id and never reads the name (The Best Defense `0DDD`
+            // rid8 and `0DF3` rid3 compare the shields with the cap so). The
+            // other three refuse a named pool (not read).
             "STU_783B4CF0" | "STU_68883EAC" | "STU_F1C45C59" | "STU_005D99E6" => {
                 let unsupported = || EvalError::UnsupportedConfig(class.into());
                 let pool = child(config, "m_7BE02F89");
+                let named = native_fields(pool, &["m_identifier", "m_resourceKey"])
+                    && self::class(pool) == Some("STUConfigVarIdentifier")
+                    && child(pool, "m_resourceKey").is_null();
                 let no_pool = pool.is_null()
-                    || (native_fields(pool, &["m_identifier", "m_resourceKey"])
-                        && self::class(pool) == Some("STUConfigVarIdentifier")
-                        && child(pool, "m_identifier").is_null()
-                        && child(pool, "m_resourceKey").is_null());
+                    || (named && child(pool, "m_identifier").is_null())
+                    || (named && class == "STU_783B4CF0");
                 if !native_fields(config, &["m_entity", "m_7E8B666C", "m_7BE02F89"]) || !no_pool {
                     return Err(unsupported());
                 }

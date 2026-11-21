@@ -197,6 +197,13 @@ const ASSUMED_INERT_STATES: &[&str] = &[
 /// retail server did with them is not known. Server-only too: the mode
 /// graphs' `STU_0FAD550D` (`m_41F2FA6C`, a bool; `0F4A` st34 as a round
 /// starts, false, before the ForCodeSynced st33 rows `2271`/`226F`/`2270`).
+/// And the Workshop chase helpers' `STU_F89A564A` (Chase Player / Global
+/// Variable At Rate's `1CCF`/`1CD0` st2: `m_entity` the owner,
+/// `m_B3867877` the chased variable's index; the base state on the
+/// client, a codec of none), whose subgraph st3 (`STU_1B2CD7F2`, the
+/// event context) the clients get: a mark for the retail rule engine that
+/// the variable moves [inference]; ORPHEUS's engine reads the variables
+/// each tick anyway.
 const ASSUMED_PLAIN_STATES: &[&str] = &[
     "STU_0C3A5D53",
     "STU_AB09B113",
@@ -204,6 +211,7 @@ const ASSUMED_PLAIN_STATES: &[&str] = &[
     "STU_7F488C3E",
     "STU_54BBC96C",
     "STU_0FAD550D",
+    "STU_F89A564A",
 ];
 
 impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
@@ -353,6 +361,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 } else if self.graphs.is_aura_graph(graph)
                     || self.graphs.is_workshop_action(graph)
                     || play::HEALTH_PACKS.contains(&graph)
+                    || graph == play::BEST_DEFENSE
                 {
                     // An aura's graph plays its effect on the body
                     // (`vm/auras.rs`: `0C71` plays `0B99` or `0C72`); a
@@ -360,7 +369,8 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                     // Player Variable At Rate `1CCC` plays `1CCF` on each
                     // player's controller, `vm/workshop.rs`); a health
                     // pack `0046` on itself and `0046` its visual's `0EB9`
-                    // ([`play::HEALTH_PACKS`]).
+                    // ([`play::HEALTH_PACKS`]); Doomfist's passive its
+                    // shield grant ([`play::BEST_DEFENSE`]).
                     if let Some(played) = played() {
                         self.play_script(id, node, played, play::Plays::Everywhere)?;
                     }
@@ -498,6 +508,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             "STU_FC3921B1" => self.create_dummy_bot(id, node, depth),
             "STUStatescriptActionCreateEntity" => self.create_entity(id, node, depth),
             "STU_C1561031" => self.remove_dummy_bot(id, node, depth),
+            "STU_5E019216" => self.start_game_mode(id, node, depth),
             "STU_CFCE55DC" => self.move_body(id, node, depth),
             "STU_545AB3B8" => self.credit_environment(id, node, depth),
             "STU_FFF26F80" => self.set_ability_cooldown_of(id, node, depth),
@@ -1035,7 +1046,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             // 43, 0x7FF789821920, 0x7FF78988F1C0). None ends by itself; the
             // server has no camera or HUD: plain states its frames carry.
             "STU_D75CDECC" | "STU_96333BBE" | "STU_A103C85E" => StateKind::Plain,
-            "STUStatescriptStateHealthPool" if is_base_health_pool(node) => {
+            "STUStatescriptStateHealthPool" if health_pool_form(node).is_some() => {
                 StateKind::HealthPool { pool: None }
             }
             "STU_E56BA8D8" if node.is_networked() && node.remote == -1 => {
@@ -1123,7 +1134,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             "STU_96F571ED" => StateKind::AreaResidency,
             "STU_4C96470A" => StateKind::Landing,
             "STU_9935FBC8" => StateKind::ViewLimits { radians: [0; 6] },
-            "STUStatescriptStateShockwave" => StateKind::Shockwave { seconds: 0 },
+            "STUStatescriptStateShockwave" => StateKind::Shockwave,
             "STU_0A6BE10E" if filter_array::is_runnable_filter_array(node) => {
                 StateKind::FilterArray
             }
@@ -1320,7 +1331,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             StateKind::AreaResidency => self.begin_area_residency(key, node)?,
             StateKind::Landing => self.begin_landing(key, node)?,
             StateKind::ViewLimits { .. } => self.refresh_view_limits(key),
-            StateKind::Shockwave { .. } => self.begin_shockwave(key, node)?,
+            StateKind::Shockwave => self.begin_shockwave(key, node)?,
             StateKind::ModifyHealth { .. } => self.begin_modify_health(key, node)?,
             StateKind::Status => self.begin_status(key, node),
             StateKind::ProjectileSpeed => self.begin_projectile_speed(key, node),

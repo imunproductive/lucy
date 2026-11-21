@@ -653,6 +653,25 @@ pub trait World {
         None
     }
 
+    /// A temporary pool on the body of `site`, named `name` when given
+    /// ([`crate::vitals::Vitals::add_temporary_pool`]); its id.
+    fn add_temporary_pool(
+        &mut self,
+        _site: Site,
+        _kind: PoolKind,
+        _maximum: f64,
+        _current: f64,
+        _name: Option<u64>,
+    ) -> Option<u32> {
+        None
+    }
+
+    /// Takes up to `amount` from the pools named `name` of the body of
+    /// `site`; what it took. None: this world has no such pools.
+    fn drain_named_pool(&mut self, _site: Site, _name: u64, _amount: f64) -> Option<f64> {
+        None
+    }
+
     /// Whether `controller` may play `hero` (`STU_9AE5FC4C`) by the heroes
     /// it may play at all; None: this world can't tell. The controller's own
     /// HeroSelect limits apply on top ([`Context::hero_available`]).
@@ -805,6 +824,20 @@ pub trait World {
         None
     }
 
+    /// Whether the ground walk of a shockwave on `site` reaches a body, its
+    /// first and last casts meeting the map as ray profile `sphere_profile`
+    /// does and its sample rays as `ray_profile` does
+    /// ([`orpheus_physics::mover::ground_walk`]). None: unknown here.
+    fn ground_walk(
+        &self,
+        _site: Site,
+        _walk: &orpheus_physics::mover::ground_walk::GroundWalk,
+        _sphere_profile: Option<u64>,
+        _ray_profile: Option<u64>,
+    ) -> Option<bool> {
+        None
+    }
+
     /// Whether the match's map lists game mode `mode` among its supported
     /// modes (`STU_02514B6A.m_supportedGamemodes`, `STU_16753B11`). None:
     /// unknown here.
@@ -855,6 +888,12 @@ pub trait World {
     /// Remove the dummy bot in a team's slot (`STU_C1561031`). False: this
     /// world removes none.
     fn remove_dummy_bot(&mut self, _site: Site, _team: i64, _slot: i64) -> bool {
+        false
+    }
+
+    /// Leave the match's waiting phase (`STU_5E019216`, the Workshop's
+    /// Start Game Mode). False: this world can't.
+    fn start_game_mode(&mut self, _site: Site) -> bool {
         false
     }
 
@@ -1427,11 +1466,9 @@ pub enum StateKind {
         radians: [u32; 6],
     },
     /// A shockwave (`STUStatescriptStateShockwave`, `vm/shockwave.rs`):
-    /// the f32 bits of the seconds its wave takes to reach its radius; it
-    /// finishes on the first update at or past them.
-    Shockwave {
-        seconds: u32,
-    },
+    /// each update its wave grows and sends its hits; it finishes once the
+    /// wave reaches its radius.
+    Shockwave,
     /// A health change (`vm/health.rs`): a rate keeps when it last applied
     /// its share.
     ModifyHealth {
@@ -2335,6 +2372,15 @@ impl Component {
         })
     }
 
+    /// The variables of `entity` that the active states' expressions read,
+    /// which [`Self::foreign_variable_changed`] re-evaluates.
+    pub fn foreign_reads(&self, entity: u32) -> impl Iterator<Item = u32> + '_ {
+        self.machine
+            .foreign_watchers
+            .range((entity, 0)..=(entity, u32::MAX))
+            .map(|(&(_, id), _)| id)
+    }
+
     /// Another entity's variable `id` changed in the world (as
     /// [`World::entity_variable`] answers it): the active states whose
     /// expressions read it re-evaluate, as for the entity's own variables.
@@ -2978,6 +3024,11 @@ enum Event {
     /// ([`Component::ai_move_arrived`]).
     AiMoveArrived(u16),
     WatchChanged(u16),
+    /// A reusing scope state took this scope instance
+    /// ([`Component::change_scope`]): the client's state event of kind 2,
+    /// which follows an active copy's scope plug again and does nothing to
+    /// an inactive one (`vm/scopes.rs`).
+    Rescope(u16),
     Message {
         position: u16,
         message: u64,
@@ -3001,6 +3052,7 @@ impl Event {
             | Self::ChaseReached(state)
             | Self::AiMoveArrived(state)
             | Self::WatchChanged(state)
+            | Self::Rescope(state)
             | Self::Timer(state, _) => Some(state),
         }
     }
@@ -3324,6 +3376,12 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 }
                 Event::AiMoveArrived(raw) => self.ai_move_arrived(key(raw))?,
                 Event::WatchChanged(raw) => self.deliver_watch(key(raw))?,
+                Event::Rescope(raw) => {
+                    if self.state(key(raw)).is_some_and(|state| state.active) {
+                        let node = self.graph(id).state(usize::from(raw)).expect("scope state");
+                        self.follow(id, node, "m_C41A9BE2", Some(key(raw)), 0)?;
+                    }
+                }
                 Event::Message {
                     position,
                     message,
@@ -4368,7 +4426,14 @@ fn for_code_transport(node: &Node) -> bool {
     node.class == FOR_CODE_SYNCED && field(&node.fields, "m_598E32D5").as_u64() == Some(1)
 }
 
-fn is_base_health_pool(node: &Node) -> bool {
+/// The HealthPool forms the VM runs, or None: the body's own pools (`0033`:
+/// `m_4895B8B6`, an output `m_CEAB19E8`, no name), Some(false); and the
+/// temporary ones (`m_0E8A5C8E`: Doomfist's `0DF3` st0, Wrecking Ball's
+/// `1566` st6, `073B`, `12C1`, `1721`, `1D03`), named (`m_7BE02F89`, an
+/// identifier) or not, with or without the outputs `m_CEAB19E8` (its
+/// current amount) and `m_C99FAFDD` (its pool, which `073B`'s ModifyHealth
+/// names in `m_C744A524`), Some(true).
+fn health_pool_form(node: &Node) -> Option<bool> {
     let config = |name| field(&node.fields, name);
     let is_owner = |value| expr::native_shape(value, "STU_B5A0CAF0", None);
     let flag = |name, expected| {
@@ -4380,25 +4445,41 @@ fn is_base_health_pool(node: &Node) -> bool {
                 _ => false,
             }
     };
+    let output = |name| {
+        let value = config(name);
+        value.is_null() || matches!(expr::lvalue(value), Ok(Some(_)))
+    };
     let source = config("m_69A20070");
-    node.is_networked()
-        && [
-            "m_7BE02F89",
-            "m_C99FAFDD",
-            "m_FF79E783",
-            "m_AF1104D0",
-            "m_BFA825EA",
-        ]
-        .into_iter()
-        .all(|name| config(name).is_null())
+    let common = node.is_networked()
+        && ["m_FF79E783", "m_AF1104D0", "m_BFA825EA"]
+            .into_iter()
+            .all(|name| config(name).is_null())
         && pool_kind(config("m_7E8B666C")).is_some()
         && is_owner(config("m_FA3ECC43"))
         && expr::native_shape(source, "STU_FEDD683C", Some("m_entity"))
         && is_owner(field(source, "m_entity"))
+        && flag("m_64839023", false);
+    if !common {
+        return None;
+    }
+    if flag("m_0E8A5C8E", false)
+        && config("m_7BE02F89").is_null()
+        && config("m_C99FAFDD").is_null()
         && flag("m_4895B8B6", true)
-        && flag("m_64839023", false)
-        && flag("m_0E8A5C8E", false)
         && matches!(expr::lvalue(config("m_CEAB19E8")), Ok(Some(_)))
+    {
+        return Some(false);
+    }
+    let name = config("m_7BE02F89");
+    (flag("m_0E8A5C8E", true)
+        && config("m_4895B8B6").is_null()
+        && (name.is_null()
+            || (field(name, "$").as_str() == Some("STUConfigVarIdentifier")
+                && field(name, "m_identifier").is_string()
+                && field(name, "m_resourceKey").is_null()))
+        && output("m_CEAB19E8")
+        && output("m_C99FAFDD"))
+    .then_some(true)
 }
 
 fn pool_kind(value: &Json) -> Option<PoolKind> {

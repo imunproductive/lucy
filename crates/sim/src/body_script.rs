@@ -33,7 +33,7 @@ use orpheus_physics::{
 use orpheus_script::{
     ai_definitions::AiControl,
     codecs::CodecTable,
-    expr::{EntityRelation, team_from_filter, to_float},
+    expr::{EntityRelation, Scope, Variable, team_from_filter, to_float},
     graph::GraphStore,
     map_tags::MapTags,
     placed::{DummyChange, EntityVolumes, NextDummy},
@@ -604,6 +604,18 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
 
     fn ability_cooldown(&self, button: i64) -> f64 {
         self.component.ability_cooldown(button).unwrap_or(0.0)
+    }
+
+    fn entity_variable(&self, id: u32) -> Value {
+        self.component
+            .resolved_variable(
+                0,
+                Variable {
+                    scope: Scope::Entity,
+                    id,
+                },
+            )
+            .unwrap_or(Value::Null)
     }
 
     fn take_scope_changes(&mut self) -> Vec<ScopeChange> {

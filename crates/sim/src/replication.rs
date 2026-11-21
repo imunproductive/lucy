@@ -74,8 +74,8 @@ use orpheus_script::{
     vm::{
         AssistLink, AuraChange, BodyEffects, DAMAGE_DEALT, DAMAGE_TAKEN, EnvironmentCredit,
         GameMessage, HEALING_DEALT, HEALING_TAKEN, Knockback, MessageEnd, Motion, MoveRequest,
-        ParentWrite, Pickup, PlayRequest, RaisedCriteria, Scaled, ScopeChange, ScopeSource,
-        Snapshot, TargetCandidate, TrackedStat, VoiceRequest, combat_scale,
+        ParentWrite, Pickup, PlayRequest, RaisedCriteria, Revision, Scaled, ScopeChange,
+        ScopeSource, Snapshot, TargetCandidate, TrackedStat, VoiceRequest, combat_scale,
     },
     weapons::{DamageTags, ProjectileBallistics},
     wire::{Value as ScriptValue, Variables},
@@ -397,6 +397,13 @@ pub trait OwnerBodyRuntime: Send {
     /// (the Workshop's Ability Cooldown); 0 without one.
     fn ability_cooldown(&self, _button: i64) -> f64 {
         0.0
+    }
+
+    /// The body's entity variable `id` as its script holds it now, a
+    /// stacked value included (for the controller's graphs that read it,
+    /// `ControllerScript::sync_body_variables`); null without one.
+    fn entity_variable(&self, _id: u32) -> ScriptValue {
+        ScriptValue::Null
     }
 
     /// The scope instances the body's scope states opened or closed on
@@ -1683,6 +1690,9 @@ struct SwitchNotices {
 pub struct RoomPlayer<'a, 'w> {
     pub appearance: PlayerAppearance<'a>,
     pub world: Option<&'w mut WorldDelivery>,
+    /// A dummy bot (`STU_FC3921B1`, the Practice Range's Training Partner):
+    /// the clients get his card without a "joined" or "left" line.
+    pub dummy: bool,
 }
 
 /// Bring every client of a room up to date on the other players
@@ -1726,11 +1736,14 @@ pub fn show_players(
         let views: Vec<_> = players
             .iter()
             .enumerate()
-            .map(|(slot, player)| match player.world.as_deref() {
-                Some(world) => {
-                    world.player_view(&player.appearance, scene, |body| observed(slot, body))
+            .map(|(slot, player)| PlayerView {
+                dummy: player.dummy,
+                ..match player.world.as_deref() {
+                    Some(world) => {
+                        world.player_view(&player.appearance, scene, |body| observed(slot, body))
+                    }
+                    None => PlayerView::absent(&player.appearance),
                 }
-                None => PlayerView::absent(&player.appearance),
             })
             .collect();
         // What each client can name in a kill feed line besides the other
@@ -1781,6 +1794,7 @@ pub fn show_players(
             if let Err(error) = world.send_hero_select(scene, tick) {
                 eprintln!("hero select frame for {:08X} failed ({error})", world.owner);
             }
+            world.send_controller_ack(tick, now);
             cards
         })
         .collect()
@@ -1820,6 +1834,13 @@ pub struct WorldDelivery {
     /// What the last controller frame showed of hero select; a change sends
     /// the next ([`Self::send_hero_select`]).
     select_shown: Option<SelectShown>,
+    /// What the last controller frame carried, without a hero switch
+    /// notice; a change of the script's projection sends the next
+    /// ([`Self::controller_changed`]).
+    controller_sent: Option<ProjectedSnapshot>,
+    /// The controller snapshot's revision [`Self::controller_changed`] last
+    /// projected.
+    controller_seen: Option<Revision>,
     /// Hero select stays shown open after a pick while the heroes assemble
     /// (match.py `game_message`), though `288B` closes it (module notes of
     /// `crate::controller`): until the client closes it or the countdown
@@ -1944,6 +1965,10 @@ pub struct WorldDelivery {
     shield: (bool, u64),
     /// A hero picked while the body was dead: the respawn plays it.
     respawn_hero: Option<(u64, SkinTheme)>,
+    /// The hero the controller's graph forced on him (the Workshop's Start
+    /// Forcing Player To Be Hero, `ControllerScript::forced_hero`), until
+    /// [`Self::change_to_forced_hero`] makes its body.
+    forced_hero: Option<u64>,
     /// A body placed at a spawn point and its facing (1/65536 turns): the
     /// view turn (25008) waits for its possession to arrive
     /// ([`Self::take_spawn_view`]).
@@ -2091,6 +2116,8 @@ impl WorldDelivery {
             controller: Stream::new(owner),
             mode: ModeView::new(),
             select_shown: None,
+            controller_sent: None,
+            controller_seen: None,
             keep_open: false,
             mode_held: Vec::new(),
             body: None,
@@ -2141,6 +2168,7 @@ impl WorldDelivery {
             spawn_flag: (true, 0),
             shield: (false, 0),
             respawn_hero: None,
+            forced_hero: None,
             spawn_view: None,
             hurt: Vec::new(),
             controller_script: None,
@@ -2283,6 +2311,8 @@ impl WorldDelivery {
         self.hurt.clear();
         self.controller_script = None;
         self.select_shown = None;
+        self.controller_sent = None;
+        self.controller_seen = None;
         self.keep_open = false;
         self.multikill_due = false;
     }
@@ -2488,7 +2518,8 @@ impl WorldDelivery {
     /// A controller frame once what it shows of hero select changed: the
     /// script's `288B` after a request or on its own (st95 closes the screen
     /// once the picked hero's body lives; st98 when the player may no longer
-    /// pick), the hero he plays, the skin selector.
+    /// pick), the hero he plays, the skin selector; or once anything else
+    /// it carries changed ([`Self::controller_changed`]).
     fn send_hero_select(&mut self, scene: &PreparedScene, tick: u32) -> io::Result<()> {
         if self.headless || !self.can_handle_game_message() {
             return Ok(());
@@ -2497,15 +2528,66 @@ impl WorldDelivery {
         let shown = self
             .select_input(scene.controller().practice())
             .map(|(shown, _)| shown);
-        if shown.is_some() && shown != self.select_shown {
+        if shown.is_some() && (shown != self.select_shown || self.controller_changed(scene)) {
             self.queue_controller(scene, tick, None)?;
         }
         Ok(())
     }
 
+    /// Whether the controller script's projection differs from the last
+    /// controller frame's. The client restores its own controller to that
+    /// frame at an owner rollback without running the controller's switches
+    /// again, so a state the server's script began since (the Training
+    /// Partner console's scope 126 st13 → st33, which hides the HUD while the
+    /// picker is open) has to reach it: until then each rollback ended the
+    /// client's own st33. Projected only when the snapshot's revision moved.
+    fn controller_changed(&mut self, scene: &PreparedScene) -> bool {
+        let Some(sent) = &self.controller_sent else {
+            return false;
+        };
+        let Some((script, revision)) = self
+            .controller_script
+            .as_ref()
+            .and_then(|script| Some((script, script.snapshot()?.revision())))
+        else {
+            return false;
+        };
+        if self.controller_seen == Some(revision) {
+            return false;
+        }
+        self.controller_seen = Some(revision);
+        let Some((_, input)) = self.select_input(scene.controller().practice()) else {
+            return false;
+        };
+        scene
+            .controller()
+            .controller_projection(script, input)
+            .is_ok_and(|projected| projected != *sent)
+    }
+
+    /// An owner chunk with only the command frame the server has of the
+    /// player (`Stream::owner_ack`), every 100 ms once the controller's data
+    /// has arrived, body or not. Without one the client's controller host
+    /// keeps each prediction it journals for 40 frames, then rolls back and
+    /// replays by itself (`0x7FF78991B200`); that rollback undid the begin
+    /// of the client-made hero preview `2906`'s st2, so a preview made in
+    /// hero select before the first body never went away
+    /// (`refs/reports/ControllerWorld.md`, "the auto-picked preview").
+    fn send_controller_ack(&mut self, tick: u32, now: Duration) {
+        if self.headless || self.controller_script.is_none() {
+            return;
+        }
+        let newest = self.command_ack(tick);
+        match self.controller.owner_ack(now, Some(newest)) {
+            Ok(Some(chunk)) => self.push(Record::script(chunk, false)),
+            Ok(None) => {}
+            Err(error) => eprintln!("controller ack of {:08X} not sent ({error})", self.owner),
+        }
+    }
+
     /// The controller script's world facts the server keeps (component 74
-    /// field 6, the body's dead flag), then its clock at `tick`. A fault
-    /// stops it.
+    /// field 6, the body's dead flag, the body's variables its graphs
+    /// read), then its clock at `tick`. A fault stops it.
     fn advance_controller(&mut self, tick: u32) {
         let (may_pick, dead) = (self.may_change_hero(), self.death.is_some());
         let Some(script) = &mut self.controller_script else {
@@ -2513,7 +2595,14 @@ impl WorldDelivery {
         };
         script.set_may_pick(may_pick);
         script.set_body_dead(dead);
-        if let Err(error) = script.advance(tick) {
+        let body = self
+            .body_script
+            .as_ref()
+            .filter(|body| self.body.is_some_and(|current| current.id == body.id));
+        let synced = script.sync_body_variables(|id| {
+            body.map_or(ScriptValue::Null, |body| body.runtime.entity_variable(id))
+        });
+        if let Err(error) = synced.and_then(|()| script.advance(tick).map(drop)) {
             eprintln!("controller script of {:08X} stopped ({error})", self.owner);
             self.controller_script = None;
         }
@@ -2663,16 +2752,19 @@ impl WorldDelivery {
     /// What a controller frame shows of hero select now, and the frame's
     /// input besides the script (`crate::controller` module notes): shown
     /// open while `288B` has it open or [`Self::keep_open`]; the skin
-    /// selector while open in the Practice Range or while heroes assemble
-    /// (match.py `send_controller`); the assemble title hidden in the
-    /// Practice Range only. Where the mode graph drives the match
+    /// selector (`288B`'s #25377) while open as heroes assemble; the
+    /// assemble title hidden in the Practice Range only. Not in the
+    /// Practice Range: its mode graph `13C0` holds no `0692`, so `288B`
+    /// st35 never sets #25377 there, and the client's st38 says Athena's
+    /// hero select line (`0918` → `03F2` VoiceStimulus `0168.078`) each
+    /// time #25377 turns on. Where the mode graph drives the match
     /// ([`Self::set_mode_graph`]) the skin selector is `288B`'s own: its
     /// st32-st35 set #25377 while the graph holds `0692` (`0F4A` st9).
     fn select_input(&self, practice: bool) -> Option<(SelectShown, ControllerFrame)> {
         let state = self.controller_script.as_ref()?.hero_select_state()?;
         let open = state.open || self.keep_open;
         let graph = self.mode_graph && !practice;
-        let skins = !graph && open && (practice || self.assembling);
+        let skins = !graph && open && self.assembling;
         let hero = self.body.map(|body| body.hero);
         Some((
             SelectShown {
@@ -2722,6 +2814,10 @@ impl WorldDelivery {
         if let Err(error) = script.receive_from(tick, message) {
             eprintln!("controller script of {owner:08X} stopped ({error})");
             self.controller_script = None;
+            return;
+        }
+        if let Some(hero) = script.forced_hero() {
+            self.forced_hero = Some(hero);
         }
     }
 
@@ -4213,17 +4309,44 @@ impl WorldDelivery {
         }
     }
 
-    /// Tests: the player's controller's instance of scope `scope`
-    /// (`vm/scopes.rs`), the one a client's 21616 from it names (the
-    /// Training Partner console's scope 126, where its picker sends `1213`).
+    /// Tests: the player's controller's instances of scope `scope`
+    /// (`vm/scopes.rs`), in order: the first is the one a client's 21616
+    /// from it names (the Training Partner console's scope 126, where its
+    /// picker sends `1213`).
     #[cfg(any(test, feature = "fixtures"))]
-    pub fn controller_scope_instance(&self, scope: u32) -> Option<u16> {
-        let snapshot = self.controller_script.as_ref()?.snapshot()?;
+    pub fn controller_scope_instances(&self, scope: u32) -> Vec<u16> {
+        let Some(snapshot) = self
+            .controller_script
+            .as_ref()
+            .and_then(|script| script.snapshot())
+        else {
+            return Vec::new();
+        };
         snapshot
             .instances
             .iter()
-            .find(|(_, instance)| instance.scope.as_ref().is_some_and(|link| link.id == scope))
+            .filter(|(_, instance)| instance.scope.as_ref().is_some_and(|link| link.id == scope))
             .map(|(&id, _)| id)
+            .collect()
+    }
+
+    /// Tests: whether the last controller frame queued runs state `state`
+    /// of the controller's instance of graph `graph` (its own or a scope
+    /// instance on it).
+    #[cfg(any(test, feature = "fixtures"))]
+    pub fn controller_frame_state(&self, graph: u32, state: u16) -> bool {
+        let (Some(sent), Some(snapshot)) = (
+            &self.controller_sent,
+            self.controller_script
+                .as_ref()
+                .and_then(ControllerScript::snapshot),
+        ) else {
+            return false;
+        };
+        snapshot
+            .instances
+            .iter()
+            .any(|(&id, instance)| instance.graph == graph && sent.state(id, state).is_some())
     }
 
     /// Tests: whether state `state` of the current body's instance of graph
@@ -5178,6 +5301,47 @@ impl WorldDelivery {
             message,
             parameters,
         });
+    }
+
+    /// The hero the controller's graph forced on him
+    /// ([`orpheus_script::controller::ControllerScript::forced_hero`]):
+    /// `0C90`'s StateHero plays #940e, and the server makes the body, as
+    /// for a pick: a living body changes where it stands, a dead one's
+    /// respawn plays it. The skin is his card's.
+    pub fn change_to_forced_hero(
+        &mut self,
+        scene: &PreparedScene,
+        viewer: &PlayerAppearance<'_>,
+        tick: u32,
+        now: Duration,
+        quanta: u32,
+    ) -> io::Result<()> {
+        let Some(hero) = self
+            .forced_hero
+            .take()
+            .and_then(|hero| scene.heroes().get(hero))
+        else {
+            return Ok(());
+        };
+        let skin = viewer
+            .card
+            .skins
+            .get(&hero.guid)
+            .copied()
+            .unwrap_or_default();
+        if self.death.is_some() {
+            self.respawn_hero = Some((hero.guid, skin));
+            return Ok(());
+        }
+        if self.body.is_some_and(|body| body.hero == hero.guid) {
+            return Ok(());
+        }
+        match self.next_body(now) {
+            Some(entity) => self.switch(scene, viewer, tick, quanta, entity, (hero, skin), true)?,
+            // Every id of his body ring is still reserved: next tick.
+            None => self.forced_hero = Some(hero.guid),
+        }
+        Ok(())
     }
 
     /// combat.py `_respawn`: once the body's respawn is due ([`BodyDeath`]:
@@ -6418,18 +6582,39 @@ impl WorldDelivery {
         notice: Option<HeroSwitch>,
     ) -> io::Result<()> {
         self.advance_controller(tick);
-        let Some((shown, mut input)) = self.select_input(scene.controller().practice()) else {
+        let Some((shown, input)) = self.select_input(scene.controller().practice()) else {
             return Ok(());
         };
-        input.notice = notice;
         let command_frame = self.command_ack(tick);
         let Some(script) = &self.controller_script else {
             return Ok(());
         };
         self.select_shown = Some(shown);
-        let chunk = match self.controller.full_owner(command_frame, |cmfd| {
-            scene.controller().controller_frame(script, cmfd, input)
-        }) {
+        let controller = scene.controller();
+        let projections = controller
+            .controller_projection(script, input)
+            .and_then(|plain| {
+                let noticed = notice
+                    .map(|notice| {
+                        controller.controller_projection(
+                            script,
+                            ControllerFrame {
+                                notice: Some(notice),
+                                ..input
+                            },
+                        )
+                    })
+                    .transpose()?;
+                Ok((plain, noticed))
+            });
+        let chunk = projections.and_then(|(plain, noticed)| {
+            let chunk = self.controller.full_owner(command_frame, |cmfd| {
+                controller.encode_controller(script, noticed.as_ref().unwrap_or(&plain), cmfd)
+            })?;
+            self.controller_sent = Some(plain);
+            Ok(chunk)
+        });
+        let chunk = match chunk {
             Ok(chunk) => chunk,
             Err(error) => {
                 eprintln!("controller frame of {:08X} not sent ({error})", self.owner);
