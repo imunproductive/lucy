@@ -682,6 +682,7 @@ fn a_firing_bots_rocket_hits_the_player_in_front_of_it() {
         },
         dead: false,
         health: None,
+        hardpoints: None,
         tags: None,
         ai: None,
         dealt: Vec::new(),
@@ -785,6 +786,7 @@ fn nano_boost_halves_the_damage_a_bot_takes_and_boosts_what_it_deals() {
         },
         dead: false,
         health: None,
+        hardpoints: None,
         tags: None,
         ai: None,
         dealt: Vec::new(),
@@ -891,6 +893,7 @@ fn a_bots_target_tags_go_out_as_its_component_76() {
         yaw: 0.0,
         tags: None,
         health: None,
+        hardpoints: None,
         spawned: Vec::new(),
     };
     let candidates = [body(target, 1, bot.position), body(ANA, 0, [0.0; 3])];
@@ -994,6 +997,7 @@ fn the_damaging_orbs_aura_hurts_a_bot_for_its_thrower() {
         yaw: 0.0,
         tags: None,
         health: None,
+        hardpoints: None,
         spawned: Vec::new(),
     };
     let mut moira = body(MOIRA, 0, [0.0; 3]);

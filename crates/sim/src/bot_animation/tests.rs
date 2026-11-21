@@ -345,3 +345,52 @@ mod game {
         assert!(moved > 0.02, "{walking:?} {standing:?}");
     }
 }
+
+/// A Training Bot's assembly (`0BA8` st1, alias `0451` over its 2.5 s,
+/// clip `39D7` of 2.667 s) poses its bones where the client draws them.
+/// Measured in the game (2026-11-21, owprobe, the client's own hit-test
+/// skeleton, `*(*(model + 0x6F0) + 0x28)` bones 1 and 34, read every
+/// 10 ms after the respawned bot appeared; refs report `CombatBugs.md`
+/// §4): the body bone holds 1.62 m up with the head at 1.69 while the
+/// parts settle, the head then flies up past 4 m, drops through 0.8 m and
+/// swings to 0.5 m behind at 1.14 to 1.39 m, and settles at 1.80 m; the
+/// server's pose follows the same course, the client's about 0.1 s later
+/// (its view delay). So the head is hit where it is drawn.
+#[test]
+#[ignore = "requires a derived 104319 Practice Range scene"]
+fn the_assembly_poses_the_bones_where_the_client_draws_them() {
+    let path = orpheus_testkit::runtime_dir().join("data/game_bot_animation_174.json");
+    let catalog = BotRigCatalog::load(path).unwrap();
+    let body = catalog.for_body(0x0400_0000_0000_1403).unwrap();
+    let bones = |t: f64| {
+        let places = body.rig.places(&PoseInput {
+            age: t,
+            anim: Some(AnimRequest {
+                alias: 0x0C80_0000_0000_0451,
+                elapsed: t,
+                over: Some(2.5),
+            }),
+            ..PoseInput::default()
+        });
+        (places[1].translation, places[34].translation)
+    };
+    // (seconds into the server's pose, the client's body and head bones
+    // 0.1 s later).
+    for (t, client_body, client_head) in [
+        (0.3, [0.00, 1.62, 0.00], [-0.01, 1.70, 0.03]),
+        (1.3, [-0.05, 1.33, -0.01], [-0.10, 1.25, -0.51]),
+        (2.5, [-0.00, 1.30, 0.00], [-0.00, 1.80, -0.03]),
+    ] {
+        let (body, head) = bones(t);
+        for k in 0..3 {
+            assert!(
+                (body[k] - client_body[k]).abs() < 0.06,
+                "{t}: body {body:?}"
+            );
+            assert!(
+                (head[k] - client_head[k]).abs() < 0.12,
+                "{t}: head {head:?}"
+            );
+        }
+    }
+}

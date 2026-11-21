@@ -308,6 +308,12 @@ pub trait Context {
         None
     }
 
+    /// Where a body's model hardpoint (a `0DC` GUID) is in the world; None:
+    /// the world doesn't know it.
+    fn hardpoint(&mut self, _entity: u32, _hardpoint: u64) -> Option<[f64; 3]> {
+        None
+    }
+
     /// A body's yaw and pitch in turns of 65536 (the command's units; the
     /// pitch is positive looking down); None: unknown.
     fn entity_facing(&mut self, _entity: u32) -> Option<[i32; 2]> {
@@ -2335,6 +2341,32 @@ impl Evaluator<'_> {
                     _ => Value::Null,
                 }
             }
+            // Where an entity's model hardpoint `m_hardPoint` is
+            // (`Eval_STU_FC99C77E` 0x7FF789BEBDE0), as the world places it
+            // (`World::hardpoint`); no entity gives null. Soldier: 76's
+            // Tactical Visor aims its rifle at its target's `0DC.0001`
+            // (`0254` st10's `m_E2FD6F04`). A world's own answer comes
+            // first.
+            "STU_FC99C77E" if native_fields(config, &["m_entity", "m_hardPoint"]) => {
+                if let Some(value) = context.native(config) {
+                    return Ok(value);
+                }
+                let unsupported = || EvalError::UnsupportedConfig(class.into());
+                let Value::Asset(hardpoint) =
+                    self.config(child(config, "m_hardPoint"), context, nested)?
+                else {
+                    return Err(unsupported());
+                };
+                let entity = self.config(child(config, "m_entity"), context, nested)?;
+                match to_entity(&entity).filter(|&entity| valid_entity(entity)) {
+                    Some(entity) => Value::Vector(
+                        context
+                            .hardpoint(entity, hardpoint)
+                            .ok_or_else(unsupported)?,
+                    ),
+                    None => Value::Null,
+                }
+            }
             // An entity's position (`Eval_STU_309B0570` 0x7FF789C028B0 →
             // `sub_7FF789C2FD80`; ModeGraphGaps.md, "Client tools pass 2
             // (2026-11-16)"): with `m_5B94EDB8` true, the point of its
@@ -2551,13 +2583,8 @@ impl Evaluator<'_> {
             // Where a body looks: 2200A66D along its aim, 021D01CD along the
             // ground, C8C4C20D its heading in degrees, atan2(x, z) of the
             // ground direction (`BodyWorld.native` in leafall903/ORPHEUS,
-            // commit c239a84). 40AC5AE4 is the heading in degrees too
-            // (`Eval_STU_40AC5AE4` 0x7FF789BD8200 → 0x7FF789C2C220: the
-            // mover's 16-bit yaw at +66 times 2π/65536 (0x7FF789B71F70),
-            // else the transform's, times 57.29578; Rocket Punch `0D06`
-            // rid45 keeps the puncher's in #502 for its victim's `0D07`). A
-            // world's own answer comes first.
-            "STU_2200A66D" | "STU_021D01CD" | "STU_C8C4C20D" | "STU_40AC5AE4"
+            // commit c239a84). A world's own answer comes first.
+            "STU_2200A66D" | "STU_021D01CD" | "STU_C8C4C20D"
                 if native_shape(config, class, Some("m_entity")) =>
             {
                 if let Some(value) = context.native(config) {
@@ -2572,12 +2599,37 @@ impl Evaluator<'_> {
                 } else {
                     aim([context.entity_yaw(entity).ok_or_else(unsupported)?, 0])
                 };
-                if class == "STU_C8C4C20D" || class == "STU_40AC5AE4" {
+                if class == "STU_C8C4C20D" {
                     let [x, _, z] = facing;
                     Value::Float(rounded(rounded(x.atan2(z)) * DEGREES))
                 } else {
                     Value::Vector(facing)
                 }
+            }
+            // A body's aim pitch in degrees, positive looking down
+            // (`Eval_STU_40AC5AE4` 0x7FF789BD8200 → 0x7FF789C2C220: the
+            // movement state's s16 at `+66` × 0.000095873802 (0x7FF789B71F70)
+            // × 57.29578, in single precision; without a mover the
+            // transform's). `+66` holds the command's pitch: game m3
+            // (Doomfist.md §24) read 5461 looking 30° down and −3641 looking
+            // 20° up on his client's mover. The searches that follow the aim
+            // (the Tactical Visor's `0259` st7/st20, Guardian Angel's `006B`)
+            // aim their cones at `-STU_40AC5AE4(owner())`; Meteor Strike
+            // (`0C51` rid75) starts #502 from it. A world's own answer comes
+            // first; a body whose facing the world can't tell fails.
+            "STU_40AC5AE4" if native_shape(config, class, Some("m_entity")) => {
+                if let Some(value) = context.native(config) {
+                    return Ok(value);
+                }
+                let unsupported = || EvalError::UnsupportedConfig(class.into());
+                let entity = to_entity(&self.config(child(config, "m_entity"), context, nested)?)
+                    .filter(|&entity| valid_entity(entity))
+                    .ok_or_else(unsupported)?;
+                let [_, pitch] = context.entity_facing(entity).ok_or_else(unsupported)?;
+                let pitch = (pitch + 32_768).rem_euclid(65_536) - 32_768;
+                Value::Float(f64::from(
+                    pitch as f32 * 0.000_095_873_8_f32 * 57.295_78_f32,
+                ))
             }
             // A direction kept within a cone of another (Eval 0x7FF789BFB820):
             // `m_32B00625`'s yaw atan2(x, z) and pitch asin(−y) (both

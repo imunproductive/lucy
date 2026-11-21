@@ -119,6 +119,31 @@ fn pick(
         .unwrap();
 }
 
+/// The current body's ultimate charge #342e.
+fn charge(world: &WorldDelivery) -> f64 {
+    let snapshot = world.body_script.as_ref().unwrap().runtime.snapshot();
+    snapshot
+        .unwrap()
+        .variables
+        .get(&orpheus_script::ultimate::ULT_CHARGE)
+        .map_or(0.0, orpheus_script::expr::to_float)
+}
+
+/// A direct grant (`00EB.025`, `002A` the amount), which the body's `0B8B`
+/// rid20 adds to its charge.
+fn grant(world: &mut WorldDelivery, amount: f64) {
+    let script = world.body_script.as_mut().unwrap();
+    script
+        .runtime
+        .receive_message(
+            0,
+            0x0240_0000_0000_00eb,
+            Variables::from([(0x2a, ScriptValue::Float(amount))]),
+        )
+        .unwrap();
+    assert_eq!(charge(world), amount);
+}
+
 fn hit(body: u32, amount: f64) -> PlayerHit {
     PlayerHit {
         body,
@@ -624,6 +649,7 @@ fn a_fall_onto_the_catch_floor_kills_and_respawns_after_the_delay() {
     let viewer = viewer(&card);
     let mut world = spawned(&scene, &viewer);
     let body = world.current_body().unwrap();
+    grant(&mut world, 300.0);
     // Feet on the pit floor, where a fall out of the range ends.
     place(&mut world, &scene, [95.0, -11.0, 10.0], 0);
     let (centre, above_feet) = world.body_centre().unwrap();
@@ -672,6 +698,11 @@ fn a_fall_onto_the_catch_floor_kills_and_respawns_after_the_delay() {
         respawn_frame(&mut world, &scene, &viewer, &mut tick, 400),
         Some(FIRST_TICK + 188)
     );
+    // The new body stands for retail's revived one: it keeps the charge,
+    // the 300 granted and the 5 of each 1 s Wait of `0B8B`'s loop (rid3,
+    // rid4) the dead body ran in its 188 frames (3.008 s): still possessed,
+    // it charges on (its st0 tests the possessor, not life).
+    assert_eq!(charge(&world), 315.0);
     let (spawn, _) = scene
         .map()
         .spawn_point_in(0, 0, SpawnChoice::First)
@@ -983,7 +1014,8 @@ fn gibraltars_team_walls_stand_while_their_scripts_run_state_3() {
     assert_eq!(scene.team_walls().filter(|&(_, on)| on).count(), 13);
 }
 
-/// A pick while dead waits for the respawn, which plays the new hero.
+/// A pick while dead waits for the respawn, which plays the new hero, his
+/// ultimate charge from 0 (the old hero's isn't kept, as on a hero change).
 #[test]
 #[ignore = "requires a derived 104319 Practice Range pack"]
 fn a_pick_while_dead_takes_the_respawn() {
@@ -992,6 +1024,7 @@ fn a_pick_while_dead_takes_the_respawn() {
     let viewer = viewer(&card);
     let mut world = spawned(&scene, &viewer);
     let body = world.current_body().unwrap();
+    grant(&mut world, 300.0);
     place(&mut world, &scene, outside(&scene), 0);
     world.area_step(&scene, &viewer);
     world
@@ -1012,6 +1045,7 @@ fn a_pick_while_dead_takes_the_respawn() {
         Some(FIRST_TICK + 188)
     );
     assert_eq!(world.hero(), Some(tracer));
+    assert_eq!(charge(&world), 0.0);
 }
 
 /// In overtime the mode entity's #3392e is on for the body's `0C8E`, whose

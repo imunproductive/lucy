@@ -72,8 +72,8 @@ use orpheus_script::{
     placed::{DummyChange, NextDummy},
     vitals::Vitals,
     vm::{
-        GameMessage, MapRays, MessageEnd, ParentWrite, ScopeChange, ScopeSource, TargetCandidate,
-        Unknowns,
+        GameMessage, Hardpoints, MapRays, MessageEnd, ParentWrite, ScopeChange, ScopeSource,
+        TargetCandidate, Unknowns,
     },
     wire::Variables,
 };
@@ -964,6 +964,13 @@ impl PreparedScene {
         self.body_tags.get(&body).cloned()
     }
 
+    /// The model hardpoints of body definition `body` in its frame (a
+    /// hero's or a bot's, `game_hitboxes_174.json`); None when the data
+    /// gives none.
+    pub fn body_hardpoints(&self, body: u64) -> Option<Arc<Hardpoints>> {
+        self.hitboxes.hardpoints(body)
+    }
+
     pub fn heroes(&self) -> &HeroCatalog {
         &self.heroes
     }
@@ -1236,14 +1243,24 @@ impl PreparedScene {
         &self.spawn_graphs
     }
 
-    /// A player's body as a target (combat.py `_targets`): a capsule from
-    /// the feet, crouched or standing, with the mover's standing radius. It
-    /// keeps the capsule even where the data has the hero's hit shapes: they
-    /// are a rest pose, which cannot follow a crouch or an animation.
+    /// A player's body as a target (combat.py `_targets`): standing, the
+    /// hero's own hit shapes (`game_hitboxes_174.json`, the model's rest
+    /// pose: the arms down and out, the head where the client's is) turned
+    /// by the body's yaw (movement units, 65536 a turn), as the client hits
+    /// it by its model's shapes (HitPredict.md, `0x7FF78AA3E2E0`); crouched,
+    /// or a hero without shapes, a capsule from the feet with the mover's
+    /// standing radius (the rest pose cannot follow a crouch). The capsule
+    /// alone was 1 m wide on most heroes (radius 0.5, Reinhardt's 0.7), so
+    /// shots a body's width beside Tracer struck her, and critical from
+    /// the eye less 0.2 m (a Mercy's chest from 1.25 m, a Reinhardt's
+    /// shoulders). Assumption: the rest pose stands for the client's
+    /// animated one (the idle holds the arms forward; the torso, head and
+    /// legs barely move).
     pub(crate) fn player_target(
         &self,
         hero: &Hero,
         feet: [f64; 3],
+        yaw: i32,
         crouched: bool,
     ) -> crate::hitscan::TargetPose {
         let settings = self.movers.for_body(Some(hero.body));
@@ -1256,8 +1273,10 @@ impl PreparedScene {
             },
             radius: settings.stand_radius,
             eye: self.eyes.for_body(hero.body).height(crouched),
-            yaw: 0.0,
-            shapes: None,
+            yaw: f64::from(yaw) * std::f64::consts::TAU / 65_536.0,
+            shapes: (!crouched)
+                .then(|| self.hitboxes.for_body(hero.body))
+                .flatten(),
         }
     }
 
@@ -2140,6 +2159,7 @@ mod tests {
             yaw: 0.0,
             tags: None,
             health: None,
+            hardpoints: None,
             spawned: Vec::new(),
         };
         let count = |candidates: &[TargetCandidate]| {
@@ -2247,6 +2267,7 @@ mod tests {
             yaw: 0.0,
             tags: None,
             health: None,
+            hardpoints: None,
             spawned: Vec::new(),
         };
         let swing = |candidates: &[TargetCandidate]| {
@@ -2355,9 +2376,10 @@ mod tests {
         let player = |body, team, [dx, dz]: [f64; 2]| PlayerTarget {
             body,
             team,
-            pose: scene.player_target(hero, [x + dx, y, z + dz], false),
+            pose: scene.player_target(hero, [x + dx, y, z + dz], 0, false),
             dead: false,
             health: None,
+            hardpoints: None,
             tags: None,
             ai: None,
             dealt: Vec::new(),
@@ -2502,6 +2524,42 @@ mod tests {
         assert!(movement.is_none(), "{movement:?}");
     }
 
+    /// A standing hero is hit by his own shapes, turned by his yaw, as his
+    /// client tests its model's (the Training Partner's "hitboxes are
+    /// definitely wrong", user, 2026-11-20): a level shot 0.35 m beside
+    /// Tracer's head passes her, where the 0.5 m capsule took it; one at
+    /// her head (1.52 m) is critical; one at Mercy's chest (1.3 m) is not,
+    /// where the capsule's head line (eye 1.45 less 0.2) made it critical.
+    /// Turned a quarter (16384, facing +x), her hand 0.45 m out at her side
+    /// swings along the shot's line and the shot passes. Crouched, the
+    /// capsule stays.
+    #[test]
+    #[ignore = "requires a derived 104319 Practice Range scene"]
+    fn a_standing_hero_is_hit_by_his_own_shapes() {
+        let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+        let scene = assets.prepare(GameMap::practice_range()).unwrap();
+        let hero = |name| scene.heroes().find_hero(name).unwrap();
+        let feet = [0.0, 0.0, 10.0];
+        // Where a level shot along +z from (x, y, 0) enters, and whether
+        // it is critical.
+        let shot = |pose: &crate::hitscan::TargetPose, x: f64, y: f64| {
+            let (distance, entered) = pose.entry([x, y, 0.0], [0.0, 0.0, 1.0], 100.0, 0.0)?;
+            Some((distance, pose.head(entered, y)))
+        };
+        let tracer = scene.player_target(hero("Tracer"), feet, 0, false);
+        assert!(tracer.shapes.is_some());
+        assert_eq!(shot(&tracer, 0.35, 1.5), None);
+        assert!(shot(&tracer, 0.0, 1.52).unwrap().1);
+        let mercy = scene.player_target(hero("Mercy"), feet, 0, false);
+        assert!(!shot(&mercy, 0.0, 1.3).unwrap().1);
+        assert!(shot(&tracer, 0.45, 0.97).is_some(), "her hand");
+        let turned = scene.player_target(hero("Tracer"), feet, 16_384, false);
+        assert_eq!(shot(&turned, 0.45, 0.97), None);
+        let crouched = scene.player_target(hero("Tracer"), feet, 0, true);
+        assert!(crouched.shapes.is_none());
+        assert!(shot(&crouched, 0.35, 1.0).is_some());
+    }
+
     /// Widowmaker's Grappling Hook (`005A` st0, ray profile `0018.097`,
     /// map mask `0x0040` as the client loads it) cast straight up the
     /// Practice Range spawn passes the `0x1B9F` plane at y 11.2633 (a
@@ -2553,5 +2611,99 @@ mod tests {
             .unwrap();
         assert_eq!(clip.mask, 0x1B9F);
         assert!((clip.point[1] - 11.2633).abs() < 1e-3, "{clip:?}");
+    }
+
+    /// Tactical Visor in the Practice Range as the match runs it: Soldier:
+    /// 76 stands on the walk below the spawn, 10 m from the Training Bot
+    /// `80008805`, looking 6° beside it, with a full meter; ABILITY_3 begins
+    /// `0259`'s ultimate, whose search st7 aims its cone at his heading and
+    /// pitch (`-STU_40AC5AE4(owner())`, which the server answered with
+    /// nothing before: the cone field failed and the search found no
+    /// target) and finds the bot among the match's listed bodies.
+    #[test]
+    #[ignore = "requires a derived 104319 Practice Range pack"]
+    fn the_visor_finds_a_range_bot_beside_the_aim() {
+        use crate::{
+            combat::{Combat, PlayerTarget},
+            replication::BodyStep,
+        };
+        use orpheus_script::wire::{Value as ScriptValue, Variables};
+        use orpheus_wire::commands::Command;
+        const ABILITY_3: u32 = 0x20;
+        let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+        assets.set_bot_unknowns(Unknowns::Tolerate);
+        let mut scene = assets.prepare(GameMap::practice_range()).unwrap();
+        let hero = scene.heroes().get(SOLDIER).unwrap();
+        let feet = [44.76, 2.0, 20.8];
+        let bot = &scene.bots()[5];
+        let (target, [bx, _, bz]) = (bot.entity, bot.position);
+        assert_eq!(target, BOT_ENTITY + 5);
+        let yaw = (((bx - feet[0]).atan2(bz - feet[2]) + 6f64.to_radians()) * 65536.0
+            / std::f64::consts::TAU) as i32;
+        let mover = scene.player_mover_at(hero.body, 0, feet, yaw).unwrap();
+        let spawn = OwnerBodySpawn {
+            slot: 0,
+            controller: 0xa000_0100,
+            entity: 0xa000_0101,
+            body_filter: team_bit(0).unwrap(),
+            frame: FIRST_TICK,
+            pose: mover.pose(),
+            quanta: RETAIL_QUANTA,
+            mode_random: scene.mode_random(),
+            ai: None,
+            respawn_held: false,
+        };
+        let mut combat = Combat::new(&scene);
+        let mut runtime = scene.owner_body_runtime(hero, spawn).unwrap().unwrap();
+        // The game identifier every new body gets (`01C7` turns #2426e on),
+        // and a full meter.
+        runtime
+            .receive_message(
+                0,
+                0x0240_0000_0000_002d,
+                Variables::from([(0x29, ScriptValue::Asset(0))]),
+            )
+            .unwrap();
+        runtime
+            .set_entity_variables(&Variables::from([(342, ScriptValue::Float(2310.0))]))
+            .unwrap();
+        let me = PlayerTarget {
+            body: spawn.entity,
+            team: 0,
+            pose: scene.player_target(hero, feet, yaw, false),
+            dead: false,
+            health: None,
+            hardpoints: scene.body_hardpoints(hero.body),
+            tags: scene.body_tags(hero.body),
+            ai: None,
+            dealt: Vec::new(),
+        };
+        // The visor's search begins about 1.2 s after the press.
+        for frame in spawn.frame + 1..spawn.frame + 120 {
+            scene.step_bots(frame);
+            combat.record_poses(&scene, std::slice::from_ref(&me), frame);
+            runtime.set_target_candidates(&combat.target_candidates(&scene));
+            let command = Command {
+                frame,
+                buttons: if frame == spawn.frame + 30 {
+                    ABILITY_3
+                } else {
+                    0
+                },
+                yaw,
+                ..Command::default()
+            };
+            runtime.see_targets(&combat.rewind(&scene, RETAIL_QUANTA), &command);
+            runtime.advance(command, &mover, BodyStep::Posed).unwrap();
+        }
+        let snapshot = runtime.snapshot().unwrap();
+        let Some(ScriptValue::Array(found)) = snapshot.variables.get(&2337) else {
+            panic!("no visor targets: {:#?}", snapshot.assumptions);
+        };
+        assert!(
+            found.contains(&ScriptValue::Entity(target)),
+            "{found:x?} {:#?}",
+            snapshot.assumptions
+        );
     }
 }

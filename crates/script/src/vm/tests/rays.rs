@@ -11,11 +11,13 @@ const PROFILE: u64 = 0x0690_0000_0000_0065;
 const PASSING: u64 = 0x0690_0000_0000_00A1;
 const TRACK_RAY: &str = "STUStatescriptStateTrackRay";
 
-/// A wall facing −x at `wall` (none: no wall), and the bodies.
+/// A wall facing −x at `wall` (none: no wall) up to `wall_top`, and the
+/// bodies.
 #[derive(Debug)]
 struct Range {
     bodies: Vec<TargetCandidate>,
     wall: Option<f64>,
+    wall_top: f64,
     profiles: Mutex<Vec<Option<u64>>>,
 }
 
@@ -28,6 +30,7 @@ impl Range {
                 body(ENEMY, 1, [5.0, 0.0, 0.0]),
             ],
             wall,
+            wall_top: f64::INFINITY,
             profiles: Mutex::new(Vec::new()),
         }
     }
@@ -64,11 +67,15 @@ impl MapRays for Range {
         self.profiles.lock().unwrap().push(profile);
         let hit = self.wall.and_then(|wall| {
             let distance = (wall - origin[0]) / direction[0];
-            (direction[0] > 0.0 && distance <= reach).then(|| MapHit {
-                distance,
-                point: std::array::from_fn(|axis| origin[axis] + direction[axis] * distance),
-                normal: [-1.0, 0.0, 0.0],
-            })
+            let point: [f64; 3] =
+                std::array::from_fn(|axis| origin[axis] + direction[axis] * distance);
+            (direction[0] > 0.0 && distance <= reach && point[1] <= self.wall_top).then_some(
+                MapHit {
+                    distance,
+                    point,
+                    normal: [-1.0, 0.0, 0.0],
+                },
+            )
         });
         Some(hit)
     }
@@ -80,6 +87,49 @@ impl MapRays for Range {
     fn map_mask(&self, _profile: Option<u64>) -> u16 {
         u16::MAX
     }
+}
+
+/// A search's line of sight (`m_95FFC3C5`) casts its first ray to the
+/// body's chest hardpoint `0DC.0001` when the server knows the model's
+/// hardpoints, as the client's `0x7FF789BB3570` does: a wall 1.3 m high
+/// 3 m out hides the enemy's points at 0.3 and 0.6 of its 1.8 m (rays 2
+/// and 3) but not its chest at 1.32 m, seen from 1.5 m up; without the
+/// hardpoints the enemy stays hidden (and the answer is an assumption).
+#[test]
+fn a_line_of_sight_sees_a_body_by_its_chest_hardpoint() {
+    let fields = json!({
+        "m_05BE62DD":vec3(0.0, 1.5, 0.0),
+        "m_radius":{"$":"STUConfigVarInt","m_value":10},
+        "m_filter":{"$":"STUConfigVarFilter","m_84065FD1":1,"m_1E14CCA8":0,"m_4EA686DB":16,
+            "m_27CF71D5":0,"m_66747E7D":0,"m_89831602":1},
+        "m_8A2905A0":var(30, false),
+        "m_DD792FF0":0, "m_95FFC3C5":1,
+    });
+    let found = |hardpoints: Option<Hardpoints>| {
+        let mut world = Range::new(Some(3.0));
+        world.wall_top = 1.3;
+        world.bodies[2].hardpoints = hardpoints.map(Arc::new);
+        let component = start(
+            one_node("STUStatescriptStateTrackTargets", true, fields.clone()),
+            &mut world,
+        );
+        let snapshot = component.snapshot().unwrap();
+        (
+            snapshot.instances[&1].variables.get(&30).cloned(),
+            assumed(
+                &component,
+                "STUStatescriptStateTrackTargets m_95FFC3C5 hardpoints",
+            ),
+        )
+    };
+    assert_eq!(
+        found(Some(Hardpoints::from([(
+            0x0dc0_0000_0000_0001,
+            [0.0, 1.32, 0.0]
+        )]))),
+        (Some(Value::Array(vec![Value::Entity(ENEMY)])), false)
+    );
+    assert_eq!(found(None), (Some(Value::Array(Vec::new())), true));
 }
 
 fn vec3(x: f64, y: f64, z: f64) -> Json {

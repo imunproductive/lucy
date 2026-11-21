@@ -6877,15 +6877,18 @@ fn a_firing_practice_bot_shoots_the_player() {
         .unwrap();
     let reach = exit + 3.0;
     let [x, z] = [x + reach * sin, z + reach * cos];
-    // An enemy firing bot 4 m beside that spot, facing it (a quarter turn:
-    // along +x), where the other bots leave the line clear.
+    // An enemy firing bot 4 m further along the player's way, facing back
+    // at that spot, so its rockets fly along the line he ran whatever he
+    // overshot it by: his body is hit by its hero's shapes, a torso a
+    // few decimetres wide, where the capsule was a metre wide.
     let shooter = scene
         .bots_mut()
         .iter_mut()
         .find(|bot| bot.spawn.firing && bot.spawn.team != 0)
         .unwrap();
-    shooter.position = [x - 4.0, y, z];
-    shooter.yaw = 16384.0;
+    let [bot_x, bot_z] = [x + 4.0 * sin, z + 4.0 * cos];
+    shooter.position = [bot_x, y, bot_z];
+    shooter.yaw = ((-sin).atan2(-cos) * 65536.0 / std::f64::consts::TAU).rem_euclid(65536.0);
     let shooter = shooter.entity;
     let schemas = Arc::new(Schemas::game());
     let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
@@ -7004,9 +7007,9 @@ fn a_firing_practice_bot_shoots_the_player() {
         .find(|message| message.id == 25000)
         .expect("the hurt notice");
     let place = Value::Struct(Fields::from([
-        (0, Value::Float32((x - 4.0) as f32)),
+        (0, Value::Float32(bot_x as f32)),
         (4, Value::Float32(y as f32)),
-        (8, Value::Float32(z as f32)),
+        (8, Value::Float32(bot_z as f32)),
     ]));
     assert_eq!(
         [0x78, 0x7c, 0x80, 0x9c, 0xc0].map(|at| notice.fields[&at].clone()),
