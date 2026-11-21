@@ -14,11 +14,12 @@
 //! `m_B1003775` (default the entity's forward), flat and unit
 //! (`xmmword_7FF78C151790` = up when too short), its distance
 //! `m_3A5CB679`. Without a mover it writes false. The trial itself is
-//! [`orpheus_physics::mover::trial`]; only its displacement form
-//! (`m_9A978490` true: the punch and its victim) is ported. The velocity
-//! form (Reinhardt, `1537`) writes nothing, recorded.
+//! [`orpheus_physics::mover::trial`]: its displacement form (`m_9A978490`
+//! true: the punch and its victim) or its velocity form (Reinhardt `007D`,
+//! `1537`: `m_81759372` steps, 4 when unset).
 
 use super::*;
+use orpheus_physics::mover::trial::TrialForm;
 
 const WALL_CHECK: &str = "STU_FBFF5DE7";
 
@@ -38,14 +39,18 @@ impl<W: World + ?Sized> Vm<'_, '_, '_, W> {
         let id = key.instance;
         let site = self.site(id, node);
         let fields = &node.fields;
-        if !self.flag_or(id, node, "m_9A978490") {
-            self.assume(
-                site,
-                &format!("{WALL_CHECK} velocity form"),
-                "writes nothing",
-            );
-            return Ok(());
-        }
+        let form = if self.flag_or(id, node, "m_9A978490") {
+            TrialForm::Displacement
+        } else {
+            // `0x7FF789825E80(…, m_81759372, 4)`: 4 when unset.
+            let steps = match field(fields, "m_81759372") {
+                config if config.is_null() => 4,
+                config => self
+                    .config_number(id, node, config)
+                    .map_or(4, |steps| steps.clamp(0.0, f64::from(u32::MAX)) as u32),
+            };
+            TrialForm::Velocity { steps }
+        };
         let direction = match field(fields, "m_B1003775") {
             config if config.is_null() => self.world.entity_yaw(site, site.entity).map(|yaw| {
                 let radians = f64::from(yaw) * std::f64::consts::TAU / 65536.0;
@@ -64,7 +69,7 @@ impl<W: World + ?Sized> Vm<'_, '_, '_, W> {
         let direction = flat_unit(direction);
         let Some(cosine) = self
             .world
-            .trial_turn(site, site.entity, direction, distance)
+            .trial_turn(site, site.entity, direction, distance, form)
         else {
             self.assume(site, &format!("{WALL_CHECK} mover"), "writes nothing");
             return Ok(());

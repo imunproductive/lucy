@@ -19,11 +19,22 @@
 //! unit and, when its |y| is below 0.707, flat and unit again; the result
 //! is its dot with the direction, clamped to [-1, 1].
 //!
-//! Here the trial is the capsule's move by `d` in the body's world from
-//! where it stands, without the step's ground probe and spring (the client
-//! runs them first; on flat ground they don't change a horizontal move).
-//! The velocity form (the trial's own displacement over several steps,
-//! with ground friction) is not ported.
+//! The velocity form (`m_9A978490` false: Reinhardt's Charge `007D` st3,
+//! `1537` st26) sets the trial's velocity slot to the same vector instead;
+//! the trial (`0x7FF789B44630`) then runs `max(1, m_81759372)` steps of
+//! dt = 1 / steps, and every step writes that velocity into the movement
+//! state just before its move (`0x7FF789B76A70`), so the ground and air
+//! friction (bytes `+61`/`+62`) and the gravity (`m_7CBA482F` above 0)
+//! the later steps apply first are overwritten: the capsule moves by
+//! `d` / steps each step. The result is the flat displacement from the
+//! start to the last step's position divided by the distance (not made
+//! unit), dotted with the direction and clamped.
+//!
+//! Here either trial is the capsule's moves by `d` (in `steps` parts for
+//! the velocity form) in the body's world from where it stands, without
+//! the steps' ground probe and spring (the client runs them first; on flat
+//! ground they don't change a horizontal move); each velocity-form part
+//! ends on the position grid in x and z, as the mover's moves do.
 
 use std::sync::Arc;
 
@@ -38,6 +49,16 @@ use crate::{
     mover::ground_walk::{GroundWalk, ground_walk},
     mover::landing::{LandingSearch, landing_point},
 };
+
+/// Which of the wall check's trials runs (`m_9A978490`; see the module
+/// notes).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrialForm {
+    /// The desired displacement against the walls the move meets.
+    Displacement,
+    /// The body's own displacement over `steps` moves.
+    Velocity { steps: u32 },
+}
 
 /// A clipped move at most this share of the distance long stops the move.
 const STOPPED: f32 = 0.1;
@@ -67,6 +88,20 @@ impl TrialMove {
         f64::from(self.pose.radius)
     }
 
+    /// The trial's cosine in `form`: [`TrialMove::turn`] or
+    /// [`TrialMove::travel`].
+    pub fn cosine(
+        &self,
+        direction: [f64; 3],
+        distance: f64,
+        form: TrialForm,
+    ) -> Result<f64, HullContactError> {
+        match form {
+            TrialForm::Displacement => self.turn(direction, distance),
+            TrialForm::Velocity { steps } => self.travel(direction, distance, steps),
+        }
+    }
+
     /// The cosine of the angle by which the walls turn a move of the body
     /// along the flat unit `direction` for `distance`: 1 when nothing is in
     /// the way, 0 when it stops.
@@ -89,6 +124,35 @@ impl TrialMove {
             }
         };
         Ok(f64::from(dot(turned, direction).clamp(-1.0, 1.0)))
+    }
+
+    /// The velocity form's cosine: how far along the flat unit `direction`
+    /// the body gets of a move by `distance` in `steps` equal parts, over
+    /// the distance (1 when nothing is in the way, 0 when a wall stops it,
+    /// below 1 when it slides along one).
+    pub fn travel(
+        &self,
+        direction: [f64; 3],
+        distance: f64,
+        steps: u32,
+    ) -> Result<f64, HullContactError> {
+        let direction = direction.map(|axis| axis as f32);
+        let distance = (distance as f32).max(0.01);
+        let dt = 1.0 / steps.max(1) as f32;
+        let part = scale(direction, distance * dt);
+        let mut body = CharacterBody::new(Arc::clone(&self.world), self.pose, self.category);
+        let start = body.position();
+        for _ in 0..steps.max(1) {
+            let [x, y, z] = body.move_capsule(part, dt)?.position;
+            body.teleport([on_grid(x), y, on_grid(z)]);
+        }
+        let end = body.position();
+        let moved = [
+            (end[0] - start[0]) / distance,
+            0.0,
+            (end[2] - start[2]) / distance,
+        ];
+        Ok(f64::from(dot(moved, direction).clamp(-1.0, 1.0)))
     }
 
     /// Where a placement selector's landing search lands in the body's
@@ -121,4 +185,9 @@ fn unit_or_zero(v: Vec3) -> Vec3 {
         return [0.0; 3];
     }
     scale(v, squared.sqrt().recip())
+}
+
+/// `value` on the position grid (`snap`, in single precision).
+fn on_grid(value: f32) -> f32 {
+    super::posture::snap(f64::from(value)) as f32
 }
