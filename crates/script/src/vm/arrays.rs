@@ -54,7 +54,7 @@ enum Output {
     Refused,
 }
 
-impl<W: World> Vm<'_, '_, '_, W> {
+impl<W: World + ?Sized> Vm<'_, '_, '_, W> {
     /// ClearArray (1B6C130): a fresh empty array, written as SetVar writes.
     /// It neither writes null nor empties the old array in place.
     pub(super) fn clear_array(

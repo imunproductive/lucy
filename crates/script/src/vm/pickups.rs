@@ -53,7 +53,7 @@ impl Pickup {
     }
 }
 
-impl<W: World> Vm<'_, '_, '_, W> {
+impl<W: World + ?Sized> Vm<'_, '_, '_, W> {
     /// `STU_913C09E4` begins: the world keeps its pickup until it ends. A
     /// world that keeps none leaves it, as an assumption.
     pub(super) fn begin_pickup(&mut self, key: StateKey, node: &Node) {

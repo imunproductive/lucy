@@ -22,7 +22,7 @@ use super::*;
 /// not held.
 const UNSET_EXIT_LIMIT: f64 = 10_000.0;
 
-impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
+impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W> {
     pub(super) fn has_no_ai_control_target(&mut self, id: u16, node: &Node) -> bool {
         let site = self.site(id, node);
         node.is_networked()

@@ -2227,7 +2227,7 @@ fn isolated_soldier_sprint_ability_matches_the_authored_toggle_and_modifier_stat
                 "frame {frame}, state {raw}"
             );
         }
-        let projected = Vm::new(&component.graphs, &mut world, &mut component.machine)
+        let projected = Vm::new(&component.graphs, erase(&mut world), &mut component.machine)
             .collect_movement_modifiers()
             .unwrap();
         let modifiers: Vec<_> = projected

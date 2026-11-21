@@ -2,7 +2,7 @@
 
 use super::*;
 
-impl<W: World> InstanceContext<'_, W> {
+impl<W: World + ?Sized> InstanceContext<'_, W> {
     pub(super) fn read(&mut self, key: VarKey) -> Value {
         if !self.reads.contains(&key) {
             self.reads.push(key);
@@ -33,7 +33,7 @@ impl<W: World> InstanceContext<'_, W> {
     }
 }
 
-impl<W: World> Context for InstanceContext<'_, W> {
+impl<W: World + ?Sized> Context for InstanceContext<'_, W> {
     fn variable(&mut self, variable: Variable) -> Value {
         let value = self.read(source_key(self.site.instance, variable));
         // `#27` unwritten is the entity the instance was created with,

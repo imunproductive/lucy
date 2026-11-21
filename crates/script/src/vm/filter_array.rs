@@ -73,7 +73,7 @@ pub(super) fn condition_only(filter: &Json) -> bool {
     })
 }
 
-impl<W: World> Vm<'_, '_, '_, W> {
+impl<W: World + ?Sized> Vm<'_, '_, '_, W> {
     /// Filter the source again and write the output if it changed.
     pub(super) fn refresh_filter_array(&mut self, key: StateKey) -> Result<(), InitFault> {
         let id = key.instance;
