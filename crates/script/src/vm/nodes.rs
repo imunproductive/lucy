@@ -1210,7 +1210,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             StateKind::HeroSelect => self.refresh_hero_select(key),
             StateKind::WeaponVolley { .. } => self.begin_volley(key, node, depth)?,
             StateKind::TrackTargets => self.begin_track_targets(key, node)?,
-            StateKind::Ray => self.begin_ray(key, node)?,
+            StateKind::Ray => self.begin_ray(key, node, depth)?,
             StateKind::WallCheck => self.begin_wall_check(key, node)?,
             StateKind::Landing => self.begin_landing(key, node)?,
             StateKind::ViewLimits { .. } => self.refresh_view_limits(key),

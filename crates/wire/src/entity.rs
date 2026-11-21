@@ -1044,7 +1044,9 @@ pub struct FrameCandidates<'a, Queued = EntityUpdate> {
     pub unreliable: &'a [Vec<u8>],
     pub queued: &'a [Queued],
     pub movements: &'a [EntityUpdate],
-    /// The final movement, if present, corrects the owner.
+    /// The final movement, if present, corrects the owner: it gets its room
+    /// before the records that don't fit beside it (at least the first
+    /// record still goes).
     pub owner_correction: bool,
     pub reliable_only: bool,
 }
@@ -1136,26 +1138,33 @@ pub fn select_frame<'a, Queued: Borrow<EntityUpdate>>(
     } else {
         None
     };
-    if let Some(own) = own {
-        let prefix = queued.len();
-        if prefix <= entities.len() && !entities.iter().any(|record| std::ptr::eq(*record, own)) {
-            let mut keep = entities.len().min(MAX_ENTITY_RECORDS - 1);
-            while keep >= prefix {
-                let mut records = entities[..keep].to_vec();
-                records.push(own);
-                let Ok(attempt) = encode(reliable, unreliable, &records) else {
-                    break; // Preserve the already validated packet.
-                };
-                if attempt.len() <= MAX_PAYLOAD {
-                    entities = records;
-                    payload = attempt;
-                    break;
-                }
-                if keep == prefix {
-                    break;
-                }
-                keep = prefix + (keep - prefix) / 2;
+    // The owner's correction goes before the records that don't fit with
+    // it: the records keep their order and the packet keeps as many of them
+    // as fit beside it, at least the first (so a burst still drains a record
+    // a packet; without room for both, the record goes). With the
+    // correction last, a Workshop burst after a checkpoint's teleport held
+    // the teleport back for ~0.5 s and the owner's client went on from where
+    // it was (refs report `Doomfist.md` §18).
+    if let Some(own) = own
+        && !entities.iter().any(|record| std::ptr::eq(*record, own))
+    {
+        let least = usize::from(!entities.is_empty());
+        let mut keep = entities.len().min(MAX_ENTITY_RECORDS - 1);
+        loop {
+            let mut records = entities[..keep].to_vec();
+            records.push(own);
+            let Ok(attempt) = encode(reliable, unreliable, &records) else {
+                break; // Preserve the already validated packet.
+            };
+            if attempt.len() <= MAX_PAYLOAD {
+                entities = records;
+                payload = attempt;
+                break;
             }
+            if keep <= least {
+                break;
+            }
+            keep = (keep / 2).max(least);
         }
     }
     if !reliable_only

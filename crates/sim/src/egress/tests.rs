@@ -1,5 +1,5 @@
 use super::*;
-use orpheus_core::bits::BitReader;
+use orpheus_core::bits::{BitReader, BitWriter};
 use orpheus_physics::mover::correction::CorrectionHistory;
 use orpheus_wire::entity::{MAX_ENTITY_RECORDS, MAX_PAYLOAD, Movement, Operation};
 use orpheus_wire::jam::codec::Schemas;
@@ -330,6 +330,12 @@ fn correction_pose(frame: u32) -> Movement {
     }
 }
 
+/// The command ACK advances past the correction only when the correction is
+/// in the datagram that went. The correction has its room before the queued
+/// records (the policy changed on purpose, DoomfistMoves12: it used to wait
+/// until every queued record fit), so the crowded datagram here is one whose
+/// first queued record fits only alone: that record goes, the correction
+/// waits.
 #[test]
 fn selected_send_advances_ack_only_after_budget_and_transport_succeed() {
     let mut history = CorrectionHistory::new(0xa000_0101, 1);
@@ -340,13 +346,24 @@ fn selected_send_advances_ack_only_after_budget_and_transport_succeed() {
     }
     let own = history.candidate(107, true).unwrap();
     let movement = [own.update()];
-    let queued: Vec<_> = (0..MAX_ENTITY_RECORDS)
-        .map(|index| EntityUpdate {
-            entity: 0x8000_0001 + index as u32,
-            operation: Some(Operation::Destroy),
+    // The largest record that fits a datagram alone.
+    let record = |len: usize| {
+        let mut chunk = BitWriter::new();
+        chunk.raw(&vec![0x5a; len]);
+        EntityUpdate {
+            entity: 0x8000_0001,
+            chunk: Some(chunk),
             ..EntityUpdate::default()
+        }
+    };
+    let alone = (0..MAX_PAYLOAD)
+        .rev()
+        .find(|&len| {
+            orpheus_wire::entity::frame(107, 0, 0, &[], &[], &[&record(len)])
+                .is_ok_and(|bytes| bytes.len() <= MAX_PAYLOAD)
         })
-        .collect();
+        .unwrap();
+    let queued = [record(alone)];
     fn candidates<'a>(
         queued: &'a [EntityUpdate],
         movements: &'a [EntityUpdate],
@@ -384,8 +401,7 @@ fn selected_send_advances_ack_only_after_budget_and_transport_succeed() {
             },
         )
         .unwrap();
-    assert_eq!(crowded.records.len(), MAX_ENTITY_RECORDS);
-    assert!(!crowded.records.contains(&RecordSource::Movement(0)));
+    assert_eq!(crowded.records, [RecordSource::Queued(0)]);
     assert_eq!(history.corrected(), Some(100));
 
     let failed = egress.send_frame(

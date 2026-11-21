@@ -812,19 +812,22 @@ fn an_ai_pharahs_jump_jet_lifts_her_off_the_ground() {
 
 /// Echo's body graph `1DFC` keeps a RayCast (st10) 2.5 m down from a
 /// quarter metre over her feet against the map (ray profile `002C.097`),
-/// its hit into #2413, which her glide waits to be false: standing at the
-/// spawn, it meets the ground.
+/// its hit bound to #2413, which her glide waits to be false: standing at
+/// the spawn, it meets the ground.
 #[test]
 #[ignore = "requires the derived 104319 data and the Practice Range collision"]
 fn echos_ground_ray_meets_the_floor_she_stands_on() {
     let echo = Player::spawn(ECHO);
     let snapshot = echo.snapshot();
-    let (_, body) = snapshot
+    let (&body, _) = snapshot
         .instances
         .iter()
         .find(|(_, instance)| instance.graph == 0x1dfc)
         .unwrap();
-    assert_eq!(body.variables.get(&2413), Some(&ScriptValue::Bool(true)));
+    assert_eq!(
+        snapshot.resolved_bindings.get(&(body, 2413)),
+        Some(&ScriptValue::Bool(true))
+    );
     assert!(
         !snapshot
             .assumptions
@@ -1067,23 +1070,45 @@ fn doomfists_tapped_airborne_slam_flies_from_the_press_frame() {
     // 120 704 + 150 ms, in frame 7553) the preview's entity st5 ends (his
     // client's st5/st65 ended at 7097, the same frame), and at 7558 the
     // ground ray (3 m down from 0.25 m above his feet) meets the ground
-    // (#2413) on the way to his client's point.
+    // (#2413) on the way to his client's point. The ray's hit is bound to
+    // the ray (slot 0) as his client binds it, so his client casts it
+    // itself and no correction goes for it: one that listed #2413 without
+    // the binding unbound it there, and from then on only the server's
+    // frames changed it, as restores that wake no watcher (df10 s2
+    // cp4_bufslam: `0B27` st7 never watched `#10473e`, so a slam pressed
+    // during Rising Uppercut flew 2 frames late on his client).
+    let ray_hit = |doomfist: &Player| {
+        doomfist
+            .snapshot()
+            .resolved_bindings
+            .get(&(slam, 2413))
+            .cloned()
+    };
+    let bound: Vec<_> = doomfist.snapshot().bindings[&(slam, 2413)]
+        .iter()
+        .map(|binding| (binding.raw_state, binding.slot))
+        .collect();
+    assert_eq!(bound, [(8, 0)]);
     let mut corrections = Vec::new();
+    let mut hit = None;
     for frame in 7545..7560 {
         assert!(doomfist.graph_state(0x0b27, 17), "frame {frame}");
         if let Some(keys) = chunks.correction(&doomfist) {
             corrections.push((frame, keys));
         }
+        if hit.is_none() && ray_hit(&doomfist) == Some(ScriptValue::Bool(true)) {
+            hit = Some(frame);
+        }
         doomfist.step(view);
     }
-    let [(7553, ended), (7558, hit)] = &corrections[..] else {
+    let [(7553, ended)] = &corrections[..] else {
         panic!("{corrections:?}");
     };
     assert!(
         ended.contains(&ChangeKey::State(slam, 5)) && ended.contains(&ChangeKey::State(slam, 65)),
         "{ended:?}"
     );
-    assert!(hit.contains(&ChangeKey::Variable(slam, 2413)), "{hit:?}");
+    assert_eq!(hit, Some(7558));
 }
 
 /// Rocket Punch (graph `0D06`) on the server: the charge (st11) while
