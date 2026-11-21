@@ -1057,33 +1057,23 @@ fn project_chase(
         fields.insert("x", Value::Float(vm.float("cur", 0.0)?).into());
     }
     fields.insert("reached", Value::Bool(vm.flag("reached")).into());
-    let remaining = vm.optional_int("remaining")?;
-    if let Some(remaining) = remaining {
+    if let Some(remaining) = vm.optional_int("remaining")? {
         fields.insert("has_remaining", Value::Bool(true).into());
         fields.insert("big", Value::Bool(remaining >= 1 << 16).into());
         fields.insert("remaining", Value::Integer(remaining.max(0)).into());
     }
-    // The last-step time goes with a timed chase only. A client that reads
-    // it (`Read_STU_6AE5D1A1` sets `+624`) takes the chase's value from the
-    // block's cur and the time since (`0x7FF78AAAEC80` through output slot
-    // 49 `0x7FF78AAA80A0`), which for a chase without a duration steps
-    // only by its `m_9B0385B4` speed (unset: none), not by its own steps:
-    // Rocket Punch's charge `0D06` st11 (`#9272`) and st36 (`#1590`) stood
-    // at the server's first chunk's cur for the whole charge (df8 s1, df10,
-    // df12 s3). Without it the reader takes now as the last step and the
-    // client goes on stepping from cur.
     if let PayloadMode::Owner {
         frame_time,
         frame_ms,
         ..
     } = mode
-        && remaining.is_some()
-        && let Some(last) = vm.optional_int("last")?
     {
-        let t = elapsed(frame_time, frame_ms, last)?;
-        if t >= 0 {
-            fields.insert("has_last", Value::Bool(true).into());
-            fields.insert("t", Value::Integer(t).into());
+        if let Some(last) = vm.optional_int("last")? {
+            let t = elapsed(frame_time, frame_ms, last)?;
+            if t >= 0 {
+                fields.insert("has_last", Value::Bool(true).into());
+                fields.insert("t", Value::Integer(t).into());
+            }
         }
     }
     Ok(())
@@ -1750,35 +1740,5 @@ mod tests {
             encode("STU_99B885B8", json!({"id": 77}), OWNER).bit_len(),
             0
         );
-    }
-
-    /// A chase's last-step time goes to the owner with a timed chase only:
-    /// his client's output of a chase that read one is the block's cur
-    /// moved by the chase's speed over the time since (`0x7FF78AAAEC80`),
-    /// which froze Rocket Punch's charge `0D06` st11 (`#9272`, no
-    /// duration) at the server's first chunk's value for the whole charge.
-    #[test]
-    fn a_chase_sends_its_last_step_only_with_a_duration() {
-        let untimed = json!({"cur": 0.25, "reached": false, "last": 15990});
-        let expected = written(|out| {
-            out.bit(false); // vector
-            out.bit(false); // remaining
-            out.bit(false); // reached
-            out.f32(0.25);
-            out.bit(false); // no last step
-        });
-        assert_eq!(encode("STU_6AE5D1A1", untimed, OWNER), expected);
-        let timed = json!({"cur": 0.25, "reached": false, "remaining": 1400, "last": 15990});
-        let expected = written(|out| {
-            out.bit(false);
-            out.bit(true);
-            out.bit(false);
-            out.f32(0.25);
-            out.bit(false); // 16-bit remaining
-            out.bits(1400, 16).unwrap();
-            out.bit(true);
-            out.var_b(26); // 16000 + 16 - 15990
-        });
-        assert_eq!(encode("STU_6AE5D1A1", timed, OWNER), expected);
     }
 }
