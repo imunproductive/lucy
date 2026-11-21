@@ -1271,8 +1271,15 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
             }
             *mode = true;
         } else {
-            assert_eq!((script.first, script.span), (0, 1));
             assert_eq!(record.entity, CONTROLLER);
+            // Whole frames (first 0), and after the first one owner acks
+            // with the command frame every 100 ms
+            // (`WorldDelivery::send_controller_ack`).
+            if script.first == 0 {
+                assert_eq!(script.span, 1);
+            } else {
+                assert!(*controller, "an owner ack only after the whole frame");
+            }
             let mut bits = script.bits();
             assert_eq!(bits.bits(3).unwrap(), 2);
             assert!(bits.w_var().unwrap() >= orpheus_core::tick::FIRST_TICK);
@@ -1555,15 +1562,25 @@ fn exercise_hero_selection(
             assert!(client.now() < deadline, "waiting for the selected body");
         }
     };
+    // The controller's whole frames (first 0); its owner acks (the
+    // command frame every 100 ms, `WorldDelivery::send_controller_ack`)
+    // are left out, and they move the whole frames' chunk numbers on.
+    let ack = |record: &WorldRecord| {
+        record.entity == OWNER
+            && record
+                .script
+                .as_ref()
+                .is_some_and(|script| script.first != 0)
+    };
     let describe = |records: &[WorldRecord]| {
         records
             .iter()
-            .filter(|record| matches!(record.entity, OWNER | FIRST | SECOND))
+            .filter(|record| matches!(record.entity, OWNER | FIRST | SECOND) && !ack(record))
             .map(|record| {
                 (
                     record.entity,
                     record.operation,
-                    record.script.as_ref().map(|script| script.span),
+                    record.script.as_ref().map(|script| script.first),
                 )
             })
             .collect::<Vec<_>>()
@@ -1573,7 +1590,7 @@ fn exercise_hero_selection(
     let verify_controller = |records: &[WorldRecord], open, pick: Option<u64>, hero| {
         let script = records
             .iter()
-            .find(|record| record.entity == OWNER && record.script.is_some())
+            .find(|record| record.entity == OWNER && record.script.is_some() && !ack(record))
             .and_then(|record| record.script.as_ref())
             .expect("hero selection controller frame");
         let mut reader = script.bits();
@@ -1591,7 +1608,7 @@ fn exercise_hero_selection(
     let expected = [
         (FIRST, Some(1), None),
         (OWNER, Some(2), None),
-        (OWNER, None, Some(2)),
+        (OWNER, None, Some(0)),
     ];
     // The pick's frame names the new hero with the screen still open;
     // `288B` closes it once the body lives (st95), a tick later: that
@@ -1601,11 +1618,12 @@ fn exercise_hero_selection(
         assert_eq!(described[..3], expected);
         match described[3..] {
             [] => {}
-            [(OWNER, None, Some(3))] => {
+            [(OWNER, None, Some(0))] => {
                 let close = records
                     .iter()
+                    .filter(|record| record.entity == OWNER && !ack(record))
                     .filter_map(|record| record.script.as_ref())
-                    .find(|script| script.span == 3)
+                    .nth(1)
                     .unwrap();
                 assert_eq!(
                     controller_shows(assets.graphs(), close),
@@ -3107,10 +3125,13 @@ fn the_range_console_puts_a_training_partner_on_its_pad_and_a_pick_replaces_it()
     let controller_frames = watcher.datagrams[idle..]
         .iter()
         .flat_map(|(_, records)| records)
-        .filter(|record| record.entity == watcher.owner && record.script.is_some())
+        .filter(|record| record.entity == watcher.owner)
+        .filter_map(|record| record.script.as_ref())
+        .filter(|script| script.first == 0)
         .count();
-    // His controller's projection holds while he stands: no controller
-    // frame goes (a frame goes only when what it carries changed).
+    // His controller's projection holds while he stands: no whole
+    // controller frame goes (one goes only when what it carries changed;
+    // the owner acks with his command frame go on every 100 ms).
     assert_eq!(controller_frames, 0);
     for (_, records) in &watcher.datagrams {
         for chunk in records

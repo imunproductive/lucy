@@ -1753,6 +1753,7 @@ pub fn show_players(
             if let Err(error) = world.send_hero_select(scene, tick) {
                 eprintln!("hero select frame for {:08X} failed ({error})", world.owner);
             }
+            world.send_controller_ack(tick, now);
             cards
         })
         .collect()
@@ -2506,6 +2507,26 @@ impl WorldDelivery {
             .is_ok_and(|projected| projected != *sent)
     }
 
+    /// An owner chunk with only the command frame the server has of the
+    /// player (`Stream::owner_ack`), every 100 ms once the controller's data
+    /// has arrived, body or not. Without one the client's controller host
+    /// keeps each prediction it journals for 40 frames, then rolls back and
+    /// replays by itself (`0x7FF78991B200`); that rollback undid the begin
+    /// of the client-made hero preview `2906`'s st2, so a preview made in
+    /// hero select before the first body never went away
+    /// (`refs/reports/ControllerWorld.md`, "the auto-picked preview").
+    fn send_controller_ack(&mut self, tick: u32, now: Duration) {
+        if self.headless || self.controller_script.is_none() {
+            return;
+        }
+        let newest = self.command_ack(tick);
+        match self.controller.owner_ack(now, Some(newest)) {
+            Ok(Some(chunk)) => self.push(Record::script(chunk, false)),
+            Ok(None) => {}
+            Err(error) => eprintln!("controller ack of {:08X} not sent ({error})", self.owner),
+        }
+    }
+
     /// The controller script's world facts the server keeps (component 74
     /// field 6, the body's dead flag, the body's variables its graphs
     /// read), then its clock at `tick`. A fault stops it.
@@ -2673,13 +2694,16 @@ impl WorldDelivery {
     /// What a controller frame shows of hero select now, and the frame's
     /// input besides the script (`crate::controller` module notes): shown
     /// open while `288B` has it open or [`Self::keep_open`]; the skin
-    /// selector while open in the Practice Range or while heroes assemble
-    /// (match.py `send_controller`); the assemble title hidden in the
-    /// Practice Range only.
+    /// selector (`288B`'s #25377) while open as heroes assemble; the
+    /// assemble title hidden in the Practice Range only. Not in the
+    /// Practice Range: its mode graph `13C0` holds no `0692`, so `288B`
+    /// st35 never sets #25377 there, and the client's st38 says Athena's
+    /// hero select line (`0918` → `03F2` VoiceStimulus `0168.078`) each
+    /// time #25377 turns on.
     fn select_input(&self, practice: bool) -> Option<(SelectShown, ControllerFrame)> {
         let state = self.controller_script.as_ref()?.hero_select_state()?;
         let open = state.open || self.keep_open;
-        let skins = open && (practice || self.assembling);
+        let skins = open && self.assembling;
         let hero = self.body.map(|body| body.hero);
         Some((
             SelectShown {
