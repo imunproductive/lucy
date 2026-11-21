@@ -392,7 +392,13 @@ impl Engine {
         self.players = players;
     }
 
-    /// An Ongoing instance: run on the rising edge of its conditions.
+    /// An Ongoing instance: run on the rising edge of its conditions. An
+    /// edge while the instance runs is spent there: it doesn't start the
+    /// rule again once the run ends (assumption, the Workshop's documented
+    /// behaviour: a running rule ignores its conditions unless a Wait or
+    /// Loop asks; C32S2's "Spectate" waits for its button chord pressed
+    /// again, and a run that ended with the chord still held started over
+    /// and spectated at once).
     fn ongoing<H: Host + ?Sized>(&mut self, rule: usize, player: Option<EntityId>, host: &H) {
         let key = (rule, player);
         let context = Context {
@@ -404,9 +410,11 @@ impl Engine {
         let armed = self.armed.entry(key).or_insert(true);
         if !now {
             *armed = true;
-        } else if *armed && !running {
+        } else if *armed {
             *armed = false;
-            self.start(key, context);
+            if !running {
+                self.start(key, context);
+            }
         }
     }
 

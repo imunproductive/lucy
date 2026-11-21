@@ -520,6 +520,74 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         Ok(())
     }
 
+    /// Another graph set the cooldown of the ability on `button`
+    /// (`STU_FFF26F80`, the Workshop's Set Ability Cooldown `2735`;
+    /// client `Action_STU_FFF26F80` 0x7FF789B94EC0): the first running
+    /// Ability whose start (`m_A5F1A77B`) or hold (`m_A368407D`) button is
+    /// `button` (0x7FF789C9EED0, over the host's abilities) gets `value`
+    /// written to its `m_out_CooldownVar` (+0x198, 0x7FF78AA9D150). A
+    /// cooldown that runs falls from the written value from now on, as
+    /// after its own restart: so 0 ends it at the next update
+    /// ([`Self::settle_cooldown`]), and the owner frames carry the
+    /// restarted link (assumption: the client's write reaches the link's
+    /// base the same way; DoomfistMoves12 traced the restart and the
+    /// output, not the write's effect on a linked variable). False: no
+    /// ability has that button.
+    pub(super) fn set_ability_cooldown(
+        &mut self,
+        button: i64,
+        value: f64,
+    ) -> Result<bool, InitFault> {
+        if button == 0 {
+            return Ok(false);
+        }
+        let abilities: Vec<StateKey> = self
+            .machine
+            .snapshot
+            .instances
+            .iter()
+            .flat_map(|(&instance, item)| {
+                item.states
+                    .iter()
+                    .filter(|(_, state)| {
+                        state.active && matches!(state.kind, StateKind::Ability { .. })
+                    })
+                    .map(move |(&raw, _)| StateKey { instance, raw })
+            })
+            .collect();
+        let found = abilities.into_iter().find(|&key| {
+            let node = self
+                .graph(key.instance)
+                .state(usize::from(key.raw))
+                .expect("ability state");
+            ["m_A5F1A77B", "m_A368407D"].iter().any(|name| {
+                self.evaluate(key.instance, node, field(&node.fields, name), None)
+                    .is_some_and(|value| expr::to_int(&value, 0) == button)
+            })
+        });
+        let Some(key) = found else {
+            return Ok(false);
+        };
+        let node = self
+            .graph(key.instance)
+            .state(usize::from(key.raw))
+            .expect("ability state");
+        let Ok(Some(target)) = expr::lvalue(field(&node.fields, "m_out_CooldownVar")) else {
+            return Ok(false);
+        };
+        let target = source_key(key.instance, target);
+        let old = self.machine.value(target, None);
+        self.set_base(target, Value::Float(value));
+        if self
+            .state(key)
+            .is_some_and(|state| state.linked_variable == Some(target))
+        {
+            self.restart_cooldown(key, node, 0)?;
+        }
+        self.notify_value(target, &old, None)?;
+        Ok(true)
+    }
+
     pub(super) fn ability_vars(
         &mut self,
         id: u16,

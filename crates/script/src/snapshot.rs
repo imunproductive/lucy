@@ -1220,10 +1220,6 @@ impl<'a> SnapshotEncoder<'a> {
         {
             return Ok(None);
         }
-        let mut touched = stream.touched();
-        // An idle volley's ammunition goes in every owner chunk, but makes
-        // none go by itself.
-        touched.extend(self.idle_volley_ammo(snapshot)?);
         let known: BTreeSet<_> = if view == View::Observer {
             base.instances
                 .keys()
@@ -1237,6 +1233,13 @@ impl<'a> SnapshotEncoder<'a> {
         } else {
             BTreeSet::new()
         };
+        let mut touched = match view {
+            View::Observer => self.observer_touched(stream, base, &known),
+            View::Owner => stream.touched(),
+        };
+        // An idle volley's ammunition goes in every owner chunk, but makes
+        // none go by itself.
+        touched.extend(self.idle_volley_ammo(snapshot)?);
         let mut delta = self.differences(base, snapshot, &touched, &known)?;
         // The oldest action the client hasn't acknowledged, under the stamp
         // of the chunk that first carried it (upstream `frame_callout`).
@@ -1270,6 +1273,41 @@ impl<'a> SnapshotEncoder<'a> {
         delivered.action_serial = action.map_or(base.action_serial, |(_, action)| action.serial);
         let frame = self.delta_frame(snapshot, &delta, kind, frame_ms, action)?;
         Ok(Some(stream.delta(&frame, delivered, delta.keys, kind)?))
+    }
+
+    /// What an observer delta must carry besides the base's differences:
+    /// what the client may hold from a queued chunk that the base doesn't
+    /// have. That is each queued chunk's keys whose values there differ
+    /// from the base, not all its keys: a chunk made while an older one was
+    /// on its way carries that one's keys too, so taking them all kept
+    /// every key ever changed in every later chunk for as long as one chunk
+    /// was always on its way. A Workshop match's mode frame changes each
+    /// tick (the run timer), so its deltas grew to the whole start-up's
+    /// changes, 24 KB in parts, and the HUD reached the client every 30
+    /// ticks or later. Actions keep the stamp of the chunk that first
+    /// carried them.
+    fn observer_touched(
+        &self,
+        stream: &BodyStream<ProjectedSnapshot>,
+        base: &ProjectedSnapshot,
+        known: &BTreeSet<u16>,
+    ) -> BTreeSet<ChangeKey> {
+        let none = BTreeSet::new();
+        let mut touched = BTreeSet::new();
+        for (_, pending, keys) in stream.pending() {
+            touched.extend(
+                keys.iter()
+                    .filter(|key| matches!(key, ChangeKey::Action { .. }))
+                    .copied(),
+            );
+            match self.differences(base, pending, &none, known) {
+                Ok(delta) => touched.extend(delta.keys),
+                // An instance id the base had for another graph: as before,
+                // everything the chunk carried.
+                Err(_) => touched.extend(keys.iter().copied()),
+            }
+        }
+        touched
     }
 
     /// Whether the owner's projection differs from what his client holds

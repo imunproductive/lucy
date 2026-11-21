@@ -1919,6 +1919,60 @@ fn observer_delta_removes_an_instance_introduced_by_an_unacknowledged_chunk() {
     );
 }
 
+/// An observer delta made while an older one is on its way carries that
+/// one's keys (the client may hold its values), but once the older one
+/// arrived and is the base, only what the queued chunks hold differently
+/// from it. Before, each delta took every key of the queued ones, so a
+/// stream that always had one on its way (a mode frame changing each tick)
+/// carried every key it ever changed, forever.
+#[test]
+fn an_observer_delta_carries_only_what_the_queued_chunks_hold_beyond_the_base() {
+    let (graphs, snapshot) = fixture();
+    let codecs = CodecTable::from_json(CODECS).unwrap();
+    let encoder = SnapshotEncoder::new(&graphs, &codecs);
+    let observer = encoder.project(&snapshot, View::Observer).unwrap();
+    let mut stream = BodyStream::new(ENTITY);
+    let baseline = encoder.queue_full(&mut stream, &observer).unwrap();
+    stream.create_arrived();
+    stream.arrived(baseline.last);
+    let kind = DeltaKind::Observer { resend: false };
+    let root = ChangeKey::Variable(1, 100);
+    let entity = ChangeKey::Variable(0, 55);
+    let keys = |stream: &BodyStream<ProjectedSnapshot>, last: u32| {
+        stream
+            .pending()
+            .find(|(number, _, _)| *number == last)
+            .map(|(_, _, keys)| keys.clone())
+            .unwrap()
+    };
+    let mut first = observer.clone();
+    instance_mut(&mut first, 1)
+        .variables
+        .values
+        .insert(100, Value::Integer(1));
+    let one = encoder
+        .queue_delta(&mut stream, &first, kind, 16)
+        .unwrap()
+        .unwrap();
+    stream.sent(one.last);
+    let mut second = first.clone();
+    second.variables.values.insert(55, Value::Integer(7));
+    let two = encoder
+        .queue_delta(&mut stream, &second, kind, 16)
+        .unwrap()
+        .unwrap();
+    stream.sent(two.last);
+    assert_eq!(keys(&stream, two.last), BTreeSet::from([entity, root]));
+    assert!(stream.arrived(one.last).advanced);
+    let mut third = second.clone();
+    third.variables.values.insert(55, Value::Integer(8));
+    let three = encoder
+        .queue_delta(&mut stream, &third, kind, 16)
+        .unwrap()
+        .unwrap();
+    assert_eq!(keys(&stream, three.last), BTreeSet::from([entity]));
+}
+
 #[test]
 fn owner_timer_replacement_preserves_signed_time_steps_and_fifo_ties() {
     let (graphs, snapshot) = fixture();
