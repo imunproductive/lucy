@@ -376,7 +376,10 @@ fn a_plain_state_whose_payload_is_a_link_goes_out_with_no_link() {
 /// their codec `none`, the landing search (`STU_4C96470A`, codec `none+u8`)
 /// with the byte its begin sets to 0. Left out, Doomfist's client never ran
 /// his ground ray, his punch's wall check or his airborne slam's landing
-/// search (`refs/reports/Doomfist.md` §15).
+/// search (`refs/reports/Doomfist.md` §15). So do his slam's shockwave
+/// (`STU_01D67FA0`, an empty hit list) and the view limits of his punch and
+/// slam (`STU_9935FBC8`: the angles for owner full frames, the absent link
+/// in deltas), which were left out too.
 #[test]
 fn the_searches_the_owners_client_runs_go_out_in_its_frames() {
     let (graphs, mut snapshot) = fixture();
@@ -386,6 +389,9 @@ fn the_searches_the_owners_client_runs_go_out_in_its_frames() {
         frame_time: 0,
         frame_ms: 16,
     };
+    // The punch's `0D06` st45: facing 90° yaw, 0° pitch, ±60° yaw, ±30°
+    // pitch, each × 0.017453292 (`0x7FF789BBC810`).
+    let limits = [90.0_f32, 0.0, -60.0, -30.0, 60.0, 30.0].map(|degrees| degrees * 0.017_453_292);
     for (kind, codec, layout, payload, bits) in [
         (StateKind::Ray, "none", json!([]), StatePayload::new(), 0),
         (
@@ -401,6 +407,41 @@ fn the_searches_the_owners_client_runs_go_out_in_its_frames() {
             block,
             StatePayload::from([("value".into(), Value::Integer(0))]),
             8,
+        ),
+        (
+            StateKind::Shockwave { seconds: 0 },
+            "shockwave",
+            json!([{"op": "bits", "n": 1, "f": "has_list"}, {"op": "if", "c": "has_list",
+                "then": [{"op": "w_u16", "f": "n"}, {"op": "repeat", "count": "n", "f": "items",
+                    "body": [{"op": "w_u16", "f": "a"}, {"op": "bits", "n": 16, "f": "b"},
+                        {"op": "bits", "n": 32, "f": "c"}]}, {"op": "f32", "f": "f"}],
+                "else": []}]),
+            StatePayload::new(),
+            1,
+        ),
+        (
+            StateKind::ViewLimits {
+                radians: limits.map(f32::to_bits),
+            },
+            "linked_target",
+            json!([{"op": "link", "f": "link"}, {"op": "if", "c": "H&full", "then": [
+                {"op": "bits", "n": 1, "f": "has_entity"}, {"op": "if", "c": "has_entity",
+                    "then": [{"op": "entity_id", "f": "entity"}], "else": []},
+                {"op": "repeat", "count": 7, "f": "values", "body": [
+                    {"op": "bits", "n": 1, "f": "set"},
+                    {"op": "if", "c": "set", "then": [{"op": "f32", "f": "value"}], "else": []}]}],
+                "else": []}]),
+            StatePayload::from([(
+                "values".into(),
+                Value::Array(
+                    limits
+                        .iter()
+                        .chain(&[0.0])
+                        .map(|&value| Value::Float(value.into()))
+                        .collect(),
+                ),
+            )]),
+            1,
         ),
     ] {
         let mut raw: Json = serde_json::from_str(CODECS).unwrap();
@@ -829,15 +870,19 @@ fn ability_cooldown_and_push_binding_match_python_bytes() {
         std::collections::BTreeMap::from([(7, vec![(1, 0)])])
     );
 
+    // A cooldown's link (slot 0) goes to the owner with the variable's own
+    // value, the one the cooldown falls from: the owner's client works the
+    // rest out from the state's timing block (`0x7FF789B94D00`).
+    snapshot.variables.insert(7, Value::Float(1.25));
+    snapshot
+        .resolved_bindings
+        .insert((0, 7), Value::Float(0.75));
     snapshot.bindings[&(0, 7)][0].slot = 0;
-    assert!(matches!(
-        encoder.project(&snapshot, View::Owner),
-        Err(SnapshotError::InvalidBinding {
-            owner: 0,
-            variable: 7,
-            ..
-        })
-    ));
+    let owner = encoder.project(&snapshot, View::Owner).unwrap();
+    assert_eq!(owner.variables.values[&7], Value::Float(1.25));
+    assert_eq!(owner.variables.bindings[&7][0].slot, 0);
+    let observer = encoder.project(&snapshot, View::Observer).unwrap();
+    assert_eq!(observer.variables.values[&7], Value::Float(0.75));
 }
 
 #[test]
@@ -1204,6 +1249,124 @@ fn a_timed_chase_keeps_its_begin_payload_and_binding_until_it_arrives() {
     let listed = send(&arrived, DeltaKind::Correction(1007 + OWNER_SETTLE_FRAMES));
     assert!(listed.contains(&timed) && listed.contains(&variable));
     assert!(listed.contains(&vector_chase));
+}
+
+/// An ability's cooldown falls on the owner's client by itself: its variable
+/// is linked to the Ability state's slot 0 at the ability's stack priority
+/// (restart `0x7FF789BBB110` → `0x7FF78AA849B0`), whose output
+/// `0x7FF789B94D00` is `max(0, cur − (now − start) × 0.001 × rate)` from the
+/// state's timing block. So the variable goes out as its own value with
+/// that binding, and no frame of the cooldown lists it again. The server
+/// sent the falling value unbound (Python's choice), so every frame listed
+/// the variable, unbound the client's link and rolled it back: about 90
+/// rollbacks per 100 frames for the 6 s after Doomfist's slam (df8 s1).
+/// At the fall's end the ability's update (`0x7FF789B95560`, its timer 2)
+/// finds the linked value at 0 and unlinks it, leaving the variable at 0:
+/// the owner gets it unbound at 0, as his client has it. With the link kept
+/// and the variable at its own value, Doomfist's client used each ability
+/// once (df10 s1: his `#61` stayed near the full cooldown).
+#[test]
+fn an_abilitys_cooldown_goes_bound_and_its_fall_sends_nothing() {
+    use crate::vm::Component;
+    use std::sync::Arc;
+
+    let cooldown = json!({"$":"STUConfigVarDynamic","m_identifier":61,"m_60DB8F99":true});
+    let definition = graph(
+        42,
+        vec![
+            node(
+                0,
+                "STUStatescriptEntry",
+                None,
+                json!({"m_outPlug":{"$":"Plug","links":[[1,"m_beginPlug"]]}}),
+            ),
+            node(
+                1,
+                "STUStatescriptStateAbility",
+                Some(0),
+                json!({
+                    "m_out_CooldownVar":cooldown,
+                    "m_5E561E77":{"m_priority":"0x0C40000000000001"},
+                }),
+            ),
+        ],
+        json!([1]),
+        json!([0]),
+        json!([1]),
+        json!([]),
+    );
+    let graphs = Arc::new(
+        GraphStore::from_json(
+            &serde_json::to_vec(&json!({
+                "version":1,"graphs":[definition],"bodies":{},"missing":[]
+            }))
+            .unwrap(),
+        )
+        .unwrap(),
+    );
+    let codecs = CodecTable::from_json(CODECS).unwrap();
+    let encoder = SnapshotEncoder::new(&graphs, &codecs);
+    let mut world = EmptyWorld;
+    let mut component = Component::start(
+        Arc::clone(&graphs),
+        ENTITY,
+        Variables::from([(61, Value::Float(0.25))]),
+        vec![Root::new(1, 42)],
+        1000,
+        &mut world,
+        MAX_INIT_WORK,
+    )
+    .unwrap();
+    let owner = encoder
+        .project(component.snapshot().unwrap(), View::Owner)
+        .unwrap();
+    // `0001.024`: level 0, not above equals.
+    let bound = &owner.variables.bindings[&61];
+    assert_eq!(
+        (bound.len(), bound[0].state, bound[0].slot),
+        (1, 0, 0),
+        "{bound:?}"
+    );
+    assert_eq!((bound[0].priority, bound[0].above), (0, false));
+    assert_eq!(owner.entity_variable(61), Some(&Value::Float(0.25)));
+    let begun = owner.state(1, 0).unwrap().payload.clone();
+    assert_eq!(begun["cur"], Value::Float(0.25));
+
+    let mut stream = BodyStream::new(ENTITY);
+    stream.create_arrived();
+    let baseline = encoder.queue_full(&mut stream, &owner).unwrap();
+    stream.arrived(baseline.last);
+    let initial = encoder
+        .queue_delta(&mut stream, &owner, DeltaKind::InitialOwner(1000), 16)
+        .unwrap();
+    if let Some(chunk) = initial {
+        assert!(stream.arrived(chunk.last).advanced);
+    }
+    // The whole fall: 250 ms ends in frame 1015 (16 240..16 255), where the
+    // ability (no start button) starts.
+    for frame in 1001..=1014 {
+        component.advance_frame(frame, &mut world).unwrap();
+        let owner = encoder
+            .project(component.snapshot().unwrap(), View::Owner)
+            .unwrap();
+        assert_eq!(owner.state(1, 0).unwrap().payload, begun, "frame {frame}");
+        assert_eq!(owner.entity_variable(61), Some(&Value::Float(0.25)));
+        let chunk = encoder
+            .queue_delta(
+                &mut stream,
+                &owner,
+                DeltaKind::Correction(frame + OWNER_SETTLE_FRAMES),
+                16,
+            )
+            .unwrap();
+        assert!(chunk.is_none(), "frame {frame}");
+    }
+    component.advance_frame(1015, &mut world).unwrap();
+    let owner = encoder
+        .project(component.snapshot().unwrap(), View::Owner)
+        .unwrap();
+    assert!(!owner.variables.bindings.contains_key(&61));
+    assert_eq!(owner.entity_variable(61), Some(&Value::Float(0.0)));
 }
 
 /// The owner's chunks list a weapon volley's ammunition variable at the

@@ -3480,6 +3480,56 @@ fn defer_runs_its_plugs_highest_priority_first_and_once() {
     assert_eq!(active(component.snapshot().unwrap(), 1), [1, 3]);
 }
 
+/// A shockwave (`vm/shockwave.rs`) finishes on the first update at or past
+/// the time its wave takes to reach its radius, `m_6A79BD98 / m_speed`
+/// (0x7FF789BA5270), the begin's frame included; with `m_3418CEA4`
+/// (Doomfist's slam, `0B27` st44) that time is 0, so it finishes in the
+/// frame it begins in, as his client never shows it at a frame's end.
+#[test]
+fn a_shockwave_finishes_once_its_wave_reaches_its_radius() {
+    let shockwave = |fields: Json| {
+        Arc::new(store(vec![graph(
+            42,
+            vec![
+                entry(&[(1, "m_beginPlug")]),
+                node(1, "STUStatescriptStateShockwave", Some(0), fields),
+            ],
+            json!([1]),
+            json!([0]),
+        )]))
+    };
+    let state = |component: &Component| {
+        let state = &component.snapshot().unwrap().instances[&1].states[&0];
+        (state.active, state.activation)
+    };
+    let instant = start(
+        shockwave(json!({
+            "m_speed":{"$":"STUConfigVarFloat","m_value":30.0},
+            "m_6A79BD98":{"$":"STUConfigVarFloat","m_value":7.5},
+            "m_3418CEA4":{"$":"STUConfigVarBool","m_value":true},
+        })),
+        100,
+        &mut EmptyWorld,
+    );
+    assert_eq!(state(&instant), (false, 1));
+    // 7.5 m at 30 m/s: 0.25 s, so frame 115's update, at its last
+    // millisecond (255 ms after the begin at frame 100's first), finishes it.
+    let mut timed = start(
+        shockwave(json!({
+            "m_speed":{"$":"STUConfigVarFloat","m_value":30.0},
+            "m_6A79BD98":{"$":"STUConfigVarFloat","m_value":7.5},
+        })),
+        100,
+        &mut EmptyWorld,
+    );
+    for frame in 101..=114 {
+        timed.advance_frame(frame, &mut EmptyWorld).unwrap();
+        assert_eq!(state(&timed), (true, 1), "frame {frame}");
+    }
+    timed.advance_frame(115, &mut EmptyWorld).unwrap();
+    assert_eq!(state(&timed), (false, 1));
+}
+
 #[test]
 fn pulser_counts_every_begin_and_marks_pulses_after_the_first_frame_fresh() {
     let graphs = Arc::new(store(vec![graph(

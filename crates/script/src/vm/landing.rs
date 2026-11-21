@@ -85,12 +85,16 @@ impl<W: World> Vm<'_, '_, '_, W> {
     /// numbers. None: a field isn't a number, or the body has no eye.
     fn landing_search(&mut self, id: u16, node: &Node) -> Option<LandingSearch> {
         let site = self.site(id, node);
-        let (mut origin, facing) = self.world.eye(site, site.entity)?;
+        let (origin, facing) = self.world.eye(site, site.entity)?;
         let number =
             |vm: &mut Self, name: &str| vm.config_number(id, node, field(&node.fields, name));
-        if let Some(eye_y) = number(self, "m_6E8CA10B") {
-            origin[1] = eye_y;
-        }
+        // `0x7FF789BAE800`: with `m_B221D18D`, no ground above
+        // `m_6E8CA10B` (the slam: his eye's height).
+        let ceiling = if self.flag_or(id, node, "m_B221D18D") {
+            Some(number(self, "m_6E8CA10B")?)
+        } else {
+            None
+        };
         Some(LandingSearch {
             origin,
             aim: expr::aim(facing),
@@ -101,6 +105,7 @@ impl<W: World> Vm<'_, '_, '_, W> {
             spacing: number(self, "m_B42B2BEB")?,
             clearance: number(self, "m_60B6AF94")?,
             reach_height: number(self, "m_15F880A4")?,
+            ceiling,
         })
     }
 }
