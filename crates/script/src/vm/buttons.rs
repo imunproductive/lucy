@@ -113,7 +113,12 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
         for (condition, states) in listeners {
             self.spend("logical button condition edge")?;
             let button = self
-                .evaluate(id, condition, field(&condition.fields, "m_logicalButton"), None)
+                .evaluate(
+                    id,
+                    condition,
+                    field(&condition.fields, "m_logicalButton"),
+                    None,
+                )
                 .map(|value| expr::to_int(&value, -1));
             if button != Some(i64::from(edge.button)) {
                 continue;

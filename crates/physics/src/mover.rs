@@ -66,10 +66,10 @@ pub mod modifiers;
 mod motion;
 pub mod move_to;
 pub mod path_walk;
-pub mod rise;
 #[cfg(test)]
 mod ported_tests;
 pub(crate) mod posture;
+pub mod rise;
 pub mod settings;
 pub mod trial;
 
@@ -701,12 +701,8 @@ impl Mover {
             frame,
         )?;
         let lift = self.lift();
-        self.pose.position = [
-            f64::from(at[0]),
-            f64::from(at[1] - lift),
-            f64::from(at[2]),
-        ]
-        .map(snap);
+        self.pose.position =
+            [f64::from(at[0]), f64::from(at[1] - lift), f64::from(at[2])].map(snap);
         let [x, y, z] = self.pose.position;
         self.body
             .teleport([x as f32, (y + f64::from(lift)) as f32, z as f32]);

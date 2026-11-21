@@ -358,8 +358,8 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
             away_rings: authored_rings(rows, "m_579D7CFF", 1.0, &mut evaluate).ok()?,
             upward_rings: authored_rings(rows, "m_10399AE7", 1.0, &mut evaluate).ok()?,
         };
-        let pushes = [away, upward].iter().all(|speed| speed.is_finite())
-            && (away != 0.0 || upward != 0.0);
+        let pushes =
+            [away, upward].iter().all(|speed| speed.is_finite()) && (away != 0.0 || upward != 0.0);
         pushes.then_some((origin, push))
     }
 }

@@ -1570,7 +1570,10 @@ fn meteor_strikes_flight_keeps_to_the_ground_and_climbs_a_crate() {
     }
     let path: Vec<[f64; 3]> = (10..80).map(|frame| fly(&mut body, run(frame))).collect();
     assert!(path.iter().all(|feet| feet[0] == 0.0), "{path:?}");
-    assert!(path.windows(2).all(|pair| pair[1][1] >= pair[0][1]), "{path:?}");
+    assert!(
+        path.windows(2).all(|pair| pair[1][1] >= pair[0][1]),
+        "{path:?}"
+    );
     for feet in &path {
         if feet[2] <= 2.5 {
             assert_eq!(feet[1], 1.0, "{path:?}");

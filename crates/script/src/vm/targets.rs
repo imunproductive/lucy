@@ -735,7 +735,12 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
             ("m_1B89EA79", Value::Integer(entities.len() as i64)),
             (
                 "m_CEE20F6F",
-                Value::Array(distances.iter().map(|&distance| Value::Float(distance)).collect()),
+                Value::Array(
+                    distances
+                        .iter()
+                        .map(|&distance| Value::Float(distance))
+                        .collect(),
+                ),
             ),
         ];
         for (name, value) in outputs {
@@ -945,7 +950,11 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
                 .map(|(entity, _)| entity)
                 .collect();
             if unknown {
-                self.assume(site, &format!("{CLASS} {SIGHT_LINES}"), "a line it can't cast hides the body");
+                self.assume(
+                    site,
+                    &format!("{CLASS} {SIGHT_LINES}"),
+                    "a line it can't cast hides the body",
+                );
             }
             return seen;
         }

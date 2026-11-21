@@ -100,7 +100,13 @@ impl TrialMove {
         start: [f64; 3],
         end: [f64; 3],
     ) -> Result<Option<[f64; 3]>, PointSetSize> {
-        fatal_drop(&self.world, self.category, self.zones.as_deref(), start, end)
+        fatal_drop(
+            &self.world,
+            self.category,
+            self.zones.as_deref(),
+            start,
+            end,
+        )
     }
 
     /// The capsule's radius (its stance's).

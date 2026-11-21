@@ -41,8 +41,8 @@
 
 use std::fmt;
 
-use crate::contact::{body::CharacterBody, gjk::PointSetSize, hull::HullContactError};
 use crate::contact::world::ContactWorld;
+use crate::contact::{body::CharacterBody, gjk::PointSetSize, hull::HullContactError};
 use crate::mover::landing::sweep;
 
 type Vec3 = [f32; 3];
@@ -86,7 +86,9 @@ pub fn fatal_drop(
         return Ok(None);
     };
     let end = match sweep(world, category, start, end, 0.0, None)? {
-        Some(hit) => std::array::from_fn(|axis| start[axis] + (end[axis] - start[axis]) * hit.fraction),
+        Some(hit) => {
+            std::array::from_fn(|axis| start[axis] + (end[axis] - start[axis]) * hit.fraction)
+        }
         None => end,
     };
     Ok(zones.entry(start, end))
@@ -102,8 +104,15 @@ fn first_contact(
     radius: f32,
 ) -> Result<Option<f32>, PointSetSize> {
     let wide = |v: Vec3| v.map(f64::from);
-    Ok(sweep(world, category, wide(start), wide(end), f64::from(radius), None)?
-        .map(|hit| hit.fraction as f32))
+    Ok(sweep(
+        world,
+        category,
+        wide(start),
+        wide(end),
+        f64::from(radius),
+        None,
+    )?
+    .map(|hit| hit.fraction as f32))
 }
 
 impl Rise {
@@ -140,11 +149,10 @@ impl Rise {
         .map_or(UNSET_FLOOR, |point| point[1] as f32);
         let mut floor = self.floor.max(ground);
         let mut lowest = sub(centre, scale(up, self.height + 1.0));
-        let mut level =
-            match first_contact(&world, category, centre, lowest, probe)? {
-                Some(fraction) => lerp(centre, lowest, fraction)[1] - probe,
-                None => lowest[1],
-            };
+        let mut level = match first_contact(&world, category, centre, lowest, probe)? {
+            Some(fraction) => lerp(centre, lowest, fraction)[1] - probe,
+            None => lowest[1],
+        };
         if level > start[1] {
             level = start[1];
         }
