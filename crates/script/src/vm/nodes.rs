@@ -157,6 +157,18 @@ const ASSUMED_INERT_STATES: &[&str] = &[
 /// retail server did with them is not known. Server-only too: the mode
 /// graphs' `STU_0FAD550D` (`m_41F2FA6C`, a bool; `0F4A` st34 as a round
 /// starts, false, before the ForCodeSynced st33 rows `2271`/`226F`/`2270`).
+///
+/// Meteor Strike's (`0C51`, Doomfist.md §24): `STU_3BC72DE1` (st26, the
+/// view: its begin and end `0x7FF7898267C0` set component 43's camera
+/// configs) and `STU_582E0D5F` (st20, a runtime of its own, slots 17 and
+/// 36, 25 view fields) are the client's to run from their remote states;
+/// `STU_D07EBF01` (st76 with `m_69603948` true, st78 without; 23 nodes in
+/// 19 graphs, among them Reinhardt's Charge `1537`, D.Va `026A`, the
+/// Biotic Field `017B` and the 9999 kill volumes `09BB`, always naming the
+/// owner) has no client registration: server-only, its meaning unknown
+/// (an inference from its users: a native exemption for a body the
+/// ability moves in ways a walk can't, such as the retail server's
+/// movement checks; the server has none to exempt).
 const ASSUMED_PLAIN_STATES: &[&str] = &[
     "STU_0C3A5D53",
     "STU_AB09B113",
@@ -164,6 +176,9 @@ const ASSUMED_PLAIN_STATES: &[&str] = &[
     "STU_7F488C3E",
     "STU_54BBC96C",
     "STU_0FAD550D",
+    "STU_3BC72DE1",
+    "STU_582E0D5F",
+    "STU_D07EBF01",
 ];
 
 impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
@@ -404,19 +419,35 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 let contained = expr::contains(&container, &value);
                 self.branch(id, node, caller, contained, depth)
             }
+            // `Cond_STU_7DEB522D` 0x7FF78AA858C0: false while the button is
+            // disabled; during an edge of its button (`recheck_button_
+            // conditions`) true on a press with `m_87F97379` or a release
+            // with `m_12A75BC7`; else true while held with `m_00994FF0` or
+            // up with `m_F2B4B71D`.
             "STU_7DEB522D" => {
                 let Some(button) =
                     self.evaluate(id, node, field(&node.fields, "m_logicalButton"), None)
                 else {
                     return Ok(false);
                 };
-                let button = expr::to_int(&button, 0);
+                let button = expr::to_int(&button, -1);
+                let flag = |name: &str| field(&node.fields, name).as_u64().unwrap_or(0) != 0;
                 let held = self
                     .machine
                     .held_buttons
                     .iter()
                     .any(|&held| i64::from(held) == button);
-                self.branch(id, node, caller, held, depth)
+                let edge = self
+                    .machine
+                    .current_edge
+                    .filter(|edge| i64::from(edge.button) == button);
+                let met = !self.disabled(button)
+                    && (edge.is_some_and(|edge| {
+                        (flag("m_87F97379") && edge.pressed)
+                            || (flag("m_12A75BC7") && !edge.pressed)
+                    }) || (flag("m_00994FF0") && held)
+                        || (flag("m_F2B4B71D") && !held));
+                self.branch(id, node, caller, met, depth)
             }
             "STU_1113EBD5" => {
                 // A join is only reached through a plug (`follow`).
@@ -991,6 +1022,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             "STUStatescriptStateMoveTo" => StateKind::MoveTo,
             "STU_4BBC5D09" => StateKind::GrappleCast,
             "STU_1F5ED928" => StateKind::NavPath,
+            "STU_6154B909" => StateKind::Rise,
             // The scoped heroes' zoom-in input flag (Widowmaker `001B`
             // st103, Ana `0B94` st78, Ashe `14FC` st111; codec none). The
             // client's begin puts the state on its instance's update list
@@ -1200,6 +1232,10 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             StateKind::MoveTo => self.begin_move_to(key, node),
             StateKind::GrappleCast => self.begin_grapple(key, node, depth)?,
             StateKind::NavPath => self.begin_nav_path(key, node)?,
+            StateKind::Rise => {
+                self.rise_block(key, node);
+                self.register_tick(key, self.machine.now_ms);
+            }
             StateKind::AiMove => self.resolve_ai_move(key, node),
             StateKind::Rewind { .. } => self.begin_rewind(key, node)?,
             StateKind::WaitFrames { .. } => self.arm_frame_wait(key, node)?,

@@ -27,14 +27,14 @@
 //!   Blossom (170 a second), the spawn room (400 a second) and the payload
 //!   heal (10 a second) are rates, quick melee is a blow. The Biotic Field's
 //!   `017B` st6 spreads its heal over `#567`, the field's seconds.
-//! - Not read: the knockback rings `m_knockbackRings` (quick melee has
-//!   one), `m_DD792FF0` (1, 2 or 3), the bools `m_79758CE9`,
+//! - Not read: `m_DD792FF0` (1, 2 or 3), the bools `m_79758CE9`,
 //!   `m_FF9E82FA`, `m_48BED081` (false in every use), `m_B12BFE8B` (quick
-//!   melee's TrackTargets output `#23530`), `m_C0139FA6`, `m_724CBA57`
-//!   (the owner where set), `m_E33EFEE1` and `m_10399AE7` (outputs) and the
-//!   other hashed fields of `m_modifyHealth`. Each use records an
-//!   assumption. Read: `m_1376B4DF`, a push vector, where no rings go
-//!   with it ([`HealthChange::knockback`]).
+//!   melee's TrackTargets output `#23530`), `m_724CBA57` (the owner where
+//!   set), the change's own `m_10399AE7` and the other hashed fields of
+//!   `m_modifyHealth`. Each use records an assumption. Read: `m_1376B4DF`,
+//!   a push vector, where no rings go with it, and the knockback rings
+//!   with `m_C0139FA6`, `m_E33EFEE1` and `m_583C208B` where no vector does
+//!   ([`RingPush`]; [`HealthChange::knockback`]).
 //! - `m_8B707686` (u8, state `+0x14d`) is the retail server's own flag;
 //!   the client never reads it. ModifyHealth has no runtime of its own on
 //!   the client (state record #160 is the base state's, vtable
@@ -62,7 +62,7 @@
 //! state without effect, as before (recorded).
 
 use super::{targets::is_set, *};
-use crate::weapons::DamageTags;
+use crate::weapons::{DamageTags, authored_number, authored_rings, ring_scale};
 
 /// A health change for the match to apply ([`World::modify_health`]).
 #[derive(Clone, Debug, PartialEq)]
@@ -97,7 +97,7 @@ pub struct HealthChange {
 
 /// The fields the server doesn't read; each set one is an assumption.
 const UNREAD: &[&str] = &["m_B12BFE8B"];
-const UNREAD_CHANGE: &[&str] = &["m_knockbackRings", "m_C0139FA6", "m_E33EFEE1", "m_10399AE7"];
+const UNREAD_CHANGE: &[&str] = &["m_10399AE7"];
 
 impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
     pub(super) fn begin_modify_health(
@@ -163,7 +163,12 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         Ok(())
     }
 
-    /// A blow on each target not struck yet in this activation.
+    /// A blow on each target not struck yet in this activation. A blow
+    /// whose finished plug leads on (10 nodes: Meteor Strike's `0C51` st1,
+    /// whose finish steps its loop over `#375` to the next body) finishes
+    /// once it struck: the client has no runtime for the state, so its end
+    /// is the retail server's; assumed so, as the loop needs it. The others
+    /// stay on, striking bodies as they come in.
     fn strike_new_targets(&mut self, key: StateKey, node: &Node) -> Result<(), InitFault> {
         let now = self.machine.now_ms;
         let targets = self.listed_entities(key, node, "m_FA3ECC43");
@@ -179,6 +184,9 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 since_ms: now,
             }));
         self.apply_health(key, node, &new, 1.0);
+        if !new.is_empty() && node.links("m_onFinishedPlug").next().is_some() {
+            self.post(key.instance, Event::Finish(key.raw))?;
+        }
         Ok(())
     }
 
@@ -268,11 +276,11 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             Some(Value::Asset(guid)) if guid != 0 => Some(guid),
             _ => None,
         };
-        // Read only where no rings go with it (Soundwave's): the rings'
-        // pushes (`m_knockbackRings` with `m_E33EFEE1`, `m_583C208B`) are
-        // not modelled for a ModifyHealth, and Seismic Slam's `0B27` rid133
-        // and Brigitte's `1259` rid31 vectors go with rings.
-        let knockback = if is_set(field(change, "m_knockbackRings")) {
+        // Soundwave's push vector is read where no rings go with it (Seismic
+        // Slam's `0B27` rid133 and Brigitte's `1259` rid31 vectors go with
+        // rings: not modelled). With rings and no vector, [`ring_push`].
+        let rings = is_set(field(change, "m_knockbackRings"));
+        let vector = if rings {
             None
         } else {
             match self.evaluate_set(id, node, field(change, "m_1376B4DF")) {
@@ -280,6 +288,9 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 _ => None,
             }
         };
+        let ring_push = (rings && !is_set(field(change, "m_1376B4DF")))
+            .then(|| self.ring_push(id, node, change))
+            .flatten();
         let tags = DamageTags::from_authored(change, |config| {
             self.evaluate(id, node, config, None)
                 .ok_or(EvalError::MalformedConfig("damage tag"))
@@ -287,6 +298,10 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         let heal = field(change, "m_93CDFD2F").as_i64() == Some(0);
         let mut taken = true;
         for &target in targets {
+            let knockback = vector.or_else(|| {
+                let (origin, push) = ring_push.as_ref()?;
+                push.at(*origin, self.world.entity_position(site, target)?)
+            });
             taken &= self.world.modify_health(HealthChange {
                 site,
                 instigator,
@@ -315,6 +330,75 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             return None;
         }
         self.evaluate(id, node, config, None)
+    }
+
+    /// The push of a ModifyHealth with knockback rings and no vector
+    /// ([`RingPush`]): where it pushes from (`m_C0139FA6`, a point or an
+    /// entity's feet) and its speeds. None when it has no origin or pushes
+    /// nothing.
+    fn ring_push(&mut self, id: u16, node: &Node, change: &Json) -> Option<([f64; 3], RingPush)> {
+        let site = self.site(id, node);
+        let origin = match self.evaluate_set(id, node, field(change, "m_C0139FA6"))? {
+            Value::Vector(point) => point,
+            value => {
+                let entity = expr::to_entity(&value).filter(|&e| expr::valid_entity(e))?;
+                self.world.entity_position(site, entity)?
+            }
+        };
+        let mut evaluate = |config: &Json| {
+            self.evaluate(id, node, config, None)
+                .ok_or(EvalError::MalformedConfig("knockback"))
+        };
+        let away = authored_number(change.get("m_E33EFEE1"), 0.0, &mut evaluate).ok()?;
+        let upward = authored_number(change.get("m_583C208B"), 0.0, &mut evaluate).ok()?;
+        let rows = change.get("m_knockbackRings");
+        let push = RingPush {
+            away,
+            upward,
+            away_rings: authored_rings(rows, "m_579D7CFF", 1.0, &mut evaluate).ok()?,
+            upward_rings: authored_rings(rows, "m_10399AE7", 1.0, &mut evaluate).ok()?,
+        };
+        let pushes = [away, upward].iter().all(|speed| speed.is_finite())
+            && (away != 0.0 || upward != 0.0);
+        pushes.then_some((origin, push))
+    }
+}
+
+/// The push a ModifyHealth with knockback rings gives each body it
+/// reaches (`m_knockbackRings`, `STUStatescriptModifyHealthKnockbackRing`;
+/// the retail server applied it natively, ModifyHealth has no runtime on
+/// the client): `m_E33EFEE1` metres a second along the ground away from
+/// its origin `m_C0139FA6` and `m_583C208B` upward, each scaled by the
+/// rings at the body's distance from the origin (`m_579D7CFF` away,
+/// `m_10399AE7` upward; between rings as an explosion's damage, none past
+/// the last). Assumptions: the field meanings (Seismic Slam's pull,
+/// `0B27` rid133: −3 away and 6 up; Meteor Strike's `0C51` st1: `#9275`
+/// away, 10 near the centre to 1 at 8 m, and 5 up), that the push is flat
+/// away from the origin's feet, and that the body's feet give the distance.
+struct RingPush {
+    away: f64,
+    upward: f64,
+    away_rings: Vec<(f64, f64)>,
+    upward_rings: Vec<(f64, f64)>,
+}
+
+impl RingPush {
+    /// The push on a body standing at `feet`; none past the rings.
+    fn at(&self, origin: [f64; 3], feet: [f64; 3]) -> Option<[f64; 3]> {
+        let line: [f64; 3] = std::array::from_fn(|axis| feet[axis] - origin[axis]);
+        let distance = line.iter().map(|part| part * part).sum::<f64>().sqrt();
+        let away = self.away * ring_scale(&self.away_rings, distance);
+        let upward = self.upward * ring_scale(&self.upward_rings, distance);
+        if away == 0.0 && upward == 0.0 {
+            return None;
+        }
+        let flat = line[0].hypot(line[2]);
+        let [x, z] = if flat > 0.0 {
+            [line[0] / flat, line[2] / flat]
+        } else {
+            [0.0, 0.0]
+        };
+        Some([away * x, upward, away * z])
     }
 }
 

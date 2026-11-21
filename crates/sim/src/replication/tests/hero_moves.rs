@@ -1810,3 +1810,148 @@ fn doomfists_ability_pressed_while_another_runs_starts_when_it_stops() {
         [(0, (false, true)), (56, (true, false))]
     );
 }
+
+/// Meteor Strike (`0C51`) through his client's own run (game m1, release of
+/// day/doomfist16; Doomfist.md §24): from the Range spawn facing -30183
+/// with a full meter, Q (3 frames), forward from 91 frames after it to 210
+/// (16.5 m/s: the aim's speed scale 3), FIRE at 235 (4 frames). The flight
+/// (`STU_6154B909`, kind 13) keeps him on the ground under the aim: still
+/// through the 1 s leap (`#670`; mod 34's 40 m/s up moves nothing), then
+/// along the floor and over the crate step by the bots, and at rest on its
+/// top; every frame below is his client's mover, which the server's poses
+/// equalled on all 395 frames. The landing (st9, st10 a frame later) 1 s
+/// after FIRE strikes the bodies within 8 m in sight (`m_47AB1887`):
+/// within 2 m 300 (`#2577`), then down to 15 at 8 m (`#2305`, `#2306`
+/// over `#1657`..`#6252`), each from its distance (`#9326`, `m_CEE20F6F`),
+/// and knocks each back: `#9275` (10 near, 1 at 8 m) away and 5 up.
+#[test]
+#[ignore = "requires the derived 104319 data and the Practice Range collision"]
+fn doomfists_meteor_strike_flies_over_the_range_and_lands_where_his_client_did() {
+    use crate::combat::PosedShot;
+    use orpheus_script::vm::TargetCandidate;
+
+    const YAW: i32 = -30183;
+    const ULTIMATE: u32 = 0x20;
+    const FIRE: u32 = 0x01;
+    /// His client's frame for the press.
+    const PRESS: u32 = 4689;
+    let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    assets.set_player_unknowns(Unknowns::Tolerate);
+    // The ruleset key `32E0` (#13024e): a full meter at spawn.
+    assets.set_ult_generation(orpheus_script::wire::Variables::from([(
+        13024,
+        ScriptValue::Bool(true),
+    )]));
+    let scene = assets.prepare(GameMap::practice_range()).unwrap();
+    let mut doomfist = Player::spawn_on(DOOMFIST, scene, WorldDelivery::new(OWNER).unbuffered());
+    let landing = [46.5439453125, 2.0, 12.05859375];
+    let body = |entity, team, feet| TargetCandidate {
+        entity,
+        team: Some(team),
+        dead: false,
+        controller: None,
+        player: None,
+        ai: false,
+        ai_control: None,
+        feet,
+        height: 1.8,
+        radius: 0.4,
+        yaw: 0.0,
+        tags: None,
+        health: None,
+        spawned: Vec::new(),
+    };
+    // The two Training Bots by the landing in m1 (`0x80008805`, `0x80008802`:
+    // their component 4, 1 m over the feet, was at y 3.00003), one past the
+    // 8 m and an ally.
+    let off = |dz: f64| [landing[0], landing[1], landing[2] + dz];
+    let enemies = [0xa000_0201, 0xa000_0202, 0xa000_0203];
+    doomfist.world.set_target_candidates(&[
+        body(OWNER | 1, 0, doomfist.position()),
+        body(enemies[0], 1, [46.478515625, 2.0, 10.189453125]),
+        body(enemies[1], 1, [43.2236328125, 2.0, 7.865234375]),
+        body(enemies[2], 1, off(-9.0)),
+        body(0xa000_0205, 0, off(-1.0)),
+    ]);
+    // Each frame's search tries the heights of its frame's fifth: start on
+    // his client's.
+    doomfist.idle((PRESS % 5 + 5 - (doomfist.frame + 1) % 5) % 5, YAW);
+    assert_eq!((doomfist.frame + 1) % 5, PRESS % 5);
+    let start = doomfist.frame + 1;
+    let mut poses = BTreeMap::new();
+    let mut struck = Vec::new();
+    for at in 0..300 {
+        let buttons = match at {
+            0..3 => ULTIMATE,
+            235..239 => FIRE,
+            _ => 0,
+        };
+        let forward = if (91..211).contains(&at) { 127 } else { 0 };
+        doomfist.step(Command {
+            yaw: YAW,
+            buttons,
+            forward,
+            ..Command::default()
+        });
+        let pose = doomfist.world.mover.as_ref().unwrap().pose();
+        poses.insert(PRESS + at, (pose.position, pose.velocity, pose.flags));
+        for shot in doomfist.world.take_shots() {
+            if let PosedShot::Health(change) = shot {
+                struck.push((change.target, change.amount, change.knockback));
+            }
+        }
+    }
+    assert_eq!(doomfist.frame, start + 299);
+    let client = [
+        (4707, [54.5654296875, 1.0, 42.1474609375], [0.0, 0.0, 0.0], 0),
+        (4708, [54.5654296875, 1.0, 42.1474609375], [0.0, 40.0, 0.0], FELL),
+        (4721, [54.5654296875, 1.0, 42.1474609375], [0.0, 0.0, 0.0], FELL),
+        (4780, [54.5009765625, 1.0, 41.8916015625], [-4.0478515625, 0.0, -15.99609375], FELL),
+        (4800, [53.2119140625, 1.0, 36.7744140625], [-4.0478515625, 0.0, -15.99609375], FELL),
+        (4868, [48.8466796875, 1.0361328125, 19.3916015625], [-4.0478515625, 0.0, -15.99609375], FELL),
+        (4870, [48.7529296875, 1.53125, 18.904296875], [-4.0478515625, 0.0, -15.99609375], FELL),
+        (4872, [48.6240234375, 2.1240234375, 18.392578125], [-4.0478515625, 0.0, -15.99609375], FELL),
+        (4876, [48.4970703125, 2.423828125, 17.4697265625], [-4.0478515625, 0.0, -15.99609375], FELL),
+        (4879, [48.3037109375, 1.96484375, 16.7021484375], [-4.0478515625, 0.0, -15.99609375], FELL),
+        (4880, [48.240234375, 1.998046875, 16.447265625], [-4.0478515625, 0.0, -15.99609375], FELL),
+        (4899, [46.556640625, 2.0, 12.109375], [-4.0478515625, 0.0, -15.99609375], FELL),
+        (4900, landing, [-0.80859375, 0.0, -3.1953125], FELL),
+        (4901, landing, [0.0, 0.0, 0.0], FELL),
+        (4925, [46.5439453125, 2.009765625, 12.05859375], [0.0, 0.0, 0.0], 0),
+        (4987, landing, [0.0, 0.0, 0.0], 0),
+    ];
+    for (frame, position, velocity, flags) in client {
+        assert_eq!(poses[&frame], (position, velocity, flags), "frame {frame}");
+    }
+    let distances = match doomfist.graph_variable(0x0c51, 9326) {
+        Some(ScriptValue::Array(items)) => items.clone(),
+        other => panic!("#9326 {other:?}"),
+    };
+    let damage = |distance: f64| {
+        if distance <= 2.0 {
+            300.0
+        } else {
+            15.0 + (200.0 - 15.0) * (8.0 - distance) / (8.0 - 2.0)
+        }
+    };
+    let away = |distance: f64| {
+        if distance <= 2.0 {
+            10.0
+        } else {
+            1.0 + (10.0 - 1.0) * (8.0 - distance) / (8.0 - 2.0)
+        }
+    };
+    assert_eq!(struck.len(), 2, "{struck:?}");
+    for ((target, amount, knockback), (enemy, distance)) in
+        struck.iter().zip(enemies.iter().zip(&distances))
+    {
+        let ScriptValue::Float(distance) = *distance else {
+            panic!("{distances:?}");
+        };
+        assert_eq!(target, enemy);
+        assert!((amount - damage(distance)).abs() < 1e-3, "{amount} at {distance}");
+        let [x, up, z] = knockback.unwrap();
+        assert!((x.hypot(z) - away(distance)).abs() < 1e-3, "{knockback:?} at {distance}");
+        assert_eq!(up, 5.0);
+    }
+}

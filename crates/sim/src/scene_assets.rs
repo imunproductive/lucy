@@ -887,7 +887,14 @@ impl PreparedScene {
             yaw,
             mover_category(&self.map, team),
         )
-        .map(|mover| mover.with_navigation(self.navigation.clone()))
+        .map(|mover| {
+            mover
+                .with_navigation(self.navigation.clone())
+                .with_death_zones(Some(Arc::new(map_areas::DeathZones {
+                    kill_height: self.kill_height,
+                    areas: Arc::clone(&self.lethal_areas),
+                })))
+        })
         .map_err(invalid)
     }
 

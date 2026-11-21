@@ -137,6 +137,10 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                         self.update_landing(key, node)?;
                     }
                     Some(StateKind::Shockwave) => self.update_shockwave(key)?,
+                    Some(StateKind::Rise) => {
+                        let node = self.graph(id).state(usize::from(raw)).expect("rise");
+                        self.rise_block(key, node);
+                    }
                     Some(StateKind::GrappleCast) => self.tick_grapple(key, 0)?,
                     Some(StateKind::ModifyHealth { last_ms }) => {
                         let node = self.graph(id).state(usize::from(raw)).expect("health");

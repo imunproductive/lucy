@@ -89,6 +89,49 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 self.set_button_down(key, node, edge.pressed, 0)?;
             }
         }
+        self.recheck_button_conditions(id, edge)
+    }
+
+    /// A logical button condition (`STU_7DEB522D`) lists the states whose
+    /// transitions hang on it (`m_122DF0CA`); the client dispatches its
+    /// button's edges to them, and while it does the condition sees the
+    /// edge (`Cond_STU_7DEB522D` 0x7FF78AA858C0: the host's `+1084` button
+    /// and `+1083` pressed). The active ones check their transitions again
+    /// at each edge of the condition's button. Meteor Strike's FIRE
+    /// (`0C51` rid23, st18's transition) lands on the press.
+    fn recheck_button_conditions(&mut self, id: u16, edge: ButtonEdge) -> Result<(), InitFault> {
+        let graph = self.graph(id);
+        let listeners: Vec<(&Node, Vec<u16>)> = graph
+            .nodes()
+            .filter(|node| node.class == "STU_7DEB522D" && !node.client_only)
+            .map(|node| {
+                let states = raw_indices(array_field(&node.fields, "m_122DF0CA")).collect();
+                (node, states)
+            })
+            .filter(|(_, states): &(_, Vec<u16>)| !states.is_empty())
+            .collect();
+        for (condition, states) in listeners {
+            self.spend("logical button condition edge")?;
+            let button = self
+                .evaluate(id, condition, field(&condition.fields, "m_logicalButton"), None)
+                .map(|value| expr::to_int(&value, -1));
+            if button != Some(i64::from(edge.button)) {
+                continue;
+            }
+            self.machine.current_edge = Some(edge);
+            let result = states.into_iter().try_for_each(|raw| {
+                let key = StateKey { instance: id, raw };
+                if !self.state(key).is_some_and(|state| state.active) {
+                    return Ok(());
+                }
+                let Some(node) = self.graph(id).state(usize::from(raw)) else {
+                    return Ok(());
+                };
+                self.try_complete(key, node, 0)
+            });
+            self.machine.current_edge = None;
+            result?;
+        }
         Ok(())
     }
 

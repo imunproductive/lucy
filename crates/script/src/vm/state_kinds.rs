@@ -766,6 +766,35 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         }
     }
 
+    /// Meteor Strike's flight (`STU_6154B909`, `orpheus_physics::mover::rise`):
+    /// its block as the client's update (`0x7FF789C4CA20`) hands a new
+    /// behaviour each frame (slot 57 `0x7FF789C3CDA0`): `m_4999D53A` as a
+    /// bool (unset or no value: false), `m_62F6795F` as a float (0), and
+    /// `m_2A7E6E17` as a float (unset or no value: −100000).
+    pub(super) fn rise_block(&mut self, key: StateKey, node: &Node) {
+        let id = key.instance;
+        let low = {
+            let config = field(&node.fields, "m_4999D53A");
+            !config.is_null()
+                && self
+                    .evaluate(id, node, config, None)
+                    .is_some_and(|value| truthy(&value))
+        };
+        let height = self.move_number(id, node, "m_62F6795F", 0.0).unwrap_or(0.0);
+        let unset = f64::from(orpheus_physics::mover::rise::UNSET_FLOOR);
+        let floor = self
+            .move_number(id, node, "m_2A7E6E17", unset)
+            .unwrap_or(unset);
+        self.machine.movements.insert(
+            key,
+            Behaviour::Rise(Rise {
+                low,
+                height: height as f32,
+                floor: floor as f32,
+            }),
+        );
+    }
+
     /// An AI movement state (`STU_ECAEE401`) reads its move goal at its
     /// begin and at each request on its input plug: the point the move-to
     /// goal (`STU_194D744E`, `m_BD2A95EE`) its subgraph plug starts names

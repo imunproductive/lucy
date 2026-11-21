@@ -48,6 +48,7 @@ use crate::{
     contact::world::ContactWorld,
     mover::ground_walk::{GroundWalk, ground_walk},
     mover::landing::{LandingSearch, landing_point},
+    mover::rise::{DeathZones, fatal_drop},
 };
 
 /// Which of the wall check's trials runs (`m_9A978490`; see the module
@@ -72,6 +73,7 @@ pub struct TrialMove {
     world: Arc<ContactWorld>,
     pose: CapsulePose,
     category: u16,
+    zones: Option<Arc<dyn DeathZones>>,
 }
 
 impl TrialMove {
@@ -80,7 +82,25 @@ impl TrialMove {
             world,
             pose,
             category,
+            zones: None,
         }
+    }
+
+    /// The zones that kill a body that falls into them ([`fatal_drop`]).
+    pub fn with_death_zones(mut self, zones: Option<Arc<dyn DeathZones>>) -> Self {
+        self.zones = zones;
+        self
+    }
+
+    /// Where a ray from `start` down to `end`, stopped by the static shapes
+    /// the body's moves meet (as Meteor Strike's flight's ray), enters a
+    /// zone that kills, if anywhere ([`fatal_drop`]).
+    pub fn fatal_drop(
+        &self,
+        start: [f64; 3],
+        end: [f64; 3],
+    ) -> Result<Option<[f64; 3]>, PointSetSize> {
+        fatal_drop(&self.world, self.category, self.zones.as_deref(), start, end)
     }
 
     /// The capsule's radius (its stance's).

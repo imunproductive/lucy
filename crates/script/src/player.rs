@@ -727,6 +727,18 @@ impl World for PlayerWorld {
         self.trial.as_ref()?.ground_walk(sphere, ray, walk).ok()
     }
 
+    /// The ray in the body's own world, with the zones its mover knows.
+    fn fatal_drop(&self, site: Site, start: [f64; 3], end: [f64; 3]) -> Option<bool> {
+        if !self.is_player_site(site) {
+            return None;
+        }
+        self.trial
+            .as_ref()?
+            .fatal_drop(start, end)
+            .ok()
+            .map(|point| point.is_some())
+    }
+
     /// The body's team from its filter bits; the other bodies' as listed.
     fn entity_team(&self, site: Site, entity: u32) -> Option<i64> {
         if !self.is_player_site(site) {

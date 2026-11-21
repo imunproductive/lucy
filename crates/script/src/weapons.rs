@@ -797,7 +797,7 @@ impl Blast {
 
 /// A ring's scale at `distance`: the first ring's within its radius, then
 /// straight between each ring and the next, none past the last.
-fn ring_scale(rings: &[(f64, f64)], distance: f64) -> f64 {
+pub(crate) fn ring_scale(rings: &[(f64, f64)], distance: f64) -> f64 {
     let Some(&(mut previous, mut scalar)) = rings.first() else {
         return 0.0;
     };
@@ -817,7 +817,7 @@ fn ring_scale(rings: &[(f64, f64)], distance: f64) -> f64 {
 
 /// Ring rows: each one's `m_radius` and its `scale` field (absent:
 /// `default`), the finite ones, by radius.
-fn authored_rings(
+pub(crate) fn authored_rings(
     rows: Option<&Json>,
     scale: &str,
     default: f64,

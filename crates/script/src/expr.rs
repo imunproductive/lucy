@@ -333,6 +333,12 @@ pub trait Context {
         None
     }
 
+    /// Whether a ray from `start` down to `end`, stopped by the map, enters
+    /// a zone that kills (`STU_88687E54`); None: unknown.
+    fn fatal_drop(&mut self, _start: [f64; 3], _end: [f64; 3]) -> Option<bool> {
+        None
+    }
+
     /// The map point a ray from `origin` along unit `direction` meets
     /// within `reach` (a cast without a ray profile); Some(None) when it
     /// meets none, None when this world has no map.
@@ -2530,13 +2536,8 @@ impl Evaluator<'_> {
             // Where a body looks: 2200A66D along its aim, 021D01CD along the
             // ground, C8C4C20D its heading in degrees, atan2(x, z) of the
             // ground direction (`BodyWorld.native` in leafall903/ORPHEUS,
-            // commit c239a84). 40AC5AE4 is the heading in degrees too
-            // (`Eval_STU_40AC5AE4` 0x7FF789BD8200 → 0x7FF789C2C220: the
-            // mover's 16-bit yaw at +66 times 2π/65536 (0x7FF789B71F70),
-            // else the transform's, times 57.29578; Rocket Punch `0D06`
-            // rid45 keeps the puncher's in #502 for its victim's `0D07`). A
-            // world's own answer comes first.
-            "STU_2200A66D" | "STU_021D01CD" | "STU_C8C4C20D" | "STU_40AC5AE4"
+            // commit c239a84). A world's own answer comes first.
+            "STU_2200A66D" | "STU_021D01CD" | "STU_C8C4C20D"
                 if native_shape(config, class, Some("m_entity")) =>
             {
                 if let Some(value) = context.native(config) {
@@ -2551,12 +2552,29 @@ impl Evaluator<'_> {
                 } else {
                     aim([context.entity_yaw(entity).ok_or_else(unsupported)?, 0])
                 };
-                if class == "STU_C8C4C20D" || class == "STU_40AC5AE4" {
+                if class == "STU_C8C4C20D" {
                     let [x, _, z] = facing;
                     Value::Float(rounded(rounded(x.atan2(z)) * DEGREES))
                 } else {
                     Value::Vector(facing)
                 }
+            }
+            // A body's pitch in degrees (`Eval_STU_40AC5AE4` 0x7FF789BD8200
+            // → 0x7FF789C2C220: the movement state's s16 at `+66` × 2π/65536
+            // (0x7FF789B71F70), else the transform's, × 57.29578). `+66` is
+            // the Euler pitch after the yaw at `+64`, which the server never
+            // sends (`orpheus_wire::entity`: "No Euler pitch or roll"), so 0
+            // for every body. Game m2 (Doomfist.md §24): his client's own
+            // `0C51` #502 from it was 0.0 facing 142.9°. A world's own answer
+            // comes first; an invalid entity fails.
+            "STU_40AC5AE4" if native_shape(config, class, Some("m_entity")) => {
+                if let Some(value) = context.native(config) {
+                    return Ok(value);
+                }
+                to_entity(&self.config(child(config, "m_entity"), context, nested)?)
+                    .filter(|&entity| valid_entity(entity))
+                    .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?;
+                Value::Float(0.0)
             }
             // A direction kept within a cone of another (Eval 0x7FF789BFB820):
             // `m_32B00625`'s yaw atan2(x, z) and pitch asin(−y) (both
@@ -3123,6 +3141,29 @@ impl Evaluator<'_> {
                 let radius = context.body_radius(entity).ok_or_else(unsupported)?;
                 let scale = context.body_scale(entity).ok_or_else(unsupported)?;
                 Value::Float(f64::from(radius as f32 * (scale as f32).max(0.35)))
+            }
+            // Whether falling from a point would kill (`Eval_STU_88687E54`
+            // 0x7FF789BFE570): a ray from `m_A8D12F28` (a vector, else the
+            // origin) down `m_83C99CE5` metres (unset or no number: 20) by
+            // `0x7FF789B2F280`, which stops at the map and answers whether
+            // the rest enters the kill height or a damage area. Meteor
+            // Strike's floor (`0C51` st59: from 0.2 m over his feet, 50 m).
+            "STU_88687E54" if native_fields(config, &["m_A8D12F28", "m_83C99CE5"]) => {
+                let unsupported = || EvalError::UnsupportedConfig(class.into());
+                let start = match self.config(child(config, "m_A8D12F28"), context, nested)? {
+                    Value::Vector(point) => point,
+                    _ => [0.0; 3],
+                };
+                let depth = match child(config, "m_83C99CE5") {
+                    depth if depth.is_null() => 20.0,
+                    depth => match self.config(depth, context, nested)? {
+                        Value::Float(depth) => f64::from(depth as f32),
+                        Value::Integer(depth) => depth as f64,
+                        _ => 20.0,
+                    },
+                };
+                let end = [start[0], f64::from((start[1] - depth) as f32), start[2]];
+                Value::Bool(context.fatal_drop(start, end).ok_or_else(unsupported)?)
             }
             // GetGameRulesetValue (`Eval_STU_3832D36C` 0x7FF789BDFAC0,
             // GameSettings.md 15.2): `m_value` first, and a value wins (an
