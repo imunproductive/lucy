@@ -963,6 +963,19 @@ pub trait World {
         false
     }
 
+    /// A persistent sender's parameters changed while `target` holds its
+    /// message: the target's receiving states that hold it take the new
+    /// values into their outputs ([`Component::update_message`]). A world
+    /// that routes none leaves the receiver with the values it took.
+    fn update_message(
+        &mut self,
+        _source: Site,
+        _target: u32,
+        _message: u64,
+        _parameters: &Variables,
+    ) {
+    }
+
     /// A `STUStatescriptActionCriteria` raised a criteria on an entity
     /// ([`RaisedCriteria::target`]: its `m_targets`, the body itself or
     /// another entity it names, such as its controller): the event the
@@ -2472,6 +2485,25 @@ impl Component {
         })
     }
 
+    /// A persistent sender (`sender`) that this entity's receiving states
+    /// hold changed its parameters ([`World::update_message`]): they take
+    /// the new values into their outputs, and what reads them runs; their
+    /// subgraphs don't begin again (the client's receiver refreshes its
+    /// parameter cache, `D4CB70`, refs/orpheus-upstream
+    /// `docs/MESSAGE_RECEIVER.txt`).
+    pub fn update_message(
+        &mut self,
+        sender: u32,
+        message: u64,
+        parameters: Variables,
+        world: &mut impl World,
+    ) -> Result<(), InitFault> {
+        self.run(world, |vm| {
+            vm.refresh_received(sender, message, Arc::new(parameters))?;
+            vm.run()
+        })
+    }
+
     /// A new root instance of `graph` with the next free id and its own
     /// `variables` (a spawner's overrides). Its entries queue at the current
     /// clock and run at the next update (`Component.create` in
@@ -3416,22 +3448,10 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             }
             ("m_outPlug", None)
         };
-        let site = self.site(id, node);
-        for field in array_field(&node.fields, "m_params") {
-            if !field.is_object() {
-                continue;
-            }
-            let target = match expr::lvalue(field.get("m_out_Var").unwrap_or(&Json::Null)) {
-                Ok(Some(target)) => source_key(id, target),
-                Ok(None) => continue,
-                Err(error) => {
-                    self.report(site, Issue::Expression(error));
-                    return Ok(());
-                }
-            };
-            let value = self.message_parameter(parameter_id(field));
-            self.write(target, value)?;
+        if !self.write_message_parameters(id, node)? {
+            return Ok(());
         }
+        let site = self.site(id, node);
         if expr::valid_entity(sender) {
             match expr::lvalue(field(&node.fields, "m_B60ABDA4")) {
                 Ok(Some(target)) => self.write(source_key(id, target), Value::Entity(sender))?,
@@ -3444,6 +3464,29 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         }
         self.follow(id, node, path.0, path.1, 0)?;
         Ok(())
+    }
+
+    /// The message being delivered's parameters into the entry's outputs
+    /// (`m_params` rows with `m_out_Var`); false when one can't be written
+    /// (reported).
+    fn write_message_parameters(&mut self, id: u16, node: &Node) -> Result<bool, InitFault> {
+        let site = self.site(id, node);
+        for field in array_field(&node.fields, "m_params") {
+            if !field.is_object() {
+                continue;
+            }
+            let target = match expr::lvalue(field.get("m_out_Var").unwrap_or(&Json::Null)) {
+                Ok(Some(target)) => source_key(id, target),
+                Ok(None) => continue,
+                Err(error) => {
+                    self.report(site, Issue::Expression(error));
+                    return Ok(false);
+                }
+            };
+            let value = self.message_parameter(parameter_id(field));
+            self.write(target, value)?;
+        }
+        Ok(true)
     }
 
     /// A SendGameMessage action: the message goes once to the recipients
@@ -3514,13 +3557,14 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
 
     /// A running sender's tick ([`Self::begin_send_state`]): the message
     /// goes to the entities its target names that don't hold it yet, and
-    /// ends for those it no longer names. When its parameters changed it
-    /// goes again to every entity it names, which take the new ones: `0F4A`
-    /// st23/st90 hold `0724` to the spawn rooms with their team (`0473`,
-    /// #10795e/#10796e), which a Competitive side swap changes for the
-    /// rooms both sides' lists keep. [Inference: the client's sender was
-    /// not read for this; without it the swapped defenders' room stays the
-    /// other team's and hurts them, `0C8E` st45.]
+    /// ends for those it no longer names. When its parameters changed, the
+    /// entities that still hold it take the new values
+    /// ([`World::update_message`]): the client's receiver evaluates the
+    /// sender's parameters in the sender and refreshes its cache when they
+    /// change (refs/orpheus-upstream `docs/MESSAGE_PARAMETERS.txt`,
+    /// `MESSAGE_RECEIVER.txt`). `0F4A` st23/st90 hold `0724` to the spawn
+    /// rooms with their team (`0473`, #10795e/#10796e), which a Competitive
+    /// side swap changes for the rooms both sides' lists keep.
     pub(super) fn refresh_send_state(
         &mut self,
         key: StateKey,
@@ -3555,15 +3599,25 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         if joined.is_empty() && left.is_empty() && !changed {
             return Ok(());
         }
-        let to = if changed {
-            &recipients.entities
-        } else {
-            &joined
-        };
-        if !self.deliver_game_message(key.instance, node, &recipients, to)? {
+        if !self.deliver_game_message(key.instance, node, &recipients, &joined)? {
             return Ok(());
         }
         if let Some(parameters) = parameters {
+            if changed {
+                let site = self.site(key.instance, node);
+                for &entity in held.iter().filter(|entity| !left.contains(entity)) {
+                    if entity == site.entity {
+                        self.refresh_received(
+                            site.entity,
+                            recipients.message,
+                            Arc::new(parameters.clone()),
+                        )?;
+                    } else {
+                        self.world
+                            .update_message(site, entity, recipients.message, &parameters);
+                    }
+                }
+            }
             self.machine.sent.insert(key, parameters);
         }
         for &entity in &left {
@@ -3660,6 +3714,55 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             }
             self.exit_subgraph(key.instance, node, "m_452862E6", 1)?;
             self.follow(key.instance, node, "m_33DA5163", Some(key), 0)?;
+        }
+        Ok(())
+    }
+
+    /// The receiving states of `message` that hold it from `sender` take
+    /// its new `parameters` into their outputs, without beginning their
+    /// subgraphs again ([`Component::update_message`]).
+    pub(super) fn refresh_received(
+        &mut self,
+        sender: u32,
+        message: u64,
+        parameters: Arc<Variables>,
+    ) -> Result<(), InitFault> {
+        let held: Vec<StateKey> = self
+            .machine
+            .snapshot
+            .instances
+            .iter()
+            .flat_map(|(&instance, item)| {
+                item.states
+                    .iter()
+                    .filter(|(_, state)| {
+                        state.active
+                            && state.kind == StateKind::MessageIdle
+                            && state.tracked.iter().any(|held| held.entity == sender)
+                    })
+                    .map(move |(&raw, _)| StateKey { instance, raw })
+            })
+            .collect();
+        for key in held {
+            let graphs = self.graphs;
+            let graph = self.machine.snapshot.instances[&key.instance].graph;
+            let node = graphs
+                .graph(graph)
+                .and_then(|graph| graph.state(usize::from(key.raw)))
+                .expect("active receiving state");
+            let named = match node.message() {
+                Some(_) => message_of(node) == Some(message),
+                None => self.computed_message_is(key.instance, node, message),
+            };
+            if !named {
+                continue;
+            }
+            self.parameters = Some(Arc::clone(&parameters));
+            self.sender = expr::valid_entity(sender).then_some(sender);
+            let written = self.write_message_parameters(key.instance, node);
+            self.parameters = None;
+            self.sender = None;
+            written?;
         }
         Ok(())
     }

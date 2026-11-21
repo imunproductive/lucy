@@ -6454,3 +6454,89 @@ fn a_receiving_state_takes_the_message_its_expression_names() {
         .unwrap();
     assert_eq!(active(component.snapshot().unwrap(), 1), [0, 1]);
 }
+
+/// A persistent sender's new parameters reach the receiving state that
+/// holds its message (`Component::update_message`): its output takes the
+/// new value and its receive subgraph runs on, not begun again (its
+/// action, which copies the output, keeps the first value).
+#[test]
+fn a_held_messages_new_parameters_reach_its_receiver() {
+    const MESSAGE: u64 = 0x0240_0000_0000_0724;
+    const SENDER: u32 = 0xd000_0010;
+    let receiver = graph(
+        43,
+        vec![
+            node(
+                0,
+                "STUStatescriptEntry",
+                None,
+                json!({"m_outPlug":plug(&[(1,"m_beginPlug")],&[])}),
+            ),
+            node(
+                1,
+                "STUStatescriptStateGameMessageEntry",
+                Some(0),
+                json!({
+                    "m_gameMessage":{"m_gameMessage":"0x0240000000000724"},
+                    "m_params":[{"m_B5051BCE":"0x0A40000000000473","m_out_Var":var(7,false)}],
+                    "m_33DA5163":plug(&[(2,"m_beginPlug")],&[1]),
+                    "m_452862E6":plug(&[(3,"m_inPlug")],&[]),
+                }),
+            ),
+            node(2, "STUStatescriptState", Some(1), json!({})),
+            node(
+                3,
+                "STUStatescriptActionSetVar",
+                None,
+                json!({"m_out_Var":var(8,false),"m_value":var(7,false)}),
+            ),
+        ],
+        json!([1, 2]),
+        json!([0]),
+    );
+    let mut component = Component::start(
+        Arc::new(store(vec![receiver])),
+        0x8000_0416,
+        Variables::new(),
+        vec![Root::new(1, 43)],
+        100,
+        &mut EmptyWorld,
+        MAX_INIT_WORK,
+    )
+    .unwrap();
+    let variable = |component: &Component, id| {
+        component.snapshot().unwrap().instances[&1]
+            .variables
+            .get(&id)
+            .cloned()
+    };
+    component
+        .receive_message(
+            SENDER,
+            MESSAGE,
+            Variables::from([(0x0473, Value::Integer(0))]),
+            &mut EmptyWorld,
+        )
+        .unwrap();
+    assert_eq!(variable(&component, 7), Some(Value::Integer(0)));
+    assert_eq!(active(component.snapshot().unwrap(), 1), [0]);
+    // The receive subgraph's action copied the output (#8 = #7).
+    assert_eq!(variable(&component, 8), Some(Value::Integer(0)));
+    component
+        .update_message(
+            SENDER,
+            MESSAGE,
+            Variables::from([(0x0473, Value::Integer(1))]),
+            &mut EmptyWorld,
+        )
+        .unwrap();
+    let snapshot = component.snapshot().unwrap();
+    assert!(
+        snapshot.initialization_complete(),
+        "{:?}",
+        snapshot.diagnostics
+    );
+    assert_eq!(variable(&component, 7), Some(Value::Integer(1)));
+    assert_eq!(variable(&component, 8), Some(Value::Integer(0)));
+    assert_eq!(active(component.snapshot().unwrap(), 1), [0]);
+}

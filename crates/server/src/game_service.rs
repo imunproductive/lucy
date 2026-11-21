@@ -80,7 +80,7 @@ use orpheus_sim::{
     hurt_feedback::HurtFeedback,
     instance::{FREE_FOR_ALL_TEAM, Instance, Member, RETAIL_QUANTA, TOURNAMENT_QUANTA, ownership},
     match_flow::{FlowEvent, MatchFlow, Mode, Phase, Standing, Timers},
-    messages::{Backlog, HeldReach, Players, Recipients, deliver, deliver_held},
+    messages::{Backlog, HeldReach, Players, Recipients, deliver, deliver_held, deliver_updates},
     mode_script::ModeRunner,
     mode_view::ModeFrame,
     objectives::Participant,
@@ -3327,8 +3327,10 @@ impl State {
             messages.append(&mut room.mail);
             let (placed, mut ends) = world.scene.take_placed_messages();
             messages.extend(placed);
+            let mut updates = Vec::new();
             if let Some(mode) = &mut room.mode {
                 ends.extend(mode.take_message_ends());
+                updates = mode.take_message_updates();
             }
             if let Some(combat) = &mut world.combat {
                 messages.extend(combat.take_messages());
@@ -3350,6 +3352,7 @@ impl State {
             }
             deliver_held(&held, &mut room.held_reach, &mut recipients);
             deliver(&mut room.backlog, messages, ends, &mut recipients);
+            deliver_updates(&updates, &mut recipients);
             let mut changes = world.scene.take_dummy_changes();
             drop(players);
             let mut opened = Vec::new();

@@ -59,8 +59,25 @@ pub trait Recipients {
     /// A persistent sender let its message to `end.target`, one of these,
     /// go.
     fn end(&mut self, end: &MessageEnd);
+    /// A persistent sender that `update.target`, one of these, holds
+    /// changed its parameters; these route none by default.
+    fn update(&mut self, _update: &GameMessage) {}
     /// The entities whose graphs these run now.
     fn entities(&self) -> Vec<u32>;
+}
+
+/// Persistent senders' new parameters to the entities that hold their
+/// messages (`orpheus_script` `World::update_message`), after the tick's
+/// messages ([`deliver`]).
+pub fn deliver_updates(updates: &[GameMessage], recipients: &mut [&mut dyn Recipients]) {
+    for update in updates {
+        if let Some(group) = recipients
+            .iter_mut()
+            .find(|group| group.runs(update.target))
+        {
+            group.update(update);
+        }
+    }
 }
 
 /// The entities each held broadcast reached ([`deliver_held`]).
@@ -289,6 +306,10 @@ impl Recipients for PlacedScripts {
 
     fn end(&mut self, end: &MessageEnd) {
         self.end_message(end);
+    }
+
+    fn update(&mut self, update: &GameMessage) {
+        self.update_message(update);
     }
 
     fn entities(&self) -> Vec<u32> {

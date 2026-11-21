@@ -1198,6 +1198,21 @@ impl MapEntityWorld {
         );
     }
 
+    /// A persistent sender (`sender`) that the placed entity `target`
+    /// holds changed its parameters ([`Component::update_message`]).
+    pub fn update_message(
+        &mut self,
+        target: u32,
+        sender: u32,
+        message: u64,
+        parameters: &Variables,
+    ) {
+        self.run_scripts(
+            |entity| entity == target,
+            |component, world| component.update_message(sender, message, parameters.clone(), world),
+        );
+    }
+
     /// Run `run` on the running script of each entity `pick` takes, with
     /// its world (a script that faults stops), then hand on what they
     /// asked for ([`Self::settle`]).

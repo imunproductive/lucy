@@ -416,6 +416,16 @@ impl ModeRunner {
         }
     }
 
+    /// The new parameters of the graph's persistent sends that other
+    /// entities still hold, since the last call, for the match to route
+    /// after its messages ([`crate::messages::deliver_updates`]).
+    pub fn take_message_updates(&mut self) -> Vec<GameMessage> {
+        match self {
+            Self::Graph { script, .. } => script.take_message_updates(),
+            Self::HandBuilt { .. } => Vec::new(),
+        }
+    }
+
     /// A persistent sender let its message to the mode entity go.
     pub fn end_message(&mut self, end: &MessageEnd) {
         let Self::Graph { script, .. } = self else {

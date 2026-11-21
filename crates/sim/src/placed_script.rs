@@ -479,6 +479,19 @@ impl PlacedScripts {
         }
     }
 
+    /// A persistent sender that the placed entity `update.target` holds
+    /// changed its parameters (`update.parameters`).
+    pub fn update_message(&mut self, update: &GameMessage) {
+        if let Some(world) = &mut self.world {
+            world.update_message(
+                update.target,
+                update.sender,
+                update.message,
+                &update.parameters,
+            );
+        }
+    }
+
     /// Each complete script's latest frame, by entity.
     pub fn frames(&self) -> impl Iterator<Item = (u32, &PlacedFrame)> {
         self.frames

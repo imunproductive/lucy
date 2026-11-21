@@ -165,6 +165,10 @@ pub struct ModeWorld {
     /// The ends of the graphs' persistent sends to other entities, until
     /// [`ModeScript`] hands them on.
     ends: Vec<MessageEnd>,
+    /// The new parameters of the graphs' persistent sends to other
+    /// entities that still hold them, until the match takes them
+    /// ([`ModeScript::take_message_updates`]).
+    updates: Vec<GameMessage>,
     /// The entities the graphs made that [`ModeScript`] hasn't started
     /// yet, and those it runs.
     made: Vec<CreatedEntity>,
@@ -204,6 +208,7 @@ impl ModeWorld {
             own: Vec::new(),
             held: Vec::new(),
             ends: Vec::new(),
+            updates: Vec::new(),
             made: Vec::new(),
             created: Vec::new(),
             destroyed: Vec::new(),
@@ -681,6 +686,17 @@ impl World for ModeWorld {
             self.held.remove(index);
         }
         true
+    }
+
+    /// A persistent send's new parameters go to the match, which hands
+    /// them to the target's receivers ([`ModeScript::take_message_updates`]).
+    fn update_message(&mut self, _source: Site, target: u32, message: u64, parameters: &Variables) {
+        self.updates.push(GameMessage {
+            sender: GAME_MODE_ENTITY,
+            target,
+            message,
+            parameters: parameters.clone(),
+        });
     }
 }
 
@@ -1279,6 +1295,13 @@ impl ModeScript {
         let mut ends = std::mem::take(&mut self.routed_ends);
         ends.append(&mut self.world.ends);
         ends
+    }
+
+    /// The new parameters of the graphs' persistent sends that other
+    /// entities still hold ([`World::update_message`]), for the match to
+    /// route. The entities the mode entity made get none.
+    pub fn take_message_updates(&mut self) -> Vec<GameMessage> {
+        std::mem::take(&mut self.world.updates)
     }
 
     /// The messages of [`Self::take_messages`] to the entities `to`
