@@ -108,7 +108,13 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
     }
 
     /// A completion check a join asked for (upstream's `CHECK` event): an
-    /// active state that is not ending tries to complete.
+    /// active state that is not ending tries to complete. An Ability first
+    /// settles its cooldown link (its event 2 runs the update
+    /// 0x7FF789B95560, whose cooldown check comes first), so a write of its
+    /// cooldown variable restarts the cooldown in the same frame. The rest
+    /// of that update (the start and keep) stays on its tick: running it
+    /// here started Soldier: 76's sprint a frame before the authored
+    /// timeline (`isolated_soldier_sprint_ability_matches_…`).
     pub(super) fn check(&mut self, key: StateKey) -> Result<(), InitFault> {
         let Some(state) = self.state_mut(key) else {
             return Ok(());
@@ -117,10 +123,14 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         if !state.active || state.ending {
             return Ok(());
         }
+        let ability = matches!(state.kind, StateKind::Ability { .. });
         let node = self
             .graph(key.instance)
             .state(usize::from(key.raw))
             .expect("active state node");
+        if ability {
+            self.settle_cooldown(key, node, 0)?;
+        }
         self.try_complete(key, node, 0)
     }
 
