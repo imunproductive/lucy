@@ -1835,7 +1835,12 @@ impl OwnerBodyRuntime for Mailbox {
 fn route(worlds: &mut [&mut WorldDelivery]) {
     let mut players = crate::messages::Players::new(worlds, 100);
     let messages = players.take_messages();
-    crate::messages::deliver(messages, Vec::new(), &mut [&mut players]);
+    crate::messages::deliver(
+        &mut crate::messages::Backlog::default(),
+        messages,
+        Vec::new(),
+        &mut [&mut players],
+    );
 }
 
 /// match.py `queue_body_message`: a message to an entity no player's body

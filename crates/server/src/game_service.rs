@@ -80,7 +80,7 @@ use orpheus_sim::{
     hurt_feedback::HurtFeedback,
     instance::{FREE_FOR_ALL_TEAM, Instance, Member, RETAIL_QUANTA, TOURNAMENT_QUANTA, ownership},
     match_flow::{FlowEvent, MatchFlow, Mode, Phase, Standing, Timers},
-    messages::{HeldReach, Players, Recipients, deliver, deliver_held},
+    messages::{Backlog, HeldReach, Players, Recipients, deliver, deliver_held},
     mode_script::ModeRunner,
     mode_view::ModeFrame,
     objectives::Participant,
@@ -805,6 +805,8 @@ struct Room {
     mail: Vec<GameMessage>,
     /// Who each of the mode graph's held broadcasts reached.
     held_reach: HeldReach,
+    /// The messages over a tick's cap, for the next tick's `route_messages`.
+    backlog: Backlog,
     /// When the flow last advanced.
     flow_at: Duration,
     /// The tick the flow started: the first player came into the world,
@@ -851,6 +853,7 @@ impl Room {
             mode: None,
             mail: Vec::new(),
             held_reach: HeldReach::default(),
+            backlog: Backlog::default(),
             flow_at: Duration::ZERO,
             flow_tick: 0,
             mode_frame: None,
@@ -3312,7 +3315,7 @@ impl State {
                 recipients.push(mode);
             }
             deliver_held(&held, &mut room.held_reach, &mut recipients);
-            deliver(messages, ends, &mut recipients);
+            deliver(&mut room.backlog, messages, ends, &mut recipients);
             let mut changes = world.scene.take_dummy_changes();
             drop(players);
             let mut opened = Vec::new();

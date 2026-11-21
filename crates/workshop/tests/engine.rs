@@ -307,6 +307,67 @@ rule("Beside")
     assert_eq!(order(&game), [1.0, 2.0, 3.0, 4.0]);
 }
 
+/// Abort ends the action list it is in: in a called subroutine it returns
+/// to the caller (C32S2's MLVLicons: a level's icon, then Abort, and
+/// GenerateMap goes on), and Abort If does the same; in the rule itself it
+/// ends the rule.
+#[test]
+fn abort_in_a_called_subroutine_returns_to_its_caller() {
+    let mut engine = engine(
+        r#"
+variables
+{
+	global:
+		0: Order
+}
+subroutines
+{
+	0: Icons
+	1: Text
+}
+rule("Main")
+{
+	event { Ongoing - Global; }
+	actions
+	{
+		Call Subroutine(Icons);
+		Modify Global Variable(Order, Append To Array, 2);
+		Call Subroutine(Text);
+		Modify Global Variable(Order, Append To Array, 4);
+		Abort;
+		Modify Global Variable(Order, Append To Array, 99);
+	}
+}
+rule("Icons")
+{
+	event { Subroutine; Icons; }
+	actions
+	{
+		Modify Global Variable(Order, Append To Array, 1);
+		Abort;
+		Modify Global Variable(Order, Append To Array, 99);
+	}
+}
+rule("Text")
+{
+	event { Subroutine; Text; }
+	actions
+	{
+		Modify Global Variable(Order, Append To Array, 3);
+		Abort If(True);
+		Modify Global Variable(Order, Append To Array, 99);
+	}
+}
+"#,
+    );
+    let mut game = Match::new(catalog());
+    game.globals.insert(0, Value::Array(Vec::new()));
+    run(&mut engine, &mut game, 1);
+    let order: Vec<f64> = game.global(0).array().into_iter().map(number).collect();
+    assert_eq!(order, [1.0, 2.0, 3.0, 4.0]);
+    assert_eq!(engine.running(), 0);
+}
+
 #[test]
 fn for_while_break_and_continue() {
     let mut engine = engine(

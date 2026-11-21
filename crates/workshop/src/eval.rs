@@ -772,15 +772,21 @@ impl<H: World + Variables + ?Sized> Eval<'_, '_, H> {
                 let wanted = self.at(value, 1);
                 Value::Bool(items.iter().any(|item| item.equals(&wanted)))
             }
+            // An array that is not among the items stands for its first
+            // element, as a value where one is wanted [inference: C32S2's
+            // CP Clear finds the checkpoint it landed in with Index Of
+            // Array Value(Local_Pos, Filtered Array(Local_Pos, …)); taken
+            // whole, it is -1 and the clear sends the player to
+            // checkpoint 0].
             INDEX_OF_ARRAY_VALUE => {
                 let items = self.at(value, 0).array();
                 let wanted = self.at(value, 1);
-                Value::Number(
-                    items
-                        .iter()
-                        .position(|item| item.equals(&wanted))
-                        .map_or(-1.0, |index| index as f64),
-                )
+                let find = |wanted: &Value| items.iter().position(|item| item.equals(wanted));
+                let found = find(&wanted).or_else(|| match &wanted {
+                    Value::Array(within) => within.first().and_then(find),
+                    _ => None,
+                });
+                Value::Number(found.map_or(-1.0, |index| index as f64))
             }
             ARRAY_SLICE => {
                 let items = self.at(value, 0).array();

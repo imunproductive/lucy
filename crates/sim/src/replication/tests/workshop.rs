@@ -338,3 +338,46 @@ fn dpk_archive_c32s2_times_the_run_and_resets_it_on_a_fall() {
     assert_eq!(number(&parkour.player_variable("RunTime")), 0.0);
     assert_eq!(number(&parkour.player_variable("RunState")), 0.0);
 }
+
+/// Level select: from the hub (checkpoint 0, whose ring list `QPos[0]`
+/// holds the levels' first checkpoints), landing in level 1's ring
+/// (checkpoint 1, 1.872 m, at (18.363, 4.117, 9.094)) clears it ("CP Clear
+/// / Fail" → CP Clear: the checkpoint is 1, "First CP of a Level" sets the
+/// level to 1, CP Change puts him at its centre). The hub's list is whole
+/// only if MLVLicons' Abort returns to "Generate Global Data" (it ends the
+/// subroutine, not the rule).
+///
+/// The player's first Reset ran on his spawn, before "Generate Global Data"
+/// finished (here he spawns with the match; in a game he picks his hero
+/// later), so his list was the hub's at that time: a fall resets him and
+/// takes the hub's list again.
+#[test]
+#[ignore = "requires an Overwatch 1.74 install and the DPK archive (just test-dpk <install> <archive>)"]
+fn dpk_archive_c32s2_landing_in_level_ones_ring_selects_it() {
+    const LEVEL_ONE: [f64; 3] = [18.363, 4.117, 9.094];
+    let mut parkour = Parkour::start();
+    parkour.run(5.0);
+    let ScriptValue::Array(hub) = parkour.global("QPos") else {
+        panic!("no checkpoint positions");
+    };
+    let ScriptValue::Array(levels) = &hub[0] else {
+        panic!("{:?}", hub[0]);
+    };
+    // 11 levels: level 1 to 10 and the secret one.
+    assert_eq!(levels.len(), 11);
+    assert_eq!(levels[0], ScriptValue::Vector(LEVEL_ONE));
+    let (centre, _) = parkour.first_checkpoint();
+    // The ground below the hub's balcony, 2.1 m from level 1's centre.
+    parkour.place([20.5, 5.0, 9.6]);
+    parkour.run(1.5);
+    assert!(distance(parkour.feet(), centre) < 1.0, "the fall reset him");
+    parkour.place([18.5, 5.5, 9.1]);
+    parkour.run(1.0);
+    assert_eq!(number(&parkour.player_variable("Checkpoint")), 1.0);
+    assert_eq!(number(&parkour.player_variable("Level")), 1.0);
+    assert!(
+        distance(parkour.feet(), LEVEL_ONE) < 0.5,
+        "{:?}",
+        parkour.feet()
+    );
+}

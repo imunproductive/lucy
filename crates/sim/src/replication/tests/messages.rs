@@ -132,7 +132,12 @@ fn a_mode_message_to_every_entity_reaches_bodies_controllers_and_bots() {
     let mut players = Players::new(&mut worlds, tick);
     let (mut bots, placed) = scene.message_recipients(tick);
     let mut recipients: [&mut dyn Recipients; 3] = [&mut players, &mut bots, placed];
-    deliver(messages, Vec::new(), &mut recipients);
+    deliver(
+        &mut crate::messages::Backlog::default(),
+        messages,
+        Vec::new(),
+        &mut recipients,
+    );
 
     assert_eq!(
         body_snapshot(&world).variables.get(&FLAG_VARIABLE),
@@ -190,6 +195,7 @@ fn need_healing_reaches_an_ai_heros_body_but_not_the_senders() {
     let mut worlds = [&mut player, &mut ai];
     let mut players = Players::new(&mut worlds, tick);
     deliver(
+        &mut crate::messages::Backlog::default(),
         vec![mail(sender, NEED_HEALING, Variables::new())],
         Vec::new(),
         &mut [&mut players],
