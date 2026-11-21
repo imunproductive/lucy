@@ -41,8 +41,9 @@ test-game game:
     cargo build -p orpheus-relay --locked; $env:ORPHEUS_GAME_DIR = '{{game}}'; cargo nextest run --workspace --exclude orpheus-launcher --locked --cargo-profile gametest --run-ignored only -j $env:RUST_TEST_THREADS -E 'not (test(/datatool/) | test(/matches_the_pack/) | test(/dpk_archive/) | test(/(^|::)slow_/) | test(/(^|::)serial_/))'; $parallel = $LASTEXITCODE; cargo nextest run --workspace --exclude orpheus-launcher --locked --cargo-profile gametest --run-ignored only -j 1 -E 'test(/(^|::)serial_/) & not test(/(^|::)slow_/)'; exit [Math]::Max($parallel, $LASTEXITCODE)
 
 # The game-install tests that play a whole match or run over a minute: their names start with slow_.
+# The ones that read the Doomfist parkour archive run in test-dpk.
 test-slow game:
-    $env:ORPHEUS_GAME_DIR = '{{game}}'; cargo nextest run --workspace --exclude orpheus-launcher --locked --cargo-profile gametest --run-ignored only -j $env:RUST_TEST_THREADS -E 'test(/(^|::)slow_/)'
+    $env:ORPHEUS_GAME_DIR = '{{game}}'; cargo nextest run --workspace --exclude orpheus-launcher --locked --cargo-profile gametest --run-ignored only -j $env:RUST_TEST_THREADS -E 'test(/(^|::)slow_/) & not test(/dpk_archive/)'
 
 # The game-install tests of one crate whose names contain the filter (while working on a feature).
 test-named game crate filter profile="dev":
