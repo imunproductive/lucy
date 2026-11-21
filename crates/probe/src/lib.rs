@@ -71,6 +71,31 @@ pub mod client {
     /// Component 44's mirror field 0 (`m_1AB5E773`): the entity the player
     /// possesses.
     pub const POSSESSED: u64 = 0xD0;
+    /// An entity's components (the lookup idiom of `0x7FF789CB7F10`):
+    /// component `n` is there when bit `n % 64` of the word `n / 64` of the
+    /// bitset at `+0x88` is set; its masked pointer is in the array at
+    /// `+0x58`, at the byte `[entity + 0xA8 + n / 64]` plus the set bits
+    /// below it in that word.
+    pub const COMPONENT_BITS: u64 = 0x88;
+    pub const COMPONENT_ARRAY: u64 = 0x58;
+    pub const COMPONENT_FIRST: u64 = 0xA8;
+    /// The pointer mask: `Prot_MaskingStub(&seed, &index)` turns the seed
+    /// into `seed ^ PEB.Ldr ^ MASK_LDR_KEY` and the index into
+    /// `2 * index - MASK_STUB`; the unmasking reads the table at
+    /// `MASK_TABLE + (index & 0xFFF)` and `+ (index >> 52)`.
+    pub const MASK_STUB: u64 = 0x7FF7_88FC_7C60;
+    pub const MASK_TABLE: u64 = 0x7FF7_8BDF_46D0;
+    pub const MASK_SEED: u64 = 0x190F_02EA_706F_9322;
+    pub const MASK_INDEX: u64 = 0x9B51_7592_7A19_5769;
+    pub const MASK_LDR_KEY: u64 = 0x81FC_5721_67C0_36B9;
+    pub const MASK_ADD: u32 = 420_414_186;
+    /// The world's entities by id: buckets of 16 bytes (entries, count) at
+    /// `([world+0x18] ^ (2 * ror64([ENTITIES_KEY_GLOBAL], 4) + ENTITIES_KEY))
+    /// + 16 * (id & 0xFFF)`, each entry (id, entity) in 16 bytes
+    /// (`0x7FF789CB7F10`).
+    pub const WORLD_ENTITIES: u64 = 0x18;
+    pub const ENTITIES_KEY_GLOBAL: u64 = 0x7FF7_8BDF_53A8;
+    pub const ENTITIES_KEY: u64 = 0x042B_51EF_9B84_A901;
 
     /// The world: `[entity+0x28] ^ WORLD_KEY`; its systems:
     /// `[world+0x140] ^ (SYSTEMS_KEY - [SYSTEMS_KEY_GLOBAL])`

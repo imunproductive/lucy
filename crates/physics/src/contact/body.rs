@@ -61,6 +61,8 @@ pub struct CharacterBody {
     proxy_moved: bool,
     contacts: Vec<(u32, ProxyContact)>,
     pairs: HashSet<u32>,
+    /// The world's switch count when the pairs were last updated.
+    epoch: u64,
     /// The capsules of the other characters that block the moves
     /// ([`CharacterBody::set_peers`]).
     peer_capsules: Vec<Capsule>,
@@ -84,6 +86,7 @@ impl fmt::Debug for CharacterBody {
 impl CharacterBody {
     pub fn new(world: Arc<ContactWorld>, pose: CapsulePose, category: u16) -> Self {
         Self {
+            epoch: world.epoch(),
             world,
             pose,
             category,
@@ -331,8 +334,23 @@ impl CharacterBody {
     }
 
     fn update_pairs(&mut self) {
-        if !std::mem::take(&mut self.proxy_moved) {
+        // A switch change takes the switched-off shapes out and lets the
+        // switched-on ones in, whether or not the proxy moved.
+        let epoch = self.world.epoch();
+        let switched = epoch != self.epoch;
+        if !std::mem::take(&mut self.proxy_moved) && !switched {
             return;
+        }
+        if switched {
+            self.epoch = epoch;
+            let (world, pairs) = (&self.world, &mut self.pairs);
+            self.contacts.retain(|(id, _)| {
+                let on = world.shape_on(*id);
+                if !on {
+                    pairs.remove(id);
+                }
+                on
+            });
         }
         let before = self.contacts.len();
         for id in self.world.query(self.fat) {
@@ -558,5 +576,92 @@ mod tests {
         assert!(body.try_resize(0.5, 0.55).unwrap());
         assert!(!body.try_resize(0.5, 1.0).unwrap());
         assert!(!body.fits(0.001, 1.0).unwrap());
+    }
+
+    /// Two triangles over the corners `a b c d` (`a b c` and `d c b`), as
+    /// one static mesh of `mask`.
+    fn quad(corners: [Vec3; 4], mask: u16) -> StaticShape {
+        let mesh = Mesh {
+            vertices: corners.to_vec(),
+            triangles: vec![
+                Triangle {
+                    corners: [0, 1, 2],
+                    wings: [-1, 3, -1],
+                    mask,
+                    surface: 0,
+                },
+                Triangle {
+                    corners: [3, 2, 1],
+                    wings: [-1, 0, -1],
+                    mask,
+                    surface: 0,
+                },
+            ],
+        };
+        let geometry =
+            StaticGeometry::Mesh(Arc::new(ContactMesh::new(mesh, [1.0; 3], mask).unwrap()));
+        StaticShape::new(geometry, None).unwrap()
+    }
+
+    /// The spawn rooms' paired team walls (`ContactWorld::with_switched`):
+    /// two walls in one doorway, one stopping team 0's mover (mask 0x88)
+    /// and one team 1's (0x90). A wall stops only its team's body, and only
+    /// while its group is on; a body pressed against it walks on once it is
+    /// switched off, though its pairs were made with the wall on.
+    #[test]
+    fn switched_team_walls_stop_their_team_only_while_on() {
+        let floor = quad(
+            [
+                [-10.0, 0.0, -10.0],
+                [-10.0, 0.0, 10.0],
+                [10.0, 0.0, -10.0],
+                [10.0, 0.0, 10.0],
+            ],
+            0x18,
+        );
+        // Facing -x, where the bodies come from.
+        let wall = |mask| {
+            vec![quad(
+                [
+                    [2.0, 0.0, 10.0],
+                    [2.0, 4.0, 10.0],
+                    [2.0, 0.0, -10.0],
+                    [2.0, 4.0, -10.0],
+                ],
+                mask,
+            )]
+        };
+        let world = Arc::new(
+            ContactWorld::new(vec![floor])
+                .unwrap()
+                .with_switched(vec![wall(0x88), wall(0x90)])
+                .unwrap(),
+        );
+        let pose = CapsulePose {
+            position: [0.0, 0.1, 0.0],
+            radius: 0.5,
+            top: 1.0,
+        };
+        let walk = |body: &mut CharacterBody| {
+            for _ in 0..8 {
+                body.move_capsule([0.5, 0.0, 0.0], 0.016).unwrap();
+            }
+            body.position()[0]
+        };
+        let [team0, team1] = [0x08, 0x10];
+        // Both off: everyone walks through the doorway.
+        assert!(walk(&mut CharacterBody::new(Arc::clone(&world), pose, team0)) > 3.9);
+        assert!(walk(&mut CharacterBody::new(Arc::clone(&world), pose, team1)) > 3.9);
+        // Team 0's wall on: it stops at the wall, team 1 walks on.
+        assert!(world.switch(0, true));
+        assert!(!world.switch(0, true));
+        let mut stopped = CharacterBody::new(Arc::clone(&world), pose, team0);
+        let x = walk(&mut stopped);
+        assert!(x > 1.4 && x < 1.5, "stopped at {x}");
+        assert!(walk(&mut CharacterBody::new(Arc::clone(&world), pose, team1)) > 3.9);
+        // Off again: the stopped body goes on.
+        assert!(world.switch(0, false));
+        assert!(walk(&mut stopped) > 3.9);
+        assert!(!world.is_on(0) && !world.is_on(1));
     }
 }

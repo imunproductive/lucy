@@ -23,10 +23,10 @@ use crate::{
     target_tags::{TargetTagLists, TargetTags},
     vitals::{PoolKind, Vitals},
     vm::{
-        AssistLink, AuraChange, BodyEffects, CombatMod, DEAD_FILTER_BIT, DummyBot, GameMessage,
-        HealthChange, MapRays, ParentWrite, Pickup, RaisedCriteria, ScopeChange, SeenBodies,
-        SeenBody, Site, TargetCandidate, TargetTagEffect, TrackedStat, Unknowns, VoiceRequest,
-        World,
+        AssistLink, AuraChange, BodyEffects, CombatMod, DEAD_FILTER_BIT, DummyBot,
+        EnvironmentCredit, GameMessage, HealthChange, MapRays, ParentWrite, Pickup, RaisedCriteria,
+        ScopeChange, SeenBodies, SeenBody, Site, TargetCandidate, TargetTagEffect, TrackedStat,
+        Unknowns, VoiceRequest, World,
     },
     wheel::{Cosmetic, Cosmetics},
     wire::{Value, Variables},
@@ -145,6 +145,9 @@ pub struct PlayerWorld {
     aura_changes: Vec<AuraChange>,
     /// The stats the body's graphs counted, for the match's stat table.
     tracked_stats: Vec<TrackedStat>,
+    /// Who the body's graphs named an environment kill of the body
+    /// credits (`STU_545AB3B8`), for the match.
+    environment_credits: Vec<EnvironmentCredit>,
     /// A graph revived the body (`0C8E`'s `STU_621AF478` on the
     /// Workshop's Resurrect), for the match to bring it back.
     revive: bool,
@@ -316,6 +319,17 @@ impl World for PlayerWorld {
             return false;
         }
         self.tracked_stats.push(stat);
+        true
+    }
+
+    /// The body's own graph names who its environment kill credits
+    /// ([`Self::take_environment_credits`]); another entity's isn't this
+    /// player's.
+    fn credit_environment(&mut self, site: Site, credit: EnvironmentCredit) -> bool {
+        if site.entity != self.entity || credit.body != self.entity {
+            return false;
+        }
+        self.environment_credits.push(credit);
         true
     }
 
@@ -874,6 +888,7 @@ impl PlayerWorld {
             health_changes: Vec::new(),
             aura_changes: Vec::new(),
             tracked_stats: Vec::new(),
+            environment_credits: Vec::new(),
             revive: false,
             next_dummy: None,
             dummies: Vec::new(),
@@ -904,6 +919,12 @@ impl PlayerWorld {
     /// The stats the body's graphs counted since the last call, in order.
     pub fn take_tracked_stats(&mut self) -> Vec<TrackedStat> {
         std::mem::take(&mut self.tracked_stats)
+    }
+
+    /// Who the body's graphs named its environment kill credits since the
+    /// last call (`STU_545AB3B8`), in order.
+    pub fn take_environment_credits(&mut self) -> Vec<EnvironmentCredit> {
+        std::mem::take(&mut self.environment_credits)
     }
 
     /// Whether a graph revived the body since the last call.

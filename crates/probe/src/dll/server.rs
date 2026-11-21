@@ -251,6 +251,17 @@ fn handle(probe: &'static Probe, request: &Value) -> Result<Value, String> {
                 .map(|(component, entity, id)| json!({"component": component, "entity": entity, "id": id}))
                 .collect())
         }
+        "component" => {
+            let id = arg(request, "id")? as u32;
+            let kind = u8::try_from(arg(request, "kind")?).map_err(|_| "kind: 0-255")?;
+            let player = probe.game.entity.load(Ordering::Relaxed);
+            if player == 0 {
+                return Err("no player entity yet (the frame sampler has not run)".into());
+            }
+            let entity = game::entity_by_id(probe, player, id);
+            let component = entity.and_then(|entity| game::entity_component(probe, entity, kind));
+            Ok(json!({"entity": entity, "component": component}))
+        }
         "owner" => {
             let component = arg(request, "component")?;
             let entity = game::owner(probe, component);

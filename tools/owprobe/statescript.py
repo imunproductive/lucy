@@ -34,12 +34,14 @@ def graph_id(guid):
 
 
 def hosts(p: Probe, entity_id=None):
-    """[{component, entity, id, host}] of component 47s (of one entity id)."""
-    out = []
-    for c in p.components(COMP47_VTABLE):
-        if entity_id is None or c["id"] == entity_id:
-            out.append(dict(c, host=c["component"] + HOST_IN_COMP47))
-    return out
+    """[{component, entity, id, host}] of component 47s (of one entity id: the client's own lookup, else a heap
+    scan of their vtable)."""
+    if entity_id is not None:
+        found = p.component(entity_id, 47)
+        if not found["component"]:
+            return []
+        return [dict(found, id=entity_id, host=found["component"] + HOST_IN_COMP47)]
+    return [dict(c, host=c["component"] + HOST_IN_COMP47) for c in p.components(COMP47_VTABLE)]
 
 
 def instances(p: Probe, host):
@@ -142,7 +144,7 @@ def host_entity_variables(p: Probe, host, wanted=None):
 def entity_vars(p: Probe, entity, wanted=None):
     """{id: value} of an entity's entity variables (#Ne): `entity` an id, 'player' (the local player, A0000100 in
     the Range) or 'body' (the body he possesses); `wanted` ids or all. {} for an entity without component 47.
-    Finds the host with a component scan (about 2.4 s)."""
+    Finds the host with the client's component lookup (`Probe.component`)."""
     entity = resolve_entity(p, entity)
     found = hosts(p, entity)
     return host_entity_variables(p, found[0]["host"], wanted) if found else {}

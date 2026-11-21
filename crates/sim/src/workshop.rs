@@ -83,11 +83,20 @@ const EQUAL: Id = 0x333A;
 /// to: All Teams, Team 1, Team 2 (`sub_7FF789C14870`).
 const TEAMS: [Id; 3] = [0x4D4E, 0x4D4F, 0x4D50];
 
-/// The mode entity's variables the Create actions write their last id
-/// into: Create HUD Text's text id (`1D8A` rid39) and the others' entity
-/// (`1CE8`, `1AB1` `STU_0BDBC7B2`).
-const LAST_TEXT_ID: u32 = 20765;
-const LAST_CREATED_ENTITY: u32 = 20554;
+/// The mode entity's variables behind the Workshop values the clients'
+/// `1B4A` evaluates: Last Text ID `51FE` reads `#20989e` (Create HUD Text
+/// `1D8A` rid9, Create In-World Text `1D8D` rid15 write the new id there),
+/// Last Created Entity `4C31` `#20555e` (Create Effect `1CE8` rid7,
+/// Create Icon `1AB1` rid14 write the new entity there, 0 when the limit
+/// was reached), Text Count `8657` `#20988e` (the texts up) and Entity
+/// Count `865B` the length of `#20554e` (the effects and icons up: each
+/// Create appends its entity, `1CE8` rid0, `1AB1` rid21, and each removes
+/// it when destroyed, `1CE8` rid49, `1AB1` rid2). `#20765e` is the text
+/// ids' counter.
+const LAST_TEXT_ID: u32 = 20989;
+const LAST_CREATED_ENTITY: u32 = 20555;
+const TEXT_COUNT: u32 = 20988;
+const CREATED_ENTITIES: u32 = 20554;
 
 /// The Workshop buttons (`4A39`), the command bits the client sends for
 /// their logical buttons (`orpheus_script::timeline::button_edges`: the
@@ -126,6 +135,8 @@ pub struct WorkshopView {
     pub hero: u64,
     pub health: f64,
     pub max_health: f64,
+    /// The ultimate's charge in percent of its cost (#342e of #338e).
+    pub ultimate_charge: f64,
 }
 
 /// A player of the match as the room gives him each tick.
@@ -491,7 +502,7 @@ impl Host<'_, '_> {
             let params = engine.evaluate_params(&*self, &source, &context);
             let kinds = param_kinds(self.catalog, running.call.action);
             let running = self.actions.get_mut(&handle).expect("due action");
-            let mut changed = false;
+            let mut changed = Vec::new();
             for (index, param) in params.iter().enumerate() {
                 if !running.reevaluated.get(index).copied().unwrap_or(false) {
                     continue;
@@ -500,13 +511,13 @@ impl Host<'_, '_> {
                 if let Some(sent) = running.sent.get_mut(index)
                     && !sent.identical(&value)
                 {
-                    *sent = value;
-                    changed = true;
+                    *sent = value.clone();
+                    changed.push((index, value));
                 }
             }
-            if changed {
-                let (action, sent) = (running.action, running.sent.clone());
-                if let Err(error) = self.script.set_action_parameters(action, sent) {
+            if !changed.is_empty() {
+                let action = running.action;
+                if let Err(error) = self.script.set_action_parameters(action, &changed) {
                     eprintln!("the Workshop's mode entity stopped ({error})");
                 }
             }
@@ -815,8 +826,8 @@ impl World for Host<'_, '_> {
     fn max_health(&self, player: EntityId) -> f64 {
         self.view(player).map_or(0.0, |view| view.max_health)
     }
-    fn ultimate_charge_percent(&self, _player: EntityId) -> f64 {
-        0.0
+    fn ultimate_charge_percent(&self, player: EntityId) -> f64 {
+        self.view(player).map_or(0.0, |view| view.ultimate_charge)
     }
     /// The cooldown left on the player's body's ability on the button
     /// ([`WorldDelivery::ability_cooldown`]): C32S2's "Reset Ability CDs
@@ -873,10 +884,17 @@ impl World for Host<'_, '_> {
         from_wire(&self.script.entity_value(LAST_TEXT_ID))
     }
     fn entity_count(&self) -> usize {
-        0
+        match self.script.entity_value(CREATED_ENTITIES) {
+            Wire::Array(entities) => entities.len(),
+            _ => 0,
+        }
     }
     fn text_count(&self) -> usize {
-        0
+        match self.script.entity_value(TEXT_COUNT) {
+            Wire::Integer(count) => usize::try_from(count).unwrap_or(0),
+            Wire::Float(count) if count > 0.0 => count as usize,
+            _ => 0,
+        }
     }
     fn server_load(&self) -> [f64; 3] {
         [0.0; 3]

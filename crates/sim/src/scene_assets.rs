@@ -304,6 +304,9 @@ pub struct PreparedScene {
     map_tags: Arc<MapTags>,
     /// Each body definition's target tags ([`body_tags`]).
     body_tags: Arc<BodyTags>,
+    /// The team walls' entities, by their switched group in the contact
+    /// world ([`Self::switch_team_walls`]).
+    team_walls: Vec<u32>,
     /// Their scripts (`placed_script`).
     placed_scripts: PlacedScripts,
     /// Where a falling body dies on a map with neither damage areas nor
@@ -497,6 +500,13 @@ impl SceneAssets {
         // The ray scene takes the longest (about 2 s for the Practice Range
         // in a debug build): it builds on a thread of its own beside the
         // movement scene, the contacts and the navigation.
+        let walls = self.map_areas.team_walls(&map, identifiers);
+        let team_walls: Vec<u32> = walls.iter().map(|wall| wall.entity()).collect();
+        let wall_shapes = walls
+            .iter()
+            .map(|wall| wall.shapes())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(invalid)?;
         let (ground, contacts, navigation, rays) = std::thread::scope(|scope| {
             let rays = scope.spawn(|| {
                 let cache = read_ray_cache(BufReader::new(File::open(&rays_path)?), identity)
@@ -504,8 +514,10 @@ impl SceneAssets {
                 CollisionScene::expanded_rays(&cache, identifiers, identity).map_err(invalid)
             });
             let ground = CollisionScene::movement_probe(&cache, identifiers).map_err(invalid);
-            // Every map's players move on its collision (match.py `new_mover`).
+            // Every map's players move on its collision (match.py
+            // `new_mover`), and on its team walls while they are on.
             let contacts = ContactWorld::from_movement_cache(cache, identifiers)
+                .and_then(|world| world.with_switched(wall_shapes))
                 .map(Arc::new)
                 .map_err(invalid);
             let navigation = self.navigation(&map);
@@ -661,6 +673,7 @@ impl SceneAssets {
             removed_placeables: Vec::new(),
             map_tags,
             body_tags: Arc::clone(&scripts.body_tags),
+            team_walls,
         };
         let mut factories = self
             .owner_bodies
@@ -1061,7 +1074,8 @@ impl PreparedScene {
     /// itself; else [`Self::room_holds`]) the mode's message, then advance
     /// them to `tick`. A placeable that removed itself (a health pack the
     /// ruleset turns off, `0046`) goes as [`Self::remove_placeables`]'
-    /// do.
+    /// do. The team walls then stand as their scripts say
+    /// ([`Self::switch_team_walls`]).
     pub fn advance_placed(&mut self, tick: u32, holds: &[(u32, Option<u8>)]) {
         self.placed_scripts.advance(tick, holds);
         let removed = self.placed_scripts.take_removed();
@@ -1070,6 +1084,32 @@ impl PreparedScene {
                 .retain(|placed| !removed.contains(&placed.entity()));
             self.removed_placeables.extend(removed);
         }
+        self.switch_team_walls();
+    }
+
+    /// Turn each team wall on in the movers' world while its script runs
+    /// `0FA8`'s state 3, off otherwise ([`map_areas::team_wall_on`]).
+    fn switch_team_walls(&self) {
+        let Some(contacts) = &self.contacts else {
+            return;
+        };
+        let world = self.placed_scripts.world();
+        for (group, &entity) in self.team_walls.iter().enumerate() {
+            let script = world.and_then(|world| world.entity(entity));
+            contacts.switch(group, map_areas::team_wall_on(script));
+        }
+    }
+
+    /// The team walls' entities and whether each stands in the movers'
+    /// world now.
+    pub fn team_walls(&self) -> impl Iterator<Item = (u32, bool)> + '_ {
+        self.team_walls.iter().enumerate().map(|(group, &entity)| {
+            let on = self
+                .contacts
+                .as_ref()
+                .is_some_and(|contacts| contacts.is_on(group));
+            (entity, on)
+        })
     }
 
     /// The placed scripts' game messages and message ends since the last

@@ -1168,6 +1168,29 @@ impl Combat {
             })
     }
 
+    /// Who the players' graphs named their bodies' environment kills
+    /// credit since the last call (`STU_545AB3B8`: the Rocket Punch
+    /// victim's `0D07` names the puncher before its wall slam), kept as
+    /// each body's knock credit ([`WorldDelivery::credit_environment`]):
+    /// a player's body or a living bot ([`Self::shooter`]); an entity that
+    /// is neither, or none, credits nobody.
+    pub fn apply_environment_credits(
+        &self,
+        scene: &PreparedScene,
+        players: &mut [CombatPlayer<'_>],
+        now: Duration,
+    ) {
+        for world in players
+            .iter_mut()
+            .filter_map(|player| player.world.as_deref_mut())
+        {
+            for credit in world.take_environment_credits() {
+                let by = credit.by.and_then(|entity| self.shooter(scene, entity));
+                world.credit_environment(credit.body, by, now);
+            }
+        }
+    }
+
     /// A hit of `amount` with `tags` on `target` as the shooter's dealt
     /// modifiers make it (`orpheus_script::vm::statuses`): a heal scaled
     /// by those of the healing he gives, damage by those of the damage he
@@ -1908,6 +1931,15 @@ impl KnockCredit {
     /// The body's own explosion pushed it.
     pub fn own_push(&mut self) {
         self.0 = None;
+    }
+
+    /// A graph named who an environment kill of `body` credits at `now`
+    /// (`STU_545AB3B8`): `by` as if he knocked it, or nobody.
+    pub fn named(&mut self, body: u32, by: Option<Shooter>, now: Duration) {
+        match by {
+            Some(by) => self.knocked(body, by, now),
+            None => self.0 = None,
+        }
     }
 
     /// The body's mover posed a frame that jumped or landed it.

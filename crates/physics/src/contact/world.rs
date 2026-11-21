@@ -13,11 +13,22 @@
 //! The broadphase hands the best fraction on as the next shape's limit, so a
 //! later shape counts only when strictly closer. Unverified: the world's
 //! shape order (chunk polytopes, meshes, then props in placeable order).
+//!
+//! Switched shapes ([`ContactWorld::with_switched`]): the spawn rooms' team
+//! walls (graph `0FA8`, definitions `1C90`/`1C91`) are the models of
+//! server-owned placeables that stand in every PvP doorway in pairs, one
+//! stopping each team (their meshes' masks 0x88 and 0x90: team proxy 0x08
+//! or 0x10, `orpheus_assets` `map_areas`). The client turns a wall on for
+//! the team it stops only while its graph's state 3 runs (after game
+//! message `0845`); the match does the same through
+//! [`ContactWorld::switch`]. A switched-off shape is out of every query;
+//! a body drops its pairs with it at its next pair update.
 
 use std::collections::{BTreeSet, HashMap, hash_map::Entry};
 use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::collision::cache::{CacheError, CollisionCache, Hull, Mesh, Placement, Shape};
 use crate::collision::grid::{ColumnGrid, ColumnRange, GridBuilder};
@@ -101,6 +112,8 @@ pub struct StaticShape {
     frame: Option<ContactFrame>,
     matrix: Option<CastFrame>,
     fat: Option<ContactBounds>,
+    /// The group that switches it ([`ContactWorld::with_switched`]).
+    switch: Option<usize>,
 }
 
 impl StaticShape {
@@ -132,6 +145,7 @@ impl StaticShape {
             frame,
             matrix,
             fat,
+            switch: None,
         })
     }
 
@@ -255,11 +269,19 @@ pub struct WorldHit {
 pub struct ContactWorld {
     shapes: Vec<StaticShape>,
     grid: ColumnGrid,
+    /// Whether each switched group is on.
+    switches: Box<[AtomicBool]>,
+    /// Moved on by every switch change, so bodies redo their pairs.
+    epoch: AtomicU64,
 }
 
 impl ContactWorld {
     /// Keep the supplied proxy order. It also determines equal-fraction ties.
     pub fn new(shapes: Vec<StaticShape>) -> Result<Self, ContactWorldError> {
+        Self::build(shapes, 0)
+    }
+
+    fn build(shapes: Vec<StaticShape>, groups: usize) -> Result<Self, ContactWorldError> {
         let mut grid = GridBuilder::with_large_limit(HUGE_PROXY_COLUMNS);
         for (index, shape) in shapes.iter().enumerate() {
             let id = u32::try_from(index).map_err(|_| ContactWorldError::IndexLimit)?;
@@ -274,7 +296,50 @@ impl ContactWorld {
         Ok(Self {
             shapes,
             grid: grid.build(),
+            switches: (0..groups).map(|_| AtomicBool::new(false)).collect(),
+            epoch: AtomicU64::new(0),
         })
+    }
+
+    /// This world with groups of shapes the match switches on and off,
+    /// after its own shapes in group order: group `n` is `groups[n]`, off
+    /// at first (see the module notes).
+    pub fn with_switched(self, groups: Vec<Vec<StaticShape>>) -> Result<Self, ContactWorldError> {
+        let count = groups.len();
+        let mut shapes = self.shapes;
+        for (group, members) in groups.into_iter().enumerate() {
+            shapes.extend(members.into_iter().map(|shape| StaticShape {
+                switch: Some(group),
+                ..shape
+            }));
+        }
+        Self::build(shapes, count)
+    }
+
+    /// Turn a switched group on or off; whether that changed it.
+    pub fn switch(&self, group: usize, on: bool) -> bool {
+        let changed = self.switches[group].swap(on, Ordering::AcqRel) != on;
+        if changed {
+            self.epoch.fetch_add(1, Ordering::AcqRel);
+        }
+        changed
+    }
+
+    /// Whether a switched group is on.
+    pub fn is_on(&self, group: usize) -> bool {
+        self.switches[group].load(Ordering::Acquire)
+    }
+
+    /// Counts the switch changes.
+    pub(crate) fn epoch(&self) -> u64 {
+        self.epoch.load(Ordering::Acquire)
+    }
+
+    /// Whether a shape is in the world now: not switched, or switched on.
+    pub(crate) fn shape_on(&self, id: u32) -> bool {
+        self.shapes[id as usize]
+            .switch
+            .is_none_or(|group| self.is_on(group))
     }
 
     /// Consume the movement cache and retain only the selected placement groups.
@@ -343,7 +408,10 @@ impl ContactWorld {
         let mut seen = FastSet::default();
         self.grid.visit(range.expanded(1), |id| {
             let shape = &self.shapes[id as usize];
-            if shape.fat.is_some_and(|bounds| overlaps(low, high, bounds)) && seen.insert(id) {
+            if shape.fat.is_some_and(|bounds| overlaps(low, high, bounds))
+                && shape.switch.is_none_or(|group| self.is_on(group))
+                && seen.insert(id)
+            {
                 found.push(id);
             }
         });

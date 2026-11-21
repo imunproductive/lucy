@@ -450,6 +450,95 @@ fn an_early_press_starts_the_ability_only_within_its_window() {
     assert!(running(&component));
 }
 
+/// Two abilities that push themselves on the entity's ability stack #33 at
+/// the same priority (`0C4…0001`, not above equal ones), as all of
+/// Doomfist's do: one on button 35 (command bit 0x008) that button 29
+/// (0x002) stops, setting #62 while it runs; one on button 36 (0x010)
+/// setting #63 when it starts. Both have a 0.1 s early-press window.
+fn stacked_abilities() -> Store {
+    let ability = |position, raw, fields: Json| {
+        let mut fields = fields;
+        fields["m_out_StackVar"] = var(33, true);
+        fields["m_5E561E77"] = json!({"m_priority":"0x0C40000000000001"});
+        fields["m_246438AD"] = json!({"$":"STUConfigVarFloat","m_value":0.1});
+        node(position, "STUStatescriptStateAbility", Some(raw), fields)
+    };
+    let mut fixture = graph(
+        42,
+        vec![
+            entry(&[(1, "m_beginPlug"), (2, "m_beginPlug")]),
+            ability(
+                1,
+                0,
+                json!({
+                    "m_A5F1A77B":35,
+                    "m_8CBD15DA":29,
+                    "m_EF3C5C73":[{"m_out_Var":var(62, true), "m_value":true}],
+                    "m_19899EAC":[{"m_out_Var":var(62, true), "m_value":false}],
+                }),
+            ),
+            ability(
+                2,
+                1,
+                json!({
+                    "m_A5F1A77B":36,
+                    "m_EF3C5C73":[{"m_out_Var":var(63, true), "m_value":true}],
+                }),
+            ),
+        ],
+        json!([1, 2]),
+        json!([0]),
+    );
+    fixture["fields"]["m_680A2CB2"] = json!([0, 1]);
+    Arc::new(store(vec![fixture]))
+}
+
+/// The client's start check (0x7FF789BB8D20) asks the stack for every
+/// priority the ability has, its push's too, before it takes the press,
+/// and puts the press back when a gate fails. So a press while another
+/// ability holds the stack starts the ability when that one stops, if
+/// that is within the press's window or the button is still held:
+/// Rocket Punch held through Rising Uppercut, Rising Uppercut pressed in
+/// the punch's last frames. The server pushed the ability under the
+/// running one, which dropped it at once and spent the press; a held
+/// button then stayed latched and never started it.
+#[test]
+fn a_press_while_another_ability_holds_the_stack_starts_it_when_that_one_stops() {
+    // The first ability starts at frame 1 (16 ms); the second is tapped at
+    // frame 5 (80 ms).
+    let run = |stop: u32, held: bool| {
+        let mut component = start(stacked_abilities(), 0, &mut EmptyWorld);
+        let mut started = None;
+        for frame in 1..=40 {
+            let second = if held {
+                (5..=30).contains(&frame)
+            } else {
+                frame == 5
+            };
+            let first = match frame {
+                1 => 0x008,
+                frame if frame == stop => 0x002,
+                _ => 0,
+            };
+            drive(&mut component, frame..=frame, |_| {
+                first | if second { 0x010 } else { 0 }
+            });
+            let running = marked(&component, 62) == Some(Value::Bool(true));
+            assert_eq!(running, frame < stop, "frame {frame}");
+            if started.is_none() && marked(&component, 63) == Some(Value::Bool(true)) {
+                started = Some(frame);
+            }
+        }
+        started
+    };
+    // Stopped 96 ms after the tap: within its 100 ms.
+    assert_eq!(run(11, false), Some(11));
+    // 112 ms after: the press has expired.
+    assert_eq!(run(12, false), None);
+    // Held: it starts whenever the first one stops.
+    assert_eq!(run(20, true), Some(20));
+}
+
 /// Cassidy's Deadeye (graph `022F`): its six-second window (ChaseVar st18,
 /// node 27) feeds two joins through its transitions. It keeps running when it
 /// begins (it used to end at once) until secondary fire (button 29, command

@@ -72,10 +72,10 @@ use orpheus_script::{
     stream::{BodyStream, ChangeKey, DeltaKind, ScriptChunk, Stream},
     vitals::{Death, Vitals},
     vm::{
-        AssistLink, AuraChange, BodyEffects, DAMAGE_DEALT, DAMAGE_TAKEN, GameMessage,
-        HEALING_DEALT, HEALING_TAKEN, MessageEnd, Motion, MoveRequest, ParentWrite, Pickup,
-        PlayRequest, RaisedCriteria, Scaled, ScopeChange, ScopeSource, Snapshot, TargetCandidate,
-        TrackedStat, VoiceRequest, combat_scale,
+        AssistLink, AuraChange, BodyEffects, DAMAGE_DEALT, DAMAGE_TAKEN, EnvironmentCredit,
+        GameMessage, HEALING_DEALT, HEALING_TAKEN, MessageEnd, Motion, MoveRequest, ParentWrite,
+        Pickup, PlayRequest, RaisedCriteria, Scaled, ScopeChange, ScopeSource, Snapshot,
+        TargetCandidate, TrackedStat, VoiceRequest, combat_scale,
     },
     weapons::{DamageTags, ProjectileBallistics},
     wire::{Value as ScriptValue, Variables},
@@ -494,6 +494,12 @@ pub trait OwnerBodyRuntime: Send {
     /// The stats the body's graphs counted since the last call (TrackStat,
     /// TrackStatTime): the match adds them to its players' stats.
     fn take_tracked_stats(&mut self) -> Vec<TrackedStat> {
+        Vec::new()
+    }
+
+    /// Who the body's graphs named its environment kill credits since the
+    /// last call (`STU_545AB3B8`).
+    fn take_environment_credits(&mut self) -> Vec<EnvironmentCredit> {
         Vec::new()
     }
 
@@ -4727,6 +4733,23 @@ impl WorldDelivery {
         self.knocks.settle();
     }
 
+    /// Who the player's body's graphs named its environment kill credits
+    /// since the last call (`STU_545AB3B8`), for the match to resolve
+    /// ([`crate::combat::Combat::apply_environment_credits`]).
+    pub fn take_environment_credits(&mut self) -> Vec<EnvironmentCredit> {
+        self.body_script
+            .as_mut()
+            .map_or_else(Vec::new, |script| script.runtime.take_environment_credits())
+    }
+
+    /// A graph named who an environment kill of the player's living body
+    /// `body` credits at `now` ([`KnockCredit::named`]).
+    pub fn credit_environment(&mut self, body: u32, by: Option<Shooter>, now: Duration) {
+        if self.current_body() == Some(body) && self.death.is_none() {
+            self.knocks.named(body, by, now);
+        }
+    }
+
     /// An aura comes on the player's living body (Biotic Grenade's
     /// explosion, an ApplyAura) or goes off it.
     pub fn change_aura(&mut self, change: &AuraChange) {
@@ -4789,14 +4812,33 @@ impl WorldDelivery {
         let hero = scene.heroes().get(body.hero)?;
         let pose = mover.pose();
         let target = scene.player_target(hero, pose.position, mover.crouched());
-        let vitals = match self
+        let script = self
             .body_script
             .as_ref()
-            .filter(|script| script.id == body.id)
-        {
+            .filter(|script| script.id == body.id);
+        let vitals = match script {
             Some(script) => script.runtime.vitals(),
             None => self.plain_vitals.as_ref(),
         };
+        // The meter `0B8B` and Set Ultimate Charge (`1DAB`) keep: #342e
+        // of the cost #338e.
+        let ultimate_charge =
+            script
+                .and_then(|script| script.runtime.snapshot())
+                .map_or(0.0, |snapshot| {
+                    let read = |id| {
+                        snapshot
+                            .variables
+                            .get(&id)
+                            .map_or(0.0, orpheus_script::expr::to_float)
+                    };
+                    let cost = read(orpheus_script::ultimate::ULT_COST);
+                    if cost > 0.0 {
+                        100.0 * read(orpheus_script::ultimate::ULT_CHARGE) / cost
+                    } else {
+                        0.0
+                    }
+                });
         let command = self.input.last;
         let [right, forward] = pose.throttles.map(|throttle| f64::from(throttle) / 127.0);
         Some(WorkshopView {
@@ -4813,6 +4855,7 @@ impl WorldDelivery {
             hero: body.hero,
             health: vitals.map_or(0.0, Vitals::total),
             max_health: vitals.map_or(0.0, Vitals::maximum),
+            ultimate_charge,
         })
     }
 

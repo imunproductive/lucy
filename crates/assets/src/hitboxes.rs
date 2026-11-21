@@ -53,7 +53,10 @@
 //! its bones name no parents, so read as roots (as the props' `node_frame`
 //! does) the Training Bot's head bone `0x11` would be 0.12 m up instead of
 //! 1.33 m. A point `p` of a part is at `t + q·(s ⊙ p)` with the bone's
-//! model matrix; every hit bone's scale is 1.
+//! model matrix, and a radius is scaled by `s`. The idle poses scale hit
+//! bones only uniformly (since scales unpack as `v/1024`, e.g. `0x1403`'s
+//! bone `931` at 0.947); a non-uniform scale would bend a sphere, so it is
+//! refused.
 //!
 //! **Axes.** The model frame is the body's: Y up, the origin at the feet
 //! (the foot bones within 0.15 m of it, the Training Bot's lowest sphere's
@@ -507,22 +510,34 @@ fn shapes(
                 .bone(part.node)
                 .map(|index| &model[index])
                 .ok_or_else(|| format!("bone {:X} is not in the skeleton", part.node))?;
-            if bone.scale.iter().any(|scale| (scale - 1.0).abs() > 1e-3) {
-                return Err(format!("bone {:X} is scaled", part.node));
+            let [sx, sy, sz] = bone.scale;
+            if (sx - sy).abs() > 1e-3 || (sx - sz).abs() > 1e-3 {
+                return Err(format!(
+                    "bone {:X} is scaled unevenly {:?}",
+                    part.node, bone.scale
+                ));
             }
+            // Within 1e-3 of 1 (float noise of the composed scales) the
+            // radius stays as the file has it.
+            let scale = if (sx - 1.0).abs() > 1e-3 {
+                f64::from(sx)
+            } else {
+                1.0
+            };
+            let radius = |radius: f32| float(f64::from(radius) * scale);
             let critical = part.critical(zones);
             Ok(match part.geometry {
-                Geometry::Sphere(centre, radius) => json!({
+                Geometry::Sphere(centre, r) => json!({
                     "kind": "sphere",
                     "centre": point(place(bone, centre)),
-                    "radius": float(f64::from(radius)),
+                    "radius": radius(r),
                     "critical": critical,
                 }),
-                Geometry::Capsule(a, b, radius) => json!({
+                Geometry::Capsule(a, b, r) => json!({
                     "kind": "capsule",
                     "a": point(place(bone, a)),
                     "b": point(place(bone, b)),
-                    "radius": float(f64::from(radius)),
+                    "radius": radius(r),
                     "critical": critical,
                 }),
             })

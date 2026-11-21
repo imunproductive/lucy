@@ -882,6 +882,106 @@ fn a_fall_off_gibraltar_dies_in_its_kill_volume() {
     );
 }
 
+/// Watchpoint: Gibraltar's 26 team walls (`0FA8`, 13 each of `1C90` and
+/// `1C91`) run whole in Escort, each with its definition's team in v1777
+/// (0 for `1C90`, 1 for `1C91`, the team its mesh stops), and stand off
+/// in a match on the Rust flow, which sends no `0845`. Given `0845`, the
+/// 13 whose entry condition holds begin state 3; a wall
+/// stands in the movers' world exactly when its script runs state 3 and is
+/// complete (its frames say so too). State 3's state 6 takes its
+/// conditional target tag (`#1777 == TeamBlue ? 02B3 : 02B4`), so those
+/// 13 stand.
+#[test]
+#[ignore = "requires a derived 104319 pack and the install (Gibraltar's collision)"]
+fn gibraltars_team_walls_stand_while_their_scripts_run_state_3() {
+    const GIBRALTAR: u64 = 0x0800_0000_0000_0184;
+    const WALL_MESSAGE: u64 = 0x0240_0000_0000_0845;
+    const WALL_GRAPH: u32 = 0x0FA8;
+    const WALL_TEAM: u32 = 1777;
+    let runtime = orpheus_testkit::runtime_dir();
+    let assets = SceneAssets::load(&runtime)
+        .unwrap()
+        .with_collision_build(install_collision_build(orpheus_testkit::game_dir()));
+    let map = orpheus_content::maps::MapCatalog::load(runtime.join("data"))
+        .unwrap()
+        .game_map(
+            GIBRALTAR,
+            crate::match_flow::ESCORT,
+            "Escort",
+            false,
+            &[6, 6],
+        )
+        .unwrap();
+    let mut scene = assets.prepare(map).unwrap();
+    let walls: Vec<u32> = scene.team_walls().map(|(entity, _)| entity).collect();
+    assert_eq!(walls.len(), 26);
+    let mut tick = FIRST_TICK;
+    for _ in 0..5 {
+        scene.advance_placed(tick, &[]);
+        tick += 1;
+    }
+    // The wall's `0FA8` instance and whether its state 3 runs.
+    let wall_state = |scene: &PreparedScene, entity: u32| {
+        let placed = scene
+            .placed_scripts()
+            .world()
+            .unwrap()
+            .entity(entity)
+            .unwrap();
+        let instance = placed
+            .snapshot()
+            .unwrap()
+            .instances
+            .values()
+            .find(|instance| instance.graph == WALL_GRAPH)
+            .unwrap();
+        let on = instance.states.get(&3).is_some_and(|state| state.active);
+        (
+            instance.variables.get(&WALL_TEAM).cloned(),
+            on,
+            placed.complete(),
+        )
+    };
+    for placed in scene.server_placeables() {
+        let Some(team) = (match placed.definition {
+            0x0400_0000_0000_1C90 => Some(0),
+            0x0400_0000_0000_1C91 => Some(1),
+            _ => None,
+        }) else {
+            assert!(!walls.contains(&placed.entity()));
+            continue;
+        };
+        assert!(walls.contains(&placed.entity()));
+        assert_eq!(
+            wall_state(&scene, placed.entity()),
+            (Some(ScriptValue::Integer(team)), false, true),
+            "{:X}",
+            placed.entity()
+        );
+    }
+    assert!(scene.team_walls().all(|(_, on)| !on));
+    {
+        let (_, placed) = scene.message_recipients(tick);
+        for &entity in &walls {
+            placed.receive_message(&GameMessage {
+                sender: orpheus_wire::entity::GAME_MODE_ENTITY,
+                target: entity,
+                message: WALL_MESSAGE,
+                parameters: Variables::new(),
+            });
+        }
+    }
+    scene.advance_placed(tick, &[]);
+    let mut begun = 0;
+    for (entity, on) in scene.team_walls().collect::<Vec<_>>() {
+        let (_, state_3, complete) = wall_state(&scene, entity);
+        begun += usize::from(state_3);
+        assert_eq!(on, state_3 && complete, "{entity:X}");
+    }
+    assert_eq!(begun, 13);
+    assert_eq!(scene.team_walls().filter(|&(_, on)| on).count(), 13);
+}
+
 /// A pick while dead waits for the respawn, which plays the new hero.
 #[test]
 #[ignore = "requires a derived 104319 Practice Range pack"]
