@@ -135,10 +135,11 @@ fn a_second_kill_within_two_seconds_pulses_the_announcers_double_kill() {
             environment: false,
             from: None,
             source: None,
+            health_pack: false,
         };
         let [first_stats, second_stats, third_stats] = &mut stats;
         let [first_victim, second_victim] = &mut victims;
-        let notices = apply_player_hits(
+        let (notices, _) = apply_player_hits(
             &scene,
             vec![hit],
             &mut [

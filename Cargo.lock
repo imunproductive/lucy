@@ -875,6 +875,7 @@ dependencies = [
  "orpheus-sim",
  "orpheus-testkit",
  "orpheus-wire",
+ "orpheus-workshop",
  "serde_json",
  "tempfile",
  "tiny_http",
@@ -894,6 +895,7 @@ dependencies = [
  "orpheus-stu",
  "orpheus-testkit",
  "orpheus-wire",
+ "orpheus-workshop",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -932,6 +934,17 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+]
+
+[[package]]
+name = "orpheus-workshop"
+version = "0.0.0"
+dependencies = [
+ "orpheus-testkit",
+ "orpheus-wire",
+ "serde",
+ "serde_json",
+ "tracing",
 ]
 
 [[package]]

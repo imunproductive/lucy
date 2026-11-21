@@ -295,6 +295,8 @@ pub struct PreparedScene {
     /// the loading screen doesn't wait for, created after the player and
     /// the mode, with their script data.
     server_placeables: Vec<Arc<PlacedScript>>,
+    /// The server placeables a mode graph removed ([`Self::remove_placeables`]).
+    removed_placeables: Vec<u32>,
     /// The map's entities with target tags in this mode, which the scene
     /// tag queries find (`map_areas::MapAreaData::map_tags`).
     map_tags: Arc<MapTags>,
@@ -648,6 +650,7 @@ impl SceneAssets {
             mode_random,
             placed_scripts,
             server_placeables,
+            removed_placeables: Vec::new(),
             map_tags,
             body_tags: Arc::clone(&scripts.body_tags),
         };
@@ -1013,6 +1016,29 @@ impl PreparedScene {
         &self.placed_scripts
     }
 
+    /// Remove the server placeables whose identifier 2 is `identifier`, as
+    /// a mode graph's `STU_A3DC6A25` does (`0CBB` st34: the health packs,
+    /// `2AB0.01C`, when the ruleset turns them off): their scripts end, a
+    /// client whose world starts later doesn't get them, and each client's
+    /// delivery drops what it hasn't sent of them
+    /// ([`Self::removed_placeables`]). A client that holds one already
+    /// removes it itself when it runs the state.
+    pub fn remove_placeables(&mut self, identifier: u64) {
+        let (gone, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.server_placeables)
+            .into_iter()
+            .partition(|placed| placed.second_identifier == Some(identifier));
+        self.server_placeables = kept;
+        for placed in gone {
+            self.placed_scripts.remove(placed.entity());
+            self.removed_placeables.push(placed.entity());
+        }
+    }
+
+    /// The server placeables removed so far ([`Self::remove_placeables`]).
+    pub fn removed_placeables(&self) -> &[u32] {
+        &self.removed_placeables
+    }
+
     /// The spawn rooms the mode holds now the mode's message for, in the
     /// mode graph's place (`choice`: each team's current spawn, the match
     /// flow's; [`map_areas::room_holds`]).
@@ -1023,9 +1049,17 @@ impl PreparedScene {
     /// Start the server placeables' scripts at the first call, give the
     /// spawn rooms `holds` (none where the mode graph sends its `0724`
     /// itself; else [`Self::room_holds`]) the mode's message, then advance
-    /// them to `tick`.
+    /// them to `tick`. A placeable that removed itself (a health pack the
+    /// ruleset turns off, `0046`) goes as [`Self::remove_placeables`]'
+    /// do.
     pub fn advance_placed(&mut self, tick: u32, holds: &[(u32, Option<u8>)]) {
         self.placed_scripts.advance(tick, holds);
+        let removed = self.placed_scripts.take_removed();
+        if !removed.is_empty() {
+            self.server_placeables
+                .retain(|placed| !removed.contains(&placed.entity()));
+            self.removed_placeables.extend(removed);
+        }
     }
 
     /// The placed scripts' game messages and message ends since the last
@@ -1080,6 +1114,18 @@ impl PreparedScene {
     /// (`Combat::target_candidates`).
     pub fn set_placed_target_candidates(&mut self, candidates: &[TargetCandidate]) {
         self.placed_scripts.set_target_candidates(candidates);
+    }
+
+    /// The pickups the server placeables hold now (the health packs), for
+    /// the bodies' searches ([`PlacedScripts::pickups`]).
+    pub fn pickups(&self) -> Vec<orpheus_script::vm::Pickup> {
+        self.placed_scripts.pickups()
+    }
+
+    /// The health changes the server placeables made since the last call
+    /// (a health pack's heal), for the match's health code.
+    pub fn take_placed_health_changes(&mut self) -> Vec<orpheus_script::vm::HealthChange> {
+        self.placed_scripts.take_health_changes()
     }
 
     /// The statescript graphs, for runs outside the scene (the mode graph).

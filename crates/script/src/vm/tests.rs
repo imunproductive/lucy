@@ -3677,8 +3677,10 @@ fn ai_fire_holds_its_slot_button_until_it_ends() {
     }
 }
 
+/// WaitForServerFrames finishes after its count of server frames, the
+/// server's own ticks: no assumption (the client never counts them).
 #[test]
-fn server_frame_wait_finishes_after_its_frames_and_is_recorded() {
+fn server_frame_wait_finishes_after_its_frames() {
     let graphs = Arc::new(store(vec![graph(
         42,
         vec![
@@ -3704,7 +3706,11 @@ fn server_frame_wait_finishes_after_its_frames_and_is_recorded() {
             parameter: 0
         }]
     );
-    assert_eq!(snapshot.assumptions[0].class, "STU_E3CEF6B9");
+    assert!(
+        snapshot.assumptions.is_empty(),
+        "{:?}",
+        snapshot.assumptions
+    );
     component.advance_frame(102, &mut EmptyWorld).unwrap();
     assert_eq!(active(component.snapshot().unwrap(), 1), [0]);
     component.advance_frame(103, &mut EmptyWorld).unwrap();

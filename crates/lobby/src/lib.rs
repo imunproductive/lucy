@@ -8,6 +8,7 @@ pub mod battle_tag_query;
 pub mod celebrations;
 pub mod clock;
 pub mod collection;
+pub mod custom_game;
 pub mod economy;
 pub mod gallery;
 pub mod handoff;

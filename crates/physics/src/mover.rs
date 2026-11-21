@@ -238,6 +238,11 @@ impl Mover {
         self.posture.crouched()
     }
 
+    /// Whether its last pose stands on the ground (no airborne flag).
+    pub fn on_ground(&self) -> bool {
+        self.posture.ground() == Ground::Standing
+    }
+
     /// The target of the `MoveTo` move the body runs (the client's kind-1
     /// block `+0x20`), if any.
     pub fn move_target(&self) -> Option<[f64; 3]> {

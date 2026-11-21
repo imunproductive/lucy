@@ -75,6 +75,184 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         Ok(true)
     }
 
+    /// `STUStatescriptActionCreateEntity` (`STU_72C9C62F`, execute
+    /// `Action_STU_72C9C62F` 0x7FF7897FA4C0): make an entity of definition
+    /// `m_entityDef` (an `STU_8556841E`) at `m_position` and write it to
+    /// `m_E95B313B`. The client makes it itself only for an instance it
+    /// runs on its own (`instance+0x318` bit 3 clear) or a client-only
+    /// node (`sub_7FF789809ED0`), or predicts it with `m_294B652A`
+    /// (`sub_7FF78980A1C0`); an instance the server's frames made leaves
+    /// it to the server, which makes it for every client. The world makes
+    /// it ([`World::create_entity`]). Read: the definition, the position
+    /// and the output, all the Workshop's Create Effect `1CE8` and Create
+    /// Icon `1AB1` set (`m_51AB9D21` is 5 and the three flags 0 in all 17
+    /// uses of the bundle); any other field (a team, a facing: `0D44`,
+    /// `1061`, `116F`, `15AE`, `23B0`) or the prediction flag is refused.
+    pub(super) fn create_entity(
+        &mut self,
+        id: u16,
+        node: &Node,
+        depth: usize,
+    ) -> Result<bool, InitFault> {
+        /// The action's other config fields (`python tools/stu.py
+        /// STUStatescriptActionCreateEntity`).
+        const UNREAD: [&str; 18] = [
+            "m_F7621CAB",
+            "m_40AF7E2D",
+            "m_1C558638",
+            "m_EC1E473E",
+            "m_3E3E203A",
+            "m_888BCD8B",
+            "m_3EBF988B",
+            "m_AA26E7DD",
+            "m_A1A715A6",
+            "m_D7F85181",
+            "m_246C47AF",
+            "m_F8E56B94",
+            "m_A3A50DF2",
+            "m_DE3B4F01",
+            "m_373DBF32",
+            "m_E2BF1226",
+            "m_0FDD45BB",
+            "m_481C68E7",
+        ];
+        let site = self.site(id, node);
+        let unread = UNREAD
+            .iter()
+            .any(|name| !field(&node.fields, name).is_null())
+            || field(&node.fields, "m_294B652A").as_i64() != Some(0);
+        let definition = field(&node.fields, "m_entityDef");
+        let definition = (definition.get("$").and_then(Json::as_str) == Some("STU_8556841E"))
+            .then(|| definition.get("m_entityDef").and_then(asset_guid))
+            .flatten();
+        let (false, Some(definition)) = (unread, definition) else {
+            self.report(
+                site,
+                Issue::UnsupportedField("STUStatescriptActionCreateEntity fields"),
+            );
+            return Ok(false);
+        };
+        let position = match field(&node.fields, "m_position") {
+            Json::Null => None,
+            config => match self.evaluate(id, node, config, None) {
+                Some(Value::Vector(position)) => Some(position),
+                Some(_) => {
+                    self.report(
+                        site,
+                        Issue::UnsupportedField("STUStatescriptActionCreateEntity position"),
+                    );
+                    return Ok(false);
+                }
+                None => return Ok(false),
+            },
+        };
+        let target = match expr::lvalue(field(&node.fields, "m_E95B313B")) {
+            Ok(target) => target.map(|target| source_key(id, target)),
+            Err(error) => {
+                self.report(site, Issue::Expression(error));
+                return Ok(false);
+            }
+        };
+        let Some(entity) = self.world.create_entity(
+            site,
+            EntityCreation {
+                definition,
+                position,
+            },
+        ) else {
+            self.report(site, Issue::UnsupportedAction(node.class.clone()));
+            return Ok(false);
+        };
+        if let Some(target) = target {
+            self.write(target, Value::Entity(entity))?;
+        }
+        self.follow(id, node, "m_outPlug", None, depth)?;
+        Ok(true)
+    }
+
+    /// `STUStatescriptStateCreateEntity` (`STU_BB1054F4`) begins (slot 23
+    /// `0x7FF7897FAC30`): as the action, the client makes the entity itself
+    /// only for an instance it runs on its own or a client-only node
+    /// (`sub_7FF789809ED0`), so a networked instance's is the server's.
+    /// The client reads `m_entityDef`, `m_position`, the scale
+    /// `m_40AF7E2D` and `m_1C558638` (evaluated, its value dropped), and
+    /// writes the entity to `m_E95B313B`; with `m_294B652A` it predicts it
+    /// (slot 56). A position is a vector or an array's first one
+    /// (`sub_7FF789806DE0` → `sub_7FF789E75E70`, type 6 only); anything
+    /// else (the health pack `0046` st15's `owner()`) leaves it to the
+    /// creator's default, here none ([`EntityCreation::position`]). A set
+    /// scale or prediction is refused. Its end (slot 24 `0x7FF7897FACF0`)
+    /// destroys the entity with its children ([`Self::end_create_entity`]).
+    pub(super) fn begin_create_entity(
+        &mut self,
+        key: StateKey,
+        node: &Node,
+    ) -> Result<(), InitFault> {
+        let id = key.instance;
+        let site = self.site(id, node);
+        if !field(&node.fields, "m_40AF7E2D").is_null()
+            || field(&node.fields, "m_294B652A").as_i64() != Some(0)
+        {
+            self.report(
+                site,
+                Issue::UnsupportedField("StateCreateEntity scale or prediction"),
+            );
+            return Ok(());
+        }
+        let Some(definition) = self.evaluate(id, node, field(&node.fields, "m_entityDef"), None)
+        else {
+            return Ok(());
+        };
+        let Value::Asset(definition) = definition else {
+            self.report(
+                site,
+                Issue::UnsupportedField("StateCreateEntity definition"),
+            );
+            return Ok(());
+        };
+        let position = match field(&node.fields, "m_position") {
+            Json::Null => None,
+            config => match self.evaluate(id, node, config, None) {
+                Some(value) => first_vector(&value),
+                None => return Ok(()),
+            },
+        };
+        let target = match expr::lvalue(field(&node.fields, "m_E95B313B")) {
+            Ok(target) => target.map(|target| source_key(id, target)),
+            Err(error) => {
+                self.report(site, Issue::Expression(error));
+                return Ok(());
+            }
+        };
+        let Some(entity) = self.world.create_entity(
+            site,
+            EntityCreation {
+                definition,
+                position,
+            },
+        ) else {
+            self.report(site, Issue::UnsupportedState(node.class.clone()));
+            return Ok(());
+        };
+        if let Some(state) = self.state_mut(key) {
+            state.kind = StateKind::CreateEntity {
+                entity: Some(entity),
+            };
+        }
+        if let Some(target) = target {
+            self.write(target, Value::Entity(entity))?;
+        }
+        Ok(())
+    }
+
+    /// The entity a `StateCreateEntity` made goes as the state ends.
+    pub(super) fn end_create_entity(&mut self, key: StateKey, node: &Node, entity: u32) {
+        let site = self.site(key.instance, node);
+        if !self.world.destroy_entity(site, entity) {
+            self.assume(site, &node.class, "the world removes no entity");
+        }
+    }
+
     /// `STU_FC3921B1` (server-only: the base action's run on the client):
     /// ask the world for a dummy bot of hero `m_heroGUID` in team
     /// `m_67465E75`'s slot `m_slot`, standing at `m_06B5A4F1` and facing
@@ -161,10 +339,14 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
     /// ControllerWorld.md): put the body `m_target` at `m_AF774F7D` facing
     /// `m_E3779CD0` (strong guess from its uses: Reinhardt's Charge `007D`
     /// carries its pinned enemy #536 so, rid94 and rid115; the controller
-    /// `0C90` rid181 its body to the spawn point #8370). With no target it
-    /// moves nothing: `007D`'s entry rid17 runs it at every start with
-    /// #536 unset. The server moves no other body yet, so a target is
-    /// refused, or left where it is in a release build (an assumption).
+    /// `0C90` rid181 its body to the spawn point #8370; the Workshop's
+    /// Teleport `1D45` the target player's body to the parameter
+    /// `#18739[1]`, facing `STU_C8C4C20D` of the body, its own facing).
+    /// With no target it moves nothing: `007D`'s entry rid17 runs it at
+    /// every start with #536 unset. The world moves the body
+    /// ([`World::move_body`]); where it doesn't, or the place isn't a
+    /// vector, a target is refused, or left where it is in a release build
+    /// (an assumption).
     pub(super) fn move_body(
         &mut self,
         id: u16,
@@ -174,13 +356,39 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         let Some(target) = self.evaluate(id, node, field(&node.fields, "m_target"), None) else {
             return Ok(false);
         };
-        if !entities(&target).is_empty() {
+        let bodies = entities(&target);
+        if !bodies.is_empty() {
             let site = self.site(id, node);
-            if !self.tolerates_unknowns() {
-                self.report(site, Issue::UnsupportedAction(node.class.clone()));
-                return Ok(false);
+            let position = match self.evaluate_quietly(id, node, field(&node.fields, "m_AF774F7D"))
+            {
+                Some(Value::Vector(position)) => Some(position),
+                _ => None,
+            };
+            let facing = match self.evaluate_quietly(id, node, field(&node.fields, "m_E3779CD0")) {
+                Some(Value::Vector(facing)) => Some(facing),
+                _ => None,
+            };
+            let mut moved = position.is_some();
+            for &body in &bodies {
+                moved = moved
+                    && position.is_some_and(|position| {
+                        self.world.move_body(
+                            site,
+                            BodyMove {
+                                body,
+                                position,
+                                facing,
+                            },
+                        )
+                    });
             }
-            self.assume(site, &node.class, "moves no body");
+            if !moved {
+                if !self.tolerates_unknowns() {
+                    self.report(site, Issue::UnsupportedAction(node.class.clone()));
+                    return Ok(false);
+                }
+                self.assume(site, &node.class, "moves no body");
+            }
         }
         self.follow(id, node, "m_outPlug", None, depth)?;
         Ok(true)
@@ -211,6 +419,32 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             self.write(target, Value::Array(Vec::new()))?;
         }
         self.follow(id, node, "m_outPlug", None, depth)?;
+        Ok(true)
+    }
+
+    /// `STU_A3DC6A25` at its begin (`sub_7FF78990C1B0`, its only own slot):
+    /// every entity of the scene made from an entity placeable (type 9)
+    /// whose identifier 2 (the placeable's body `+16`) is the identifier
+    /// `m_44E07E6E` goes (`sub_7FF78A73C890`, with its children). `0CBB`
+    /// st34 so removes the health packs (`2AB0.01C`) when the ruleset's
+    /// Spawn Health Packs (#9542e) says so. The client runs the state too
+    /// and removes its own placeables so (the packs' pads). False: the
+    /// identifier failed to evaluate (reported).
+    pub(super) fn remove_placeables(&mut self, id: u16, node: &Node) -> Result<bool, InitFault> {
+        let Some(identifier) = self.evaluate(id, node, field(&node.fields, "m_44E07E6E"), None)
+        else {
+            return Ok(false);
+        };
+        let site = self.site(id, node);
+        let removed = match identifier {
+            Value::Asset(identifier) => self.world.remove_placeables(site, identifier),
+            // No identifier: no placeable has identifier 2 of 0 to remove.
+            Value::Null => true,
+            _ => false,
+        };
+        if !removed {
+            self.assume(site, &node.class, "the world removes no placeable");
+        }
         Ok(true)
     }
 
@@ -482,4 +716,15 @@ pub(super) fn entities(value: &Value) -> Vec<u32> {
         value => add(value),
     }
     found
+}
+
+/// A value as the client's position read takes it (`sub_7FF789E75E70`):
+/// a vector, or an array's first item followed down; none for anything
+/// else.
+fn first_vector(value: &Value) -> Option<[f64; 3]> {
+    match value {
+        Value::Vector(position) => Some(*position),
+        Value::Array(items) => first_vector(items.first()?),
+        _ => None,
+    }
 }

@@ -8,7 +8,7 @@
 use super::*;
 use crate::combat::{
     Combat, CombatPlayer, ENVIRONMENT_DAMAGE, ENVIRONMENTAL_DEATHS, ENVIRONMENTAL_KILLS,
-    FINAL_BLOWS, Shooter, ShotContext, apply_player_hits,
+    FINAL_BLOWS, PlayerEvent, Shooter, ShotContext, apply_player_hits,
 };
 use crate::map_areas::room_message;
 use crate::messages::{HeldReach, Players, deliver_held};
@@ -138,6 +138,7 @@ fn hit(body: u32, amount: f64) -> PlayerHit {
         environment: false,
         from: None,
         source: None,
+        health_pack: false,
     }
 }
 
@@ -638,7 +639,7 @@ fn a_fall_onto_the_catch_floor_kills_and_respawns_after_the_delay() {
     assert_eq!(hits[0].amount, ENVIRONMENT_DAMAGE);
     let mut stats = PlayerStats::default();
     let now = Duration::from_secs(10);
-    let notices = apply_player_hits(
+    let (notices, _) = apply_player_hits(
         &scene,
         hits,
         &mut [CombatPlayer {
@@ -718,7 +719,8 @@ fn a_fall_onto_the_catch_floor_kills_and_respawns_after_the_delay() {
 /// names too (the "died" message's killer, the kill feed line's `03E9`),
 /// and an Environmental Death; the enemy gets the elimination with its final
 /// blow, an Environmental Kill and the health the body had left as damage
-/// done.
+/// done. The Workshop's events see the same: damage from the enemy that
+/// killed in the environment, then his final blow.
 #[test]
 #[ignore = "requires a derived 104319 Practice Range pack"]
 fn a_fall_after_an_enemys_knock_is_the_enemys_kill() {
@@ -776,7 +778,7 @@ fn a_fall_after_an_enemys_knock_is_the_enemys_kill() {
     let mut combat = Combat::new(&scene);
     combat.environment_kill(body, 0, tick);
     let (mut stats, mut enemy_stats) = (PlayerStats::default(), PlayerStats::default());
-    let notices = apply_player_hits(
+    let (notices, events) = apply_player_hits(
         &scene,
         combat.take_player_hits(),
         &mut [
@@ -817,6 +819,25 @@ fn a_fall_after_an_enemys_knock_is_the_enemys_kill() {
         assert_eq!(enemy_stats.value(stat), 1.0, "{stat:#x}");
     }
     assert_eq!(enemy_stats.value(board.hero_damage), left);
+    assert_eq!(
+        events,
+        [
+            PlayerEvent::Damage {
+                attacker: Some(ENEMY),
+                victim: OWNER,
+                dealt: left,
+                critical: false,
+                environment: true,
+                direction: None,
+                killed: true,
+            },
+            PlayerEvent::Elimination {
+                player: ENEMY,
+                victim: OWNER,
+                final_blow: true,
+            },
+        ]
+    );
 }
 
 /// Watchpoint: Gibraltar has no damage areas and no catch floor: a body that

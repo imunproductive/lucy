@@ -39,12 +39,12 @@ use orpheus_script::{
     graph::GraphStore,
     map_tags::MapTags,
     mode::EVERY_ENTITY,
-    placed::{DummyChange, EntityVolumes, MapEntityWorld, NextDummy},
+    placed::{DummyChange, EntityVolumes, MADE_FIRST, MADE_SPAN, MapEntityWorld, NextDummy},
     snapshot::{ProjectedSnapshot, SnapshotEncoder, View},
     stream::{ScriptChunk, Stream, StreamError},
     vm::{
-        GameMessage, MapRays, MessageEnd, ParentWrite, ScopeChange, ScopeSource, TargetCandidate,
-        Unknowns,
+        GameMessage, HealthChange, MapRays, MessageEnd, ParentWrite, Pickup, ScopeChange,
+        ScopeSource, TargetCandidate, Unknowns,
     },
 };
 use orpheus_wire::entity::GAME_MODE_ENTITY;
@@ -57,6 +57,22 @@ use crate::map_areas::{PlacedScript, ROOM_MESSAGE, RoomVolumes, SpawnRoom, room_
 pub struct PlacedFrame {
     pub serial: u64,
     pub bits: Arc<BitWriter>,
+}
+
+/// An entity a placeable's graph made (a health pack's visual), as the
+/// clients get it: its create and its latest frame (none while its graphs
+/// can't send one).
+#[derive(Clone, Copy, Debug)]
+pub struct MadeView<'a> {
+    pub entity: u32,
+    pub definition: u64,
+    pub position: [f64; 3],
+    pub frame: Option<&'a PlacedFrame>,
+}
+
+/// Whether `entity` is one the placeables' graphs made.
+fn is_made(entity: u32) -> bool {
+    entity.wrapping_sub(MADE_FIRST) < MADE_SPAN
 }
 
 /// The scripts of one match's server placeables.
@@ -82,10 +98,14 @@ pub struct PlacedScripts {
     ends: Vec<MessageEnd>,
     /// The last projection and frame of each complete script.
     frames: BTreeMap<u32, (ProjectedSnapshot, PlacedFrame)>,
+    /// The same for the entities the graphs made.
+    made_frames: BTreeMap<u32, (ProjectedSnapshot, PlacedFrame)>,
     /// The player and body the next dummy bot gets, as the match gave.
     next_dummy: Option<NextDummy>,
     /// The running scripts' dummy bot changes for the match to carry out.
     dummies: Vec<DummyChange>,
+    /// The placeables that removed themselves, for the scene to drop.
+    removed: Vec<u32>,
     gaps_logged: bool,
 }
 
@@ -116,8 +136,10 @@ impl PlacedScripts {
             messages: Vec::new(),
             ends: Vec::new(),
             frames: BTreeMap::new(),
+            made_frames: BTreeMap::new(),
             next_dummy: None,
             dummies: Vec::new(),
+            removed: Vec::new(),
             gaps_logged: false,
         }
     }
@@ -157,6 +179,8 @@ impl PlacedScripts {
                     Some(Arc::new(RoomVolumes(Arc::clone(&self.rooms))) as Arc<dyn EntityVolumes>),
                     tick,
                 ));
+                // The clients get what the graphs make (`update_placed`).
+                world.make_entities();
                 world.set_next_dummy(self.next_dummy);
                 world.place(self.placed.iter().map(|placed| placed.placement()));
                 world
@@ -194,6 +218,23 @@ impl PlacedScripts {
         self.ends
             .extend(ends.into_iter().filter(|end| running(world, end.sender)));
         self.take_dummies();
+        // The placeables that removed themselves (a health pack the
+        // ruleset turns off): their graphs ended, and they send no more.
+        // The entities the graphs made that went leave `Self::made`.
+        let destroyed = self
+            .world
+            .as_mut()
+            .map(MapEntityWorld::take_destroyed)
+            .unwrap_or_default();
+        for entity in destroyed {
+            if is_made(entity) {
+                self.made_frames.remove(&entity);
+                continue;
+            }
+            self.placed.retain(|placed| placed.entity() != entity);
+            self.frames.remove(&entity);
+            self.removed.push(entity);
+        }
         let world = self.world.as_mut().expect("started above");
         if !self.gaps_logged {
             self.gaps_logged = true;
@@ -214,10 +255,15 @@ impl PlacedScripts {
         let encoder =
             SnapshotEncoder::new(&self.graphs, &self.codecs).with_unknowns(world.unknowns());
         for placed in world.entities() {
+            let frames = if is_made(placed.entity) {
+                &mut self.made_frames
+            } else {
+                &mut self.frames
+            };
             let snapshot = match placed.snapshot() {
                 Some(snapshot) if placed.complete() => snapshot,
                 _ => {
-                    self.frames.remove(&placed.entity);
+                    frames.remove(&placed.entity);
                     continue;
                 }
             };
@@ -228,12 +274,11 @@ impl PlacedScripts {
                         "placed entity {:08X}'s frame does not project ({error:?})",
                         placed.entity
                     );
-                    self.frames.remove(&placed.entity);
+                    frames.remove(&placed.entity);
                     continue;
                 }
             };
-            if self
-                .frames
+            if frames
                 .get(&placed.entity)
                 .is_some_and(|(known, _)| *known == projected)
             {
@@ -241,25 +286,57 @@ impl PlacedScripts {
             }
             match encoder.full(&projected) {
                 Ok(bits) => {
-                    let serial = self
-                        .frames
+                    let serial = frames
                         .get(&placed.entity)
                         .map_or(1, |(_, frame)| frame.serial + 1);
                     let frame = PlacedFrame {
                         serial,
                         bits: Arc::new(bits),
                     };
-                    self.frames.insert(placed.entity, (projected, frame));
+                    frames.insert(placed.entity, (projected, frame));
                 }
                 Err(error) => {
                     eprintln!(
                         "placed entity {:08X}'s frame does not encode ({error:?})",
                         placed.entity
                     );
-                    self.frames.remove(&placed.entity);
+                    frames.remove(&placed.entity);
                 }
             }
         }
+    }
+
+    /// The entities the placeables' graphs made that are there now, with
+    /// their latest frames ([`crate::replication::WorldDelivery::update_placed`]).
+    pub fn made(&self) -> impl Iterator<Item = MadeView<'_>> {
+        self.world
+            .iter()
+            .flat_map(MapEntityWorld::made)
+            .map(|made| MadeView {
+                entity: made.entity,
+                definition: made.definition,
+                position: made.position,
+                frame: self.made_frames.get(&made.entity).map(|(_, frame)| frame),
+            })
+    }
+
+    /// The pickups the running placeables hold now (the health packs'
+    /// `0046` st5), for the bodies' searches (`0033` st11).
+    pub fn pickups(&self) -> Vec<Pickup> {
+        self.world
+            .iter()
+            .flat_map(MapEntityWorld::pickups)
+            .copied()
+            .collect()
+    }
+
+    /// The health changes the placeables made since the last call (a
+    /// health pack heals the body that asked), for the match's health code.
+    pub fn take_health_changes(&mut self) -> Vec<HealthChange> {
+        self.world
+            .as_mut()
+            .map(MapEntityWorld::take_health_changes)
+            .unwrap_or_default()
     }
 
     /// The running scripts' game messages and message ends since the last
@@ -381,6 +458,22 @@ impl PlacedScripts {
             .iter()
             .map(|(&entity, (_, frame))| (entity, frame))
     }
+
+    /// The placed entity `entity` goes (a mode graph removed it,
+    /// `STU_A3DC6A25`): its graphs end, or never start, and it sends no
+    /// more frames.
+    pub fn remove(&mut self, entity: u32) {
+        self.placed.retain(|placed| placed.entity() != entity);
+        self.frames.remove(&entity);
+        if let Some(world) = &mut self.world {
+            world.remove(entity);
+        }
+    }
+
+    /// The placeables that removed themselves since the last call.
+    pub fn take_removed(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.removed)
+    }
 }
 
 /// One placeable's script stream on one client.
@@ -400,6 +493,11 @@ pub(crate) struct PlacedViews {
 impl PlacedViews {
     pub(crate) fn clear(&mut self) {
         self.views.clear();
+    }
+
+    /// The entity went: a later one with its id starts a new stream.
+    pub(crate) fn forget(&mut self, entity: u32) {
+        self.views.remove(&entity);
     }
 
     /// The chunks of the frames this client doesn't have yet, for the
@@ -534,10 +632,13 @@ mod tests {
     /// st2, whose st1 tags each marker `0035`) and the spawn room `0D62`
     /// (126, whose target searches `13C0`'s `0724` begins: every field
     /// they set is understood, `vm/targets.rs`) run whole and have frames,
-    /// as do the four whose graphs `0216`/`0217` end at once and the pad
-    /// `26F8` (586: the Training Partner setting, ruleset 29450, is on, so
-    /// it keeps itself); the console `265F` still meets gaps and sends
-    /// nothing. Each door's frame changes twice in its first 300 frames: as
+    /// as do the four health packs (185, 188, 199, 416), whose `0046`
+    /// (played by `0216`/`0217`) keeps them up: each made its visual (st15
+    /// StateCreateEntity, `005F`/`0060`, the 23rd to 26th entities) and
+    /// holds its pickup; and the pad `26F8` (586: the Training Partner
+    /// setting, ruleset 29450, is on, so it keeps itself); the console
+    /// `265F` still meets gaps and sends nothing. Each door's frame
+    /// changes twice in its first 300 frames: as
     /// it takes `13C0`'s `0702` (st12, remote slot 7, writes its remote sync
     /// variables #8869 and #8870 from `03C5` and `03C4`) and by its alias
     /// states (see `0D32`; which wait ends first is not pinned here).
@@ -552,7 +653,15 @@ mod tests {
         }
         let scene = &range.scene;
         let world = scene.placed_scripts().world().unwrap();
-        assert_eq!(world.entities().len(), 22);
+        assert_eq!(world.entities().len(), 26);
+        let packs = [185, 188, 199, 416];
+        let makers: Vec<u32> = world
+            .made()
+            .iter()
+            .map(|made| made.maker & 0x7FFF_FFFF)
+            .collect();
+        assert_eq!(makers, packs);
+        assert_eq!(world.pickups().count(), packs.len());
         let room = world.entity(0x8000_007E).unwrap();
         assert!(room.running() && room.complete(), "{:?}", world.gaps());
         let framed: Vec<u32> = scene
@@ -581,6 +690,125 @@ mod tests {
                 .all(|(graph, _)| ![0x01ce, 0x0d62].contains(graph)),
             "{gaps:?}"
         );
+    }
+
+    /// A Range health pack's `0046`: its pickup (st5) is a 0.7 m sphere
+    /// 0.5 m above the pack for any team (kind 0). A living body's `0643`
+    /// (its `0033` st11 found the pickup) makes the pack heal him by its
+    /// #199 (st0: a heal from the pack itself, its #6396e unset, for the
+    /// match's health code), drop its pickup and its visual (#467 0, so
+    /// st16 ends st15) and come back #384 s later (st2 chases #467 back to
+    /// 1 at 1/#384 a second: 10 s for the small `0217`, 15 s for the big
+    /// `0216`, times the ruleset's #9522, 1 on the Range), with a new
+    /// visual. An ask while it is down heals nothing.
+    #[test]
+    #[ignore = "requires the derived 104319 data"]
+    fn a_range_health_pack_heals_the_body_that_asks_and_comes_back() {
+        use std::collections::BTreeSet;
+
+        const BODY: u32 = 0xa000_0101;
+        const TOUCH: u64 = 0x0240_0000_0000_0643;
+        let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+        let mut range = Range::start(&assets, 100);
+        let mut tick = 100;
+        while tick < 110 {
+            range.advance(tick);
+            tick += 1;
+        }
+        let world = range.scene.placed_scripts().world().unwrap();
+        let pickup = *world.pickups().next().unwrap();
+        let pack = pickup.entity;
+        let [x, y, z] = world.entity(pack).unwrap().position;
+        // The VM's vectors and floats are the client's f32 values.
+        let single = |value: f64| value as f32;
+        assert_eq!(
+            (
+                pickup.kind,
+                single(pickup.radius),
+                pickup.team,
+                pickup.centre.map(single)
+            ),
+            (0, 0.7, -1, [x, y + 0.5, z].map(single))
+        );
+        let visual = |range: &Range| {
+            let world = range.scene.placed_scripts().world().unwrap();
+            world
+                .made()
+                .iter()
+                .find(|made| made.maker == pack)
+                .map(|made| made.entity)
+        };
+        let first = visual(&range).unwrap();
+        let up = |range: &Range| {
+            let world = range.scene.placed_scripts().world().unwrap();
+            world.pickups().any(|pickup| pickup.entity == pack)
+        };
+        range.scene.set_placed_target_candidates(&[TargetCandidate {
+            entity: BODY,
+            team: Some(0),
+            dead: false,
+            controller: Some(0xa000_0100),
+            player: Some(0xa000_0100),
+            ai: false,
+            ai_control: None,
+            feet: [x, y, z],
+            height: 1.8,
+            radius: 0.4,
+            yaw: 0.0,
+            tags: Some(Arc::new(BTreeSet::new())),
+            health: None,
+            spawned: Vec::new(),
+        }]);
+        // The server routes a tick's messages after the placeables ran
+        // that tick (`GameService::tick`: `advance_placed`, then
+        // `route_messages`), so the ask lands in the last frame they ran.
+        tick -= 1;
+        let taken = tick;
+        let ask = GameMessage {
+            sender: BODY,
+            target: pack,
+            message: TOUCH,
+            parameters: Variables::new(),
+        };
+        range
+            .scene
+            .message_recipients(taken)
+            .1
+            .receive_message(&ask);
+        let heals = range.scene.take_placed_health_changes();
+        let [heal] = heals.as_slice() else {
+            panic!("{heals:?}");
+        };
+        assert_eq!(
+            (heal.target, heal.instigator, heal.heal),
+            (BODY, pack, true)
+        );
+        let seconds: u32 = if heal.amount == 75.0 {
+            10
+        } else if heal.amount == 250.0 {
+            15
+        } else {
+            panic!("heal {}", heal.amount)
+        };
+        assert!(!up(&range));
+        assert_eq!(visual(&range), None);
+        range
+            .scene
+            .message_recipients(taken)
+            .1
+            .receive_message(&ask);
+        assert!(range.scene.take_placed_health_changes().is_empty());
+        while !up(&range) {
+            tick += 1;
+            assert!(tick < taken + 2000, "the pack never came back");
+            range.advance(tick);
+        }
+        // The chase reaches 1 in the first frame that starts once #384 s
+        // have run since the pickup (`FRAME_MS` 16 ms frames).
+        let frames = (seconds * 1000).div_ceil(orpheus_script::timeline::FRAME_MS as u32);
+        assert_eq!(tick - taken, frames);
+        let second = visual(&range).unwrap();
+        assert_ne!(second, first);
     }
 
     /// The Practice Range's Training Partner console `265F` (267), with

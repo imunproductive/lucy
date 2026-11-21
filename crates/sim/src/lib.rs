@@ -41,3 +41,4 @@ pub mod spawned;
 pub mod voice_lines;
 pub mod weapon_spread;
 pub mod wheel;
+pub mod workshop;

@@ -43,8 +43,9 @@ use orpheus_script::{
     vitals::Vitals,
     vm::{
         AssistLink, AuraChange, BodyEffects, Component, GameMessage, MAX_INIT_WORK, MapRays,
-        Motion, MoveRequest, ParentWrite, RaisedCriteria, Root, Scaled, ScopeChange, ScopeSource,
-        Site, Snapshot, StateKind, TargetCandidate, TrackedStat, Unknowns, VoiceRequest, World,
+        Motion, MoveRequest, ParentWrite, Pickup, RaisedCriteria, Root, Scaled, ScopeChange,
+        ScopeSource, Site, Snapshot, StateKind, TargetCandidate, TrackedStat, Unknowns,
+        VoiceRequest, World,
     },
     weapons::{DamageTags, HitDefinition, ProjectileBallistics, pellet_rings, ray_profile},
     wire::{Value, Variables},
@@ -176,9 +177,12 @@ impl PlayerBodyFactory {
         let health = pools.unwrap_or(FALLBACK_POOLS).total();
         let mut variables = orpheus_script::vm::player_entity_variables(body, health, health);
         // The ruleset's ultimate generation settings, which `0B8B` reads as
-        // entity variables (`orpheus_script::ultimate`), or the override.
+        // entity variables (`orpheus_script::ultimate`), a match's own
+        // ruleset first (a Workshop script's), or the override.
         variables.extend(ult_generation.unwrap_or_else(|| {
-            orpheus_script::ultimate::generation_variables(graphs.rulesets(), hero.guid, mode)
+            orpheus_script::ultimate::generation_variables(|key| {
+                graphs.ruleset_value(key, hero.guid, mode, ruleset)
+            })
         }));
         // The hero settings its graphs read, at their defaults; what the
         // client sent replaces them once the body runs (`WorldDelivery`).
@@ -284,21 +288,27 @@ impl PlayerBodyFactory {
         world.controller_on_fire = self.controller_on_fire;
         world.unknowns = self.unknowns;
         world.team_sizes = self.mode_body.team_sizes.clone();
+        let team = team_from_filter(spawn.body_filter);
         let mut roots = self.roots.clone();
-        let mode_script = self
-            .mode_body
-            .scripts
-            .get(&team_from_filter(spawn.body_filter))
-            .copied();
+        let mode_script = self.mode_body.scripts.get(&team).copied();
         if let Some(graph) = mode_script {
             let id = roots.last().map_or(Some(1), |root| root.id.checked_add(1));
             let id = id.ok_or_else(|| unsupported("no instance id left for the mode body"))?;
             roots.push(Root::new(id, graph));
         }
+        // A custom match's ruleset values, which the client's graphs read
+        // only as the body's entity variables
+        // (`GraphStore::body_variables`).
+        let mut variables = self.variables.clone();
+        variables.extend(self.graphs.body_variables(
+            self.ruleset,
+            self.hero,
+            u8::try_from(team).ok(),
+        ));
         let mut component = Component::start(
             Arc::clone(&self.graphs),
             spawn.entity,
-            self.variables.clone(),
+            variables,
             roots,
             spawn.frame,
             &mut world,
@@ -680,6 +690,10 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
         let targets = self.world.targets.get_or_insert_with(Vec::new);
         targets.clear();
         targets.extend_from_slice(candidates);
+    }
+
+    fn set_pickups(&mut self, pickups: &[Pickup]) {
+        self.world.pickups = Some(pickups.to_vec());
     }
 
     /// The killer's possessor as the body's graphs would ask it

@@ -123,6 +123,10 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             StateKind::Assist => self.end_assist(key, node),
             StateKind::ApplyAura => self.end_auras(key),
             StateKind::Scope => self.end_scopes(key),
+            StateKind::CreateEntity {
+                entity: Some(entity),
+            } => self.end_create_entity(key, node, entity),
+            StateKind::Pickup => self.end_pickup(key, node),
             StateKind::SendMessage => self.end_send_state(key, node)?,
             StateKind::StatTime => self.end_stat_time(key, node),
             _ => (),
@@ -143,6 +147,9 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         }
         if matches!(kind, StateKind::TargetTag { .. }) {
             state.kind = StateKind::TargetTag { effect: None };
+        }
+        if matches!(kind, StateKind::CreateEntity { .. }) {
+            state.kind = StateKind::CreateEntity { entity: None };
         }
         if matches!(kind, StateKind::LogicalButton { .. }) {
             state.kind = StateKind::LogicalButton { down: false };

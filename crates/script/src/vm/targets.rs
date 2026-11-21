@@ -245,7 +245,7 @@ pub(super) const TAG_LISTS: [&str; 3] = ["m_9C7BD8B8", "m_B486603E", "m_8B2A4DF3
 const TEAM_BIT: u64 = 0x0080_0000;
 const FREE_FOR_ALL_TEAM: u8 = 4;
 const BODY_KINDS: u64 = 0x1_0041;
-const DEAD: u64 = 0x10;
+pub(crate) const DEAD: u64 = 0x10;
 
 /// The line of sight (see the module notes): the switch, its origin, the
 /// filter whose ray profile it casts with, the sweep before the rays and

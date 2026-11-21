@@ -12,6 +12,10 @@
 //! (refs/reports/OwnerPrediction.md, "Day (2026-11-17)", DayJoin). So a
 //! tick's change costs a few bytes, where the Range's whole `13C0` frame
 //! is about 920 (refs/reports/ModeGraphGaps.md, "DayModeFrame").
+//!
+//! A chunk too big for a datagram (a Workshop match's frame: its rules'
+//! global arrays and action instances on the mode entity, about 10 KB)
+//! goes in parts, as any entity's (`replication/parts.rs`).
 
 use std::sync::Arc;
 
@@ -85,7 +89,7 @@ impl ModeView {
         frame: ModeFrame<'_>,
         tick: u32,
     ) -> Result<Option<ScriptChunk>, SnapshotError> {
-        match frame {
+        let chunk = match frame {
             ModeFrame::Full(payload) => {
                 if let Chunks::Graph(stream) = &self.chunks {
                     self.chunks = Chunks::Full(Stream::after(GAME_MODE_ENTITY, stream.last()));
@@ -95,7 +99,7 @@ impl ModeView {
                 let Chunks::Full(stream) = &mut self.chunks else {
                     unreachable!("a stream of full frames")
                 };
-                Ok(Some(stream.full(payload)?))
+                stream.full(payload)?
             }
             ModeFrame::Graph { encoder, projected } => {
                 if let Chunks::Full(stream) = &self.chunks {
@@ -112,31 +116,31 @@ impl ModeView {
                         return Ok(None); // the full frame is on its way
                     }
                     self.queued = Some((Arc::clone(projected), tick.saturating_add(RESEND_TICKS)));
-                    return encoder.queue_full(stream, projected).map(Some);
+                    encoder.queue_full(stream, projected)?
+                } else {
+                    if self.queued.as_ref().is_some_and(|(queued, again)| {
+                        Arc::ptr_eq(queued, projected) && tick < *again
+                    }) {
+                        return Ok(None);
+                    }
+                    self.queued = Some((Arc::clone(projected), tick.saturating_add(RESEND_TICKS)));
+                    let Some(chunk) = encoder.queue_delta(
+                        stream,
+                        projected,
+                        DeltaKind::Observer { resend: false },
+                        FRAME_MS as u32,
+                    )?
+                    else {
+                        return Ok(None);
+                    };
+                    if let Some(old) = self.unsent.replace(chunk.last) {
+                        stream.discard_unsent(old);
+                    }
+                    chunk
                 }
-                if self
-                    .queued
-                    .as_ref()
-                    .is_some_and(|(queued, again)| Arc::ptr_eq(queued, projected) && tick < *again)
-                {
-                    return Ok(None);
-                }
-                self.queued = Some((Arc::clone(projected), tick.saturating_add(RESEND_TICKS)));
-                let Some(chunk) = encoder.queue_delta(
-                    stream,
-                    projected,
-                    DeltaKind::Observer { resend: false },
-                    FRAME_MS as u32,
-                )?
-                else {
-                    return Ok(None);
-                };
-                if let Some(old) = self.unsent.replace(chunk.last) {
-                    stream.discard_unsent(old);
-                }
-                Ok(Some(chunk))
             }
-        }
+        };
+        Ok(Some(chunk))
     }
 
     /// Whether chunk `last` still has to reach the client: a graph chunk
@@ -158,7 +162,7 @@ impl ModeView {
         }
     }
 
-    /// Chunk `last`'s datagram arrived or was lost; true: send it again.
+    /// Chunk `last` arrived or was lost; true: send it again.
     pub(crate) fn delivered(&mut self, last: u32, arrived: bool) -> bool {
         match &mut self.chunks {
             Chunks::Full(stream) if arrived => {

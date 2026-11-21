@@ -203,14 +203,16 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            generation_variables(&rulesets, TRACER, PRACTICE_RANGE),
+            generation_variables(|key| rulesets.default(key, TRACER, PRACTICE_RANGE)),
             crate::wire::Variables::from([
                 (9532, Value::Float(2.0)),
                 (12918, Value::Float(0.25)),
                 (13022, Value::Float(0.5)),
             ])
         );
-        assert!(generation_variables(&rulesets, SOLDIER, PRACTICE_RANGE).is_empty());
+        assert!(
+            generation_variables(|key| rulesets.default(key, SOLDIER, PRACTICE_RANGE)).is_empty()
+        );
     }
 
     /// The install's table: 32 heroes and 24 modes list schemas, and the

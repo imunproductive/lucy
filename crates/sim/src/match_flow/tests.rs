@@ -366,6 +366,31 @@ fn quick_play_assault_runs_its_phases_and_attackers_win_by_taking_a_and_b() {
     assert!(!run.flow.respawns());
 }
 
+/// C32S2's "Match time" rule: Set Match Time(1) at 0.25 s and at 1.35 s
+/// ends assembling heroes and then setup within 2.4 s, and Set Match
+/// Time(3600) gives the round 3599 s (the action's limit). Before the
+/// players are in, nothing.
+#[test]
+fn set_match_time_gives_the_phase_its_seconds() {
+    let set = |seconds: f64| Variables::from([(SETUP_CLOCK, Value::Float(seconds))]);
+    let mut run = Run::new(new_flow(&assault(), false, Timers::default()).unwrap());
+    run.flow.receive(SET_MATCH_TIME_MESSAGE, &set(1.0));
+    run.flow.start();
+    assert_eq!(run.flow.clock(), 30.0);
+    run.until(0.25, &[], |_| false);
+    run.flow.receive(SET_MATCH_TIME_MESSAGE, &set(1.0));
+    close(run.phase(2.0, &[], Phase::Setup), 1.0);
+    run.until(0.1, &[], |_| false);
+    run.flow.receive(SET_MATCH_TIME_MESSAGE, &set(1.0));
+    close(run.phase(2.0, &[], Phase::Round), 1.0);
+    assert!(run.elapsed < 2.45, "the round at {} s", run.elapsed);
+    run.flow.receive(SET_MATCH_TIME_MESSAGE, &set(3600.0));
+    assert_eq!(run.flow.clock(), 3599.0);
+    // Another message to the mode entity leaves the clock.
+    run.flow.receive(SETUP_MESSAGE, &set(5.0));
+    assert_eq!(run.flow.clock(), 3599.0);
+}
+
 #[test]
 fn the_time_scale_shortens_every_timer_and_capture() {
     let timers = Timers { scale: 0.1 };

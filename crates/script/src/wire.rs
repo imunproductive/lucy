@@ -710,26 +710,7 @@ pub fn read_full_head(
             break;
         }
         id = id.checked_add(step).ok_or(WireError::InstanceId)?;
-        let graph = bits.bits(16)? as u16;
-        let creator = if bits.bit()? { bits.entity_id()? } else { None };
-        bits.bit()?;
-        let parent = if bits.bit()? {
-            Some((bits.w_var()?, bits.w_var()?))
-        } else {
-            None
-        };
-        // A scope instance's references (scope id, count, then each
-        // entity and, for a valid one, its instance and state).
-        if bits.bit()? {
-            bits.w_var()?;
-            for _ in 0..bits.w_u16()? {
-                if bits.entity_id()?.is_some() {
-                    bits.w_var()?;
-                    bits.w_var()?;
-                }
-            }
-        }
-        instances.push((id, graph, creator, parent));
+        instances.push(read_descriptor(&mut bits, id)?);
     }
     let mut variables = Variables::new();
     let mut links = BTreeMap::new();
@@ -754,6 +735,69 @@ pub fn read_full_head(
         links,
         end: bits.position(),
     })
+}
+
+/// Instance `id`'s descriptor as [`write_descriptor`] writes it: graph,
+/// creator and parent; the scope's references are read past.
+fn read_descriptor(bits: &mut BitReader<'_>, id: u16) -> Result<ListedInstance, WireError> {
+    let graph = bits.bits(16)? as u16;
+    let creator = if bits.bit()? { bits.entity_id()? } else { None };
+    bits.bit()?;
+    let parent = if bits.bit()? {
+        Some((bits.w_var()?, bits.w_var()?))
+    } else {
+        None
+    };
+    // A scope instance's references (scope id, count, then each entity
+    // and, for a valid one, its instance and state).
+    if bits.bit()? {
+        bits.w_var()?;
+        for _ in 0..bits.w_u16()? {
+            if bits.entity_id()?.is_some() {
+                bits.w_var()?;
+                bits.w_var()?;
+            }
+        }
+    }
+    Ok((id, graph, creator, parent))
+}
+
+/// An instance an observer delta lists: what it says of it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DeltaInstance {
+    /// Gone.
+    Removed(u16),
+    /// Changed, with no new descriptor.
+    Changed(u16),
+    /// New (or replaced): its listed form.
+    Described(ListedInstance),
+}
+
+/// The instance list at the head of an observer delta (`SnapshotEncoder`'s
+/// `delta_frame`). For tests and logs.
+pub fn read_delta_instances(bytes: &[u8]) -> Result<Vec<DeltaInstance>, WireError> {
+    let mut bits = BitReader::new(bytes);
+    if bits.bit()? || bits.bit()? {
+        // Not a delta, or an owner's (CmFD).
+        return Err(WireError::InvalidValue);
+    }
+    let mut instances = Vec::new();
+    let mut id = 0_u16;
+    loop {
+        let step = bits.w_u16()?;
+        if step == 0 {
+            break;
+        }
+        id = id.checked_add(step).ok_or(WireError::InstanceId)?;
+        instances.push(if bits.bit()? {
+            DeltaInstance::Removed(id)
+        } else if bits.bit()? {
+            DeltaInstance::Described(read_descriptor(&mut bits, id)?)
+        } else {
+            DeltaInstance::Changed(id)
+        });
+    }
+    Ok(instances)
 }
 
 /// A tagged value as [`write_value`] writes it, in either encoding. For
@@ -934,6 +978,60 @@ pub fn chunk(payload: &BitWriter, first: u32, span: u32) -> Result<BitWriter, Wi
     Ok(out)
 }
 
+/// The most bits a chunk's head takes: `SFSF` (w_u32), `SFDt` (w_var),
+/// the part bit, `Part` (w_u16), the last part's bit and `Size` (w_var).
+const MAX_CHUNK_HEAD_BITS: usize = 34 + 34 + 1 + 18 + 1 + 34;
+
+/// `chunk` (as [`chunk`] wrote it) in parts of at most `max_bytes` each,
+/// none when it fits whole. Each part has the chunk's first number and
+/// span, the part bit, its number (`Part`, w_u16, from 0) and a bit set on
+/// the last part only, then its share of the payload. The client's chunk
+/// reader (`0x7FF7898A6450`) reads them into the chunk's `+8` and `+12`;
+/// its applier (`0x7FF78991E630`) applies no part, and before it the
+/// joiner (`0x7FF78991FE30`) waits for a last part whose numbers 0 to its
+/// own are all queued with the same first number and span, appends their
+/// payloads in order (`0x7FF789919500`) into one whole chunk and queues
+/// that in their place. Parts of one chunk don't supersede each other in
+/// the queue (`0x7FF78991A3E0` drops a queued chunk of the same range only
+/// for the same part number), so a lost part alone goes again.
+pub fn chunk_parts(
+    chunk: &BitWriter,
+    max_bytes: usize,
+) -> Result<Option<Vec<BitWriter>>, WireError> {
+    if chunk.as_bytes().len() <= max_bytes {
+        return Ok(None);
+    }
+    let share = max_bytes
+        .checked_mul(8)
+        .and_then(|bits| bits.checked_sub(MAX_CHUNK_HEAD_BITS))
+        .filter(|&bits| bits > 0)
+        .ok_or(WireError::ChunkRange)?;
+    let mut whole = BitReader::with_range(chunk.as_bytes(), 0, chunk.bit_len())?;
+    let first = whole.w_u32()?;
+    let span = whole.w_var()?;
+    if whole.bit()? {
+        return Err(WireError::ChunkRange); // already a part
+    }
+    let width = whole.w_var()? as usize;
+    let count = width.div_ceil(share);
+    let last = u16::try_from(count - 1).map_err(|_| WireError::ChunkRange)?;
+    (0..=last)
+        .map(|number| {
+            let bits = share.min(whole.left());
+            let mut part = BitWriter::new();
+            part.w_u32(first);
+            part.w_var(span);
+            part.bit(true);
+            part.w_u16(number);
+            part.bit(number == last);
+            part.w_var(u32::try_from(bits).map_err(|_| WireError::ChunkRange)?);
+            part.raw_bits(&whole.raw_bits(bits)?, bits)?;
+            Ok(part)
+        })
+        .collect::<Result<_, _>>()
+        .map(Some)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -946,6 +1044,37 @@ mod tests {
             .collect();
         assert_eq!(bits.bit_len(), count);
         assert_eq!(actual, expected);
+    }
+
+    /// A chunk's parts, read as the client's chunk reader does
+    /// (`0x7FF7898A6450`) and joined as its joiner does (`0x7FF78991FE30`:
+    /// the payloads of parts 0 to the one marked last, in order), give the
+    /// chunk's range and payload back; each part fits its budget.
+    #[test]
+    fn a_chunks_parts_join_into_the_chunk() {
+        let mut payload = BitWriter::new();
+        for value in 0..2500u32 {
+            payload.bits(u64::from(value % 7), 3).unwrap();
+        }
+        let whole = chunk(&payload, 0, 9).unwrap();
+        assert_eq!(chunk_parts(&whole, 1024).unwrap(), None);
+        let parts = chunk_parts(&whole, 300).unwrap().unwrap();
+        assert_eq!(parts.len(), 4);
+        let mut joined = BitWriter::new();
+        for (number, part) in (0..).zip(&parts) {
+            assert!(part.as_bytes().len() <= 300);
+            let mut bits = BitReader::with_range(part.as_bytes(), 0, part.bit_len()).unwrap();
+            assert_eq!((bits.w_u32().unwrap(), bits.w_var().unwrap()), (0, 9));
+            assert!(bits.bit().unwrap(), "a part");
+            assert_eq!(bits.w_u16().unwrap(), number);
+            assert_eq!(bits.bit().unwrap(), usize::from(number) == parts.len() - 1);
+            let width = bits.w_var().unwrap() as usize;
+            assert_eq!(bits.left(), width);
+            joined
+                .raw_bits(&bits.raw_bits(width).unwrap(), width)
+                .unwrap();
+        }
+        assert_eq!(joined, payload);
     }
 
     #[test]

@@ -61,14 +61,11 @@ use orpheus_content::{
     parameters::{CLIENT_GAME_MESSAGE, PICK_HERO},
     stats::{BRONZE, GOLD, Medals, PlayerStats, SILVER, StatsCatalog},
 };
-use orpheus_core::tick::FIRST_TICK;
 use orpheus_lobby::handoff::Handoff;
 use orpheus_script::{
-    controller::HeroSelectRequest,
     mode::ModePlayer,
     snapshot::ProjectedSnapshot,
     vm::{AuraChange, GameMessage, ScopeChange, TrackedStat},
-    wire::chunk,
 };
 use orpheus_sim::{
     ai::{Difficulty, Random},
@@ -79,7 +76,6 @@ use orpheus_sim::{
         apply_player_hits, apply_player_pushes, deliver_projectiles, finish_bot_rockets,
         show_bot_rockets, show_fired,
     },
-    controller::ControllerFrame,
     egress::GameEgress,
     hurt_feedback::HurtFeedback,
     instance::{FREE_FOR_ALL_TEAM, Instance, Member, RETAIL_QUANTA, TOURNAMENT_QUANTA, ownership},
@@ -93,6 +89,7 @@ use orpheus_sim::{
     scene::{PlayerAppearance, PlayerCard},
     scene_assets::{CollisionBuild, CollisionFiles, FellOut, PreparedScene},
     voice_lines::VoiceLine,
+    workshop::{WorkshopPlayer, WorkshopRun},
 };
 use orpheus_wire::entity::Component as WorldComponent;
 use orpheus_wire::{
@@ -148,6 +145,9 @@ pub struct MatchSnapshot {
     /// (match.py `waiting_for_players`).
     pub waiting: bool,
     pub players: Vec<PlayerSnapshot>,
+    /// A Workshop match (a custom game, or `--workshop`): how many rules
+    /// its script has for the Workshop engine; `None` for every other match.
+    pub workshop_rules: Option<usize>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -322,6 +322,13 @@ enum Request {
     },
     Snapshot {
         reply: mpsc::SyncSender<Vec<MatchSnapshot>>,
+    },
+    /// The Workshop script of the match that just opened.
+    Workshop {
+        id: MatchId,
+        logic: Arc<orpheus_workshop::Logic>,
+        catalog: Arc<orpheus_workshop::Catalog>,
+        reply: mpsc::SyncSender<bool>,
     },
     /// The matches that ended since the last call, oldest first.
     Results {
@@ -577,6 +584,23 @@ impl GameService {
         self.request(|reply| Request::Snapshot { reply })
     }
 
+    /// Give a match that just opened (before its scene is ready: right
+    /// after `open_world`) its Workshop script and the catalog it reads,
+    /// for the Workshop engine. False when the match is gone.
+    pub fn attach_workshop(
+        &self,
+        id: MatchId,
+        logic: Arc<orpheus_workshop::Logic>,
+        catalog: Arc<orpheus_workshop::Catalog>,
+    ) -> io::Result<bool> {
+        self.request(|reply| Request::Workshop {
+            id,
+            logic,
+            catalog,
+            reply,
+        })
+    }
+
     /// The matches that ended by their rules since the last call, oldest
     /// first; the lobby records them in the players' profiles.
     pub fn take_results(&self) -> io::Result<Vec<MatchResult>> {
@@ -803,6 +827,17 @@ struct Room {
     ai: Option<Difficulty>,
     /// Its dummy bots (`ai.rs`): the Practice Range's Training Partner.
     dummies: Vec<ai::DummySeat>,
+    /// Its Workshop script (`attach_workshop`) and, once the mode starts,
+    /// its engine (`orpheus_sim::workshop`).
+    workshop: Option<RoomWorkshop>,
+}
+
+/// A match's Workshop script and its engine.
+struct RoomWorkshop {
+    logic: Arc<orpheus_workshop::Logic>,
+    catalog: Arc<orpheus_workshop::Catalog>,
+    /// Runs from the mode's start (`Room::begin_flow`).
+    run: Option<WorkshopRun>,
 }
 
 impl Room {
@@ -826,6 +861,7 @@ impl Room {
             started: Instant::now(),
             ai: None,
             dummies: Vec::new(),
+            workshop: None,
         };
         room.add(players);
         room
@@ -891,7 +927,7 @@ impl Room {
     /// The players are in a PvP world: the flow starts with "assemble your
     /// team", and the mode graph once to see whether it can drive the mode
     /// entity (`mode_script.rs`).
-    fn begin_flow(&mut self, scene: &PreparedScene, timers: Timers, now: Duration, tick: u32) {
+    fn begin_flow(&mut self, scene: &mut PreparedScene, timers: Timers, now: Duration, tick: u32) {
         if self.flow.is_some() {
             return;
         }
@@ -934,8 +970,25 @@ impl Room {
         );
         self.flow = Some(flow);
         // The players reach the graph with the next tick's flow
-        // (`update_flows`), as they join.
-        self.mode = Some(ModeRunner::start(scene, tick, Vec::new()));
+        // (`update_flows`), as they join. A Workshop match runs its
+        // actions on the mode entity, so a graph must drive it
+        // (`ModeRunner::workshop`).
+        let workshop = self.workshop.as_mut().and_then(|workshop| {
+            let mode = ModeRunner::workshop(scene, tick, Vec::new())?;
+            workshop.run = Some(WorkshopRun::new(
+                &workshop.logic,
+                Arc::clone(&workshop.catalog),
+                u64::from(tick),
+            ));
+            Some(mode)
+        });
+        let mode = self
+            .mode
+            .insert(workshop.unwrap_or_else(|| ModeRunner::start(scene, tick, Vec::new())));
+        // The mode graph removes placeables as it starts (`0CBB` st34, the
+        // health packs): before the world that just started reaches the
+        // client, so their creates never go.
+        take_placeable_removals(mode, scene);
         self.flow_at = now;
         self.flow_tick = tick;
         self.next_mode_frame = now;
@@ -1019,33 +1072,14 @@ struct CombatUi {
     last_hit_frame: u32,
 }
 
-/// The first controller frame a player of `team` gets, hero select open
-/// with the skin selector, projected from a controller script started for
-/// the size check (its frames are the script's: `orpheus_sim::controller`).
-fn initial_controller(
-    scene: &PreparedScene,
-    entity: u32,
-    team: u8,
-    tick: u32,
-) -> io::Result<orpheus_core::bits::BitWriter> {
-    let controller = scene.controller();
-    let mut script = controller
-        .start_script(scene.shared_graphs(), entity, team, scene.heroes(), tick)
-        .map_err(invalid)?;
-    script
-        .hero_select(tick, HeroSelectRequest::OpenOrClose(true))
-        .map_err(invalid)?;
-    controller
-        .controller_frame(
-            &script,
-            tick,
-            ControllerFrame {
-                skins: true,
-                hide_assemble: true,
-                ..ControllerFrame::default()
-            },
-        )
-        .map_err(invalid)
+/// The placeables the mode entity's graphs removed (`0CBB` st34: the
+/// health packs, when the ruleset turns them off), out of the scene.
+fn take_placeable_removals(mode: &mut ModeRunner, scene: &mut PreparedScene) {
+    if let Some(script) = mode.script_mut() {
+        for identifier in script.take_placeable_removals() {
+            scene.remove_placeables(identifier);
+        }
+    }
 }
 
 /// The mode graph's frame this tick, while it drives the mode entity: the
@@ -1062,8 +1096,10 @@ fn graph_frame(
     })
 }
 
-/// A scene the worker can open a world on, whose world baselines fit a
-/// datagram for every player (`teams` and `cards` in slot order).
+/// A scene the worker can open a world on, whose world creates fit a
+/// datagram for every player (`teams` and `cards` in slot order). A
+/// statescript chunk too big for one goes in parts
+/// (`orpheus_sim::replication`).
 fn check_scene(
     scene: &PreparedScene,
     map: &GameMap,
@@ -1087,28 +1123,14 @@ fn check_scene(
             room: SpawnChoice::First,
             card,
         };
-        let creates = scene.initial_world(&viewer)?;
-        let controller = initial_controller(scene, viewer.entity, team, FIRST_TICK)?;
-        let scripts = [
-            script_record(viewer.entity, &controller)?,
-            script_record(GAME_MODE_ENTITY, scene.mode_ui())?,
-        ];
-        for record in creates.iter().chain(&scripts) {
-            let packet = frame(u32::MAX, u32::MAX, 0, &[], &[], &[record]).map_err(invalid)?;
+        for record in scene.initial_world(&viewer)? {
+            let packet = frame(u32::MAX, u32::MAX, 0, &[], &[], &[&record]).map_err(invalid)?;
             if packet.len() > MAX_PAYLOAD {
                 return Err(invalid("a world baseline exceeds the game datagram budget"));
             }
         }
     }
     Ok(())
-}
-
-fn script_record(entity: u32, payload: &orpheus_core::bits::BitWriter) -> io::Result<EntityUpdate> {
-    Ok(EntityUpdate {
-        entity,
-        chunk: Some(chunk(payload, 0, 1).map_err(invalid)?),
-        ..EntityUpdate::default()
-    })
 }
 
 fn player_entity(slot: usize) -> u32 {
@@ -1487,14 +1509,19 @@ impl Peer {
         if let (true, Some(frame)) = (self.presented, room.mode_frame_now()) {
             self.world.queue_mode_frame(frame, tick)?;
         }
+        // The entities the mode entity's graphs made (the Workshop's
+        // effects and icons), after the mode frame that names them.
+        if let (true, Some(mode)) = (self.presented, room.mode.as_ref()) {
+            self.world.update_mode_entities(mode);
+        }
         if let (true, Some(world)) = (room.assembled && self.presented, &room.world) {
             self.world.end_assemble(&world.scene, tick)?;
         }
         self.world.set_assembling(room.assembling());
         let spawned = self.advance_loading(schemas, room, slot, now, tick)?;
-        if let Some(world) = room.world.take() {
+        if let Some(mut world) = room.world.take() {
             if spawned && !world.scene.controller().practice() {
-                room.begin_flow(&world.scene, timers, now, tick);
+                room.begin_flow(&mut world.scene, timers, now, tick);
             }
             room.world = Some(world);
         }
@@ -1718,6 +1745,10 @@ impl State {
                 id,
                 map: room.map.name.clone(),
                 mode: room.map.mode_name.clone(),
+                workshop_rules: room
+                    .workshop
+                    .as_ref()
+                    .map(|workshop| workshop.logic.rules.len()),
                 waiting: room
                     .flow
                     .as_ref()
@@ -1777,6 +1808,23 @@ impl State {
             Request::Scene { id, scene } => self.scene_ready(id, scene, now),
             Request::Snapshot { reply } => {
                 let _ = reply.send(self.snapshot());
+            }
+            Request::Workshop {
+                id,
+                logic,
+                catalog,
+                reply,
+            } => {
+                let room = self.rooms.get_mut(&id);
+                let found = room.is_some();
+                if let Some(room) = room {
+                    room.workshop = Some(RoomWorkshop {
+                        logic,
+                        catalog,
+                        run: None,
+                    });
+                }
+                let _ = reply.send(found);
             }
             Request::Results { reply } => {
                 let _ = reply.send(std::mem::take(&mut self.results));
@@ -2487,11 +2535,14 @@ impl State {
     }
 
     /// The hits on players' bodies of a room (combat.py `_damage`, `_died`).
+    /// What they did between the players goes to the room's Workshop rules
+    /// (`WorkshopRun::player_events`).
     fn resolve_player_hits(&mut self, id: MatchId, tick: u32, now: Duration) {
         let Some(Room {
             players,
             world,
             flow,
+            workshop,
             ..
         }) = self.rooms.get_mut(&id)
         else {
@@ -2518,8 +2569,11 @@ impl State {
                     stats: &mut player.stats,
                 })
                 .collect();
-            let notices = apply_player_hits(scene, hits, &mut room, tick, now);
-            apply_player_pushes(pushes, &mut room, now);
+            let (notices, mut events) = apply_player_hits(scene, hits, &mut room, tick, now);
+            events.extend(apply_player_pushes(pushes, &mut room, now));
+            if let Some(run) = workshop.as_mut().and_then(|workshop| workshop.run.as_mut()) {
+                run.player_events(&events);
+            }
             notices
         };
         // The kills count for the match flow's score (Deathmatch, Team
@@ -2607,7 +2661,11 @@ impl State {
             now,
         };
         let mut struck: Vec<(Option<u32>, BotHit)> = Vec::new();
-        for change in world.scene.take_bot_health_changes() {
+        // The bots' graphs' changes, and the server placeables' (a health
+        // pack heals the body that walked onto it, `0046` st0).
+        let mut changes = world.scene.take_bot_health_changes();
+        changes.extend(world.scene.take_placed_health_changes());
+        for change in changes {
             let shooter = self
                 .seats
                 .iter()
@@ -2661,11 +2719,14 @@ impl State {
                 let candidates = combat.target_candidates(&world.scene);
                 world.scene.set_bot_target_candidates(&candidates);
                 world.scene.set_placed_target_candidates(&candidates);
+                // The health packs the bodies' searches find (`0033` st11).
+                let pickups = world.scene.pickups();
                 for peer in room_peers(&mut self.peers, &self.seats, id, players.len())
                     .into_iter()
                     .flatten()
                 {
                     peer.world.set_target_candidates(&candidates);
+                    peer.world.set_pickups(&pickups);
                 }
                 let context = ShotContext {
                     quanta: RETAIL_QUANTA,
@@ -2928,6 +2989,10 @@ impl State {
                     let variables = orpheus_script::wire::Variables::new();
                     room.mail.extend(mode.advance(tick, &variables, players));
                     room.graph_frame = graph_frame(mode, room.graph_frame.take());
+                    // No flow stands in for the graph's own entries here.
+                    if let Some(script) = mode.script_mut() {
+                        script.take_own_messages();
+                    }
                 }
                 continue;
             }
@@ -2952,6 +3017,39 @@ impl State {
                 .mode
                 .as_mut()
                 .map_or_else(Vec::new, |mode| mode.advance(tick, &variables, players));
+            // The Workshop's rules after the mode entity's frame, against
+            // the players in the world.
+            if let (Some(run), Some(mode)) = (
+                room.workshop
+                    .as_mut()
+                    .and_then(|workshop| workshop.run.as_mut()),
+                room.mode.as_mut(),
+            ) {
+                let mut players: Vec<WorkshopPlayer<'_>> = self
+                    .peers
+                    .iter_mut()
+                    .filter_map(|(connection, peer)| {
+                        let &(_, slot) = connections
+                            .iter()
+                            .find(|(seated, _)| seated == connection)?;
+                        let player = &room.players[slot];
+                        (!player.gone && peer.world.world_started()).then_some(WorkshopPlayer {
+                            controller: player.entity,
+                            slot,
+                            team: player.info.team,
+                            world: &mut peer.world,
+                        })
+                    })
+                    .collect();
+                run.step(tick, &world.scene, mode, &mut players);
+            }
+            // The flow stands in for the mode graph's entries: what the
+            // mode entity's graphs sent it (the Workshop's Set Match Time).
+            if let Some(script) = room.mode.as_mut().and_then(ModeRunner::script_mut) {
+                for message in script.take_own_messages() {
+                    flow.receive(message.message, &message.parameters);
+                }
+            }
             let changed = events
                 .iter()
                 .any(|event| matches!(event, FlowEvent::Phase(_)));
@@ -3329,7 +3427,7 @@ impl State {
                     // rooms the match flow's spawns hold get it here. The
                     // scripts' dummy bots (the Training Partner) are AI
                     // players of the room (`ai.rs`).
-                    let holds = if room.mode.as_ref().is_some_and(ModeRunner::graph_driven) {
+                    let holds = if room.mode.as_ref().is_some_and(ModeRunner::holds_rooms) {
                         Vec::new()
                     } else {
                         let flow = room.flow.as_ref();
@@ -3338,6 +3436,12 @@ impl State {
                         })
                     };
                     world.scene.set_next_dummy(Some(next));
+                    // The placeables the mode entity's graphs removed (`0CBB`
+                    // st34: the health packs, when the ruleset turns them
+                    // off) go before their scripts run again.
+                    if let Some(mode) = room.mode.as_mut() {
+                        take_placeable_removals(mode, &mut world.scene);
+                    }
                     world.scene.advance_placed(tick, &holds);
                     dummies.push((id, world.scene.take_dummy_changes()));
                     scopes.push((id, world.scene.take_scope_changes()));
