@@ -24,9 +24,9 @@ use crate::{
     vitals::{PoolKind, Vitals},
     vm::{
         AssistLink, AuraChange, BodyEffects, CombatMod, DEAD_FILTER_BIT, DummyBot,
-        EnvironmentCredit, GameMessage, HealthChange, Knockback, MapRays, ParentWrite, Pickup,
-        PlayRequest, RaisedCriteria, ScopeChange, SeenBodies, SeenBody, Site, TargetCandidate,
-        TargetTagEffect, TrackedStat, Unknowns, VoiceRequest, World,
+        EnvironmentCredit, GameMessage, HealthChange, Knockback, MapRays, MessageEnd, ParentWrite,
+        Pickup, PlayRequest, RaisedCriteria, ScopeChange, SeenBodies, SeenBody, Site,
+        TargetCandidate, TargetTagEffect, TrackedStat, Unknowns, VoiceRequest, World,
     },
     wheel::{Cosmetic, Cosmetics},
     wire::{Value, Variables},
@@ -141,6 +141,12 @@ pub struct PlayerWorld {
     pub cosmetics: Cosmetics,
     /// Game messages to other entities, for the match to route.
     outbox: Vec<GameMessage>,
+    /// The ends of its persistent sends to other entities, for the match
+    /// to route ([`Self::take_message_ends`]).
+    ends: Vec<MessageEnd>,
+    /// Its persistent sends' new parameters for the entities that hold
+    /// them, for the match to route ([`Self::take_message_updates`]).
+    updates: Vec<GameMessage>,
     /// The criteria the body's graphs raised on it or its controller, for
     /// the match to answer with the body's voice lines.
     criteria: Vec<RaisedCriteria>,
@@ -252,6 +258,34 @@ impl World for PlayerWorld {
             parameters: parameters.clone(),
         });
         true
+    }
+
+    /// A persistent send to another entity ended for it (`0F00`'s `08AE`
+    /// to the capture point the body left): the match routes the end.
+    fn end_message(&mut self, source: Site, target: u32, message: u64) -> bool {
+        if source.entity != self.entity || target == crate::mode::EVERY_ENTITY {
+            return false;
+        }
+        self.ends.push(MessageEnd {
+            sender: self.entity,
+            target,
+            message,
+        });
+        true
+    }
+
+    /// A persistent send's new parameters go to the match, which hands
+    /// them to the target's receivers.
+    fn update_message(&mut self, source: Site, target: u32, message: u64, parameters: &Variables) {
+        if source.entity != self.entity {
+            return;
+        }
+        self.updates.push(GameMessage {
+            sender: self.entity,
+            target,
+            message,
+            parameters: parameters.clone(),
+        });
     }
 
     /// A message to every entity (`STU_57692020`, a primary channel's
@@ -930,6 +964,8 @@ impl PlayerWorld {
             unknowns: Unknowns::for_build(),
             cosmetics: Cosmetics::default(),
             outbox: Vec::new(),
+            ends: Vec::new(),
+            updates: Vec::new(),
             criteria: Vec::new(),
             voices: Vec::new(),
             health_changes: Vec::new(),
@@ -1017,6 +1053,17 @@ impl PlayerWorld {
     /// recipient takes each with `Component::receive_message`.
     pub fn take_messages(&mut self) -> Vec<GameMessage> {
         std::mem::take(&mut self.outbox)
+    }
+
+    /// The ends of the body's persistent sends to other entities since the
+    /// last call, in order, for the match to route with its messages.
+    pub fn take_message_ends(&mut self) -> Vec<MessageEnd> {
+        std::mem::take(&mut self.ends)
+    }
+
+    /// The body's persistent sends' new parameters since the last call.
+    pub fn take_message_updates(&mut self) -> Vec<GameMessage> {
+        std::mem::take(&mut self.updates)
     }
 
     /// The criteria the body's graphs raised on it or its controller since

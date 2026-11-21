@@ -117,11 +117,14 @@
 //! node `0x8000` and `0x200000000000`, refs `OwnerPrediction.md` §12.4)
 //! take the model's physics out with its drawing; not read in the client.
 //! The mode graphs send `0845` (`0F4A` st60, `0D76` st19); the Rust match
-//! flow that stands in for them in normal matches doesn't, so there every
-//! wall stays off, on the server as on the clients. Where `0845` comes,
-//! state 3 begins with state 6 (`STU_E56BA8D8`), whose target tags are a
-//! conditional the VM refuses ("target tag literal"), so that script is
-//! incomplete and its wall stays off too (docs/dev/loose-ends.md).
+//! flow that stands in for them (Escort, Hybrid and the other modes)
+//! doesn't, so there every wall stays off, on the server as on the
+//! clients. Under `0F4A` (Assault) the walls take it, and st5 reads the
+//! attacking team from the mode graph's #10795e
+//! (`MapEntityWorld::set_mode_variables`; before that the placed scripts
+//! read the mode entity's ruleset values only, the attacking team null,
+//! and Anubis's defenders' doorway walls stood all match). Measured on
+//! Anubis (Practice vs AI): no wall on in assemble, setup or the round.
 
 use std::{
     collections::{BTreeSet, HashMap},

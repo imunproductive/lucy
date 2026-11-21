@@ -6670,3 +6670,91 @@ fn a_held_messages_new_parameters_reach_its_receiver() {
     assert_eq!(variable(&component, 8), Some(Value::Integer(0)));
     assert_eq!(active(component.snapshot().unwrap(), 1), [0]);
 }
+
+/// `0E8E` st49: a receiving state in collection mode (`m_39B47960` 1)
+/// outputs every holder's parameter, in the order they came in, and keeps
+/// the others when one lets go; the last one's end takes it back to idle.
+#[test]
+fn a_collecting_receiver_lists_every_holders_parameter() {
+    const MESSAGE: u64 = 0x0240_0000_0000_08ae;
+    const FIRST: u32 = 0xa000_0201;
+    const SECOND: u32 = 0xa000_0301;
+    let receiver = graph(
+        43,
+        vec![
+            node(
+                0,
+                "STUStatescriptEntry",
+                None,
+                json!({"m_outPlug":plug(&[(1,"m_beginPlug")],&[])}),
+            ),
+            node(
+                1,
+                "STUStatescriptStateGameMessageEntry",
+                Some(0),
+                json!({
+                    "m_gameMessage":{"m_gameMessage":"0x02400000000008AE"},
+                    "m_params":[{"m_B5051BCE":"0x0A400000000004B8","m_out_Var":var(7,false)}],
+                    "m_39B47960":1,
+                    "m_33DA5163":plug(&[(2,"m_beginPlug")],&[1]),
+                }),
+            ),
+            node(2, "STUStatescriptState", Some(1), json!({})),
+        ],
+        json!([1, 2]),
+        json!([0]),
+    );
+    let mut component = Component::start(
+        Arc::new(store(vec![receiver])),
+        0x8000_0332,
+        Variables::new(),
+        vec![Root::new(1, 43)],
+        100,
+        &mut EmptyWorld,
+        MAX_INIT_WORK,
+    )
+    .unwrap();
+    let listed = |component: &Component| {
+        component.snapshot().unwrap().instances[&1]
+            .variables
+            .get(&7)
+            .cloned()
+    };
+    for body in [FIRST, SECOND] {
+        component
+            .receive_message(
+                body,
+                MESSAGE,
+                Variables::from([(0x04b8, Value::Entity(body))]),
+                &mut EmptyWorld,
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        listed(&component),
+        Some(Value::Array(vec![
+            Value::Entity(FIRST),
+            Value::Entity(SECOND)
+        ]))
+    );
+    component
+        .end_message(FIRST, MESSAGE, &mut EmptyWorld)
+        .unwrap();
+    assert_eq!(
+        listed(&component),
+        Some(Value::Array(vec![Value::Entity(SECOND)]))
+    );
+    assert_eq!(active(component.snapshot().unwrap(), 1), [0]);
+    component
+        .end_message(SECOND, MESSAGE, &mut EmptyWorld)
+        .unwrap();
+    let snapshot = component.snapshot().unwrap();
+    assert!(
+        snapshot.initialization_complete(),
+        "{:?}",
+        snapshot.diagnostics
+    );
+    // Back in its idle subgraph, listing no one.
+    assert_eq!(active(snapshot, 1), [0, 1]);
+    assert_eq!(listed(&component), Some(Value::Array(Vec::new())));
+}

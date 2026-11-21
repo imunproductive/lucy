@@ -488,6 +488,24 @@ pub trait OwnerBodyRuntime: Send {
         Vec::new()
     }
 
+    /// The ends of the body's persistent sends to other entities since the
+    /// last call ([`crate::messages::deliver`]).
+    fn take_message_ends(&mut self) -> Vec<MessageEnd> {
+        Vec::new()
+    }
+
+    /// The body's persistent sends' new parameters since the last call
+    /// ([`crate::messages::deliver_updates`]).
+    fn take_message_updates(&mut self) -> Vec<GameMessage> {
+        Vec::new()
+    }
+
+    /// The ends of the persistent sends the body's graphs hold now: what
+    /// goes when its script stops.
+    fn held_sends(&self) -> Vec<MessageEnd> {
+        Vec::new()
+    }
+
     /// Whether the body's graphs revived it since the last call (`0C8E`'s
     /// `STU_621AF478` on the Workshop's Resurrect).
     fn take_revive(&mut self) -> bool {
@@ -1953,6 +1971,9 @@ pub struct WorldDelivery {
     /// body's health changes dealt ([`Self::source_dealt`]), to go with its
     /// messages.
     modified: Vec<GameMessage>,
+    /// The ends of the persistent sends his bodies' scripts held as they
+    /// stopped ([`Self::take_message_ends`]).
+    retired_sends: Vec<MessageEnd>,
     /// Where his bodies come into the world instead of a spawn point, and
     /// their facing (1/65536 turns): a dummy bot's ([`Self::place_bodies_at`]).
     placement: Option<([f64; 3], i32)>,
@@ -2127,6 +2148,7 @@ impl WorldDelivery {
             controller_scopes: Vec::new(),
             multikill_due: false,
             modified: Vec::new(),
+            retired_sends: Vec::new(),
             placement: None,
         }
     }
@@ -2235,6 +2257,7 @@ impl WorldDelivery {
         self.mover = None;
         self.teleported = None;
         self.body_script = None;
+        self.retired_sends.clear();
         self.script_failed = false;
         self.projectile_destroys.clear();
         self.projectile_events.clear();
@@ -3701,6 +3724,10 @@ impl WorldDelivery {
     fn cancel_body_script(&mut self) {
         self.script_failed = false;
         if let Some(mut script) = self.body_script.take() {
+            // Its persistent sends go with it.
+            self.retired_sends
+                .extend(script.runtime.take_message_ends());
+            self.retired_sends.extend(script.runtime.held_sends());
             script.stream.retire();
             if let Some(mover) = &mut self.mover {
                 let frame = mover.pose().frame.unwrap_or(script.frame);
@@ -5291,6 +5318,30 @@ impl WorldDelivery {
             messages.extend(controller.take_messages());
         }
         messages
+    }
+
+    /// The ends of his body's persistent sends to other entities since the
+    /// last call, with those its stopped scripts held, for the match to
+    /// route with his messages ([`crate::messages::deliver`]).
+    pub fn take_message_ends(&mut self) -> Vec<MessageEnd> {
+        let mut ends = std::mem::take(&mut self.retired_sends);
+        if self.world_started()
+            && let Some(script) = self.body_script.as_mut()
+        {
+            ends.extend(script.runtime.take_message_ends());
+        }
+        ends
+    }
+
+    /// His body's persistent sends' new parameters since the last call
+    /// ([`crate::messages::deliver_updates`]).
+    pub fn take_message_updates(&mut self) -> Vec<GameMessage> {
+        if !self.world_started() {
+            return Vec::new();
+        }
+        self.body_script
+            .as_mut()
+            .map_or_else(Vec::new, |script| script.runtime.take_message_updates())
     }
 
     fn take_body_messages(&mut self) -> Vec<GameMessage> {

@@ -1172,6 +1172,12 @@ impl PreparedScene {
         self.placed_scripts.set_target_candidates(candidates);
     }
 
+    /// The mode entity's variables as the mode's graph keeps them, for the
+    /// placed scripts that read them (`PlacedScripts::set_mode_variables`).
+    pub fn set_placed_mode_variables(&mut self, variables: &Variables) {
+        self.placed_scripts.set_mode_variables(variables);
+    }
+
     /// The pickups the server placeables hold now (the health packs), for
     /// the bodies' searches ([`PlacedScripts::pickups`]).
     pub fn pickups(&self) -> Vec<orpheus_script::vm::Pickup> {

@@ -66,6 +66,7 @@ impl Machine {
             scopes: BTreeMap::new(),
             outcomes: BTreeMap::new(),
             sent: BTreeMap::new(),
+            collected: BTreeMap::new(),
         })
     }
 

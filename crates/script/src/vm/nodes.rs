@@ -942,6 +942,14 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             // base state, `python tools/stu.py STU_7F5C3F95`), so the
             // client runs it plain.
             "STU_7F5C3F95" => StateKind::Plain,
+            // A UX presenter of the match's end (`180A` st19, remote 11:
+            // the cards' fades `m_AD8C28BA`/`m_D7ED647E`/`m_C69C2A73`).
+            // The client shows it; its block is one bit (`+0x470`, set by
+            // its event 1, 0x7FF7899E7BE0) the server sends unset
+            // (`snapshot.rs`). What sets it, and so its `m_82A8A67E` plug
+            // to the next card (#59 + 1), is not read: the server's match
+            // end sends the players home after its own wait.
+            "STU_4BD2E886" => StateKind::Plain,
             // The authored zero-valued form inherits the base state reader.
             "STU_D9843704"
                 if node.is_networked() && node.remote == -1 && {

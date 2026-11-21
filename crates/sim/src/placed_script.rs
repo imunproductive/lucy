@@ -492,6 +492,14 @@ impl PlacedScripts {
         }
     }
 
+    /// The mode entity's variables as the mode's graph keeps them, for the
+    /// scripts that read them ([`MapEntityWorld::set_mode_variables`]).
+    pub fn set_mode_variables(&mut self, variables: &Variables) {
+        if let Some(world) = &mut self.world {
+            world.set_mode_variables(variables);
+        }
+    }
+
     /// Each complete script's latest frame, by entity.
     pub fn frames(&self) -> impl Iterator<Item = (u32, &PlacedFrame)> {
         self.frames

@@ -3383,13 +3383,15 @@ impl State {
             }
             let mut players = Players::new(&mut worlds, tick);
             let mut messages = players.take_messages();
+            let player_ends = players.take_message_ends();
+            let mut updates = players.take_message_updates();
             messages.append(&mut room.mail);
             let (placed, mut ends) = world.scene.take_placed_messages();
             messages.extend(placed);
-            let mut updates = Vec::new();
+            ends.extend(player_ends);
             if let Some(mode) = &mut room.mode {
                 ends.extend(mode.take_message_ends());
-                updates = mode.take_message_updates();
+                updates.extend(mode.take_message_updates());
             }
             if let Some(combat) = &mut world.combat {
                 messages.extend(combat.take_messages());
@@ -3399,6 +3401,12 @@ impl State {
                 let (sent, ended) = spawned.take_messages();
                 messages.extend(sent);
                 ends.extend(ended);
+            }
+            // The mode entity's variables the placeables read (the spawn
+            // walls' `0FA8` st5 the attacking team #10795e), as the mode's
+            // graph left them this tick, before its messages reach them.
+            if let Some(variables) = room.mode.as_ref().and_then(ModeRunner::entity_variables) {
+                world.scene.set_placed_mode_variables(variables);
             }
             let held = orpheus_sim::mode_script::held(room.mode.as_ref());
             let (mut bots, placed) = world.scene.message_recipients(tick);

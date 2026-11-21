@@ -306,6 +306,20 @@ impl ModeRunner {
         }
     }
 
+    /// The mode entity's variables as the mode's own graph keeps them,
+    /// while it drives the match ([`Self::holds_rooms`]), for the placed
+    /// scripts that read them (`0FA8`'s attacking team #10795e).
+    pub fn entity_variables(&self) -> Option<&Variables> {
+        match self {
+            Self::Graph {
+                script,
+                mode_graph: true,
+                ..
+            } => script.snapshot().map(|snapshot| &snapshot.variables),
+            _ => None,
+        }
+    }
+
     /// Why the graph doesn't drive the mode entity; empty when it does.
     pub fn gaps(&self) -> Option<&Gaps> {
         match self {

@@ -303,6 +303,9 @@ struct Shared<'a> {
     graphs: &'a GraphStore,
     mode: u64,
     ruleset: u64,
+    /// The mode entity's variables as its graph keeps them, over the
+    /// mode's ([`MapEntityWorld::set_mode_variables`]).
+    mode_variables: &'a Variables,
     mode_random: f32,
     unknowns: Unknowns,
     players: &'a [TargetCandidate],
@@ -381,6 +384,9 @@ impl World for EntityWorld<'_, '_> {
         }
         if entity != GAME_MODE_ENTITY {
             return Value::Null;
+        }
+        if let Some(value) = self.shared.mode_variables.get(&id) {
+            return value.clone();
         }
         self.shared
             .graphs
@@ -801,6 +807,9 @@ pub struct MapEntityWorld {
     mode: u64,
     /// The game's ruleset ([`GraphStore::mode_variables`]); 0: none.
     ruleset: u64,
+    /// The mode entity's variables as its graph keeps them
+    /// ([`Self::set_mode_variables`]); empty where no graph drives it.
+    mode_variables: Variables,
     /// The match's mode entity value (`World::mode_random`).
     mode_random: f32,
     unknowns: Unknowns,
@@ -842,6 +851,7 @@ impl MapEntityWorld {
             graphs,
             mode,
             ruleset,
+            mode_variables: Variables::new(),
             mode_random,
             unknowns,
             players: Vec::new(),
@@ -855,6 +865,37 @@ impl MapEntityWorld {
         };
         world.place(placements);
         world
+    }
+
+    /// The mode entity's variables now, as the graph that drives it keeps
+    /// them: the scripts read them through `STU_A3DEF368` (`0FA8` st5 the
+    /// attacking team #10795e), over the mode's own values. The states
+    /// that read one that changed take the change.
+    pub fn set_mode_variables(&mut self, variables: &Variables) {
+        let changed: Vec<u32> = variables
+            .iter()
+            .filter(|&(id, value)| self.mode_variables.get(id) != Some(value))
+            .map(|(&id, _)| id)
+            .chain(
+                self.mode_variables
+                    .keys()
+                    .filter(|&id| !variables.contains_key(id))
+                    .copied(),
+            )
+            .collect();
+        if changed.is_empty() {
+            return;
+        }
+        self.mode_variables = variables.clone();
+        self.run_scripts(
+            |_| true,
+            |component, world| {
+                for &id in &changed {
+                    component.foreign_variable_changed(GAME_MODE_ENTITY, id, world)?;
+                }
+                Ok(())
+            },
+        );
     }
 
     /// From now on the graphs make the entities they ask for
@@ -974,6 +1015,7 @@ impl MapEntityWorld {
             graphs,
             mode,
             ruleset,
+            mode_variables,
             mode_random,
             unknowns,
             players,
@@ -989,6 +1031,7 @@ impl MapEntityWorld {
             graphs,
             mode: *mode,
             ruleset: *ruleset,
+            mode_variables,
             mode_random: *mode_random,
             unknowns: *unknowns,
             players,

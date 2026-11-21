@@ -5858,16 +5858,19 @@ fn slow_an_assault_match_on_anubis_captures_a_and_b_and_sends_the_players_home()
     server.stop().unwrap();
 }
 
-/// Practice vs AI, Easy, on Temple of Anubis (orpheus_sim::ai) at a time
-/// scale of 1/4: one player on the blue team (the defenders) and eleven AI
-/// heroes, five with him and six attacking. His game gets them as other
-/// players (their cards with their heroes' names, their bodies); the AI
-/// heroes pick roster heroes, the attackers walk from their spawn toward
-/// point A, the AI heroes of both teams fight (bodies lose health or die),
-/// and the match flow ends the match: the result has the player only, and
-/// his game goes home.
+/// Practice vs AI, Easy, on Temple of Anubis (orpheus_sim::ai), the mode
+/// graph `0F4A` running the match on its own clocks: one player on the
+/// blue team (the defenders) and eleven AI heroes, five with him and six
+/// attacking. His game gets them as other players (their cards with their
+/// heroes' names, their bodies); the AI heroes pick roster heroes, the
+/// attackers walk from their spawn toward point A, the AI heroes of both
+/// teams fight (bodies lose health or die; the defenders leave their
+/// spawn room only once the spawn walls' `0FA8` reads the attacking team
+/// from the mode graph, and the point counts who stands on it only once
+/// the bodies' `08AE`/`08AF` end as they leave), and the mode graph ends
+/// the match: the result has the player only, and his game goes home.
 #[test]
-#[ignore = "slow: simulates a whole match at 1/4 scale with twelve bodies, about 40 s optimised; requires an Overwatch 1.74 install (ORPHEUS_GAME_DIR)"]
+#[ignore = "slow: simulates a whole match on the mode graph's clocks with twelve bodies, about 8 min optimised; requires an Overwatch 1.74 install (ORPHEUS_GAME_DIR)"]
 fn slow_a_practice_vs_ai_match_plays_its_ai_heroes_to_the_end() {
     use orpheus_content::{
         heroes::SOLDIER,

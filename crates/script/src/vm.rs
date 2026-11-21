@@ -2521,6 +2521,42 @@ impl Component {
         })
     }
 
+    /// The ends of the persistent sends its running SendGameMessage states
+    /// hold to other entities: what goes with a body whose script stops
+    /// (its `0F00`'s `08AE` to the capture point it stood on), as the
+    /// client's message manager drops a destroyed sender's messages.
+    pub fn held_sends(&self) -> Vec<MessageEnd> {
+        let sender = self.machine.snapshot.entity;
+        let mut ends = Vec::new();
+        for instance in self.machine.snapshot.instances.values() {
+            let Some(graph) = self.graphs.graph(instance.graph) else {
+                continue;
+            };
+            for (&raw, state) in &instance.states {
+                if !state.active || state.kind != StateKind::SendMessage {
+                    continue;
+                }
+                let Some(message) = graph.state(usize::from(raw)).and_then(message_of) else {
+                    continue;
+                };
+                ends.extend(
+                    state
+                        .tracked
+                        .iter()
+                        .filter(|held| {
+                            held.entity != sender && held.entity != crate::mode::EVERY_ENTITY
+                        })
+                        .map(|held| MessageEnd {
+                            sender,
+                            target: held.entity,
+                            message,
+                        }),
+                );
+            }
+        }
+        ends
+    }
+
     /// A persistent sender (`sender`) that this entity's receiving states
     /// hold changed its parameters ([`World::update_message`]): they take
     /// the new values into their outputs, and what reads them runs; their
@@ -3040,6 +3076,10 @@ struct Machine {
     /// The parameters each running targeted SendGameMessage state last
     /// sent ([`Vm::refresh_send_state`]).
     sent: BTreeMap<StateKey, Variables>,
+    /// The parameters each holder of a running collecting receiving state
+    /// (`m_39B47960` nonzero) sent, in the order the holders came in
+    /// ([`Vm::write_message_parameters`]).
+    collected: BTreeMap<StateKey, Vec<(u32, Arc<Variables>)>>,
 }
 
 struct Vm<'graph, 'world, 'machine, W> {
@@ -3393,15 +3433,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
     /// source `sub_7FF78AAA32F0` answers it from the message's `+152`
     /// before its own parameters), the others the message's.
     fn message_parameter(&self, id: u32) -> Value {
-        match self.sender {
-            Some(sender) if id == MESSAGE_SENDER => Value::Entity(sender),
-            _ => self
-                .parameters
-                .as_deref()
-                .and_then(|parameters| parameters.get(&id))
-                .cloned()
-                .unwrap_or(Value::Null),
-        }
+        held_parameter(self.sender, self.parameters.as_deref(), id)
     }
 
     /// Whether a message entry's filter (`m_filter`) lets the message in.
@@ -3477,6 +3509,14 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                     since_ms,
                 });
             }
+            if collects(node) {
+                let parameters = self.parameters.clone().unwrap_or_default();
+                let rows = self.machine.collected.entry(key).or_default();
+                match rows.iter_mut().find(|(holder, _)| *holder == sender) {
+                    Some(row) => row.1 = parameters,
+                    None => rows.push((sender, parameters)),
+                }
+            }
             ("m_452862E6", Some(key))
         } else {
             if !self.message_filter_admits(id, node) {
@@ -3484,7 +3524,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             }
             ("m_outPlug", None)
         };
-        if !self.write_message_parameters(id, node)? {
+        if !self.write_message_parameters(id, node, path.1)? {
             return Ok(());
         }
         let site = self.site(id, node);
@@ -3504,9 +3544,23 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
 
     /// The message being delivered's parameters into the entry's outputs
     /// (`m_params` rows with `m_out_Var`); false when one can't be written
-    /// (reported).
-    fn write_message_parameters(&mut self, id: u16, node: &Node) -> Result<bool, InitFault> {
+    /// (reported). A collecting receiving state (`m_39B47960` nonzero,
+    /// `key`) outputs each holder's value instead, in the order they came
+    /// in: the client's receiver returns its cached array in a nonzero
+    /// collection mode (`D4B800`, refs/orpheus-upstream
+    /// `docs/MESSAGE_RECEIVER.txt`). `0E8E` st49/st50 so list the bodies on
+    /// a capture point by team, each body's `0F00` holding `08AE`/`08AF`
+    /// with itself, and count them.
+    fn write_message_parameters(
+        &mut self,
+        id: u16,
+        node: &Node,
+        key: Option<StateKey>,
+    ) -> Result<bool, InitFault> {
         let site = self.site(id, node);
+        let collected = key
+            .and_then(|key| self.machine.collected.get(&key))
+            .cloned();
         for field in array_field(&node.fields, "m_params") {
             if !field.is_object() {
                 continue;
@@ -3519,7 +3573,18 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                     return Ok(false);
                 }
             };
-            let value = self.message_parameter(parameter_id(field));
+            let parameter = parameter_id(field);
+            let value = match &collected {
+                Some(rows) => Value::Array(
+                    rows.iter()
+                        .map(|(holder, parameters)| {
+                            let holder = expr::valid_entity(*holder).then_some(*holder);
+                            held_parameter(holder, Some(parameters), parameter)
+                        })
+                        .collect(),
+                ),
+                None => self.message_parameter(parameter),
+            };
             self.write(target, value)?;
         }
         Ok(true)
@@ -3745,9 +3810,19 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             }
             let state = self.state_mut(key).expect("active receiving state");
             state.tracked.retain(|held| held.entity != sender);
-            if !state.tracked.is_empty() {
+            let holders = state.tracked.len();
+            if let Some(rows) = self.machine.collected.get_mut(&key) {
+                rows.retain(|(holder, _)| *holder != sender);
+            }
+            // A collecting receiver lists the holders left: none once the
+            // last one goes (the client's cached array is empty then).
+            if self.machine.collected.contains_key(&key) {
+                self.write_message_parameters(key.instance, node, Some(key))?;
+            }
+            if holders != 0 {
                 continue;
             }
+            self.machine.collected.remove(&key);
             self.exit_subgraph(key.instance, node, "m_452862E6", 1)?;
             self.follow(key.instance, node, "m_33DA5163", Some(key), 0)?;
         }
@@ -3793,9 +3868,14 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             if !named {
                 continue;
             }
+            if let Some(rows) = self.machine.collected.get_mut(&key)
+                && let Some(row) = rows.iter_mut().find(|(holder, _)| *holder == sender)
+            {
+                row.1 = Arc::clone(&parameters);
+            }
             self.parameters = Some(Arc::clone(&parameters));
             self.sender = expr::valid_entity(sender).then_some(sender);
-            let written = self.write_message_parameters(key.instance, node);
+            let written = self.write_message_parameters(key.instance, node, Some(key));
             self.parameters = None;
             self.sender = None;
             written?;
@@ -4358,6 +4438,26 @@ fn parameter_id(config: &Json) -> u32 {
         .get("m_B5051BCE")
         .and_then(asset_guid)
         .map_or(0, |guid| u32::from(guid as u16))
+}
+
+/// One parameter of a message from `sender` with `parameters`: `0009` is
+/// the sender, the others the message's own.
+fn held_parameter(sender: Option<u32>, parameters: Option<&Variables>, id: u32) -> Value {
+    match sender {
+        Some(sender) if id == MESSAGE_SENDER => Value::Entity(sender),
+        _ => parameters
+            .and_then(|parameters| parameters.get(&id))
+            .cloned()
+            .unwrap_or(Value::Null),
+    }
+}
+
+/// Whether a receiving state collects every holder's parameters
+/// (`m_39B47960`, its collection mode, nonzero).
+fn collects(node: &Node) -> bool {
+    field(&node.fields, "m_39B47960")
+        .as_i64()
+        .is_some_and(|mode| mode != 0)
 }
 
 fn field<'a>(fields: &'a Json, name: &str) -> &'a Json {

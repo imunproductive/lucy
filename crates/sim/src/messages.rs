@@ -242,6 +242,24 @@ impl<'a, 'w> Players<'a, 'w> {
             .flat_map(|world| world.take_messages())
             .collect()
     }
+
+    /// The ends of the players' bodies' persistent sends since the last
+    /// call ([`WorldDelivery::take_message_ends`]).
+    pub fn take_message_ends(&mut self) -> Vec<MessageEnd> {
+        self.worlds
+            .iter_mut()
+            .flat_map(|world| world.take_message_ends())
+            .collect()
+    }
+
+    /// The players' bodies' persistent sends' new parameters since the
+    /// last call ([`deliver_updates`]).
+    pub fn take_message_updates(&mut self) -> Vec<GameMessage> {
+        self.worlds
+            .iter_mut()
+            .flat_map(|world| world.take_message_updates())
+            .collect()
+    }
 }
 
 impl Recipients for Players<'_, '_> {

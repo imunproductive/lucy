@@ -43,9 +43,9 @@ use orpheus_script::{
     vitals::Vitals,
     vm::{
         AssistLink, AuraChange, BodyEffects, Component, GameMessage, Knockback, MAX_INIT_WORK,
-        MapRays, Motion, MoveRequest, ParentWrite, Pickup, PlayRequest, RaisedCriteria, Root,
-        Scaled, ScopeChange, ScopeSource, Site, Snapshot, StateKind, TargetCandidate, TrackedStat,
-        Unknowns, VoiceRequest, World,
+        MapRays, MessageEnd, Motion, MoveRequest, ParentWrite, Pickup, PlayRequest, RaisedCriteria,
+        Root, Scaled, ScopeChange, ScopeSource, Site, Snapshot, StateKind, TargetCandidate,
+        TrackedStat, Unknowns, VoiceRequest, World,
     },
     weapons::{DamageTags, HitDefinition, ProjectileBallistics, pellet_rings, ray_profile},
     wire::{Value, Variables},
@@ -688,6 +688,18 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
 
     fn take_messages(&mut self) -> Vec<GameMessage> {
         self.world.take_messages()
+    }
+
+    fn take_message_ends(&mut self) -> Vec<MessageEnd> {
+        self.world.take_message_ends()
+    }
+
+    fn take_message_updates(&mut self) -> Vec<GameMessage> {
+        self.world.take_message_updates()
+    }
+
+    fn held_sends(&self) -> Vec<MessageEnd> {
+        self.component.held_sends()
     }
 
     fn take_revive(&mut self) -> bool {
