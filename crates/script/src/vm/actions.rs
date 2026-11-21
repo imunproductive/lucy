@@ -7,7 +7,7 @@
 
 use super::*;
 
-impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
+impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W> {
     /// A condition's result (`branch` in `ow174/game/script/nodes.py`): a
     /// false result is taken when a false link is; a true one when a true
     /// link is, or when neither plug has links.

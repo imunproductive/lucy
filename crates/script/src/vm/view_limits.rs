@@ -18,7 +18,7 @@
 
 use super::*;
 
-impl<W: World> Vm<'_, '_, '_, W> {
+impl<W: World + ?Sized> Vm<'_, '_, '_, W> {
     /// Evaluate the limits again (begin, or a change of what they read).
     pub(super) fn refresh_view_limits(&mut self, key: StateKey) {
         let id = key.instance;

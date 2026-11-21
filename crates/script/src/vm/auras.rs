@@ -133,7 +133,7 @@ impl Component {
         };
         let id = u16::try_from(self.machine.next_id).map_err(|_| InitFault::InstanceIdExhausted)?;
         let mut created = false;
-        self.run(world, |vm| {
+        self.run(erase(world), |vm| {
             created = vm.create(id, graph, None, Variables::new(), instigator)?;
             if !created {
                 return Ok(());
@@ -179,7 +179,7 @@ impl Component {
                 if !self.machine.snapshot.instances.contains_key(&id) {
                     return Ok(false);
                 }
-                self.run(world, |vm| {
+                self.run(erase(world), |vm| {
                     vm.post(id, Event::ExitInstance)?;
                     vm.run()
                 })?;
@@ -189,7 +189,7 @@ impl Component {
     }
 }
 
-impl<W: World> Vm<'_, '_, '_, W> {
+impl<W: World + ?Sized> Vm<'_, '_, '_, W> {
     /// Each "aura applied" entry of the new instance takes the instigator,
     /// the creator and its parameters, then runs.
     fn start_aura(

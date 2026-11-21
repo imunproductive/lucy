@@ -21,7 +21,7 @@
 
 use super::*;
 
-impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
+impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W> {
     pub(super) fn ability_buttons(&mut self, key: StateKey, node: &Node) -> Option<[u8; 3]> {
         let mut buttons = [0; 3];
         for (button, field_name) in

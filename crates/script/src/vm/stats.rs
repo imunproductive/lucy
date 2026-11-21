@@ -16,7 +16,7 @@
 
 use super::*;
 
-impl<W: World> Vm<'_, '_, '_, W> {
+impl<W: World + ?Sized> Vm<'_, '_, '_, W> {
     /// TrackStat: `m_amount` to each stat for each target, now. An amount
     /// or a target that can't be evaluated counts nothing; nothing here
     /// can fail.
