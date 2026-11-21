@@ -1240,7 +1240,15 @@ fn a_timed_chase_keeps_its_begin_payload_and_binding_until_it_arrives() {
     // and Doomfist's Rocket Punch charge (`0D06` st11/st36) stood still
     // from the server's first frame of the charge.
     let bound = &owner.instances[&1].variables.bindings[&100];
-    assert_eq!((bound.len(), bound[0].state, bound[0].slot), (1, 0, 0));
+    assert_eq!(
+        (
+            bound.len(),
+            bound[0].state,
+            bound[0].slot,
+            bound[0].volatile
+        ),
+        (1, 0, 0, true)
+    );
     assert!(send(&owner, DeltaKind::InitialOwner(1000)).contains(&timed));
 
     // 16 000 + 125 ms is in frame 1007 (16 112..16 127).
