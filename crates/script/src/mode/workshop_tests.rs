@@ -25,6 +25,9 @@ const SMALL_MESSAGE: u32 = 0x1D7B;
 const CREATE_HUD_TEXT: u32 = 0x1D8A;
 const DESTROY_HUD_TEXT: u32 = 0x1D8B;
 const TELEPORT: u32 = 0x1D45;
+const CREATE_ICON: u32 = 0x1AB1;
+const DESTROY_ICON: u32 = 0x1C17;
+const CREATE_EFFECT: u32 = 0x1CE8;
 
 /// The Workshop value Number (`01C:4876`).
 const NUMBER: u64 = 0x0D80_0000_0000_4876;
@@ -341,24 +344,24 @@ fn small_message_reaches_its_target_in_the_frames() {
 #[test]
 #[ignore = "requires the derived 104319 graph bundle"]
 fn create_icon_follows_its_reevaluated_visible_to() {
-    const CREATE_ICON: u32 = 0x1AB1;
     const ICON_SCOPE: u32 = 47;
     /// The scope instance's copy of Visible To.
     const ICON_VISIBLE_TO: u32 = 20176;
     let mut script = host();
     let identifier = |id: u64| Value::Asset(0x0D80_0000_0000_0000 | id);
-    let parameters = |visible: Vec<Value>| {
+    let create = run(
+        &mut script,
+        CREATE_ICON,
         vec![
-            constant(Value::Array(visible)),
+            constant(Value::Array(Vec::new())),
             constant(Value::Vector([18.363, 5.867, 9.094])),
             // Checkmark; "Visible To".
             identifier(0x551C),
             identifier(0x5069),
             constant(Value::Null),
             constant(Value::Bool(false)),
-        ]
-    };
-    let create = run(&mut script, CREATE_ICON, parameters(Vec::new()));
+        ],
+    );
     assert_eq!(finished(&script, create), ActionOutcome::Done);
     let scope = |script: &ModeScript| {
         let snapshot = script.snapshot().unwrap();
@@ -376,7 +379,10 @@ fn create_icon_follows_its_reevaluated_visible_to() {
     let (_, copied) = scope(&script);
     assert_eq!(copied, Some(constant(Value::Array(Vec::new()))));
     script
-        .set_action_parameters(create, parameters(vec![Value::Entity(PLAYER)]))
+        .set_action_parameters(
+            create,
+            &[(0, constant(Value::Array(vec![Value::Entity(PLAYER)])))],
+        )
         .unwrap();
     let (id, copied) = scope(&script);
     assert_eq!(
@@ -396,6 +402,162 @@ fn create_icon_follows_its_reevaluated_visible_to() {
         projected.instance_variable(id, ICON_VISIBLE_TO),
         Some(&Value::Array(vec![Value::Entity(PLAYER)]))
     );
+    assert_complete(&script);
+}
+
+/// Create Effect `1CE8` with Reevaluation "Visible To" (`5069`): its scope
+/// 35 opens on the `304A` it made, not on the mode entity, and copies
+/// Visible To into `#20176` there (rid14, a plain copy), which StateStack
+/// st0 evaluates on each client; the parameters the Reevaluation leaves
+/// out the graph freezes to their values (rid23 → rid27: the radius,
+/// `#18739[4]`, copied to `#2101`, which only StateStack st4 would
+/// evaluate, and st4 runs only for a reevaluated radius). C32S2's level
+/// rings are made at the match start, visible to the players with
+/// `CPData[13]`: when the rules evaluate a player in, the copy on the
+/// effect follows, the frozen radius stays a number, and the effect's
+/// frames carry the stack's value. Before, only the mode entity's own
+/// instances took the new parameters, and the reevaluation sent every
+/// parameter again as a value tree, so the client's ring had a tree for
+/// a radius and drew nothing.
+#[test]
+#[ignore = "requires the derived 104319 graph bundle"]
+fn create_effect_follows_its_reevaluated_visible_to() {
+    const EFFECT: u64 = 0x0400_0000_0000_304A;
+    const EFFECT_SCOPE: u32 = 35;
+    const EFFECT_VISIBLE_TO: u32 = 20176;
+    const EFFECT_RADIUS: u32 = 2101;
+    let mut script = host();
+    let identifier = |id: u64| Value::Asset(0x0D80_0000_0000_0000 | id);
+    let create = run(
+        &mut script,
+        CREATE_EFFECT,
+        vec![
+            constant(Value::Array(Vec::new())),
+            // Ring, white, level 1's first checkpoint, "Visible To".
+            identifier(0x5346),
+            constant(identifier(0x50AD)),
+            constant(Value::Vector([18.363, 4.117, 9.094])),
+            constant(Value::Float(1.872)),
+            identifier(0x5069),
+        ],
+    );
+    assert_eq!(finished(&script, create), ActionOutcome::Done);
+    let [made] = script.created() else {
+        panic!("{:?}", script.created());
+    };
+    assert_eq!(made.definition, EFFECT);
+    let ring = made.entity;
+    let scope = |script: &ModeScript| {
+        let snapshot = script.created_script(ring).unwrap().snapshot().unwrap();
+        let (&scope, instance) = snapshot
+            .instances
+            .iter()
+            .find(|(_, instance)| {
+                instance.scope.as_ref().is_some_and(|scope| {
+                    scope.id == EFFECT_SCOPE && scope.source.instance == create.instance
+                })
+            })
+            .expect("the effect's scope instance on the ring");
+        let variable = |id: u32| instance.variables.get(&id).cloned();
+        (scope, variable(EFFECT_VISIBLE_TO), variable(EFFECT_RADIUS))
+    };
+    let (_, copied, radius) = scope(&script);
+    assert_eq!(copied, Some(constant(Value::Array(Vec::new()))));
+    assert_eq!(radius, Some(Value::Float(1.872)));
+    script
+        .set_action_parameters(
+            create,
+            &[(0, constant(Value::Array(vec![Value::Entity(PLAYER)])))],
+        )
+        .unwrap();
+    let (id, copied, radius) = scope(&script);
+    assert_eq!(
+        copied,
+        Some(constant(Value::Array(vec![Value::Entity(PLAYER)])))
+    );
+    assert_eq!(radius, Some(Value::Float(1.872)));
+    script.advance(2).unwrap();
+    let graphs = Arc::clone(&script.world.graphs);
+    let codecs = CodecTable::client();
+    let encoder = SnapshotEncoder::new(&graphs, &codecs);
+    let snapshot = script.created_script(ring).unwrap().snapshot().unwrap();
+    let projected = encoder.project(snapshot, View::Observer).unwrap();
+    assert_eq!(
+        projected.instance_variable(id, EFFECT_VISIBLE_TO),
+        Some(&Value::Array(vec![Value::Entity(PLAYER)]))
+    );
+    assert_eq!(
+        projected.instance_variable(id, EFFECT_RADIUS),
+        Some(&Value::Float(1.872))
+    );
+    assert_complete(&script);
+}
+
+/// Destroy Icon `1C17` sends `0DFA` with its entity to the mode entity,
+/// where each Create Icon `1AB1`'s scope 47 takes it when it names its own
+/// icon (rid4, `0773` == `#38`): it drops the icon from the created list
+/// `#20554e` (rid2) and removes the icon (rid1 `STU_523EE38D` on `#38`),
+/// so the clients lose it; the other icon stays. The entity is the one
+/// Last Created Entity gives, `#20555e` (`1B4A`'s `4C31`).
+#[test]
+#[ignore = "requires the derived 104319 graph bundle"]
+fn destroy_icon_removes_the_icon_it_names() {
+    /// Last Created Entity and the effects and icons up.
+    const LAST_CREATED: u32 = 20555;
+    const CREATED_ENTITIES: u32 = 20554;
+    let mut script = host();
+    let identifier = |id: u64| Value::Asset(0x0D80_0000_0000_0000 | id);
+    let mut icons = Vec::new();
+    for position in [[18.363, 5.867, 9.094], [10.045, 5.843, 9.007]] {
+        let create = run(
+            &mut script,
+            CREATE_ICON,
+            vec![
+                constant(Value::Array(vec![Value::Entity(PLAYER)])),
+                constant(Value::Vector(position)),
+                // Checkmark; "None".
+                identifier(0x551C),
+                identifier(0x506A),
+                constant(Value::Null),
+                constant(Value::Bool(false)),
+            ],
+        );
+        assert_eq!(finished(&script, create), ActionOutcome::Done);
+        let Value::Entity(icon) = script.entity_value(LAST_CREATED) else {
+            panic!("{:?}", script.entity_value(LAST_CREATED));
+        };
+        icons.push((icon, create.instance));
+    }
+    let [(first, first_action), (second, second_action)] = icons[..] else {
+        unreachable!()
+    };
+    assert_eq!(
+        script.entity_value(CREATED_ENTITIES),
+        Value::Array(vec![Value::Entity(first), Value::Entity(second)])
+    );
+    let destroy = run(
+        &mut script,
+        DESTROY_ICON,
+        vec![constant(Value::Entity(first))],
+    );
+    assert_eq!(finished(&script, destroy), ActionOutcome::Done);
+    script.advance(2).unwrap();
+    let made: Vec<u32> = script.created().iter().map(|made| made.entity).collect();
+    assert_eq!(made, [second]);
+    assert_eq!(
+        script.entity_value(CREATED_ENTITIES),
+        Value::Array(vec![Value::Entity(second)])
+    );
+    let scopes: Vec<u16> = script
+        .snapshot()
+        .unwrap()
+        .instances
+        .values()
+        .filter_map(|instance| instance.scope.as_ref())
+        .map(|scope| scope.source.instance)
+        .collect();
+    assert!(!scopes.contains(&first_action), "{scopes:?}");
+    assert!(scopes.contains(&second_action), "{scopes:?}");
     assert_complete(&script);
 }
 

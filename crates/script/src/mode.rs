@@ -159,6 +159,9 @@ pub struct ModeWorld {
     /// yet, and those it runs.
     made: Vec<CreatedEntity>,
     created: Vec<CreatedEntity>,
+    /// The running ones the graphs removed, until [`ModeScript`] ends
+    /// them ([`World::destroy_entity`]).
+    destroyed: Vec<u32>,
     /// The next id to try ([`CREATED_FIRST`]).
     next_created: u32,
 }
@@ -190,6 +193,7 @@ impl ModeWorld {
             held: Vec::new(),
             made: Vec::new(),
             created: Vec::new(),
+            destroyed: Vec::new(),
             next_created: 0,
         }
     }
@@ -435,6 +439,26 @@ impl World for ModeWorld {
             position: creation.position.unwrap_or_default(),
         });
         Some(entity)
+    }
+
+    /// The mode entity removes an entity it made (`STU_523EE38D`: Create
+    /// Icon `1AB1` rid1 on its `#38` when Destroy Icon's `0DFA` names it):
+    /// one not started yet never starts; [`ModeScript`] ends a running
+    /// one's graphs after the run, and the match removes it from the
+    /// clients with the rest of [`ModeScript::created`]. False for an
+    /// entity it didn't make.
+    fn destroy_entity(&mut self, _site: Site, entity: u32) -> bool {
+        if let Some(index) = self.made.iter().position(|made| made.entity == entity) {
+            self.made.remove(index);
+            return true;
+        }
+        if !self.created.iter().any(|created| created.entity == entity) {
+            return false;
+        }
+        if !self.destroyed.contains(&entity) {
+            self.destroyed.push(entity);
+        }
+        true
     }
 
     /// `STU_A3DEF368` is the first entity with component 114, the mode
@@ -827,19 +851,28 @@ impl ModeScript {
         self.settle()
     }
 
-    /// The rule engine evaluated a running action's parameters again
-    /// ([`Component::set_action_parameters`]).
+    /// The rule engine evaluated a running action's parameters again: the
+    /// `changed` ones (by index) replace theirs
+    /// ([`Component::set_action_parameters`]), and its instances here and
+    /// the scope instances it opened on the entities the mode entity made
+    /// ([`MapEntityWorld::set_scope_parameters`]: Create Effect's on its
+    /// effect) copy them again.
     pub fn set_action_parameters(
         &mut self,
         action: WorkshopAction,
-        parameters: Vec<Value>,
+        changed: &[(usize, Value)],
     ) -> Result<(), InitFault> {
-        self.component.set_action_parameters(
+        let Some(parameters) = self.component.set_action_parameters(
             action.instance,
             action.start_ms,
-            parameters,
+            changed,
             &mut self.world,
-        )?;
+        )?
+        else {
+            return Ok(());
+        };
+        self.entities
+            .set_scope_parameters(GAME_MODE_ENTITY, action.instance, &parameters);
         self.settle()
     }
 
@@ -912,7 +945,8 @@ impl ModeScript {
     ///   All Effects `1CEA` to every entity); the rest wait for the match
     ///   ([`Self::take_messages`]);
     /// - the entities that removed themselves (`STU_523EE38D`: the effect's
-    ///   scope 35 on `0DF6`) go.
+    ///   scope 35 on `0DF6`) or that the mode entity removed (Create Icon
+    ///   `1AB1`'s scope 47 on `0DFA`, [`World::destroy_entity`]) go.
     ///
     /// Then each Workshop action that reported its result and has nothing
     /// left to do retires (no work [`Component::instance_busy`] counts, no
@@ -1060,7 +1094,11 @@ impl ModeScript {
             // Their persistent sends end nowhere, as the mode entity's own
             // but its held broadcasts (`ModeWorld::end_message`).
             self.entities.take_message_ends();
-            for entity in self.entities.take_destroyed() {
+            let removed = std::mem::take(&mut self.world.destroyed);
+            for &entity in &removed {
+                self.entities.remove(entity);
+            }
+            for entity in removed.into_iter().chain(self.entities.take_destroyed()) {
                 self.world
                     .created
                     .retain(|created| created.entity != entity);
