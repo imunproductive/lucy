@@ -804,6 +804,20 @@ pub trait World {
         None
     }
 
+    /// Whether the ground walk of a shockwave on `site` reaches a body, its
+    /// first and last casts meeting the map as ray profile `sphere_profile`
+    /// does and its sample rays as `ray_profile` does
+    /// ([`orpheus_physics::mover::ground_walk`]). None: unknown here.
+    fn ground_walk(
+        &self,
+        _site: Site,
+        _walk: &orpheus_physics::mover::ground_walk::GroundWalk,
+        _sphere_profile: Option<u64>,
+        _ray_profile: Option<u64>,
+    ) -> Option<bool> {
+        None
+    }
+
     /// Whether the match's map lists game mode `mode` among its supported
     /// modes (`STU_02514B6A.m_supportedGamemodes`, `STU_16753B11`). None:
     /// unknown here.
@@ -1381,11 +1395,9 @@ pub enum StateKind {
         radians: [u32; 6],
     },
     /// A shockwave (`STUStatescriptStateShockwave`, `vm/shockwave.rs`):
-    /// the f32 bits of the seconds its wave takes to reach its radius; it
-    /// finishes on the first update at or past them.
-    Shockwave {
-        seconds: u32,
-    },
+    /// each update its wave grows and sends its hits; it finishes once the
+    /// wave reaches its radius.
+    Shockwave,
     /// A health change (`vm/health.rs`): a rate keeps when it last applied
     /// its share.
     ModifyHealth {

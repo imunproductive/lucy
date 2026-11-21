@@ -59,6 +59,7 @@
 
 pub mod correction;
 pub mod ground;
+pub mod ground_walk;
 pub mod kinematics;
 pub mod landing;
 pub mod modifiers;

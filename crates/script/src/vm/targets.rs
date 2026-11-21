@@ -356,8 +356,8 @@ impl Found {
 }
 
 /// A line of sight's rays as evaluated now (see the module notes).
-struct Sight {
-    origin: [f64; 3],
+pub(super) struct Sight {
+    pub(super) origin: [f64; 3],
     profile: u64,
     sides: bool,
 }
@@ -401,6 +401,25 @@ impl Sight {
             }
         }
         Some(Sighting::Guessed(false))
+    }
+
+    /// The point of `body` its first clear ray reaches, rays 2 and 3 in
+    /// order without the hardpoints or the side rays (a shockwave's sight
+    /// line, `0x7FF789BB3570` from `0x7FF789BBD0D0`, keeps it); None: the
+    /// map can't answer.
+    pub(super) fn seen_point(
+        &self,
+        map: &dyn MapRays,
+        body: &TargetCandidate,
+    ) -> Option<Option<[f64; 3]>> {
+        let [x, y, z] = body.feet;
+        for share in [SIGHT_LOW, SIGHT_HIGH] {
+            let point = [x, y + body.height * share, z];
+            if self.clear(map, point)? {
+                return Some(Some(point));
+            }
+        }
+        Some(None)
     }
 
     /// Whether the ray from the origin to `point` meets nothing of the map.
@@ -810,7 +829,12 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
 
     /// The line of sight's origin, ray profile and side rays, or the field
     /// the server can't evaluate.
-    fn sight(&mut self, id: u16, node: &Node, centre: [f64; 3]) -> Result<Sight, &'static str> {
+    pub(super) fn sight(
+        &mut self,
+        id: u16,
+        node: &Node,
+        centre: [f64; 3],
+    ) -> Result<Sight, &'static str> {
         let fields = &node.fields;
         let origin = match field(fields, SIGHT_ORIGIN) {
             Json::Null => centre,
@@ -1266,7 +1290,7 @@ fn closest_points(p1: [f64; 3], q1: [f64; 3], p2: [f64; 3], q2: [f64; 3]) -> [[f
 /// `0x7FF789B9E660`): the point of its axis nearest the sphere's diameter
 /// along the cone's `direction` is within the half-angle (`cos`) of it, or
 /// that diameter crosses the axis ahead of the centre.
-fn in_cone(
+pub(super) fn in_cone(
     body: &TargetCandidate,
     centre: [f64; 3],
     direction: [f64; 3],

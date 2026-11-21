@@ -35,6 +35,7 @@ use crate::{
     contact::math::{Vec3, dot, scale},
     contact::solver::clip_velocity,
     contact::world::ContactWorld,
+    mover::ground_walk::{GroundWalk, ground_walk},
     mover::landing::{LandingSearch, landing_point},
 };
 
@@ -99,6 +100,17 @@ impl TrialMove {
         search: &LandingSearch,
     ) -> Result<Option<[f64; 3]>, PointSetSize> {
         landing_point(&self.world, category, search)
+    }
+
+    /// Whether a shockwave's ground walk reaches a body in the body's
+    /// world ([`ground_walk`]).
+    pub fn ground_walk(
+        &self,
+        sphere_category: u16,
+        ray_category: u16,
+        walk: &GroundWalk,
+    ) -> Result<bool, PointSetSize> {
+        ground_walk(&self.world, sphere_category, ray_category, walk)
     }
 }
 

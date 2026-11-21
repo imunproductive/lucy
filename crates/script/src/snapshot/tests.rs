@@ -409,7 +409,7 @@ fn the_searches_the_owners_client_runs_go_out_in_its_frames() {
             8,
         ),
         (
-            StateKind::Shockwave { seconds: 0 },
+            StateKind::Shockwave,
             "shockwave",
             json!([{"op": "bits", "n": 1, "f": "has_list"}, {"op": "if", "c": "has_list",
                 "then": [{"op": "w_u16", "f": "n"}, {"op": "repeat", "count": "n", "f": "items",
