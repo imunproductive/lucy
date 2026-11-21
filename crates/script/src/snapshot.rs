@@ -1001,18 +1001,27 @@ impl<'a> SnapshotEncoder<'a> {
                 .instances
                 .get(&binding.instance)
                 .ok_or_else(invalid)?;
-            if !source.states.get(&binding.raw_state).is_some_and(|state| {
-                state.active
-                    && matches!(
-                        (state.kind, binding.slot),
-                        (StateKind::Stack { .. } | StateKind::ChaseVar, 0)
-                            | (StateKind::Ability { .. }, 0 | 1)
-                            | (StateKind::GrappleCast, 0 | 1)
-                            | (StateKind::Ray, 0..=3)
-                    )
-            }) {
-                return Err(invalid());
-            }
+            // Volatile as the client's own link of each is: a chase's
+            // (begin `0x7FF78AAAF430` → `0x7FF78AA82F90`/`0x7FF78AA83570`,
+            // 1), a cooldown's (restart `0x7FF789BBB110` → `0x7FF78AA849B0`,
+            // 1), a RayCast's (`0x7FF789B940E0`, 1) and a GrappleCast's
+            // outputs (`0x7FF789BA1AA0`, 1); an ability's stack push
+            // (`0x7FF789BA6D40`, 0). A Stack's is volatile when its value
+            // read something volatile (`0x7FF78AA822B0`), which the VM
+            // doesn't track: never here. A frame's binding replaces the
+            // client's, and one that isn't volatile freezes the variable
+            // at the value it was first read at: the HUD's cooldowns and the
+            // Rocket Punch's charge stood still.
+            let volatile = match source.states.get(&binding.raw_state) {
+                Some(state) if state.active => match (state.kind, binding.slot) {
+                    (StateKind::Stack { .. }, 0) | (StateKind::Ability { .. }, 1) => false,
+                    (StateKind::ChaseVar | StateKind::Ability { .. }, 0)
+                    | (StateKind::GrappleCast, 0 | 1)
+                    | (StateKind::Ray, 0..=3) => true,
+                    _ => return Err(invalid()),
+                },
+                _ => return Err(invalid()),
+            };
             let graph = self.graph(binding.instance, source.graph)?;
             let node = graph
                 .state(usize::from(binding.raw_state))
@@ -1025,6 +1034,7 @@ impl<'a> SnapshotEncoder<'a> {
                     slot: binding.slot,
                     priority: binding.priority.level,
                     above: binding.priority.above_equals,
+                    volatile,
                 });
             }
         }
