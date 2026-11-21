@@ -474,6 +474,7 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
             own.feet = pose.position;
         }
         // Command gaps and timer advances retain the last movement record.
+        self.world.movement_fresh = step == BodyStep::Posed;
         if step == BodyStep::Posed {
             self.world.movement = pose;
         }

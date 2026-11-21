@@ -32,7 +32,9 @@ use crate::{
     wire::{Value, Variables},
 };
 use orpheus_content::maps::TUTORIAL_MODE;
-use orpheus_physics::mover::{landing::LandingSearch, sample_movement_flags, trial::TrialMove};
+use orpheus_physics::mover::{
+    landing::LandingSearch, movement_restarted, sample_movement_flags, trial::TrialMove,
+};
 use orpheus_wire::entity::{GAME_MODE_ENTITY, Movement};
 
 /// The hero body graphs that raise the body's voice reactions: `01CA` and
@@ -65,6 +67,9 @@ pub struct PlayerWorld {
     /// when the match doesn't say.
     pub eye_height: Option<f64>,
     pub movement: Movement,
+    /// `movement` came from this frame's move (not retained over a command
+    /// gap or a timer advance).
+    pub movement_fresh: bool,
     /// The move-speed scale the body's mover used on its last move (mover
     /// `+0x4D8`, `STU_ED807E07`); none: the match doesn't say.
     pub speed_scale: Option<f64>,
@@ -431,6 +436,10 @@ impl World for PlayerWorld {
             return None;
         }
         sample_movement_flags(&self.movement)
+    }
+
+    fn movement_restarted(&self, site: Site) -> bool {
+        self.movement_fresh && self.is_player_site(site) && movement_restarted(&self.movement)
     }
 
     fn body_scale(&mut self, site: Site, target: u32, override_value: &Value) -> Option<f64> {
@@ -837,6 +846,7 @@ impl PlayerWorld {
             position: [0.0; 3],
             eye_height: None,
             movement: Movement::default(),
+            movement_fresh: false,
             speed_scale: None,
             trial: None,
             throttles: [0; 2],

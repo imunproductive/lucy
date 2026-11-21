@@ -451,6 +451,91 @@ fn movement_sample_updates_only_changed_authored_outputs() {
     ));
 }
 
+/// The client's sampler (`0x7FF789C4D420`) follows the landing plug and then
+/// the takeoff plug when the body was airborne at both samples but landed
+/// and left again in between (air ticks back at 0), and neither while it
+/// just stays airborne or a gap repeats the record.
+#[test]
+fn movement_sample_follows_both_plugs_when_the_body_lands_and_leaves_between_samples() {
+    struct SampleWorld {
+        sample: u16,
+        restarted: bool,
+    }
+    impl World for SampleWorld {
+        fn movement_sample(&self, _: Site) -> Option<u16> {
+            Some(self.sample)
+        }
+        fn movement_restarted(&self, _: Site) -> bool {
+            self.restarted
+        }
+    }
+    let set = |position, identifier, value: i64| {
+        node(
+            position,
+            "STUStatescriptActionSetVar",
+            None,
+            json!({"m_out_Var":var(identifier,true), "m_value":value}),
+        )
+    };
+    let fixture = graph(
+        42,
+        vec![
+            node(
+                0,
+                "STUStatescriptEntry",
+                None,
+                json!({"m_outPlug":plug(&[(1,"m_beginPlug")], &[])}),
+            ),
+            node(
+                1,
+                "STU_96F1DBCF",
+                Some(0),
+                json!({
+                    "m_49F4B33C":var(100,true),
+                    "m_2102C541":plug(&[(2,"m_inPlug")], &[]),
+                    "m_E37BC6C2":plug(&[(3,"m_inPlug")], &[])
+                }),
+            ),
+            set(2, 200, 1),
+            set(3, 200, 2),
+        ],
+        json!([1]),
+        json!([0]),
+    );
+    let graphs = Arc::new(store(vec![fixture]));
+    let mut world = SampleWorld {
+        sample: 1,
+        restarted: false,
+    };
+    let mut component = Component::start(
+        Arc::clone(&graphs),
+        42,
+        Variables::new(),
+        vec![Root::new(1, 42)],
+        0,
+        &mut world,
+        MAX_INIT_WORK,
+    )
+    .unwrap();
+    let mark = |component: &Component| component.snapshot().unwrap().variables.get(&200).cloned();
+    component.advance_frame(1, &mut world).unwrap();
+    assert_eq!(mark(&component), None, "airborne, still in the air");
+
+    world.restarted = true;
+    component.advance_frame(2, &mut world).unwrap();
+    assert_eq!(
+        mark(&component),
+        Some(Value::Integer(2)),
+        "landing, then takeoff"
+    );
+
+    component.advance_frame(3, &mut world).unwrap();
+    world.sample = 2;
+    world.restarted = false;
+    component.advance_frame(4, &mut world).unwrap();
+    assert_eq!(mark(&component), Some(Value::Integer(1)), "landed");
+}
+
 #[test]
 fn instance_exit_drains_in_order_and_finishes_the_linked_parent() {
     let entry = |links: &[(u16, &str)]| {
