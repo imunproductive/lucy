@@ -607,3 +607,139 @@ fn dpk_archive_c32s2_resets_the_slams_cooldown_at_a_checkpoint() {
         .collect();
     assert!(rises.iter().any(|&vy| vy > 0.0), "{rises:?}");
 }
+
+/// The rings and icons through level 1 and back to the hub, the user's
+/// steps (2026-11-21). A checkpoint shows its next rings and their icons
+/// ("Generate Rings": Create Effect, Create Icon, each kept in `Elements`
+/// through Last Created Entity, `#20555e`), and "Destroy Elements" removes
+/// the last checkpoint's first (Destroy Effect `1CE9`, Destroy Icon
+/// `1C17`); the Skip CP arrow (Interact) goes when Interact is let go.
+/// The hub's 10 level rings and icons, made at the start for the players
+/// with `CPData[13]` ("Generate Global Data", Reevaluation Visible To),
+/// stay up all along: out of the hub no player sees them, back at the hub
+/// he does again. Before, Last Created Entity gave the list of every
+/// effect and icon up (`#20554e`): each Destroy Effect removed every
+/// effect, the level rings with it, and no Destroy Icon removed any icon;
+/// a level ring's Visible To never followed the player, and its
+/// reevaluation sent the radius the graph had frozen back as a value tree
+/// the client's ring doesn't evaluate (no ring drawn).
+#[test]
+#[ignore = "requires an Overwatch 1.74 install and the DPK archive (just test-dpk <install> <archive>)"]
+fn dpk_archive_c32s2_shows_only_the_current_checkpoints_rings_and_icons() {
+    const ICON_ENTITY: u64 = 0x0400_0000_0000_304b;
+    /// The effect scope's copies of Visible To (`1CE8` rid14) and of the
+    /// radius (`#2101`, frozen to a number when the Reevaluation leaves it
+    /// out: the client's ring reads it as it is).
+    const EFFECT_VISIBLE_TO: u32 = 20176;
+    const EFFECT_RADIUS: u32 = 2101;
+    const NUMBER: u64 = 0x0D80_0000_0000_4876;
+    const INTERACT: u32 = 0x004;
+    const JUMP: u32 = 0x040;
+    const ULTIMATE: u32 = 0x020;
+    let made = |parkour: &mut Parkour, definition: u64| -> Vec<u32> {
+        let script = parkour.mode.script_mut().unwrap();
+        script
+            .created()
+            .iter()
+            .filter(|made| made.definition == definition)
+            .map(|made| made.entity)
+            .collect()
+    };
+    // The effects whose Visible To copy is the list `visible`, inside
+    // Number as the engine sends a filtered player array, and whose radius
+    // is a number.
+    let rings_visible_to = |parkour: &mut Parkour, visible: Vec<ScriptValue>| -> usize {
+        let copy = orpheus_script::expr::workshop_tree(NUMBER, vec![ScriptValue::Array(visible)]);
+        let effects = made(parkour, EFFECT_ENTITY);
+        let script = parkour.mode.script_mut().unwrap();
+        effects
+            .into_iter()
+            .filter(|&effect| {
+                script
+                    .created_script(effect)
+                    .and_then(|placed| placed.snapshot())
+                    .is_some_and(|snapshot| {
+                        snapshot.instances.values().any(|instance| {
+                            instance.scope.as_ref().map(|scope| scope.id) == Some(EFFECT_SCOPE)
+                                && instance.variables.get(&EFFECT_VISIBLE_TO) == Some(&copy)
+                                && matches!(
+                                    instance.variables.get(&EFFECT_RADIUS),
+                                    Some(ScriptValue::Float(_))
+                                )
+                        })
+                    })
+            })
+            .count()
+    };
+    let elements = |parkour: &Parkour| -> Vec<u32> {
+        let ScriptValue::Array(items) = parkour.player_variable("Elements") else {
+            return Vec::new();
+        };
+        items
+            .iter()
+            .filter_map(|item| match item {
+                ScriptValue::Entity(entity) => Some(*entity),
+                ScriptValue::Float(_) | ScriptValue::Integer(_) | ScriptValue::Bool(false) => None,
+                other => panic!("an element is no entity: {other:?}"),
+            })
+            .collect()
+    };
+    let press = |parkour: &mut Parkour, button: u32| {
+        for _ in 0..10 {
+            parkour.step(INTERACT);
+        }
+        for _ in 0..3 {
+            parkour.step(INTERACT | button);
+        }
+        for _ in 0..10 {
+            parkour.step(INTERACT);
+        }
+        parkour.run(1.0);
+    };
+    let player = || vec![ScriptValue::Entity(OWNER)];
+    let mut parkour = Parkour::start();
+    parkour.run(5.0);
+    let hub_icons = made(&mut parkour, ICON_ENTITY);
+    assert_eq!(hub_icons.len(), 10);
+    assert_eq!(rings_visible_to(&mut parkour, player()), 10);
+    parkour.place([20.5, 5.0, 9.6]);
+    parkour.run(1.5);
+    parkour.place([18.5, 5.5, 9.1]);
+    parkour.run(1.0);
+    for checkpoint in 1..=6 {
+        if checkpoint > 1 {
+            press(&mut parkour, JUMP);
+        }
+        assert_eq!(
+            number(&parkour.player_variable("Checkpoint")),
+            f64::from(checkpoint)
+        );
+        let shown = elements(&parkour);
+        assert!(!shown.is_empty());
+        let mut expected: Vec<u32> = hub_icons.clone();
+        expected.extend(
+            made(&mut parkour, ICON_ENTITY)
+                .into_iter()
+                .filter(|icon| shown.contains(icon)),
+        );
+        let effects = made(&mut parkour, EFFECT_ENTITY);
+        assert!(
+            shown
+                .iter()
+                .all(|element| effects.contains(element) || expected.contains(element)),
+            "checkpoint {checkpoint}: {shown:08X?} not all up"
+        );
+        assert_eq!(
+            made(&mut parkour, ICON_ENTITY),
+            expected,
+            "checkpoint {checkpoint}"
+        );
+        assert_eq!(rings_visible_to(&mut parkour, Vec::new()), 10);
+    }
+    // Reset (Interact + Ultimate): back at the hub, his checkpoint's rings
+    // and icons go, the level rings show again.
+    press(&mut parkour, ULTIMATE);
+    assert_eq!(number(&parkour.player_variable("Checkpoint")), 0.0);
+    assert_eq!(made(&mut parkour, ICON_ENTITY), hub_icons);
+    assert_eq!(rings_visible_to(&mut parkour, player()), 10);
+}
