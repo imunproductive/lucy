@@ -2612,22 +2612,28 @@ impl Evaluator<'_> {
                     Value::Vector(facing)
                 }
             }
-            // A body's pitch in degrees (`Eval_STU_40AC5AE4` 0x7FF789BD8200
-            // → 0x7FF789C2C220: the movement state's s16 at `+66` × 2π/65536
-            // (0x7FF789B71F70), else the transform's, × 57.29578). `+66` is
-            // the Euler pitch after the yaw at `+64`, which the server never
-            // sends (`orpheus_wire::entity`: "No Euler pitch or roll"), so 0
-            // for every body. Game m2 (Doomfist.md §24): his client's own
-            // `0C51` #502 from it was 0.0 facing 142.9°. A world's own answer
-            // comes first; an invalid entity fails.
+            // A body's aim pitch in degrees, positive looking down
+            // (`Eval_STU_40AC5AE4` 0x7FF789BD8200 → 0x7FF789C2C220: the
+            // movement state's s16 at `+66` × 0.000095873802 (0x7FF789B71F70)
+            // × 57.29578, in single precision; without a mover the
+            // transform's). `+66` holds the command's pitch: game m3
+            // (Doomfist.md §24) read 5461 looking 30° down and −3641 looking
+            // 20° up on his client's mover. The searches that follow the aim
+            // (the Tactical Visor's `0259` st7/st20, Guardian Angel's `006B`)
+            // aim their cones at `-STU_40AC5AE4(owner())`; Meteor Strike
+            // (`0C51` rid75) starts #502 from it. A world's own answer comes
+            // first; a body whose facing the world can't tell fails.
             "STU_40AC5AE4" if native_shape(config, class, Some("m_entity")) => {
                 if let Some(value) = context.native(config) {
                     return Ok(value);
                 }
-                to_entity(&self.config(child(config, "m_entity"), context, nested)?)
+                let unsupported = || EvalError::UnsupportedConfig(class.into());
+                let entity = to_entity(&self.config(child(config, "m_entity"), context, nested)?)
                     .filter(|&entity| valid_entity(entity))
-                    .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?;
-                Value::Float(0.0)
+                    .ok_or_else(unsupported)?;
+                let [_, pitch] = context.entity_facing(entity).ok_or_else(unsupported)?;
+                let pitch = (pitch + 32_768).rem_euclid(65_536) - 32_768;
+                Value::Float(f64::from(pitch as f32 * 0.000_095_873_8_f32 * 57.295_78_f32))
             }
             // A direction kept within a cone of another (Eval 0x7FF789BFB820):
             // `m_32B00625`'s yaw atan2(x, z) and pitch asin(−y) (both
