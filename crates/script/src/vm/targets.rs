@@ -569,7 +569,7 @@ pub(crate) fn filter_word(candidate: &TargetCandidate) -> u64 {
     TEAM_BIT << team | BODY_KINDS | dead
 }
 
-impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
+impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W> {
     /// The search at the state's begin; a form the server runs searches
     /// again on the frames its rate gives.
     pub(super) fn begin_track_targets(

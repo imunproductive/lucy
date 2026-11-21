@@ -17,7 +17,7 @@
 
 use super::*;
 
-impl<W: World> Vm<'_, '_, '_, W> {
+impl<W: World + ?Sized> Vm<'_, '_, '_, W> {
     /// The begin writes false, then tests at once and each update.
     pub(super) fn begin_area_residency(
         &mut self,

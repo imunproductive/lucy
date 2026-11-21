@@ -49,7 +49,7 @@ enum AnimationRun {
     },
 }
 
-impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
+impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W> {
     pub(super) fn register_tick(&mut self, key: StateKey, start_ms: u64) {
         self.machine
             .ticking

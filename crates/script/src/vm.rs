@@ -2110,6 +2110,22 @@ pub struct ShotEvent {
     pub spread: Option<f64>,
 }
 
+/// The world as the VM's generic code takes it. That code is instantiated
+/// once per world type, and the unit tests' dozens of worlds would each make
+/// a copy: more sections than one COFF object holds (link.exe LNK1136 or
+/// LNK1106; docs/dev/testing.md "Build speed"). A test build hands every world
+/// to the VM as `dyn World`, so they share one copy; other builds keep each
+/// world's own.
+#[cfg(test)]
+fn erase(world: &mut impl World) -> &mut dyn World {
+    world
+}
+
+#[cfg(not(test))]
+fn erase<W: World>(world: &mut W) -> &mut W {
+    world
+}
+
 /// A single body using the same authored graph engine as one-shot initialization.
 pub struct Component {
     graphs: Arc<GraphStore>,
@@ -2127,6 +2143,7 @@ impl Component {
         world: &mut impl World,
         max_work: usize,
     ) -> Result<Self, InitFault> {
+        let world = erase(world);
         let mut machine = Machine::new(entity, entity_variables, frame, max_work)?;
         Vm::new(&graphs, world, &mut machine).start(roots)?;
         machine.capture_outputs();
@@ -2181,6 +2198,7 @@ impl Component {
         config: &Json,
         world: &mut impl World,
     ) -> Result<Value, EvalError> {
+        let world = erase(world);
         self.evaluate_in_state(instance, raw_state, None, world, |node, context| {
             expr::evaluate_in(config, node.configs(), context)
         })
@@ -2198,13 +2216,14 @@ impl Component {
         candidate: u32,
         world: &mut W,
     ) -> Option<bool> {
+        let world = erase(world);
         let bound = Value::Entity(candidate);
         self.evaluate_in_state(
             filter.instance,
             filter.state,
             Some(&bound),
             world,
-            |node, context: &mut InstanceContext<'_, W>| {
+            |node, context: &mut InstanceContext<'_, _>| {
                 let filter = field(&node.fields, statuses::PARTY_FILTER);
                 expr::passes_filter_as_candidate(filter, candidate, context)
             },
@@ -2233,7 +2252,7 @@ impl Component {
     /// `evaluate` in a context of the state `raw_state` of `instance`, as a
     /// read outside the VM's run (nothing is recorded); `candidate` answers
     /// every parameter when set.
-    fn evaluate_in_state<W: World, T>(
+    fn evaluate_in_state<W: World + ?Sized, T>(
         &self,
         instance: u16,
         raw_state: u16,
@@ -2289,6 +2308,7 @@ impl Component {
         value: Value,
         world: &mut impl World,
     ) -> Result<(), InitFault> {
+        let world = erase(world);
         self.run(world, |vm| {
             let key = VarKey::Entity(id);
             let old = vm.machine.value(key, None);
@@ -2307,6 +2327,7 @@ impl Component {
         value: f64,
         world: &mut impl World,
     ) -> Result<(), InitFault> {
+        let world = erase(world);
         self.run(world, |vm| vm.set_ability_cooldown(button, value).map(drop))
     }
 
@@ -2318,7 +2339,8 @@ impl Component {
     /// with no world (every hero's are constants). None: no ability has
     /// that button.
     pub fn ability_cooldown(&self, button: i64) -> Option<f64> {
-        let world = &mut EmptyWorld;
+        let mut empty = EmptyWorld;
+        let world = erase(&mut empty);
         let snapshot = self.snapshot()?;
         let abilities: Vec<(u16, u16)> = snapshot
             .instances
@@ -2361,6 +2383,7 @@ impl Component {
         value: Value,
         world: &mut impl World,
     ) -> Result<(), InitFault> {
+        let world = erase(world);
         if !self.machine.snapshot.instances.contains_key(&instance) {
             return Ok(());
         }
@@ -2390,6 +2413,7 @@ impl Component {
         id: u32,
         world: &mut impl World,
     ) -> Result<(), InitFault> {
+        let world = erase(world);
         self.run(world, |vm| {
             let watchers = vm
                 .machine
@@ -2423,6 +2447,7 @@ impl Component {
         classes: &[&str],
         world: &mut impl World,
     ) -> Result<(), InitFault> {
+        let world = erase(world);
         self.run(world, |vm| {
             let mut watchers: Vec<StateKey> = Vec::new();
             for class in classes {
@@ -2458,6 +2483,7 @@ impl Component {
         &mut self,
         world: &mut impl World,
     ) -> Result<Option<BTreeMap<ModifierKey, Modifier>>, InitFault> {
+        let world = erase(world);
         if self.halted {
             return Err(InitFault::Halted);
         }
@@ -2505,7 +2531,7 @@ impl Component {
     }
 
     pub fn run_now(&mut self, world: &mut impl World) -> Result<(), InitFault> {
-        self.run(world, |vm| vm.run())
+        self.run(erase(world), |vm| vm.run())
     }
 
     pub fn advance_frame(&mut self, frame: u32, world: &mut impl World) -> Result<(), InitFault> {
@@ -2561,6 +2587,7 @@ impl Component {
         message: u64,
         world: &mut impl World,
     ) -> Result<(), InitFault> {
+        let world = erase(world);
         self.run(world, |vm| {
             vm.release_message(sender, message)?;
             vm.run()
@@ -2632,6 +2659,7 @@ impl Component {
         variables: Variables,
         world: &mut impl World,
     ) -> Result<Option<u16>, InitFault> {
+        let world = erase(world);
         let id = u16::try_from(self.machine.next_id).map_err(|_| InitFault::InstanceIdExhausted)?;
         let mut created = false;
         self.run(world, |vm| {
@@ -2644,6 +2672,7 @@ impl Component {
     /// End an instance and its children now, without their end plugs
     /// (`Component.destroy`).
     pub fn destroy_instance(&mut self, id: u16, world: &mut impl World) -> Result<(), InitFault> {
+        let world = erase(world);
         if !self.machine.snapshot.instances.contains_key(&id) {
             return Ok(());
         }
@@ -2735,6 +2764,7 @@ impl Component {
         raw_state: u16,
         world: &mut impl World,
     ) -> Result<bool, InitFault> {
+        let world = erase(world);
         if self.halted {
             return Err(InitFault::Halted);
         }
@@ -2761,6 +2791,7 @@ impl Component {
         finished: bool,
         world: &mut impl World,
     ) -> Result<bool, InitFault> {
+        let world = erase(world);
         if self.halted {
             return Err(InitFault::Halted);
         }
@@ -2789,6 +2820,7 @@ impl Component {
         delay_ms: u64,
         world: &mut impl World,
     ) -> Result<(), InitFault> {
+        let world = erase(world);
         if self.halted {
             return Err(InitFault::Halted);
         }
@@ -2818,6 +2850,7 @@ impl Component {
         delay_ms: u64,
         world: &mut impl World,
     ) -> Result<(), InitFault> {
+        let world = erase(world);
         if self.halted {
             return Err(InitFault::Halted);
         }
@@ -2853,6 +2886,7 @@ impl Component {
         command: Option<Command>,
         world: &mut impl World,
     ) -> Result<(), InitFault> {
+        let world = erase(world);
         if frame_start(frame) < self.machine.now_ms {
             return Err(InitFault::FrameOrder {
                 frame,
@@ -2862,7 +2896,7 @@ impl Component {
         self.run(world, |vm| vm.advance_frame(frame, command))
     }
 
-    fn run<W: World>(
+    fn run<W: World + ?Sized>(
         &mut self,
         world: &mut W,
         operation: impl FnOnce(&mut Vm<'_, '_, '_, W>) -> Result<(), InitFault>,
@@ -2888,6 +2922,7 @@ pub fn initialize(
     world: &mut impl World,
     max_work: usize,
 ) -> Result<Snapshot, InitFault> {
+    let world = erase(world);
     let mut machine = Machine::new(entity, entity_variables, 0, max_work)?;
     Vm::new(graphs, world, &mut machine).start(roots)?;
     machine.capture_outputs();
@@ -3134,7 +3169,7 @@ struct Machine {
     collected: BTreeMap<StateKey, Vec<(u32, Arc<Variables>)>>,
 }
 
-struct Vm<'graph, 'world, 'machine, W> {
+struct Vm<'graph, 'world, 'machine, W: ?Sized> {
     graphs: &'graph GraphStore,
     world: &'world mut W,
     machine: &'machine mut Machine,
@@ -3147,7 +3182,7 @@ struct Vm<'graph, 'world, 'machine, W> {
     output_write_depth: usize,
 }
 
-impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
+impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W> {
     fn new(
         graphs: &'graph GraphStore,
         world: &'world mut W,
@@ -4661,7 +4696,7 @@ fn chase_step(current: Value, destination: Value, step: f64) -> (Value, bool) {
     }
 }
 
-struct InstanceContext<'a, W> {
+struct InstanceContext<'a, W: ?Sized> {
     machine: &'a Machine,
     /// The graphs, for the nodes of the instances' active states (the
     /// ForCode rows [`Context::for_code`] reads).

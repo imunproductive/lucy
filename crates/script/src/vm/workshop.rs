@@ -193,7 +193,7 @@ impl Component {
         // A reused id's earlier result is not this instance's.
         self.machine.outcomes.remove(&id);
         let mut created = false;
-        self.run(world, |vm| {
+        self.run(erase(world), |vm| {
             created = vm.create(id, graph, None, variables, vm.machine.snapshot.entity)?;
             vm.run()
         })?;
@@ -296,7 +296,7 @@ impl Component {
         }
         // The plain copies as the old parameters gave them.
         let mut copies = Vec::new();
-        self.run(world, |vm| {
+        self.run(erase(world), |vm| {
             for &child in &children {
                 copies.extend(vm.parameter_copies(child));
             }
@@ -316,7 +316,7 @@ impl Component {
                 scope.parent.insert(ACTION_PARAMETERS, parameters.clone());
             }
         }
-        self.run(world, |vm| {
+        self.run(erase(world), |vm| {
             for &child in &children {
                 vm.copy_parameters(child)?;
             }
@@ -339,7 +339,7 @@ impl Component {
         request: &PlayRequest,
         world: &mut impl World,
     ) -> Result<(), InitFault> {
-        self.run(world, |vm| {
+        self.run(erase(world), |vm| {
             vm.play_here(
                 request.graph,
                 &request.parameters,
@@ -352,7 +352,7 @@ impl Component {
     }
 }
 
-impl<W: World> Vm<'_, '_, '_, W> {
+impl<W: World + ?Sized> Vm<'_, '_, '_, W> {
     /// The action's first result counts.
     fn report_outcome(&mut self, id: u16, outcome: ActionOutcome) {
         let start = self.machine.snapshot.instances[&id].start_ms;

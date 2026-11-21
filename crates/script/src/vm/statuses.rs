@@ -252,7 +252,7 @@ pub const INVULNERABLE: i64 = 0;
 /// `STU_9028E035` `m_type` 1: phased out (guess).
 pub const PHASED_OUT: i64 = 1;
 
-impl<W: World> Vm<'_, '_, '_, W> {
+impl<W: World + ?Sized> Vm<'_, '_, '_, W> {
     pub(super) fn begin_status(&mut self, key: StateKey, node: &Node) {
         let site = self.site(key.instance, node);
         let status = field(&node.fields, "m_type").as_i64().unwrap_or(0);

@@ -73,7 +73,7 @@ pub(super) fn server_played_graph(graph: u32, node: u16) -> Option<u32> {
     (site == (graph, node)).then_some(played)
 }
 
-impl<W: World> Vm<'_, '_, '_, W> {
+impl<W: World + ?Sized> Vm<'_, '_, '_, W> {
     pub(super) fn play_script(
         &mut self,
         id: u16,

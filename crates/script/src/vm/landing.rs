@@ -24,7 +24,7 @@ const SELECTOR: &str = "STU_4C96470A";
 const LENGTH: &str = "m_6386E7B4";
 const GATE: &str = "m_B02B1FD7";
 
-impl<W: World> Vm<'_, '_, '_, W> {
+impl<W: World + ?Sized> Vm<'_, '_, '_, W> {
     /// The landing form ticks while it runs; the other form is plain.
     pub(super) fn begin_landing(&mut self, key: StateKey, node: &Node) -> Result<(), InitFault> {
         let id = key.instance;

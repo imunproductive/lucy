@@ -12,7 +12,7 @@
 
 use super::*;
 
-impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
+impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W> {
     pub(super) fn insert_link(
         &mut self,
         target: VarKey,
