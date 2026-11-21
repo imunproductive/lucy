@@ -2633,7 +2633,9 @@ impl Evaluator<'_> {
                     .ok_or_else(unsupported)?;
                 let [_, pitch] = context.entity_facing(entity).ok_or_else(unsupported)?;
                 let pitch = (pitch + 32_768).rem_euclid(65_536) - 32_768;
-                Value::Float(f64::from(pitch as f32 * 0.000_095_873_8_f32 * 57.295_78_f32))
+                Value::Float(f64::from(
+                    pitch as f32 * 0.000_095_873_8_f32 * 57.295_78_f32,
+                ))
             }
             // A direction kept within a cone of another (Eval 0x7FF789BFB820):
             // `m_32B00625`'s yaw atan2(x, z) and pitch asin(−y) (both

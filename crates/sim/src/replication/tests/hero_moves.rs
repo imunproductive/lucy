@@ -1441,6 +1441,7 @@ fn doomfists_slam_shockwave_strikes_the_enemies_ahead_of_its_landing() {
         tags: None,
         health: None,
         spawned: Vec::new(),
+        hardpoints: None,
     };
     let candidates = [
         body(OWNER | 1, 0, start),

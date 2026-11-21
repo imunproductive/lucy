@@ -2088,6 +2088,7 @@ fn doomfists_passive_grants_temporary_shields_that_drain() {
         tags: None,
         health: None,
         spawned: Vec::new(),
+        hardpoints: None,
     }]);
     let mover = Mover::new(
         MoverSettings::default(),
