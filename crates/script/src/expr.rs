@@ -1679,21 +1679,6 @@ impl Evaluator<'_> {
             // Local Player (`Eval_STU_8985E00A`: the client's own player
             // entity): the server has none.
             "STU_8985E00A" => Value::Null,
-            // A console variable's value by its hash `m_74A2248F` (slot 5
-            // `sub_7FF789C04A60`: the getters of the client's 1601 console
-            // variables, a table at 0x7FF78B574A90 by hash; `0CBB` rid122
-            // reads `0FE1E03E`, DevFeatures). A hash not in that table
-            // leaves the evaluate's value as it starts, integer 0
-            // (`sub_7FF78AA88550`, type 2), a value. Custom String `5C14`
-            // in `1B4A` tests `A3AAEC43`, which no 1.74 console variable
-            // has (`owsearch cvar`, the table), so it writes its text. The
-            // server knows no other console variable's value.
-            "STU_A753DC79"
-                if child(config, "m_74A2248F").as_i64().map(|hash| hash as u32)
-                    == Some(0xA3AA_EC43) =>
-            {
-                Value::Integer(0)
-            }
             // A copy of a reevaluated Workshop parameter (Create HUD Text's
             // scope `1D8A` rid6 and five more Create graphs). Server-only:
             // the client's evaluate is the base config's `xor al, al`; the
@@ -3196,11 +3181,15 @@ impl Evaluator<'_> {
                     // Reaper's server-only `0075` rid25/26: 0xD645EF78 a bool
                     // (#48, getter 0x7FF789BFA5C0), false, and 0xA3E1FE20 a
                     // double (#49, getter 0x7FF789C05E20 writes it as a
-                    // float), 1.0. The others' values are not known.
+                    // float), 1.0. Custom String `5C14`'s test in `1B4A`:
+                    // 0xA3AB2FC3 (#645) a bool, false (`owsearch cvar`; an
+                    // earlier note named it `A3AAEC43`, a misread hash), so
+                    // the string writes its text. The others' values are
+                    // not known.
                     "STU_A753DC79" => {
                         match child(config, "m_74A2248F").as_i64().map(|hash| hash as u32) {
                             Some(0xE1C1_E402) => Value::Integer(128),
-                            Some(0x0FE1_E03E | 0xD645_EF78) => Value::Bool(false),
+                            Some(0x0FE1_E03E | 0xD645_EF78 | 0xA3AB_2FC3) => Value::Bool(false),
                             Some(0xA3E1_FE20) => Value::Float(1.0),
                             _ => return Err(EvalError::UnsupportedConfig(class.into())),
                         }
