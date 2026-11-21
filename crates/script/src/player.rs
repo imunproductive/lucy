@@ -790,6 +790,21 @@ impl World for PlayerWorld {
                 let [x, y, z] = self.position;
                 self.eye_height.map(|eye| Value::Vector([x, y + eye, z]))
             }
+            // The body's aim pitch in degrees, positive looking down (its
+            // movement record's pitch). Assumption from its uses (115
+            // nodes): the searches that follow the aim (the Tactical
+            // Visor's `0259` st7/st20, Mercy's Guardian Angel `006B` rid6
+            // and rid113) aim their cone at the pitch
+            // `-STU_40AC5AE4(owner())` (positive up, in degrees beside the
+            // heading `STU_C8C4C20D`), and most of the rest store it into
+            // #502 for the aim's animation (`0259`'s `00C0.013` mapping).
+            // Unanswered, the visor's cone field failed and its search
+            // found no target in the match. Its evaluator `0x7FF789BD8200`
+            // reads it through `0x7FF789C2C220`, not traced.
+            "STU_40AC5AE4" if self.is_player_site(site) && is_owner(config.get("m_entity")) => {
+                let pitch = (self.movement.pitch + 32_768).rem_euclid(65_536) - 32_768;
+                Some(Value::Float(f64::from(pitch) * 360.0 / 65_536.0))
+            }
             "STU_310D6529" => {
                 const THROTTLE_UNIT: f32 = 1.0 / 127.0;
                 let [right, forward] = self

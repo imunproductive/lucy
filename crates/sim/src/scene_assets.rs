@@ -2600,4 +2600,98 @@ mod tests {
         assert_eq!(clip.mask, 0x1B9F);
         assert!((clip.point[1] - 11.2633).abs() < 1e-3, "{clip:?}");
     }
+
+    /// Tactical Visor in the Practice Range as the match runs it: Soldier:
+    /// 76 stands on the walk below the spawn, 10 m from the Training Bot
+    /// `80008805`, looking 6° beside it, with a full meter; ABILITY_3 begins
+    /// `0259`'s ultimate, whose search st7 aims its cone at his heading and
+    /// pitch (`-STU_40AC5AE4(owner())`, which the server answered with
+    /// nothing before: the cone field failed and the search found no
+    /// target) and finds the bot among the match's listed bodies.
+    #[test]
+    #[ignore = "requires a derived 104319 Practice Range pack"]
+    fn the_visor_finds_a_range_bot_beside_the_aim() {
+        use crate::{
+            combat::{Combat, PlayerTarget},
+            replication::BodyStep,
+        };
+        use orpheus_script::wire::{Value as ScriptValue, Variables};
+        use orpheus_wire::commands::Command;
+        const ABILITY_3: u32 = 0x20;
+        let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+        assets.set_bot_unknowns(Unknowns::Tolerate);
+        let mut scene = assets.prepare(GameMap::practice_range()).unwrap();
+        let hero = scene.heroes().get(SOLDIER).unwrap();
+        let feet = [44.76, 2.0, 20.8];
+        let bot = &scene.bots()[5];
+        let (target, [bx, _, bz]) = (bot.entity, bot.position);
+        assert_eq!(target, BOT_ENTITY + 5);
+        let yaw = (((bx - feet[0]).atan2(bz - feet[2]) + 6f64.to_radians()) * 65536.0
+            / std::f64::consts::TAU) as i32;
+        let mover = scene.player_mover_at(hero.body, 0, feet, yaw).unwrap();
+        let spawn = OwnerBodySpawn {
+            slot: 0,
+            controller: 0xa000_0100,
+            entity: 0xa000_0101,
+            body_filter: team_bit(0).unwrap(),
+            frame: FIRST_TICK,
+            pose: mover.pose(),
+            quanta: RETAIL_QUANTA,
+            mode_random: scene.mode_random(),
+            ai: None,
+            respawn_held: false,
+        };
+        let mut combat = Combat::new(&scene);
+        let mut runtime = scene.owner_body_runtime(hero, spawn).unwrap().unwrap();
+        // The game identifier every new body gets (`01C7` turns #2426e on),
+        // and a full meter.
+        runtime
+            .receive_message(
+                0,
+                0x0240_0000_0000_002d,
+                Variables::from([(0x29, ScriptValue::Asset(0))]),
+            )
+            .unwrap();
+        runtime
+            .set_entity_variables(&Variables::from([(342, ScriptValue::Float(2310.0))]))
+            .unwrap();
+        let me = PlayerTarget {
+            body: spawn.entity,
+            team: 0,
+            pose: scene.player_target(hero, feet, yaw, false),
+            dead: false,
+            health: None,
+            hardpoints: scene.body_hardpoints(hero.body),
+            tags: scene.body_tags(hero.body),
+            ai: None,
+            dealt: Vec::new(),
+        };
+        // The visor's search begins about 1.2 s after the press.
+        for frame in spawn.frame + 1..spawn.frame + 120 {
+            scene.step_bots(frame);
+            combat.record_poses(&scene, std::slice::from_ref(&me), frame);
+            runtime.set_target_candidates(&combat.target_candidates(&scene));
+            let command = Command {
+                frame,
+                buttons: if frame == spawn.frame + 30 {
+                    ABILITY_3
+                } else {
+                    0
+                },
+                yaw,
+                ..Command::default()
+            };
+            runtime.see_targets(&combat.rewind(&scene, RETAIL_QUANTA), &command);
+            runtime.advance(command, &mover, BodyStep::Posed).unwrap();
+        }
+        let snapshot = runtime.snapshot().unwrap();
+        let Some(ScriptValue::Array(found)) = snapshot.variables.get(&2337) else {
+            panic!("no visor targets: {:#?}", snapshot.assumptions);
+        };
+        assert!(
+            found.contains(&ScriptValue::Entity(target)),
+            "{found:x?} {:#?}",
+            snapshot.assumptions
+        );
+    }
 }

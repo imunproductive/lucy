@@ -345,6 +345,16 @@ impl TargetCandidate {
         (self.yaw * TURN_UNITS / std::f64::consts::TAU).round() as i64 as i32
     }
 
+    /// Where its model hardpoint `hardpoint` is in the world, with its feet
+    /// at `feet` facing `yaw` (radians): the point turned by the yaw about
+    /// the feet. None: no such hardpoint known.
+    pub fn hardpoint_at(&self, hardpoint: u64, feet: [f64; 3], yaw: f64) -> Option<[f64; 3]> {
+        let [x, y, z] = *self.hardpoints.as_deref()?.get(&hardpoint)?;
+        let (sin, cos) = yaw.sin_cos();
+        let [fx, fy, fz] = feet;
+        Some([fx + x * cos + z * sin, fy + y, fz - x * sin + z * cos])
+    }
+
     /// Its filter word as the target searches test it (`vm/targets.rs`
     /// module notes: team bit, body kinds, dead).
     pub fn filter_word(&self) -> u64 {
@@ -756,7 +766,6 @@ pub trait World {
             .target_candidates(site)?
             .iter()
             .find(|body| body.entity == entity)?;
-        let [x, y, z] = *body.hardpoints.as_deref()?.get(&hardpoint)?;
         let (feet, yaw) = match self.seen_bodies(site) {
             Some(SeenBodies::Rewound(seen)) => seen
                 .iter()
@@ -764,9 +773,7 @@ pub trait World {
                 .map_or((body.feet, body.yaw), |seen| (seen.feet, seen.yaw)),
             _ => (body.feet, body.yaw),
         };
-        let (sin, cos) = yaw.sin_cos();
-        let [fx, fy, fz] = feet;
-        Some([fx + x * cos + z * sin, fy + y, fz - x * sin + z * cos])
+        body.hardpoint_at(hardpoint, feet, yaw)
     }
 
     /// A body's yaw and pitch, as [`expr::Context::entity_facing`].
