@@ -1026,6 +1026,14 @@ impl Room {
         }
         match self.mode.as_mut() {
             Some(mode) if mode.holds_rooms() => mode.start_match(),
+            // Nothing stands in for a mode its graph drives: the match
+            // waits, and says why.
+            mode if flow.mode().graph_driven() => tracing::error!(
+                "[game] {}: {:?} plays only on its mode graph, which doesn't run here: {:?}",
+                self.map.name,
+                flow.mode(),
+                mode.and_then(|mode| mode.gaps())
+            ),
             _ => flow.start(),
         }
         tracing::info!(

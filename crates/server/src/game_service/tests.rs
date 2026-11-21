@@ -7073,6 +7073,7 @@ fn a_firing_practice_bot_shoots_the_player() {
     server.stop().unwrap();
 }
 
+mod assault;
 mod collision_ready;
 mod victims;
 mod workshop;
