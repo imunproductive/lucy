@@ -1585,7 +1585,7 @@ fn doomfists_slam_cooldown_links_for_its_fall_and_he_slams_again() {
 
 /// Rocket Punch held through Rising Uppercut, and Rising Uppercut pressed
 /// in the punch's last frame, start when the other stops (the user's check
-/// of 2026-11-21, issues 3 and 5; `refs/reports/Doomfist.md` §19). Each of
+/// of 2026-11-21, issues 3 and 5; `refs/reports/Doomfist.md` §20). Each of
 /// his abilities pushes itself on #33e at one priority (`0C4…0001`), and
 /// his client's start check (0x7FF789BB8D20) asks the stack for that
 /// priority before it takes a press, puts the press back when the stack
