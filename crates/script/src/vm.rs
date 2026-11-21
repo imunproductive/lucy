@@ -1069,6 +1069,21 @@ pub trait World {
         false
     }
 
+    /// A graph set the cooldown of an ability of a body (`STU_FFF26F80`:
+    /// the Workshop's Set Ability Cooldown `2735` on its player's
+    /// possessed body): the match writes it in that body's script
+    /// ([`Component::set_ability_cooldown`]). False: this world sets none.
+    fn set_ability_cooldown(&mut self, _site: Site, _cooldown: CooldownWrite) -> bool {
+        false
+    }
+
+    /// A graph revived a dead body (`STU_621AF478`: the mode body script
+    /// `0C8E` on the Workshop's Resurrect): the match brings it back where
+    /// it lies. False: this world revives none.
+    fn revive(&mut self, _site: Site, _body: u32) -> bool {
+        false
+    }
+
     /// A `PlayScript` action played its graph on another entity (the
     /// Workshop's Chase Variable `1CCC` plays `1CCF` on each target
     /// player): the match plays it in that entity's script
@@ -1268,6 +1283,15 @@ pub struct BodyMove {
 pub struct EnvironmentCredit {
     pub body: u32,
     pub by: Option<u32>,
+}
+
+/// A cooldown another entity's graph sets ([`World::set_ability_cooldown`]):
+/// the ability of `body` on logical button `button` gets `value`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CooldownWrite {
+    pub body: u32,
+    pub button: i64,
+    pub value: f64,
 }
 
 #[derive(Default)]
@@ -2180,6 +2204,61 @@ impl Component {
             let old = vm.machine.value(key, None);
             vm.set_base(key, value);
             vm.notify_value(key, &old, None)
+        })
+    }
+
+    /// Another entity's graph set the cooldown of this entity's ability on
+    /// logical button `button` (the Workshop's Set Ability Cooldown,
+    /// `STU_FFF26F80`): see `vm/abilities.rs` `set_ability_cooldown`.
+    /// Nothing when no running ability has that button.
+    pub fn set_ability_cooldown(
+        &mut self,
+        button: i64,
+        value: f64,
+        world: &mut impl World,
+    ) -> Result<(), InitFault> {
+        self.run(world, |vm| vm.set_ability_cooldown(button, value).map(drop))
+    }
+
+    /// The cooldown left on this entity's ability on logical button
+    /// `button`, as the Workshop's Ability Cooldown reads it: the value of
+    /// the `m_out_CooldownVar` of the first running Ability whose start or
+    /// hold button it is (the lookup of `STU_FFF26F80`, 0x7FF789C9EED0;
+    /// assumption: the value reads the same ability). The buttons are read
+    /// with no world (every hero's are constants). None: no ability has
+    /// that button.
+    pub fn ability_cooldown(&self, button: i64) -> Option<f64> {
+        let world = &mut EmptyWorld;
+        let snapshot = self.snapshot()?;
+        let abilities: Vec<(u16, u16)> = snapshot
+            .instances
+            .iter()
+            .flat_map(|(&instance, item)| {
+                item.states
+                    .iter()
+                    .filter(|(_, state)| {
+                        state.active && matches!(state.kind, StateKind::Ability { .. })
+                    })
+                    .map(move |(&raw, _)| (instance, raw))
+            })
+            .collect();
+        abilities.into_iter().find_map(|(instance, raw)| {
+            let target = self
+                .evaluate_in_state(instance, raw, None, world, |node, context| {
+                    for name in ["m_A5F1A77B", "m_A368407D"] {
+                        let value =
+                            expr::evaluate_in(field(&node.fields, name), node.configs(), context)?;
+                        if button != 0 && expr::to_int(&value, 0) == button {
+                            return expr::lvalue(field(&node.fields, "m_out_CooldownVar"));
+                        }
+                    }
+                    Ok(None)
+                })
+                .ok()
+                .flatten()?;
+            Some(expr::to_float(
+                &self.machine.value(source_key(instance, target), None),
+            ))
         })
     }
 

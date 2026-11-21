@@ -2700,10 +2700,14 @@ impl State {
             now,
         };
         let mut struck: Vec<(Option<u32>, BotHit)> = Vec::new();
-        // The bots' graphs' changes, and the server placeables' (a health
-        // pack heals the body that walked onto it, `0046` st0).
+        // The bots' graphs' changes, the server placeables' (a health
+        // pack heals the body that walked onto it, `0046` st0) and the mode
+        // entity's (the Workshop's Kill `1482`).
         let mut changes = world.scene.take_bot_health_changes();
         changes.extend(world.scene.take_placed_health_changes());
+        if let Some(script) = room.mode.as_mut().and_then(ModeRunner::script_mut) {
+            changes.extend(script.take_health_changes());
+        }
         for change in changes {
             let shooter = self
                 .seats

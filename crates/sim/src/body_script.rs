@@ -587,6 +587,18 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
         Ok(opened)
     }
 
+    fn set_ability_cooldown(&mut self, button: i64, value: f64) -> io::Result<()> {
+        self.component
+            .set_ability_cooldown(button, value, &mut self.world)
+            .map_err(unsupported)?;
+        self.log_assumptions();
+        Ok(())
+    }
+
+    fn ability_cooldown(&self, button: i64) -> f64 {
+        self.component.ability_cooldown(button).unwrap_or(0.0)
+    }
+
     fn take_scope_changes(&mut self) -> Vec<ScopeChange> {
         self.world.take_scope_changes()
     }
@@ -653,6 +665,10 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
 
     fn take_messages(&mut self) -> Vec<GameMessage> {
         self.world.take_messages()
+    }
+
+    fn take_revive(&mut self) -> bool {
+        self.world.take_revive()
     }
 
     fn set_victim_tags(&mut self, victim: u32, tags: BTreeSet<u64>) {

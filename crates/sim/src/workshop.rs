@@ -89,21 +89,22 @@ const TEAMS: [Id; 3] = [0x4D4E, 0x4D4F, 0x4D50];
 const LAST_TEXT_ID: u32 = 20765;
 const LAST_CREATED_ENTITY: u32 = 20554;
 
-/// The Workshop buttons (`4A39`) and the command bits the client sends
-/// for their logical buttons (`orpheus_script::timeline::button_edges`:
-/// the Workshop's button table `0x7FF78B585348` gives the same logical
-/// numbers, Workshop.md "WorkshopModel").
-const BUTTONS: [(Id, u32); 10] = [
-    (0x4A3A, 0x001),
-    (0x4A3B, 0x002),
-    (0x4A3C, 0x008),
-    (0x4A3D, 0x010),
-    (0x4A3E, 0x020),
-    (0x4BAA, 0x004),
-    (0x4A3F, 0x040),
-    (0x4A40, 0x080),
-    (0x6ED8, 0x800),
-    (0x6ED7, 0x400),
+/// The Workshop buttons (`4A39`), the command bits the client sends for
+/// their logical buttons (`orpheus_script::timeline::button_edges`: the
+/// Workshop's button table `0x7FF78B585348` gives the same logical
+/// numbers, Workshop.md "WorkshopModel") and those logical buttons, as
+/// Set Ability Cooldown `2735` rid6 maps them (#465).
+const BUTTONS: [(Id, u32, i64); 10] = [
+    (0x4A3A, 0x001, 20),
+    (0x4A3B, 0x002, 29),
+    (0x4A3C, 0x008, 35),
+    (0x4A3D, 0x010, 36),
+    (0x4A3E, 0x020, 37),
+    (0x4BAA, 0x004, 30),
+    (0x4A3F, 0x040, 11),
+    (0x4A40, 0x080, 12),
+    (0x6ED8, 0x800, 31),
+    (0x6ED7, 0x400, 14),
 ];
 
 /// A player's body as the Workshop's values see it
@@ -777,7 +778,7 @@ impl World for Host<'_, '_> {
         };
         BUTTONS
             .iter()
-            .any(|&(id, bit)| id == button && view.buttons & bit != 0)
+            .any(|&(id, bit, _)| id == button && view.buttons & bit != 0)
     }
     fn is_on_ground(&self, player: EntityId) -> bool {
         self.view(player).is_some_and(|view| view.on_ground)
@@ -819,8 +820,17 @@ impl World for Host<'_, '_> {
     fn ultimate_charge_percent(&self, player: EntityId) -> f64 {
         self.view(player).map_or(0.0, |view| view.ultimate_charge)
     }
-    fn ability_cooldown(&self, _player: EntityId, _button: Id) -> f64 {
-        0.0
+    /// The cooldown left on the player's body's ability on the button
+    /// ([`WorldDelivery::ability_cooldown`]): C32S2's "Reset Ability CDs
+    /// inside CP" resets them while any is above 0.
+    fn ability_cooldown(&self, player: EntityId, button: Id) -> f64 {
+        let (Some(index), Some(&(_, _, logical))) = (
+            self.index(player),
+            BUTTONS.iter().find(|&&(id, _, _)| id == button),
+        ) else {
+            return 0.0;
+        };
+        self.players[index].world.ability_cooldown(logical)
     }
     fn has_status(&self, _player: EntityId, _status: Id) -> bool {
         false

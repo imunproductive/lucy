@@ -162,6 +162,16 @@ impl Parkour {
         deliver_held(&held, &mut self.held_reach, &mut recipients);
         deliver(&mut self.backlog, messages, Vec::new(), &mut recipients);
         let now = self.now();
+        // The mode entity's health changes (the Workshop's Kill), as the
+        // game service applies them (`Combat::modify_health`: the mode
+        // entity's are the environment's).
+        let changes = self.mode.script_mut().unwrap().take_health_changes();
+        for change in changes {
+            if Some(change.target) == self.world.current_body() && !change.heal {
+                self.damage(change.amount);
+            }
+        }
+        let viewer = self::viewer(&self.card);
         self.world
             .respawn_due(&self.scene, &viewer, self.frame, now, RETAIL_QUANTA)
             .unwrap();
@@ -174,6 +184,11 @@ impl Parkour {
 
     /// The environment kills his body (`Combat::environment_kill`).
     fn kill(&mut self) {
+        assert!(self.damage(10_000.0));
+    }
+
+    /// The environment deals `amount` to his body; true: it died.
+    fn damage(&mut self, amount: f64) -> bool {
         let body = self.world.current_body().unwrap();
         let hit = PlayerHit {
             body,
@@ -182,7 +197,7 @@ impl Parkour {
                 team: 0,
                 bot: false,
             },
-            amount: 10_000.0,
+            amount,
             critical: false,
             loadout: None,
             frame: self.frame,
@@ -196,11 +211,10 @@ impl Parkour {
             health_pack: false,
         };
         let now = self.now();
-        let damage = self
-            .world
+        self.world
             .damage_body(&self.scene, &hit, self.frame, now)
-            .unwrap();
-        assert!(damage.killed);
+            .unwrap()
+            .killed
     }
 
     fn run(&mut self, seconds: f64) {
@@ -537,4 +551,108 @@ fn dpk_archive_c32s2_respawns_a_killed_player_at_once() {
     // Respawn's `06B6` reaches his body, whose `0685` makes the respawn
     // due, and the new body comes, all in that tick.
     assert_eq!(ticks, 1);
+}
+
+/// "Spectate | Uppercut + Slam + Ultimate": the chord stops the run's
+/// timer and kills the player (Kill `1482`: its ModifyHealth on
+/// `STU_CF348C08` of the player, his body, through the mode entity's
+/// health changes) with respawning off (`1CE0`'s `0DE0` to `0C8E`), so he
+/// stays dead; "Death Reset" waits for Spectate false. The chord pressed
+/// again resurrects him (`1481` → `0A21` → `0C8E` rid76 `STU_621AF478`):
+/// a new body where he lay, the timer going again. Before, Kill named no
+/// body, and the run ended with the chord held, started over at once and
+/// spectated again.
+#[test]
+#[ignore = "requires an Overwatch 1.74 install and the DPK archive (just test-dpk <install> <archive>)"]
+fn dpk_archive_c32s2_spectates_with_the_time_paused() {
+    const CHORD: u32 = 0x008 | 0x010 | 0x020;
+    let mut parkour = Parkour::start();
+    parkour.run(5.0);
+    parkour.place([20.5, 5.0, 9.6]);
+    parkour.run(1.5);
+    parkour.place([18.5, 5.5, 9.1]);
+    parkour.run(2.0);
+    let body = parkour.world.current_body();
+    let alive = |parkour: &Parkour| {
+        parkour
+            .world
+            .workshop_view(&parkour.scene)
+            .is_some_and(|view| view.alive)
+    };
+    for _ in 0..20 {
+        parkour.step(CHORD);
+    }
+    assert!(!alive(&parkour));
+    assert_eq!(parkour.player_variable("Spectate"), ScriptValue::Bool(true));
+    let paused = number(&parkour.player_variable("RunTime"));
+    parkour.run(2.0);
+    assert!(!alive(&parkour), "respawned while spectating");
+    assert_eq!(number(&parkour.player_variable("RunTime")), paused);
+    let mut ticks = 0;
+    while !alive(&parkour) {
+        parkour.step(CHORD);
+        ticks += 1;
+        assert!(ticks < 20, "never resurrected");
+    }
+    parkour.run(1.0);
+    assert_ne!(parkour.world.current_body(), body);
+    assert!(
+        distance(parkour.feet(), [18.363, 4.117, 9.094]) < 0.5,
+        "{:?}",
+        parkour.feet()
+    );
+    assert_eq!(
+        parkour.player_variable("Spectate"),
+        ScriptValue::Bool(false)
+    );
+    assert!(number(&parkour.player_variable("RunTime")) > paused);
+}
+
+/// The checkpoints reset Doomfist's cooldowns: Set Ability Cooldown
+/// `2735` opens a scope on the player whose `STU_FFF26F80` writes the
+/// value into the cooldown of the body's ability on the button (Seismic
+/// Slam, logical button 36, `0B27`'s Ability), and Ability Cooldown reads
+/// it. At level 1's checkpoint 1 a slam that lands outside the ring
+/// starts its 6 s cooldown and fails the checkpoint in that tick ("CP
+/// Clear / Fail" → CP Fail: back to the centre, Wait 0.08, then Reset
+/// Ability CDs); the cooldown is 0 again 5 ticks later (the 0.08 s wait,
+/// the scope's write reaching the body in the tick it opens), and the next
+/// slam leaves the ground at once. Before, Set Ability Cooldown wrote
+/// nothing and the slam waited out its cooldown.
+#[test]
+#[ignore = "requires an Overwatch 1.74 install and the DPK archive (just test-dpk <install> <archive>)"]
+fn dpk_archive_c32s2_resets_the_slams_cooldown_at_a_checkpoint() {
+    const ABILITY_2: u32 = 0x10;
+    const SLAM: i64 = 36;
+    let mut parkour = Parkour::start();
+    parkour.run(5.0);
+    parkour.place([20.5, 5.0, 9.6]);
+    parkour.run(1.5);
+    parkour.place([18.5, 5.5, 9.1]);
+    parkour.run(1.0);
+    assert_eq!(number(&parkour.player_variable("Checkpoint")), 1.0);
+    let mut began = None;
+    let mut reset = None;
+    for tick in 0..200 {
+        parkour.step(if tick < 3 { ABILITY_2 } else { 0 });
+        let cooldown = parkour.world.ability_cooldown(SLAM);
+        if began.is_none() && cooldown > 0.0 {
+            began = Some((tick, cooldown));
+        } else if began.is_some() && cooldown == 0.0 {
+            reset = Some(tick);
+            break;
+        }
+    }
+    let (Some((began, _)), Some(reset)) = (began, reset) else {
+        panic!("began {began:?}, reset {reset:?}");
+    };
+    assert_eq!(reset - began, 5);
+    parkour.run(0.5);
+    let rises: Vec<f64> = (0..6)
+        .map(|tick| {
+            parkour.step(if tick < 3 { ABILITY_2 } else { 0 });
+            parkour.velocity()[1]
+        })
+        .collect();
+    assert!(rises.iter().any(|&vy| vy > 0.0), "{rises:?}");
 }

@@ -351,6 +351,12 @@ pub(crate) struct Binding {
     pub slot: u8,
     pub priority: i8,
     pub above: bool,
+    /// The binding's `+0x29` (read by `0x7FF78991D4F0`, set by the
+    /// client's own link `0x7FF78AAB5E10`): the variable's value is worked
+    /// out again from the state at every read in a new frame (refresh
+    /// `0x7FF78AAB70B0`, variable flag 2). Without it the client computes
+    /// the value once and keeps it until the binding changes.
+    pub volatile: bool,
 }
 
 pub(crate) type Bindings = BTreeMap<u32, Vec<Binding>>;
@@ -415,7 +421,13 @@ pub(crate) fn bound_variable(
             out.w_var(u32::from(binding.priority.unsigned_abs()));
             out.bit(binding.above);
         }
-        out.bit(false); // no per-frame re-resolution
+        // +0x29, then (only when set) +0x2A, which caches the value for the
+        // frame (refresh flag 4): the client's own volatile links leave it
+        // clear.
+        out.bit(binding.volatile);
+        if binding.volatile {
+            out.bit(false);
+        }
     }
     Ok(())
 }
@@ -666,18 +678,18 @@ fn full_frame(
 
 /// The head of a full frame as the client reads it: the owner frame's
 /// CmFD (none for an observer's), the instances (id, graph, parent instance
-/// and raw state), the entity's variables and their Stack links (instance,
-/// raw state: [`bound_variable`]'s form, which names the state in its
+/// and raw state), the entity's variables and their links (instance, raw
+/// state, volatile: [`bound_variable`]'s form, which names the state in its
 /// graph's `m_statesBitCount` bits), and the bit where the instances'
 /// sections begin. For tests and logs: a value [`read_value`] can't read,
-/// or a link with a path, priority form or re-resolution the writer never
+/// or a link with a path, priority form or per-frame cache the writer never
 /// sends, is an error.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FullHead {
     pub command_frame: Option<u32>,
     pub instances: Vec<ListedInstance>,
     pub variables: Variables,
-    pub links: BTreeMap<u32, Vec<(u16, u16)>>,
+    pub links: BTreeMap<u32, Vec<(u16, u16, bool)>>,
     /// The bit after the variables: the first instance's presence slots.
     pub end: usize,
 }
@@ -896,13 +908,13 @@ pub fn read_value(bits: &mut BitReader<'_>) -> Result<Value, WireError> {
     })
 }
 
-/// An entity variable's Stack links, as [`bound_variable`] writes them with
-/// no own instance: (instance, raw state) each.
+/// An entity variable's links, as [`bound_variable`] writes them with no
+/// own instance: (instance, raw state, volatile) each.
 fn read_links(
     bits: &mut BitReader<'_>,
     instances: &[ListedInstance],
     states_bits: &impl Fn(u16) -> Option<u8>,
-) -> Result<Vec<(u16, u16)>, WireError> {
+) -> Result<Vec<(u16, u16, bool)>, WireError> {
     let count = if !bits.bit()? {
         0
     } else if !bits.bit()? {
@@ -938,10 +950,11 @@ fn read_links(
                 bits.w_var()?;
                 bits.bit()?;
             }
-            if bits.bit()? {
+            let volatile = bits.bit()?;
+            if volatile && bits.bit()? {
                 return Err(WireError::InvalidBinding);
             }
-            Ok((instance, state))
+            Ok((instance, state, volatile))
         })
         .collect()
 }

@@ -68,7 +68,7 @@ use orpheus_script::{
 use orpheus_wire::{
     combat_messages::CombatNotice,
     commands::Command,
-    entity::{EntityUpdate, Operation},
+    entity::{EntityUpdate, GAME_MODE_ENTITY, Operation},
 };
 
 /// Stand-in respawn wait in a mode whose graph sends no respawn time
@@ -1053,11 +1053,15 @@ impl Combat {
         if !(change.amount.is_finite() && change.amount > 0.0) {
             return None;
         }
+        // A server placeable, or the mode entity (the Workshop's Kill
+        // `1482` without a killer names none, so its instigator falls back
+        // to the mode entity): the environment's, as a placeable's.
         let placeable = || {
-            scene
-                .server_placeables()
-                .iter()
-                .any(|placed| placed.entity() == change.instigator)
+            change.instigator == GAME_MODE_ENTITY
+                || scene
+                    .server_placeables()
+                    .iter()
+                    .any(|placed| placed.entity() == change.instigator)
         };
         let (shooter, environment) = match self.shooter(scene, change.instigator) {
             Some(shooter) => (shooter, false),

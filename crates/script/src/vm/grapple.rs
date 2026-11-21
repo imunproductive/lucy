@@ -179,7 +179,7 @@ impl<W: World> Vm<'_, '_, '_, W> {
     }
 
     /// The variable an output field names.
-    fn output_key(&mut self, id: u16, node: &Node, name: &str) -> Option<VarKey> {
+    pub(super) fn output_key(&mut self, id: u16, node: &Node, name: &str) -> Option<VarKey> {
         match expr::lvalue(field(&node.fields, name)) {
             Ok(target) => target.map(|target| source_key(id, target)),
             Err(error) => {

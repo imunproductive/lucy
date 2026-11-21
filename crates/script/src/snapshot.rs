@@ -958,8 +958,18 @@ impl<'a> SnapshotEncoder<'a> {
                 // her scoped walk stopping once she had owner corrections.
                 // Python sent the stacked value (driver.py `_add_var`:
                 // `var.value()`); it still goes where a binding stays on the
-                // server or is an Ability's stack (slot 1).
-                if links.len() == bindings.len() && links.iter().all(|link| link.slot == 0) {
+                // server or is an Ability's stack (slot 1). A RayCast's
+                // bindings (slots 0-3) leave the own value alone too: its
+                // begin binds them without writing it (`vm/rays.rs`).
+                let own = |binding: &StackBinding| {
+                    binding.slot == 0
+                        || snapshot
+                            .instances
+                            .get(&binding.instance)
+                            .and_then(|instance| instance.states.get(&binding.raw_state))
+                            .is_some_and(|state| state.kind == StateKind::Ray)
+                };
+                if links.len() == bindings.len() && bindings.iter().all(own) {
                     value = base;
                 }
                 if !links.is_empty() {
@@ -991,17 +1001,27 @@ impl<'a> SnapshotEncoder<'a> {
                 .instances
                 .get(&binding.instance)
                 .ok_or_else(invalid)?;
-            if !source.states.get(&binding.raw_state).is_some_and(|state| {
-                state.active
-                    && matches!(
-                        (state.kind, binding.slot),
-                        (StateKind::Stack { .. } | StateKind::ChaseVar, 0)
-                            | (StateKind::Ability { .. }, 0 | 1)
-                            | (StateKind::GrappleCast, 0 | 1)
-                    )
-            }) {
-                return Err(invalid());
-            }
+            // Volatile as the client's own link of each is: a chase's
+            // (begin `0x7FF78AAAF430` → `0x7FF78AA82F90`/`0x7FF78AA83570`,
+            // 1), a cooldown's (restart `0x7FF789BBB110` → `0x7FF78AA849B0`,
+            // 1), a RayCast's (`0x7FF789B940E0`, 1) and a GrappleCast's
+            // outputs (`0x7FF789BA1AA0`, 1); an ability's stack push
+            // (`0x7FF789BA6D40`, 0). A Stack's is volatile when its value
+            // read something volatile (`0x7FF78AA822B0`), which the VM
+            // doesn't track: never here. A frame's binding replaces the
+            // client's, and one that isn't volatile freezes the variable
+            // at the value it was first read at: the HUD's cooldowns and the
+            // Rocket Punch's charge stood still.
+            let volatile = match source.states.get(&binding.raw_state) {
+                Some(state) if state.active => match (state.kind, binding.slot) {
+                    (StateKind::Stack { .. }, 0) | (StateKind::Ability { .. }, 1) => false,
+                    (StateKind::ChaseVar | StateKind::Ability { .. }, 0)
+                    | (StateKind::GrappleCast, 0 | 1)
+                    | (StateKind::Ray, 0..=3) => true,
+                    _ => return Err(invalid()),
+                },
+                _ => return Err(invalid()),
+            };
             let graph = self.graph(binding.instance, source.graph)?;
             let node = graph
                 .state(usize::from(binding.raw_state))
@@ -1014,6 +1034,7 @@ impl<'a> SnapshotEncoder<'a> {
                     slot: binding.slot,
                     priority: binding.priority.level,
                     above: binding.priority.above_equals,
+                    volatile,
                 });
             }
         }
@@ -1220,10 +1241,6 @@ impl<'a> SnapshotEncoder<'a> {
         {
             return Ok(None);
         }
-        let mut touched = stream.touched();
-        // An idle volley's ammunition goes in every owner chunk, but makes
-        // none go by itself.
-        touched.extend(self.idle_volley_ammo(snapshot)?);
         let known: BTreeSet<_> = if view == View::Observer {
             base.instances
                 .keys()
@@ -1237,6 +1254,13 @@ impl<'a> SnapshotEncoder<'a> {
         } else {
             BTreeSet::new()
         };
+        let mut touched = match view {
+            View::Observer => self.observer_touched(stream, base, &known),
+            View::Owner => stream.touched(),
+        };
+        // An idle volley's ammunition goes in every owner chunk, but makes
+        // none go by itself.
+        touched.extend(self.idle_volley_ammo(snapshot)?);
         let mut delta = self.differences(base, snapshot, &touched, &known)?;
         // The oldest action the client hasn't acknowledged, under the stamp
         // of the chunk that first carried it (upstream `frame_callout`).
@@ -1270,6 +1294,41 @@ impl<'a> SnapshotEncoder<'a> {
         delivered.action_serial = action.map_or(base.action_serial, |(_, action)| action.serial);
         let frame = self.delta_frame(snapshot, &delta, kind, frame_ms, action)?;
         Ok(Some(stream.delta(&frame, delivered, delta.keys, kind)?))
+    }
+
+    /// What an observer delta must carry besides the base's differences:
+    /// what the client may hold from a queued chunk that the base doesn't
+    /// have. That is each queued chunk's keys whose values there differ
+    /// from the base, not all its keys: a chunk made while an older one was
+    /// on its way carries that one's keys too, so taking them all kept
+    /// every key ever changed in every later chunk for as long as one chunk
+    /// was always on its way. A Workshop match's mode frame changes each
+    /// tick (the run timer), so its deltas grew to the whole start-up's
+    /// changes, 24 KB in parts, and the HUD reached the client every 30
+    /// ticks or later. Actions keep the stamp of the chunk that first
+    /// carried them.
+    fn observer_touched(
+        &self,
+        stream: &BodyStream<ProjectedSnapshot>,
+        base: &ProjectedSnapshot,
+        known: &BTreeSet<u16>,
+    ) -> BTreeSet<ChangeKey> {
+        let none = BTreeSet::new();
+        let mut touched = BTreeSet::new();
+        for (_, pending, keys) in stream.pending() {
+            touched.extend(
+                keys.iter()
+                    .filter(|key| matches!(key, ChangeKey::Action { .. }))
+                    .copied(),
+            );
+            match self.differences(base, pending, &none, known) {
+                Ok(delta) => touched.extend(delta.keys),
+                // An instance id the base had for another graph: as before,
+                // everything the chunk carried.
+                Err(_) => touched.extend(keys.iter().copied()),
+            }
+        }
+        touched
     }
 
     /// Whether the owner's projection differs from what his client holds

@@ -140,6 +140,9 @@ pub struct PlayerWorld {
     /// Who the body's graphs named an environment kill of the body
     /// credits (`STU_545AB3B8`), for the match.
     environment_credits: Vec<EnvironmentCredit>,
+    /// A graph revived the body (`0C8E`'s `STU_621AF478` on the
+    /// Workshop's Resurrect), for the match to bring it back.
+    revive: bool,
     /// The player and first body the next dummy bot the body's graphs make
     /// gets (the Training Partner console's scope 12 on this body makes
     /// one on a re-pick, `265F` node 30); none: they make none now.
@@ -319,6 +322,16 @@ impl World for PlayerWorld {
             return false;
         }
         self.environment_credits.push(credit);
+        true
+    }
+
+    /// The body's own revival waits for the match
+    /// ([`Self::take_revive`]), which brings it back where it lies.
+    fn revive(&mut self, _site: Site, body: u32) -> bool {
+        if body != self.entity {
+            return false;
+        }
+        self.revive = true;
         true
     }
 
@@ -853,6 +866,7 @@ impl PlayerWorld {
             aura_changes: Vec::new(),
             tracked_stats: Vec::new(),
             environment_credits: Vec::new(),
+            revive: false,
             next_dummy: None,
             dummies: Vec::new(),
             scopes: Vec::new(),
@@ -888,6 +902,11 @@ impl PlayerWorld {
     /// last call (`STU_545AB3B8`), in order.
     pub fn take_environment_credits(&mut self) -> Vec<EnvironmentCredit> {
         std::mem::take(&mut self.environment_credits)
+    }
+
+    /// Whether a graph revived the body since the last call.
+    pub fn take_revive(&mut self) -> bool {
+        std::mem::take(&mut self.revive)
     }
 
     /// The dummy bots the body's graphs made or removed since the last

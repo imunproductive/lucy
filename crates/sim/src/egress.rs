@@ -172,22 +172,20 @@ impl<T> GameEgress<T> {
 
         let mut sent = Vec::with_capacity(entities.len());
         let mut tracked = Vec::new();
+        // The owner's correction, the final movement, may stand anywhere
+        // after a prefix of the records (`select_frame` reserves its room);
+        // the rest are prefixes of the queued records, then of movements.
+        let own = records
+            .owner_correction
+            .then(|| records.movements.last())
+            .flatten();
         for (index, entity) in entities.into_iter().enumerate() {
-            let source = match index.checked_sub(records.queued.len()) {
-                None => RecordSource::Queued(index),
-                Some(index) => {
-                    let index = if records
-                        .movements
-                        .get(index)
-                        .is_some_and(|candidate| std::ptr::eq(entity, candidate))
-                    {
-                        index
-                    } else {
-                        // Budget selection may replace the tail of the movement
-                        // prefix with the final record, the owner's correction.
-                        records.movements.len() - 1
-                    };
-                    RecordSource::Movement(index)
+            let source = if own.is_some_and(|own| std::ptr::eq(entity, own)) {
+                RecordSource::Movement(records.movements.len() - 1)
+            } else {
+                match index.checked_sub(records.queued.len()) {
+                    None => RecordSource::Queued(index),
+                    Some(index) => RecordSource::Movement(index),
                 }
             };
             sent.push(source);

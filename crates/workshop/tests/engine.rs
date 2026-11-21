@@ -408,16 +408,30 @@ rule("Loops")
     assert_eq!(down, [5.0, 3.0, 1.0]);
 }
 
+/// Each rising edge starts a run, but one that comes while the rule runs
+/// is spent: the rule doesn't start again when that run ends (C32S2's
+/// "Spectate" waits for its chord pressed again and must end there).
 #[test]
 fn ongoing_rules_run_on_each_rising_edge_of_their_conditions() {
     let mut engine = engine(
         r#"
-variables { global: 0: Presses }
+variables { global: 0: Presses 1: Waited }
 rule("Interact")
 {
 	event { Ongoing - Each Player; All; All; }
 	conditions { Is Button Held(Event Player, Button(Interact)) == True; }
 	actions { Global.Presses += 1; }
+}
+rule("Ability 2")
+{
+	event { Ongoing - Each Player; All; All; }
+	conditions { Is Button Held(Event Player, Button(Ability 2)) == True; }
+	actions
+	{
+		Wait Until(!Is Button Held(Event Player, Button(Ability 2)), 99999);
+		Wait Until(Is Button Held(Event Player, Button(Ability 2)), 99999);
+		Global.Waited += 1;
+	}
 }
 "#,
     );
@@ -432,6 +446,20 @@ rule("Interact")
     game.player_mut(1).buttons.insert(INTERACT);
     run(&mut engine, &mut game, 1);
     assert_eq!(number(game.global(0)), 2.0);
+    // Pressed, released, pressed again: the second press ends the run.
+    game.player_mut(1).buttons.insert(ABILITY_2);
+    run(&mut engine, &mut game, 3);
+    game.player_mut(1).buttons.remove(&ABILITY_2);
+    run(&mut engine, &mut game, 3);
+    game.player_mut(1).buttons.insert(ABILITY_2);
+    run(&mut engine, &mut game, 10);
+    assert_eq!(number(game.global(1)), 1.0);
+    // Still held after the run: no new one began (it would still wait).
+    game.player_mut(1).buttons.remove(&ABILITY_2);
+    run(&mut engine, &mut game, 3);
+    game.player_mut(1).buttons.insert(ABILITY_2);
+    run(&mut engine, &mut game, 10);
+    assert_eq!(number(game.global(1)), 1.0, "a new run waits for the chord");
 }
 
 #[test]

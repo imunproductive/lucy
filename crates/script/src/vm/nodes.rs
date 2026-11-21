@@ -451,6 +451,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             "STU_C1561031" => self.remove_dummy_bot(id, node, depth),
             "STU_CFCE55DC" => self.move_body(id, node, depth),
             "STU_545AB3B8" => self.credit_environment(id, node, depth),
+            "STU_FFF26F80" => self.set_ability_cooldown_of(id, node, depth),
             "STU_1E93FE1F" | "STU_DC325C52" | "STU_ADAFD7FF" | "STU_99ED4486" => {
                 self.action_result(id, node, depth)
             }
@@ -499,30 +500,34 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 self.follow(id, node, "m_outPlug", None, depth)?;
                 Ok(true)
             }
-            class if self.world.no_op_action(class).is_some() => {
-                let answer = self.world.no_op_action(class).unwrap_or_default();
-                self.assume(self.site(id, node), class, answer);
-                self.follow(id, node, "m_outPlug", None, depth)?;
-                Ok(true)
-            }
-            class if ASSUMED_NO_OPS.contains(&class) => {
-                self.assume(self.site(id, node), class, "no-op");
-                self.follow(id, node, "m_outPlug", None, depth)?;
-                Ok(true)
-            }
-            class if self.tolerates_unknowns() => {
-                self.assume(self.site(id, node), class, "follows its out plug");
-                self.follow(id, node, "m_outPlug", None, depth)?;
-                Ok(true)
-            }
-            _ => {
-                self.report(
-                    self.site(id, node),
-                    Issue::UnsupportedAction(node.class.clone()),
-                );
-                Ok(false)
-            }
+            "STU_621AF478" => self.revive_bodies(id, node, depth),
+            _ => self.unhandled_action(id, node, depth),
         }
+    }
+
+    /// An action the VM has no model of: the world's no-op answer, a known
+    /// no-op, or (tolerating unknowns) one that only follows its out plug;
+    /// else refused.
+    pub(super) fn unhandled_action(
+        &mut self,
+        id: u16,
+        node: &Node,
+        depth: usize,
+    ) -> Result<bool, InitFault> {
+        let class = node.class.as_str();
+        let site = self.site(id, node);
+        if let Some(answer) = self.world.no_op_action(class) {
+            self.assume(site, class, answer);
+        } else if ASSUMED_NO_OPS.contains(&class) {
+            self.assume(site, class, "no-op");
+        } else if self.tolerates_unknowns() {
+            self.assume(site, class, "follows its out plug");
+        } else {
+            self.report(site, Issue::UnsupportedAction(node.class.clone()));
+            return Ok(false);
+        }
+        self.follow(id, node, "m_outPlug", None, depth)?;
+        Ok(true)
     }
 
     /// A criteria action changes nothing the VM tracks; it tells the world
@@ -1220,7 +1225,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             StateKind::HeroSelect => self.refresh_hero_select(key),
             StateKind::WeaponVolley { .. } => self.begin_volley(key, node, depth)?,
             StateKind::TrackTargets => self.begin_track_targets(key, node)?,
-            StateKind::Ray => self.begin_ray(key, node)?,
+            StateKind::Ray => self.begin_ray(key, node, depth)?,
             StateKind::WallCheck => self.begin_wall_check(key, node)?,
             StateKind::Landing => self.begin_landing(key, node)?,
             StateKind::ViewLimits { .. } => self.refresh_view_limits(key),

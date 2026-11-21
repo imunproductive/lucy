@@ -853,7 +853,8 @@ fn ability_cooldown_and_push_binding_match_python_bytes() {
         146,
         "081500001d40003c200000e84f0000801f0000",
     );
-    // The owner's full frame head: the pushed value and its Stack link.
+    // The owner's full frame head: the pushed value and its Stack link,
+    // not volatile (the client's push `0x7FF789BA6D40` links it so).
     let head = crate::wire::read_full_head(
         encoder.owner_full(&owner, 1001, 16).unwrap().as_bytes(),
         |graph| {
@@ -865,14 +866,29 @@ fn ability_cooldown_and_push_binding_match_python_bytes() {
     .unwrap();
     assert_eq!(head.command_frame, Some(1001));
     assert_eq!(head.variables, Variables::from([(7, Value::Bool(true))]));
+    let links = |owner: &ProjectedSnapshot| {
+        crate::wire::read_full_head(
+            encoder.owner_full(owner, 1001, 16).unwrap().as_bytes(),
+            |graph| {
+                graphs
+                    .graph(u32::from(graph))
+                    .map(|graph| graph.header.states_bits)
+            },
+        )
+        .unwrap()
+        .links
+    };
     assert_eq!(
-        head.links,
-        std::collections::BTreeMap::from([(7, vec![(1, 0)])])
+        links(&owner),
+        std::collections::BTreeMap::from([(7, vec![(1, 0, false)])])
     );
 
     // A cooldown's link (slot 0) goes to the owner with the variable's own
     // value, the one the cooldown falls from: the owner's client works the
-    // rest out from the state's timing block (`0x7FF789B94D00`).
+    // rest out from the state's timing block (`0x7FF789B94D00`) at every
+    // read, as the link is volatile (`+0x29`, as the client's restart
+    // `0x7FF789BBB110` links it). Sent without it, the client read the
+    // value once and its HUD showed the cooldown's start until a reset.
     snapshot.variables.insert(7, Value::Float(1.25));
     snapshot
         .resolved_bindings
@@ -881,6 +897,10 @@ fn ability_cooldown_and_push_binding_match_python_bytes() {
     let owner = encoder.project(&snapshot, View::Owner).unwrap();
     assert_eq!(owner.variables.values[&7], Value::Float(1.25));
     assert_eq!(owner.variables.bindings[&7][0].slot, 0);
+    assert_eq!(
+        links(&owner),
+        std::collections::BTreeMap::from([(7, vec![(1, 0, true)])])
+    );
     let observer = encoder.project(&snapshot, View::Observer).unwrap();
     assert_eq!(observer.variables.values[&7], Value::Float(0.75));
 }
@@ -1215,8 +1235,20 @@ fn a_timed_chase_keeps_its_begin_payload_and_binding_until_it_arrives() {
     assert_eq!(begun.payload["last"], Value::Integer(16_000));
     assert_eq!(begun.payload["remaining"], Value::Integer(125));
     assert_eq!(owner.instance_variable(1, 100), Some(&Value::Float(0.5)));
+    // Volatile, as the client's chase begin links it (`0x7FF78AAAF430`):
+    // sent without it, the client worked the value out once and kept it,
+    // and Doomfist's Rocket Punch charge (`0D06` st11/st36) stood still
+    // from the server's first frame of the charge.
     let bound = &owner.instances[&1].variables.bindings[&100];
-    assert_eq!((bound.len(), bound[0].state, bound[0].slot), (1, 0, 0));
+    assert_eq!(
+        (
+            bound.len(),
+            bound[0].state,
+            bound[0].slot,
+            bound[0].volatile
+        ),
+        (1, 0, 0, true)
+    );
     assert!(send(&owner, DeltaKind::InitialOwner(1000)).contains(&timed));
 
     // 16 000 + 125 ms is in frame 1007 (16 112..16 127).
@@ -1917,6 +1949,60 @@ fn observer_delta_removes_an_instance_introduced_by_an_unacknowledged_chunk() {
             .unwrap()
             .is_none()
     );
+}
+
+/// An observer delta made while an older one is on its way carries that
+/// one's keys (the client may hold its values), but once the older one
+/// arrived and is the base, only what the queued chunks hold differently
+/// from it. Before, each delta took every key of the queued ones, so a
+/// stream that always had one on its way (a mode frame changing each tick)
+/// carried every key it ever changed, forever.
+#[test]
+fn an_observer_delta_carries_only_what_the_queued_chunks_hold_beyond_the_base() {
+    let (graphs, snapshot) = fixture();
+    let codecs = CodecTable::from_json(CODECS).unwrap();
+    let encoder = SnapshotEncoder::new(&graphs, &codecs);
+    let observer = encoder.project(&snapshot, View::Observer).unwrap();
+    let mut stream = BodyStream::new(ENTITY);
+    let baseline = encoder.queue_full(&mut stream, &observer).unwrap();
+    stream.create_arrived();
+    stream.arrived(baseline.last);
+    let kind = DeltaKind::Observer { resend: false };
+    let root = ChangeKey::Variable(1, 100);
+    let entity = ChangeKey::Variable(0, 55);
+    let keys = |stream: &BodyStream<ProjectedSnapshot>, last: u32| {
+        stream
+            .pending()
+            .find(|(number, _, _)| *number == last)
+            .map(|(_, _, keys)| keys.clone())
+            .unwrap()
+    };
+    let mut first = observer.clone();
+    instance_mut(&mut first, 1)
+        .variables
+        .values
+        .insert(100, Value::Integer(1));
+    let one = encoder
+        .queue_delta(&mut stream, &first, kind, 16)
+        .unwrap()
+        .unwrap();
+    stream.sent(one.last);
+    let mut second = first.clone();
+    second.variables.values.insert(55, Value::Integer(7));
+    let two = encoder
+        .queue_delta(&mut stream, &second, kind, 16)
+        .unwrap()
+        .unwrap();
+    stream.sent(two.last);
+    assert_eq!(keys(&stream, two.last), BTreeSet::from([entity, root]));
+    assert!(stream.arrived(one.last).advanced);
+    let mut third = second.clone();
+    third.variables.values.insert(55, Value::Integer(8));
+    let three = encoder
+        .queue_delta(&mut stream, &third, kind, 16)
+        .unwrap()
+        .unwrap();
+    assert_eq!(keys(&stream, three.last), BTreeSet::from([entity]));
 }
 
 #[test]
