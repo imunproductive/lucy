@@ -812,6 +812,7 @@ fn nano_boost_halves_the_damage_a_bot_takes_and_boosts_what_it_deals() {
             tags: DamageTags::NONE,
             loadout: None,
             aura: None,
+            knockback: None,
             frame: tick,
         };
         combat

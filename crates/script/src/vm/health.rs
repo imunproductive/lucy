@@ -33,7 +33,8 @@
 //!   melee's TrackTargets output `#23530`), `m_C0139FA6`, `m_724CBA57`
 //!   (the owner where set), `m_E33EFEE1` and `m_10399AE7` (outputs) and the
 //!   other hashed fields of `m_modifyHealth`. Each use records an
-//!   assumption.
+//!   assumption. Read: `m_1376B4DF`, a push vector, where no rings go
+//!   with it ([`HealthChange::knockback`]).
 //! - `m_8B707686` (u8, state `+0x14d`) is the retail server's own flag;
 //!   the client never reads it. ModifyHealth has no runtime of its own on
 //!   the client (state record #160 is the base state's, vtable
@@ -84,6 +85,12 @@ pub struct HealthChange {
     pub loadout: Option<u64>,
     /// The aura it applies to the body it reaches (`m_277A4ECA`).
     pub aura: Option<u64>,
+    /// The push it gives the body it reaches, in metres a second
+    /// (`m_modifyHealth.m_1376B4DF`, a vector): Soundwave's (Lúcio's
+    /// `0776` rid28 st11, loadout `0B9:0A3`) 17 along his aim lifted by 0.5,
+    /// evaluated in his graph. The retail server applied it natively:
+    /// ModifyHealth has no runtime of its own on the client.
+    pub knockback: Option<[f64; 3]>,
     /// The component's frame when it was dealt.
     pub frame: u32,
 }
@@ -239,6 +246,18 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             Some(Value::Asset(guid)) if guid != 0 => Some(guid),
             _ => None,
         };
+        // Read only where no rings go with it (Soundwave's): the rings'
+        // pushes (`m_knockbackRings` with `m_E33EFEE1`, `m_583C208B`) are
+        // not modelled for a ModifyHealth, and Seismic Slam's `0B27` rid133
+        // and Brigitte's `1259` rid31 vectors go with rings.
+        let knockback = if is_set(field(change, "m_knockbackRings")) {
+            None
+        } else {
+            match self.evaluate_set(id, node, field(change, "m_1376B4DF")) {
+                Some(Value::Vector(push)) if push.iter().all(|axis| axis.is_finite()) => Some(push),
+                _ => None,
+            }
+        };
         let tags = DamageTags::from_authored(change, |config| {
             self.evaluate(id, node, config, None)
                 .ok_or(EvalError::MalformedConfig("damage tag"))
@@ -256,6 +275,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 tags,
                 loadout,
                 aura,
+                knockback,
                 frame: self.machine.frame,
             });
         }

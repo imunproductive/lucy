@@ -500,6 +500,8 @@ pub struct PlayerPush {
     /// Whose explosion it was: the knock an environment kill credits
     /// ([`KnockCredit`]).
     pub by: Shooter,
+    /// The ability that pushed (the Workshop's Event Ability).
+    pub loadout: Option<u64>,
 }
 
 /// What a hit or a push did between the room's players
@@ -513,6 +515,8 @@ pub enum PlayerEvent {
     /// ([`KnockCredit`]), or the victim himself for his own blow and a fall
     /// nobody knocked him into ([`Combat::environment_kill`]); none for a
     /// bot's or a placeable's. `direction`: [`PlayerHit::direction`].
+    /// `loadout`: the ability that dealt it ([`PlayerHit::loadout`]), for
+    /// the Workshop's Event Ability.
     Damage {
         attacker: Option<u32>,
         victim: u32,
@@ -521,6 +525,7 @@ pub enum PlayerEvent {
         environment: bool,
         direction: Option<Vec3>,
         killed: bool,
+        loadout: Option<u64>,
     },
     /// `victim`'s death counts as `player`'s elimination: his final blow,
     /// or his share of the kill ([`kill_credit`]).
@@ -531,19 +536,21 @@ pub enum PlayerEvent {
     },
     /// `healee`'s pools took `healed` (above 0) of a heal. `healer`: the
     /// player whose heal it was; none for a bot's or a placeable's (a
-    /// health pack's, `health_pack`).
+    /// health pack's, `health_pack`). `loadout`: the healing ability.
     Heal {
         healer: Option<u32>,
         healee: u32,
         healed: f64,
         health_pack: bool,
+        loadout: Option<u64>,
     },
     /// `attacker`'s explosion pushed `victim`'s body by `push` (metres a
-    /// second).
+    /// second), with the ability `loadout`.
     Knockback {
         attacker: u32,
         victim: u32,
         push: Vec3,
+        loadout: Option<u64>,
     },
 }
 
@@ -1125,6 +1132,17 @@ impl Combat {
                 source: change.source,
                 health_pack: change.heal && change.site.graph == HEALTH_PACK,
             });
+            // Its push (Soundwave's), as an explosion's on another player
+            // ([`PlayerPush`]): the owner corrections carry it to his
+            // client, which predicts none for another's hit.
+            if let Some(push) = change.knockback.filter(|_| !change.heal && !own) {
+                self.player_pushes.push(PlayerPush {
+                    body: target,
+                    push,
+                    by: shooter,
+                    loadout: change.loadout,
+                });
+            }
             self.auras.extend(aura);
             return None;
         }
@@ -1144,15 +1162,25 @@ impl Combat {
             self.apply_bot_impact(scene, shooter, change.frame, None, context, &impact, None)?;
         hit.source = change.source;
         self.auras.extend(aura);
+        if let Some(push) = change.knockback.filter(|_| !change.heal) {
+            scene.knock_bot(target, push, context.tick);
+        }
         Some(hit)
     }
 
     /// The shooter `entity` is: a player's body as the match last placed
-    /// it, or a living bot.
+    /// it (his player entity, the controller, standing for it: the
+    /// Workshop's Heal `137C` names the healer player as its instigator,
+    /// `STU_77B0987E(#18739[1])`, where Damage `1483` takes his body with
+    /// `STU_CF348C08`), or a living bot.
     fn shooter(&self, scene: &PreparedScene, entity: u32) -> Option<Shooter> {
-        if let Some(slot) = self.players.iter().find(|slot| slot.target.body == entity) {
+        if let Some(slot) = self
+            .players
+            .iter()
+            .find(|slot| slot.target.body == entity || slot.target.body & !0xff == entity)
+        {
             return Some(Shooter {
-                source: entity,
+                source: slot.target.body,
                 team: slot.target.team,
                 bot: false,
             });
@@ -1422,6 +1450,7 @@ impl Combat {
                         body: *entity,
                         push,
                         by: shooter,
+                        loadout: flight.blast_loadout(),
                     });
                 }
             }
@@ -2144,6 +2173,7 @@ pub fn apply_player_hits(
                     healee: players[victim].entity,
                     healed: given,
                     health_pack: hit.health_pack,
+                    loadout: hit.loadout,
                 });
             }
             if !hit.shooter.bot {
@@ -2188,6 +2218,7 @@ pub fn apply_player_hits(
             environment: hit.environment,
             direction: hit.direction,
             killed: damage.killed,
+            loadout: hit.loadout,
         });
         let bodies: Vec<Option<u32>> = players
             .iter()
@@ -2375,6 +2406,7 @@ pub fn apply_player_pushes(
                 attacker,
                 victim: players[victim].entity,
                 push: push.push,
+                loadout: push.loadout,
             });
         }
     }

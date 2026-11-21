@@ -65,14 +65,14 @@ use orpheus_lobby::handoff::Handoff;
 use orpheus_script::{
     mode::ModePlayer,
     snapshot::ProjectedSnapshot,
-    vm::{AuraChange, GameMessage, ScopeChange, TrackedStat},
+    vm::{AuraChange, GameMessage, PlayRequest, ScopeChange, TrackedStat},
 };
 use orpheus_sim::{
     ai::{Difficulty, Random},
     bot_plate::{BotPlate, PlateChange, PlateView},
     bot_script::{BotShotKind, SeenRocket},
     combat::{
-        BotHit, BotReplacement, Combat, CombatPlayer, PosedShot, Shooter, ShotContext,
+        BotHit, BotReplacement, Combat, CombatPlayer, PlayerEvent, PosedShot, Shooter, ShotContext,
         apply_player_hits, apply_player_pushes, deliver_projectiles, finish_bot_rockets,
         show_bot_rockets, show_fired,
     },
@@ -346,6 +346,28 @@ enum Request {
         id: MatchId,
         reply: mpsc::SyncSender<Vec<ai::BodyState>>,
     },
+    /// Tests: what a Workshop match's engine and action graphs met.
+    #[cfg(test)]
+    WorkshopReport {
+        id: MatchId,
+        reply: mpsc::SyncSender<Option<WorkshopReport>>,
+    },
+}
+
+/// Tests: what a Workshop match's rules met so far
+/// ([`GameService::workshop_report`]).
+#[cfg(test)]
+#[derive(Debug, Default)]
+pub(crate) struct WorkshopReport {
+    /// Whether the engine runs (the mode's graph drives the mode entity).
+    pub running: bool,
+    /// Values it doesn't evaluate ([`orpheus_workshop::Engine::unsupported`]).
+    pub unsupported: Vec<String>,
+    /// Executions it stopped.
+    pub faults: Vec<String>,
+    /// The mode entity's graphs' refused or assumed classes, by graph
+    /// (`orpheus_script::mode::ModeScript::gaps`).
+    pub gaps: Vec<((u32, String), usize)>,
 }
 
 struct OpenRequest {
@@ -617,6 +639,13 @@ impl GameService {
     #[cfg(test)]
     pub(crate) fn bodies(&self, id: MatchId) -> io::Result<Vec<ai::BodyState>> {
         self.request(|reply| Request::Bodies { id, reply })
+    }
+
+    /// Tests: what a Workshop match's rules met so far; none for another
+    /// match.
+    #[cfg(test)]
+    pub(crate) fn workshop_report(&self, id: MatchId) -> io::Result<Option<WorkshopReport>> {
+        self.request(|reply| Request::WorkshopReport { id, reply })
     }
 
     pub fn handoff_pending(&self, connection: u32) -> io::Result<bool> {
@@ -1876,6 +1905,29 @@ impl State {
             Request::Bodies { id, reply } => {
                 let _ = reply.send(self.bodies(id));
             }
+            #[cfg(test)]
+            Request::WorkshopReport { id, reply } => {
+                let report = self.rooms.get_mut(&id).and_then(|room| {
+                    let workshop = room.workshop.as_ref()?;
+                    let run = workshop.run.as_ref();
+                    Some(WorkshopReport {
+                        running: run.is_some(),
+                        unsupported: run
+                            .map(|run| run.engine().unsupported())
+                            .unwrap_or_default(),
+                        faults: run
+                            .map(|run| run.engine().faults().to_vec())
+                            .unwrap_or_default(),
+                        gaps: room
+                            .mode
+                            .as_mut()
+                            .and_then(ModeRunner::script_mut)
+                            .map(|script| script.gaps().into_iter().collect())
+                            .unwrap_or_default(),
+                    })
+                });
+                let _ = reply.send(report);
+            }
             Request::Pending { connection, reply } => {
                 let _ = reply.send(self.links.handoff_pending(connection, now));
             }
@@ -3094,9 +3146,15 @@ impl State {
                             .iter()
                             .find(|(seated, _)| seated == connection)?;
                         let player = &room.players[slot];
+                        // The Workshop's slots count within a team (Players
+                        // In Slot(0, Team 2) is Team 2's first player).
+                        let team_slot = room.players[..slot]
+                            .iter()
+                            .filter(|other| other.info.team == player.info.team)
+                            .count();
                         (!player.gone && peer.world.world_started()).then_some(WorkshopPlayer {
                             controller: player.entity,
-                            slot,
+                            slot: team_slot,
                             team: player.info.team,
                             world: &mut peer.world,
                         })
@@ -3279,6 +3337,7 @@ impl State {
     fn route_messages(&mut self, tick: u32) {
         let mut dummies = Vec::new();
         let mut scopes = Vec::new();
+        let mut plays = Vec::new();
         for (&id, room) in &mut self.rooms {
             let next = room.next_dummy();
             let Some(world) = &mut room.world else {
@@ -3325,10 +3384,12 @@ impl State {
             drop(players);
             let mut opened = Vec::new();
             let mut writes = Vec::new();
+            let mut played = Vec::new();
             for player in &mut worlds {
                 changes.extend(player.take_dummy_changes());
                 opened.extend(player.take_scope_changes());
                 writes.extend(player.take_parent_writes());
+                played.extend(player.take_body_play_requests());
             }
             // A body's scope instance sets its console's variables
             // (`STU_D49BBD03`: the console's `#940` on a re-pick).
@@ -3337,6 +3398,7 @@ impl State {
             }
             dummies.push((id, changes));
             scopes.push((id, opened));
+            plays.push((id, played));
         }
         for (id, changes) in dummies {
             self.change_dummies(id, changes);
@@ -3346,6 +3408,76 @@ impl State {
         // dummies came.
         for (id, changes) in scopes {
             self.change_scopes(id, tick, changes);
+        }
+        // A hero ability's victim graphs on the bodies it struck (Rocket
+        // Punch's `0D07`), after the room's messages.
+        for (id, requests) in plays {
+            self.play_scripts(id, tick, requests);
+        }
+    }
+
+    /// The graphs the players' ability graphs played on other bodies
+    /// (`orpheus_script` `vm/play.rs` `Plays::Others`: Rocket Punch's
+    /// `0D07`, Soundwave's `0ECA`) play in the struck player's body script
+    /// or the struck bot's; a target nobody runs gets none. Then the
+    /// knockbacks the bodies' graphs reported (`STU_AFBB59E9`, `0D07`
+    /// rid63) between the room's players go to its Workshop rules
+    /// (Player Dealt / Received Knockback); a bot's are dropped.
+    fn play_scripts(&mut self, id: MatchId, tick: u32, requests: Vec<PlayRequest>) {
+        let Some(room) = self.rooms.get_mut(&id) else {
+            return;
+        };
+        let Some(world) = &mut room.world else {
+            return;
+        };
+        let mut peers = room_peers(&mut self.peers, &self.seats, id, room.players.len());
+        for request in requests {
+            let player = peers
+                .iter_mut()
+                .flatten()
+                .find(|peer| peer.world.runs(request.target));
+            match player {
+                Some(player) => {
+                    player.world.play_on_body(&request);
+                }
+                None => {
+                    world.scene.play_on_bot(&request, tick);
+                }
+            }
+        }
+        world.scene.take_bot_knockbacks();
+        let bodies: Vec<Option<u32>> = peers
+            .iter()
+            .map(|peer| peer.as_ref().and_then(|peer| peer.world.current_body()))
+            .collect();
+        let player_of = |body: u32| {
+            bodies
+                .iter()
+                .position(|&current| current == Some(body))
+                .map(|slot| room.players[slot].entity)
+        };
+        let mut events = Vec::new();
+        for peer in peers.iter_mut().flatten() {
+            for knockback in peer.world.take_knockbacks() {
+                let (Some(attacker), Some(victim)) =
+                    (player_of(knockback.attacker), player_of(knockback.victim))
+                else {
+                    continue;
+                };
+                events.push(PlayerEvent::Knockback {
+                    attacker,
+                    victim,
+                    push: knockback.direction,
+                    loadout: knockback.loadout,
+                });
+            }
+        }
+        if let Some(run) = room
+            .workshop
+            .as_mut()
+            .and_then(|workshop| workshop.run.as_mut())
+        {
+            run.player_events(&events);
         }
     }
 

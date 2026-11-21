@@ -73,9 +73,9 @@ use orpheus_script::{
     vitals::{Death, Vitals},
     vm::{
         AssistLink, AuraChange, BodyEffects, DAMAGE_DEALT, DAMAGE_TAKEN, EnvironmentCredit,
-        GameMessage, HEALING_DEALT, HEALING_TAKEN, MessageEnd, Motion, MoveRequest, ParentWrite,
-        Pickup, PlayRequest, RaisedCriteria, Scaled, ScopeChange, ScopeSource, Snapshot,
-        TargetCandidate, TrackedStat, VoiceRequest, combat_scale,
+        GameMessage, HEALING_DEALT, HEALING_TAKEN, Knockback, MessageEnd, Motion, MoveRequest,
+        ParentWrite, Pickup, PlayRequest, RaisedCriteria, Scaled, ScopeChange, ScopeSource,
+        Snapshot, TargetCandidate, TrackedStat, VoiceRequest, combat_scale,
     },
     weapons::{DamageTags, ProjectileBallistics},
     wire::{Value as ScriptValue, Variables},
@@ -409,6 +409,25 @@ pub trait OwnerBodyRuntime: Send {
     /// The match opened the scope instance `instance` on `target` for the
     /// body's scope state `source`.
     fn scope_opened(&mut self, _source: ScopeSource, _target: u32, _instance: u16) {}
+
+    /// The graphs the body's ability graphs played on other bodies since
+    /// the last call (Rocket Punch's `0D07` on its victims), for the match
+    /// to play in their scripts ([`Self::play_script`]).
+    fn take_play_requests(&mut self) -> Vec<PlayRequest> {
+        Vec::new()
+    }
+
+    /// Another body's graph played `request.graph` on this body: played
+    /// in its script. False: it plays none.
+    fn play_script(&mut self, _request: &PlayRequest) -> io::Result<bool> {
+        Ok(false)
+    }
+
+    /// The knockbacks the body's graphs reported since the last call
+    /// (`STU_AFBB59E9`, `orpheus_script::vm::Knockback`).
+    fn take_knockbacks(&mut self) -> Vec<Knockback> {
+        Vec::new()
+    }
 
     /// The variables the body's scope instances set in their scope states'
     /// instances since the last call (`STU_D49BBD03`), for the match.
@@ -4938,6 +4957,47 @@ impl WorldDelivery {
         self.body_script
             .as_mut()
             .map_or_else(Vec::new, |script| script.runtime.take_parent_writes())
+    }
+
+    /// The graphs the current body's ability graphs played on other
+    /// bodies since the last call (Rocket Punch's `0D07`, Soundwave's
+    /// `0ECA`), for the match to play there ([`Self::play_on_body`]).
+    pub fn take_body_play_requests(&mut self) -> Vec<PlayRequest> {
+        self.body_script
+            .as_mut()
+            .map_or_else(Vec::new, |script| script.runtime.take_play_requests())
+    }
+
+    /// Another body's ability graph played `request.graph` on this
+    /// player's current body (`orpheus_script` `vm/play.rs`
+    /// `Plays::Others`): its body script plays it as the PlayScript would
+    /// have, and its instance reaches every client in the body's frames,
+    /// as the retail server's did (the client's own PlayScript on a
+    /// networked instance runs only the base action, Workshop.md
+    /// "WorkshopRuntime6"). Whether this body is its target; a failure
+    /// stops the body's script.
+    pub fn play_on_body(&mut self, request: &PlayRequest) -> bool {
+        if !self.takes_body_message(request.target) {
+            return false;
+        }
+        let Some(script) = self.body_script.as_mut() else {
+            return false;
+        };
+        match script.runtime.play_script(request) {
+            Ok(played) => played,
+            Err(error) => {
+                self.drop_failed_script(&error.to_string());
+                false
+            }
+        }
+    }
+
+    /// The knockbacks the current body's graphs reported since the last
+    /// call (`STU_AFBB59E9`), for the match's knockback credit.
+    pub fn take_knockbacks(&mut self) -> Vec<Knockback> {
+        self.body_script
+            .as_mut()
+            .map_or_else(Vec::new, |script| script.runtime.take_knockbacks())
     }
 
     /// A 21616 for the player's controller with a message other than hero

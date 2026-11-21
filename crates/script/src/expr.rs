@@ -172,6 +172,14 @@ pub trait Context {
         Value::Null
     }
 
+    /// Make every parameter read answer `candidate` (none: as before),
+    /// for a filter's condition tested on an entity (`STU_AC829876`, as
+    /// `Filter_TestEntityCondition` 0x7FF78AA9D970 pushes it). Returns the
+    /// binding it replaced; None: this context can't bind one.
+    fn bind_candidate(&mut self, _candidate: Option<Value>) -> Option<Option<Value>> {
+        None
+    }
+
     fn owner(&mut self) -> Value {
         Value::Null
     }
@@ -2522,8 +2530,13 @@ impl Evaluator<'_> {
             // Where a body looks: 2200A66D along its aim, 021D01CD along the
             // ground, C8C4C20D its heading in degrees, atan2(x, z) of the
             // ground direction (`BodyWorld.native` in leafall903/ORPHEUS,
-            // commit c239a84). A world's own answer comes first.
-            "STU_2200A66D" | "STU_021D01CD" | "STU_C8C4C20D"
+            // commit c239a84). 40AC5AE4 is the heading in degrees too
+            // (`Eval_STU_40AC5AE4` 0x7FF789BD8200 → 0x7FF789C2C220: the
+            // mover's 16-bit yaw at +66 times 2π/65536 (0x7FF789B71F70),
+            // else the transform's, times 57.29578; Rocket Punch `0D06`
+            // rid45 keeps the puncher's in #502 for its victim's `0D07`). A
+            // world's own answer comes first.
+            "STU_2200A66D" | "STU_021D01CD" | "STU_C8C4C20D" | "STU_40AC5AE4"
                 if native_shape(config, class, Some("m_entity")) =>
             {
                 if let Some(value) = context.native(config) {
@@ -2538,7 +2551,7 @@ impl Evaluator<'_> {
                 } else {
                     aim([context.entity_yaw(entity).ok_or_else(unsupported)?, 0])
                 };
-                if class == "STU_C8C4C20D" {
+                if class == "STU_C8C4C20D" || class == "STU_40AC5AE4" {
                     let [x, _, z] = facing;
                     Value::Float(rounded(rounded(x.atan2(z)) * DEGREES))
                 } else {
@@ -3381,6 +3394,14 @@ impl Evaluator<'_> {
         if !valid_entity(entity) {
             return Ok(Value::Bool(false));
         }
+        let condition = child(filter, "m_condition");
+        if !condition.is_null()
+            && let Some(outer) = context.bind_candidate(Some(Value::Entity(entity)))
+        {
+            let passes = passes_filter_as_candidate(filter, entity, context);
+            context.bind_candidate(outer);
+            return passes.map(Value::Bool);
+        }
         passes_filter(filter, &masks, entity, context).map(Value::Bool)
     }
 }
@@ -3388,10 +3409,11 @@ impl Evaluator<'_> {
 /// Whether `entity` passes a filter whose masks are `masks`, as
 /// [`Evaluator::entity_filter`] tells. The client also requires the
 /// filter's `m_condition` (`Filter_TestEntityCondition` 0x7FF78AA9D970,
-/// evaluated with the entity pushed as the candidate parameter); the
-/// evaluator doesn't bind one, so a set condition leaves an entity the
-/// masks and tag lists pass unanswered, while one they reject fails
-/// ([`passes_filter_as_candidate`] binds it).
+/// evaluated with the entity pushed as the candidate parameter); a context
+/// that binds the candidate ([`Context::bind_candidate`]) has it tested
+/// ([`passes_filter_as_candidate`]); in another a set condition leaves an
+/// entity the masks and tag lists pass unanswered, while one they reject
+/// fails.
 fn passes_filter(
     filter: &Json,
     masks: &FilterMasks,

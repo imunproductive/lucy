@@ -7,11 +7,13 @@
 //! `BodyWorld.replicate_wheel_event` in `driver.py`. The wheel's own
 //! self-targeted PlayScript nodes ([`wheel::PLAY_SCRIPTS`]), the aura
 //! graphs' (`vm/auras.rs`), the hero body's attacker list
-//! ([`ATTACKER_LIST`]) and the Workshop's actions' (Chase Variable `1CCC`
-//! playing `1CCF` on a player, [`World::play_script`]) run; every other
-//! PlayScript stays a no-op, as in the Python reference.
+//! ([`ATTACKER_LIST`]), the Workshop's actions' (Chase Variable `1CCC`
+//! playing `1CCF` on a player, [`World::play_script`]) and a hero
+//! ability's plays on the other bodies it struck ([`Plays::Others`]) run;
+//! every other PlayScript stays a no-op, as in the Python reference.
 //!
-//! A request needs a target that is the body itself. Its parameters are
+//! A request needs a target that is the body itself, or a world that
+//! plays it on the other entity. Its parameters are
 //! always arrays (1BA7C60). Policy (`m_AA4DE426`) 0 keeps a running instance
 //! of the graph and does nothing, 2 reuses it, 3 replaces it; otherwise a
 //! new root instance is made. Then each start entry (`STU_BB4AC733`) takes
@@ -44,6 +46,19 @@ pub const HEALTH_PACKS: [u32; 3] = [0x0216, 0x0217, HEALTH_PACK];
 /// (the Workshop's Event Was Health Pack, `orpheus_sim::combat`).
 pub const HEALTH_PACK: u32 = 0x0046;
 
+/// Where a PlayScript action plays its graph ([`Vm::play_script`]).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Plays {
+    /// On each of its targets, the entity itself included.
+    Everywhere,
+    /// On its targets other than the entity itself: a hero ability's
+    /// victim graph (Rocket Punch `0D06` plays `0D07` on #375, Soundwave
+    /// `0776` plays `0ECA` on #375), which the world plays in the struck
+    /// body's script ([`World::play_script`]). Its plays on its own body
+    /// stay no-ops, as before.
+    Others,
+}
+
 /// The graph a server PlayScript node (not the wheel's) plays, if it is one.
 pub(super) fn server_played_graph(graph: u32, node: u16) -> Option<u32> {
     let (site, played) = ATTACKER_LIST;
@@ -56,6 +71,7 @@ impl<W: World> Vm<'_, '_, '_, W> {
         id: u16,
         node: &Node,
         graph: u32,
+        plays: Plays,
     ) -> Result<(), InitFault> {
         let resource = node.field("m_script.m_graph").and_then(asset_guid);
         if resource != Some(0x0580 << 48 | u64::from(graph)) {
@@ -69,7 +85,7 @@ impl<W: World> Vm<'_, '_, '_, W> {
         let Some(targets) = self.evaluate(id, node, field(&node.fields, "m_targets"), None) else {
             return Ok(());
         };
-        let targets: Vec<u32> = match targets {
+        let mut targets: Vec<u32> = match targets {
             Value::Entity(target) => vec![target],
             Value::Array(items) => items
                 .iter()
@@ -80,6 +96,9 @@ impl<W: World> Vm<'_, '_, '_, W> {
                 .collect(),
             _ => Vec::new(),
         };
+        if plays == Plays::Others {
+            targets.retain(|&target| target != entity);
+        }
         if targets.is_empty() {
             return Ok(());
         }
@@ -117,6 +136,7 @@ impl<W: World> Vm<'_, '_, '_, W> {
                 parameters: parameters.clone(),
                 policy,
                 caller: entity,
+                site,
             };
             self.world.play_script(site, request);
         }

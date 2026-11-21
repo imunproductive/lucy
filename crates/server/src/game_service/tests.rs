@@ -7026,6 +7026,7 @@ fn a_firing_practice_bot_shoots_the_player() {
 }
 
 mod collision_ready;
+mod victims;
 mod workshop;
 
 /// A living enemy training bot blocks Soldier: 76's body on the server

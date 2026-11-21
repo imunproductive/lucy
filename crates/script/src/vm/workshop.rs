@@ -475,7 +475,7 @@ impl<W: World> Vm<'_, '_, '_, W> {
             reads: Vec::new(),
             foreign_reads: Vec::new(),
             parameters: self.parameters.as_deref(),
-            candidate: self.candidate.as_ref(),
+            candidate: self.candidate.clone(),
             sender: self.sender,
             watcher: None,
             read_native: false,

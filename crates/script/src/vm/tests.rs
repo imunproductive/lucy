@@ -5317,6 +5317,51 @@ fn a_target_search_filters_by_team_and_the_searcher_as_authored() {
     );
 }
 
+/// Rocket Punch's searches (`0D06` st6, st72) set `m_E474FFD6`: a cylinder
+/// along the diameter instead of a cone (`0x7FF789B9E660`). With a 60°
+/// angle and a 3 m radius a body is found when its axis is ahead of the
+/// centre and within sin 30° × 3 = 1.5 m of the line: the enemy 1.2 m to
+/// the side 1 m ahead (outside the 30° cone) is found, the one 2 m to the
+/// side and the one behind are not. The vertical scale `m_3119AD61` (1.21
+/// on the punch) changes nothing for bodies level with the centre.
+#[test]
+fn a_cylinder_search_finds_the_bodies_near_its_line_ahead() {
+    const THIRD_ENEMY: u32 = 0xa000_0303;
+    let enemies = json!({"$":"STUConfigVarFilter","m_84065FD1":1,"m_1E14CCA8":0,
+        "m_4EA686DB":16,"m_27CF71D5":0,"m_66747E7D":0,"m_89831602":1,"m_condition":null});
+    let found_with = |cylinder: u64| {
+        let graphs = Arc::new(search_fixture(
+            enemies.clone(),
+            json!({
+                "m_radius":{"$":"STUConfigVarInt","m_value":3},
+                "m_A30B383E":{"$":"STUConfigVarInt","m_value":60},
+                "m_3119AD61":{"$":"STUConfigVarFloat","m_value":1.21},
+                "m_E474FFD6":{"$":"STUConfigVarBool","m_value":cylinder},
+                "m_08285CD6":0,
+            }),
+        ));
+        let mut world = Bodies(vec![
+            body(SEARCHER, 0, [0.0; 3]),
+            body(ENEMY, 1, [1.2, 0.0, 1.0]),
+            body(SECOND_ENEMY, 1, [2.0, 0.0, 1.5]),
+            body(THIRD_ENEMY, 1, [0.5, 0.0, -1.0]),
+        ]);
+        let component = Component::start(
+            graphs,
+            SEARCHER,
+            Variables::new(),
+            vec![Root::new(1, 42)],
+            0,
+            &mut world,
+            MAX_INIT_WORK,
+        )
+        .unwrap();
+        found(&component).0
+    };
+    assert_eq!(found_with(1), [ENEMY]);
+    assert_eq!(found_with(0), Vec::<u32>::new());
+}
+
 /// A form with a part the server doesn't model (here the scoring
 /// `m_84E5DE4E`) finds nothing and says which part, without stopping the
 /// body; so does a world that lists no bodies. The outputs keep their

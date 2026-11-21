@@ -1099,6 +1099,14 @@ pub trait World {
         false
     }
 
+    /// `STU_AFBB59E9` (server-only) reported a knockback: the attacker's
+    /// push of the victim ([`Knockback`]), for the match's own knockback
+    /// credit (the Workshop's Player Dealt / Received Knockback). False:
+    /// this world keeps none.
+    fn knockback(&mut self, _site: Site, _knockback: Knockback) -> bool {
+        false
+    }
+
     /// `STUStatescriptActionCreateEntity` or `StateCreateEntity` made an
     /// entity (`vm/entities.rs`): the world gives it an id, starts its
     /// script and tells the clients. None: this world makes none.
@@ -1131,6 +1139,27 @@ pub struct PlayRequest {
     pub policy: i64,
     /// The entity that played it (the start entries' caller).
     pub caller: u32,
+    /// The PlayScript action that played it: its entity, instance, graph
+    /// and node (a hero ability's graph names the Workshop's Event
+    /// Ability of what the played graph does,
+    /// [`GraphStore::ability_button`]).
+    pub site: Site,
+}
+
+/// A knockback a graph reported (`STU_AFBB59E9`, [`World::knockback`]):
+/// Rocket Punch's victim graph `0D07` rid63 reports the puncher (`#40`)
+/// pushing its own body along the punch (`#2083`) with Rocket Punch's
+/// loadout `0B9:107`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Knockback {
+    /// `m_C285CBB2`.
+    pub attacker: u32,
+    /// `m_0F99C09F`.
+    pub victim: u32,
+    /// `m_direction`; zero when unset.
+    pub direction: [f64; 3],
+    /// `m_loadout`, the ability.
+    pub loadout: Option<u64>,
 }
 
 /// An entity a graph made ([`World::create_entity`]).
@@ -2184,7 +2213,7 @@ impl Component {
             reads: Vec::new(),
             foreign_reads: Vec::new(),
             parameters: None,
-            candidate,
+            candidate: candidate.cloned(),
             sender: None,
             watcher: None,
             read_native: false,
@@ -3812,7 +3841,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             reads: Vec::new(),
             foreign_reads: Vec::new(),
             parameters: self.parameters.as_deref(),
-            candidate: self.candidate.as_ref(),
+            candidate: self.candidate.clone(),
             sender: self.sender,
             watcher,
             read_native: false,
@@ -4286,8 +4315,9 @@ struct InstanceContext<'a, W> {
     /// Other entities' variables read (entity, id).
     foreign_reads: Vec<(u32, u32)>,
     parameters: Option<&'a Variables>,
-    /// Answers every parameter read when set: a `CycleIndex` candidate.
-    candidate: Option<&'a Value>,
+    /// Answers every parameter read when set: a `CycleIndex` candidate, a
+    /// filter's ([`expr::Context::bind_candidate`]).
+    candidate: Option<Value>,
     /// The delivered message's sender: parameter `0009`.
     sender: Option<u32>,
     watcher: Option<StateKey>,
