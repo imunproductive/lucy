@@ -132,6 +132,10 @@ pub struct ModeWorld {
     /// Where the map's server placeables stand (the objectives `0F4A`
     /// places its `0C49` over, `STU_71A87E92(#10551)`).
     pub placeables: BTreeMap<u32, [f64; 3]>,
+    /// Mode entity variables that hold before the root graph starts, over
+    /// the mode's: what the map's placeables reported before it (the
+    /// objectives' `0813`, `orpheus_sim::mode_script`).
+    pub start_variables: Variables,
     /// Other entities' variables as the mode entity's graphs know them:
     /// the server's ([`ModeScript::set_foreign_variable`]) and the graphs'
     /// own writes (a Workshop action's player variables, `STU_0BDBC7B2`).
@@ -189,6 +193,7 @@ impl ModeWorld {
             map_rays: None,
             heroes: None,
             placeables: BTreeMap::new(),
+            start_variables: Variables::new(),
             foreign: BTreeMap::new(),
             variable_writes: Vec::new(),
             scope_changes: Vec::new(),
@@ -203,6 +208,15 @@ impl ModeWorld {
             created: Vec::new(),
             destroyed: Vec::new(),
             next_created: 0,
+        }
+    }
+
+    /// Another entity's entity variables as the graphs find them when they
+    /// start (a map placeable's; the match gives them after with
+    /// [`ModeScript::set_foreign_variables`]).
+    pub fn set_foreign_variables(&mut self, entity: u32, variables: &Variables) {
+        for (&id, value) in variables {
+            self.foreign.insert((entity, id), value.clone());
         }
     }
 
@@ -737,12 +751,13 @@ impl ModeScript {
     /// ruleset `0C0:34` sets the hero limit #9548 to `254D`.
     pub fn start(mut world: ModeWorld, graph: u32, frame: u32) -> Result<Self, InitFault> {
         let graphs = Arc::clone(&world.graphs);
-        let variables: Variables = graphs
+        let mut variables: Variables = graphs
             .mode_variables(world.mode, world.ruleset)
             .iter()
             .flat_map(|variables| variables.iter())
             .map(|(&id, &value)| (id, Value::from(value)))
             .collect();
+        variables.extend(std::mem::take(&mut world.start_variables));
         let mut component = Component::start(
             graphs,
             GAME_MODE_ENTITY,

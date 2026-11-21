@@ -5619,28 +5619,28 @@ fn a_pvp_match_on_another_map_assembles_its_team_and_takes_a_third_player() {
     server.stop().unwrap();
 }
 
-/// A Quick Play Assault match on Temple of Anubis runs its whole flow on a
-/// time scale of 1/10 (orpheus_sim::match_flow): assemble, setup, the
-/// round, the capture of A and then B by the attacker, the round's end,
-/// the match's end; the result goes to the lobby (a win for the attackers'
-/// team, a loss for the defenders') and both players go home (20304).
+/// A Quick Play Assault match on Temple of Anubis, driven by its mode
+/// graph `0F4A` in the graph's own time: assemble, setup, the round, the
+/// capture of A and then B by the attacker (the capture area aura's `0F00`
+/// on his body reports him on the point, `08AF` for team 1; the point's
+/// `0E8E` counts him), the round's end, the match's end; the result goes to the
+/// lobby (a win for the attackers' team, a loss for the defenders') and
+/// both players go home (20304) after the server's wait, here 1/10 of
+/// it (orpheus_sim::match_flow `Timers`).
 ///
 /// The test moves both points into the attackers' spawn room, so the
 /// attacker captures them standing where he spawns: walking 125 m to A
 /// needs the movement the test client doesn't play.
 #[test]
-#[ignore = "plays a whole Assault match at 1/10 scale on Anubis' collision (built once); requires an Overwatch 1.74 install (ORPHEUS_GAME_DIR)"]
-fn an_assault_match_on_anubis_captures_a_and_b_and_sends_the_players_home() {
+#[ignore = "slow: plays a whole Assault match in the mode graph's time on Anubis' collision (built once), about 90 s optimised; requires an Overwatch 1.74 install (ORPHEUS_GAME_DIR)"]
+fn slow_an_assault_match_on_anubis_captures_a_and_b_and_sends_the_players_home() {
     use orpheus_content::{
         heroes::SOLDIER,
         maps::{MapCatalog, ObjectiveKind},
         parameters::PICK_HERO,
     };
-    use orpheus_script::wire::{Value as ScriptValue, Variables};
-    use orpheus_sim::{
-        match_flow::{ASSAULT, ATTACKERS, BANNER, CLOCK, DEFENDERS, OBJECTIVE_NAME},
-        scene_assets::SceneAssets,
-    };
+    use orpheus_script::wire::read_full_head;
+    use orpheus_sim::{match_flow::ASSAULT, scene_assets::SceneAssets};
 
     const ANUBIS: u64 = 0x0800_0000_0000_005b;
     const SCALE: f64 = 0.1;
@@ -5780,19 +5780,22 @@ fn an_assault_match_on_anubis_captures_a_and_b_and_sends_the_players_home() {
                 .all(|watcher| watcher.created(watcher.owner | 1).is_some())
         },
     );
-    // 3 s assemble, 4.5 s setup, A in 3 s, B in 1.8 s, 1.16 s of round end
-    // and 2 s of match end.
-    pump_within(
-        &mut [defender, attacker],
-        &schemas,
-        "the end of the match",
-        Duration::from_secs(900),
-        |watchers| {
-            watchers
-                .iter()
-                .all(|watcher| received(watcher, 20304).is_some())
-        },
-    );
+    // `0F4A`'s times: 30 s to assemble, 45 s of setup, A in 30 s and B in
+    // 18 s with one attacker on them, the round's end, then the match's
+    // end and the server's 2 s. The clients send their (idle) commands,
+    // which run their bodies' scripts, the aura's `0F00` among them.
+    let (mut defending, mut attacking) = (defender.tick + 1, attacker.tick + 1);
+    let deadline = server.now() + Duration::from_secs(150);
+    while [&*defender, &*attacker]
+        .iter()
+        .any(|watcher| received(watcher, 20304).is_none())
+    {
+        assert!(server.now() < deadline, "the match didn't end");
+        send_input(defender, &mut defending, 0, 0, 0, false);
+        send_input(attacker, &mut attacking, 0, 0, 0, false);
+        defender.pump(&schemas);
+        attacker.pump(&schemas);
+    }
     let results = server.take_results().unwrap();
     assert_eq!(results.len(), 1);
     let result = &results[0];
@@ -5821,53 +5824,36 @@ fn an_assault_match_on_anubis_captures_a_and_b_and_sends_the_players_home() {
     );
     assert!(server.take_results().unwrap().is_empty());
 
-    // The mode entity's frames, one a second and at each phase: the clock
-    // with the phase banner and the objective's name while the round is
-    // on, then the clock alone (no banner, no objective left) at the round's
-    // and the match's end.
-    // The frames as the scene makes them (`PreparedScene::mode_ui`,
-    // `PreparedScene::mode_frame`).
-    let mode_frame = |variables: &Variables| {
-        orpheus_sim::scene::mode_ui(assets.graphs(), map.mode_guid, variables).unwrap()
-    };
-    let mode_ui = mode_frame(&Variables::new()).bit_len();
-    let width = |extra: &[(u32, ScriptValue)]| {
-        let mut variables = Variables::from([(CLOCK, ScriptValue::Float(1.0))]);
-        variables.extend(extra.iter().cloned());
-        variables.extend([
-            (ATTACKERS, ScriptValue::Integer(1)),
-            (DEFENDERS, ScriptValue::Integer(0)),
-        ]);
-        mode_frame(&variables).bit_len()
-    };
-    let playing = width(&[
-        (BANNER, ScriptValue::Asset(0x0de0_0000_0000_6116)),
-        (OBJECTIVE_NAME, ScriptValue::String("Point A".into())),
-    ]);
-    let over = width(&[]);
-    assert_ne!(playing, over);
+    // The mode entity's frames are `0F4A`'s, not the hand-built `0CB6`
+    // one: its root instance (1) in each whole frame.
+    let graphs = assets.graphs();
     for watcher in [&*defender, &*attacker] {
-        let widths: Vec<usize> = watcher
-            .datagrams
-            .iter()
-            .flat_map(|(_, records)| records)
-            .filter(|record| record.entity == GAME_MODE_ENTITY)
-            .filter_map(|record| record.script.as_ref().map(|chunk| chunk.width))
-            // A client presented after the heroes assembled first gets the
-            // mode UI without variables.
-            .filter(|&width| width != mode_ui)
-            .collect();
-        // The playing frames carry the banner and the objective's name; at
-        // the round's and the match's end they're gone (the clock's compact
-        // form changes the widths, so compare with the widest).
-        assert!(widths.len() >= 5, "{widths:?}");
-        let widest = widths.iter().copied().max().unwrap();
-        assert!(widest > over, "{widths:?}");
-        assert!(
-            widths[widths.len() - 2..]
+        let roots: Vec<u16> = joined_chunks(
+            watcher
+                .datagrams
                 .iter()
-                .all(|&width| width < widest)
-        );
+                .flat_map(|(_, records)| records)
+                .filter(|record| record.entity == GAME_MODE_ENTITY)
+                .filter_map(|record| record.script.as_ref()),
+        )
+        .iter()
+        .filter(|chunk| chunk.first == 0)
+        .map(|chunk| {
+            let head = read_full_head(&chunk.data, |graph| {
+                graphs
+                    .graph(u32::from(graph))
+                    .map(|graph| graph.header.states_bits)
+            })
+            .expect("a full frame's head");
+            head.instances
+                .iter()
+                .find(|&&(instance, ..)| instance == 1)
+                .expect("the root instance")
+                .1
+        })
+        .collect();
+        assert!(!roots.is_empty(), "no full mode frame");
+        assert!(roots.iter().all(|&graph| graph == 0x0f4a), "{roots:04X?}");
     }
     server.stop().unwrap();
 }

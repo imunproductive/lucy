@@ -3340,6 +3340,12 @@ impl State {
             for world in &mut worlds {
                 world.set_next_dummy(Some(next));
             }
+            // DBG
+            if std::env::var_os("MG3_DEBUG").is_some() && tick % 300 == 0 {
+                for world in &worlds {
+                    eprintln!("DBG tick {tick} body {:?} 0F00 {}", world.body_position(), world.dbg_body_graph(0x0f00));
+                }
+            }
             let mut players = Players::new(&mut worlds, tick);
             let mut messages = players.take_messages();
             messages.append(&mut room.mail);
@@ -3361,7 +3367,7 @@ impl State {
             if std::env::var_os("MG3_DEBUG").is_some() {
                 for m in &messages {
                     let id = m.message & 0xFFFF;
-                    if [0x0813, 0x07a1, 0x07a2, 0x079e, 0x07a0, 0x08ae, 0x08af, 0x0789, 0x07cb, 0x079f, 0x000f, 0x0695, 0x0694, 0x09a3].contains(&id) || (m.sender & 0xff00_0000 == 0x8000_0000 && tick < 1100) {
+                    if [0x0724, 0x0723, 0x0b7b, 0x0813, 0x07a1, 0x07a2, 0x079e, 0x07a0, 0x08ae, 0x08af, 0x0789, 0x07cb, 0x079f, 0x000f, 0x0695, 0x0694, 0x09a3].contains(&id) {
                         eprintln!("DBG tick {tick} msg {id:04X} {:08X} -> {:08X} {:?}", m.sender, m.target, m.parameters);
                     }
                 }
@@ -3534,7 +3540,6 @@ impl State {
             let mut dummies = Vec::new();
             let mut scopes = Vec::new();
             for (&id, room) in &mut self.rooms {
-                room.begin_mode(tick);
                 let next = room.next_dummy();
                 if let Some(world) = &mut room.world {
                     // combat.py `update`: the dead bots' death scripts, then
@@ -3547,16 +3552,20 @@ impl State {
                     // messages (the spawn rooms' `0723`) go with the others
                     // (`route_messages`). A mode graph that drives the mode
                     // entity holds the spawn rooms' `0724` itself; else the
-                    // rooms the match flow's spawns hold get it here. The
-                    // scripts' dummy bots (the Training Partner) are AI
-                    // players of the room (`ai.rs`).
-                    let holds = if room.mode.as_ref().is_some_and(ModeRunner::holds_rooms) {
-                        Vec::new()
-                    } else {
-                        let flow = room.flow.as_ref();
-                        world.scene.room_holds(|team| {
-                            flow.map_or(SpawnChoice::First, |flow| flow.spawn_choice(team))
-                        })
+                    // rooms the match flow's spawns hold get it here, from
+                    // the tick after the mode started (the placeables run
+                    // their first tick before it). The scripts' dummy bots
+                    // (the Training Partner) are AI players of the room
+                    // (`ai.rs`).
+                    let holds = match room.mode.as_ref() {
+                        None => Vec::new(),
+                        Some(mode) if mode.holds_rooms() => Vec::new(),
+                        Some(_) => {
+                            let flow = room.flow.as_ref();
+                            world.scene.room_holds(|team| {
+                                flow.map_or(SpawnChoice::First, |flow| flow.spawn_choice(team))
+                            })
+                        }
                     };
                     world.scene.set_next_dummy(Some(next));
                     // The placeables the mode entity's graphs removed (`0CBB`
@@ -3579,6 +3588,9 @@ impl State {
                     }
                     bot_events.insert(id, world.scene.take_bot_events());
                 }
+                // The mode starts after the placeables' first tick, with
+                // what they reported (`mode_script::reported_objectives`).
+                room.begin_mode(tick);
             }
             for (id, changes) in dummies {
                 self.change_dummies(id, changes);

@@ -1112,6 +1112,12 @@ impl PreparedScene {
         })
     }
 
+    /// The placed scripts' game messages the match hasn't taken yet
+    /// ([`Self::take_placed_messages`]).
+    pub fn placed_messages(&self) -> &[GameMessage] {
+        self.placed_scripts.messages()
+    }
+
     /// The placed scripts' game messages and message ends since the last
     /// call, for the match to route ([`crate::messages`]).
     pub fn take_placed_messages(&mut self) -> (Vec<GameMessage>, Vec<MessageEnd>) {

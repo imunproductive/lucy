@@ -4180,6 +4180,22 @@ impl WorldDelivery {
             .map(|(&id, _)| id)
     }
 
+    // DBG (temporary)
+    #[cfg(any(test, feature = "fixtures"))]
+    pub fn dbg_body_graph(&self, graph: u32) -> String {
+        let Some(snapshot) = self.body_script.as_ref().and_then(|script| script.runtime.snapshot()) else {
+            return "no body script".into();
+        };
+        let mut out = format!("diag {:?};", snapshot.diagnostics);
+        for (id, instance) in &snapshot.instances {
+            if instance.graph == graph {
+                let active: Vec<u16> = instance.states.iter().filter(|(_, s)| s.active).map(|(k, _)| *k).collect();
+                out += &format!(" inst {id} active {active:?} vars {:?};", instance.variables);
+            }
+        }
+        out
+    }
+
     /// Tests: whether state `state` of the current body's instance of graph
     /// `graph` is active.
     #[cfg(any(test, feature = "fixtures"))]

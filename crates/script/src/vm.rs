@@ -2876,6 +2876,7 @@ enum Event {
     WatchChanged(u16),
     Message {
         position: u16,
+        message: u64,
         /// The sending entity; 0 when unknown.
         sender: u32,
         parameters: Arc<Variables>,
@@ -3214,10 +3215,11 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 Event::WatchChanged(raw) => self.deliver_watch(key(raw))?,
                 Event::Message {
                     position,
+                    message,
                     sender,
                     parameters,
                 } => {
-                    self.deliver(id, position, sender, parameters)?;
+                    self.deliver(id, position, message, sender, parameters)?;
                 }
             }
         }
@@ -3288,18 +3290,31 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         &mut self,
         id: u16,
         position: u16,
+        message: u64,
         sender: u32,
         parameters: Arc<Variables>,
     ) -> Result<(), InitFault> {
         let Some(node) = self.graph(id).node(position) else {
             return Ok(());
         };
+        if node.message().is_none() && !self.computed_message_is(id, node, message) {
+            return Ok(());
+        }
         self.parameters = Some(parameters);
         self.sender = expr::valid_entity(sender).then_some(sender);
         let result = self.deliver_entry(id, node, sender);
         self.parameters = None;
         self.sender = None;
         result
+    }
+
+    /// Whether a receiving state whose `m_gameMessage` is an expression
+    /// names `message` now (`0F4A` st53 takes `07A1` or `07A2` by the
+    /// attacking team #10795e).
+    fn computed_message_is(&mut self, id: u16, node: &Node, message: u64) -> bool {
+        let config = field(&node.fields, "m_gameMessage");
+        self.evaluate(id, node, config, None)
+            .is_some_and(|value| value == Value::Asset(message))
     }
 
     /// Parameter `id` of the message being delivered: `0009` is its
@@ -3600,7 +3615,11 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 .graph(graph)
                 .and_then(|graph| graph.state(usize::from(key.raw)))
                 .expect("active receiving state");
-            if message_of(node) != Some(message) {
+            let named = match node.message() {
+                Some(_) => message_of(node) == Some(message),
+                None => self.computed_message_is(key.instance, node, message),
+            };
+            if !named {
                 continue;
             }
             let state = self.state_mut(key).expect("active receiving state");

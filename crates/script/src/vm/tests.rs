@@ -6387,3 +6387,61 @@ fn mercys_damage_boost_is_the_beamed_bodys_and_credits_mercy() {
         assert_eq!(heard, [Some(vec![SEARCHER, MERCY])], "{aura:X}");
     }
 }
+
+/// A receiving state whose message is an expression (`0F4A` st53: `07A1`
+/// or `07A2` by the attacking team) takes the message it names now, not
+/// another, and its sender's end lets it go.
+#[test]
+fn a_receiving_state_takes_the_message_its_expression_names() {
+    const NAMED: u64 = 0x0240_0000_0000_0007;
+    let receiver = graph(
+        43,
+        vec![
+            node(
+                0,
+                "STUStatescriptEntry",
+                None,
+                json!({"m_outPlug":plug(&[(1,"m_beginPlug")],&[])}),
+            ),
+            node(
+                1,
+                "STUStatescriptStateGameMessageEntry",
+                Some(0),
+                json!({
+                    "m_gameMessage":var(5,true),
+                    "m_33DA5163":plug(&[(2,"m_beginPlug")],&[1]),
+                    "m_452862E6":plug(&[(3,"m_beginPlug")],&[2]),
+                }),
+            ),
+            node(2, "STUStatescriptState", Some(1), json!({})),
+            node(3, "STUStatescriptState", Some(2), json!({})),
+        ],
+        json!([1, 2, 3]),
+        json!([0]),
+    );
+    let mut component = Component::start(
+        Arc::new(store(vec![receiver])),
+        0xd000_0010,
+        Variables::from([(5, Value::Asset(NAMED))]),
+        vec![Root::new(1, 43)],
+        100,
+        &mut EmptyWorld,
+        MAX_INIT_WORK,
+    )
+    .unwrap();
+    assert_eq!(active(component.snapshot().unwrap(), 1), [0, 1]);
+    component
+        .receive_message(0x8000_0332, 0x0240_0000_0000_0006, Variables::new(), &mut EmptyWorld)
+        .unwrap();
+    assert_eq!(active(component.snapshot().unwrap(), 1), [0, 1]);
+    component
+        .receive_message(0x8000_0332, NAMED, Variables::new(), &mut EmptyWorld)
+        .unwrap();
+    let snapshot = component.snapshot().unwrap();
+    assert!(snapshot.initialization_complete(), "{:?}", snapshot.diagnostics);
+    assert_eq!(active(snapshot, 1), [0, 2]);
+    component
+        .end_message(0x8000_0332, NAMED, &mut EmptyWorld)
+        .unwrap();
+    assert_eq!(active(component.snapshot().unwrap(), 1), [0, 1]);
+}

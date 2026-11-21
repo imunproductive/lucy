@@ -4,9 +4,11 @@
 //!
 //! In a PvP match the room starts the mode graph once at the match's start
 //! ([`ModeRunner::start`]); the Practice Range, which has no match flow
-//! ([`without_flow`]), starts `13C0` with the room, before the placed
-//! scripts' first tick. If it runs with no refused content and no
-//! assumption, it stays: the flow's variables (none in the Range) and the
+//! ([`without_flow`]), starts `13C0` with the room, after the placed
+//! scripts' first tick (their reports to the mode entity are in when the
+//! graph starts: [`reported_objectives`]). If it runs with no refused
+//! content and no assumption, it stays: the flow's variables (none in the
+//! Range) and the
 //! match's players (`ModeScript::set_players`) are written into it each
 //! tick, it advances with the server frame, its observer frames are the
 //! mode entity's (each client gets them as deltas, [`crate::mode_view`]),
@@ -28,7 +30,7 @@ use orpheus_script::{
     mode::{CreatedEntity, EVERY_ENTITY, ModePlayer, ModeScript, ModeWorld},
     snapshot::{ProjectedSnapshot, SnapshotEncoder, View},
     vm::{GameMessage, InitFault, MessageEnd, Unknowns},
-    wire::Variables,
+    wire::{Value, Variables},
 };
 use orpheus_wire::entity::GAME_MODE_ENTITY;
 
@@ -570,7 +572,58 @@ fn mode_world(scene: &PreparedScene, players: Vec<ModePlayer>) -> ModeWorld {
             .map(|hero| (hero.guid, hero.body))
             .collect(),
     );
+    // What the placeables' first tick wrote and sent the mode entity: the
+    // objectives' times and spawn tags (`#10551.id(10550)`), their reports.
+    for (entity, variables) in scene.placed_scripts().entity_variables() {
+        world.set_foreign_variables(entity, &variables);
+    }
+    world.start_variables = reported_objectives(scene.placed_messages());
     world
+}
+
+/// An objective's report to the mode entity (`0F4C` rid1, as its script
+/// starts), with its index (`045E`; Null for the first, which `0F4C`'s
+/// binding leaves unset).
+const OBJECTIVE_REPORT: u64 = 0x0240_0000_0000_0813;
+const REPORT_INDEX: u32 = 0x045e;
+/// The mode entity's objectives by index (`#12376e`), which `0F4A`'s
+/// entry for the report fills (rid115: `#12376e[index] = sender`) and
+/// its current objective (`#10551` = `#12376e[#10548e]`, st52) reads.
+const OBJECTIVES: u32 = 12376;
+
+/// The mode entity's objectives as the map's placeables reported them in
+/// the messages the match hasn't routed yet: the room runs the placeables'
+/// first tick before it starts the mode graph, so `0F4A` starts with
+/// them, as its report entry would write them. Assumption (retail's order
+/// was not read): the objectives report before the mode graph's first
+/// lists. Started without them, `0F4A`'s spawn room lists (`#12738`,
+/// `#12739`: the tagless query of the current objective's spawn tags,
+/// every tagged placeable while the tags are Null) send every tagged
+/// placeable `0724` with both teams for a tick; a room kept in one list
+/// then lets the other list's go, which ends its sender's hold of it, and
+/// the room holds none. The report itself still reaches the graph with
+/// the other messages and writes the same.
+fn reported_objectives(messages: &[GameMessage]) -> Variables {
+    let mut objectives = Vec::new();
+    for report in messages.iter().filter(|message| {
+        message.target == GAME_MODE_ENTITY && message.message == OBJECTIVE_REPORT
+    }) {
+        let index = report
+            .parameters
+            .get(&REPORT_INDEX)
+            .map_or(0, |index| orpheus_script::expr::to_int(index, 0));
+        let Ok(index) = usize::try_from(index) else {
+            continue;
+        };
+        if objectives.len() <= index {
+            objectives.resize(index + 1, Value::Null);
+        }
+        objectives[index] = Value::Entity(report.sender);
+    }
+    if objectives.is_empty() {
+        return Variables::new();
+    }
+    Variables::from([(OBJECTIVES, Value::Array(objectives))])
 }
 
 #[cfg(test)]
@@ -579,6 +632,42 @@ mod tests {
     use crate::scene_assets::SceneAssets;
     use orpheus_content::maps::GameMap;
     use orpheus_script::{mode::EVERY_ENTITY, wire::Value};
+
+    /// The objectives' reports (`0813`) the match hasn't routed yet give
+    /// `0F4A` its objectives by index as it starts: the first one's index
+    /// is unset (Null, index 0); other messages and targets don't count.
+    #[test]
+    fn the_mode_graph_starts_with_the_objectives_reported() {
+        let report = |sender, index: Value| GameMessage {
+            sender,
+            target: GAME_MODE_ENTITY,
+            message: OBJECTIVE_REPORT,
+            parameters: Variables::from([(REPORT_INDEX, index)]),
+        };
+        let messages = [
+            report(0x8000_034b, Value::Integer(1)),
+            GameMessage {
+                target: 0x8000_0001,
+                ..report(0x8000_0002, Value::Integer(0))
+            },
+            GameMessage {
+                message: ALLOW_HERO_SELECT,
+                ..report(0x8000_0003, Value::Integer(0))
+            },
+            report(0x8000_0332, Value::Null),
+        ];
+        assert_eq!(
+            reported_objectives(&messages),
+            Variables::from([(
+                OBJECTIVES,
+                Value::Array(vec![
+                    Value::Entity(0x8000_0332),
+                    Value::Entity(0x8000_034b)
+                ])
+            )])
+        );
+        assert_eq!(reported_objectives(&[]), Variables::new());
+    }
 
     // DBG probe (temporary).
     #[test]
@@ -622,6 +711,16 @@ mod tests {
         }
         let script = mode.script_mut().unwrap();
         eprintln!("#12376e {:?}", script.entity_value(12376));
+        let tags = scene.map_tags();
+        for tag in [0x0d60_0000_0000_0341u64, 0x0d60_0000_0000_0310] {
+            eprintln!("tag {tag:016X} on {:08X?}", tags.placed_with_tag(tag));
+        }
+        for entity in tags.entities() {
+            let placed = tags.get(entity).unwrap();
+            let spawn: Vec<String> = placed.tags.iter().map(|t| format!("{t:X}")).collect();
+            eprintln!("tagged {entity:08X} {spawn:?}");
+        }
+        eprintln!("rooms {:08X?}", scene.room_holds(|_| orpheus_content::maps::SpawnChoice::First));
         // A body on point A, and the point's rates with contest on.
         let point = 0x8000_0332;
         let at = scene.map().objectives_of(orpheus_content::maps::ObjectiveKind::Point).next().unwrap().position;

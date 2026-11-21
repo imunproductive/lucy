@@ -361,6 +361,11 @@ impl PlacedScripts {
             .collect()
     }
 
+    /// The running scripts' game messages the match hasn't taken yet.
+    pub fn messages(&self) -> &[GameMessage] {
+        &self.messages
+    }
+
     /// The running scripts' game messages and message ends since the last
     /// call, for the match to route ([`crate::messages`]).
     pub fn take_messages(&mut self) -> (Vec<GameMessage>, Vec<MessageEnd>) {

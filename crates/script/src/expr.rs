@@ -1705,14 +1705,11 @@ impl Evaluator<'_> {
             "STU_92CA44CC" if !json_truthy(child(config, "m_EE729DCB")) && value.is_string() => {
                 Value::String(value.as_str().unwrap_or_default().into())
             }
-            "STU_58AA0A3B" => {
-                // The authored weapon-manager defaults take the false branch on an unset value.
-                // Populated input still lacks a verified predicate.
-                if self.config(value, context, nested)? != Value::Null {
-                    return Err(EvalError::UnsupportedConfig(class.into()));
-                }
-                Value::Bool(false)
-            }
+            // Whether its value is set: the client's evaluate
+            // (0x7FF78AA878E0) clears the result to type 255 (null),
+            // evaluates `m_value` into it and answers whether the type is
+            // no longer null; false with no value or no context.
+            "STU_58AA0A3B" => Value::Bool(self.config(value, context, nested)? != Value::Null),
             "STUConfigVarAnimCategory"
                 if fields.get("m_category") == Some(&Json::Null)
                     && child(config, "m_resourceKey").is_null() =>

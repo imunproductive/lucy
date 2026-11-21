@@ -90,6 +90,33 @@ const SERVER_NO_OPS: &[&str] = &[
     // `07F1` with it, which only client-only entries take (`0D57` rid141,
     // `1A52` rid99). Nothing on the server takes it.
     "STU_1470EF32",
+    // The capture points' `0E8E` match stats and calls, server-only with
+    // no registration of their own (the base action's run, `python
+    // tools/stu.py STU_1F2DB0E9`, `STU_3A276B3A`): `STU_1F2DB0E9` adds
+    // `m_amount` to the `m_targets`' stat `m_B44A42A0` (an `E7FEC166`
+    // enum: 18 on the capturers as the point falls, rid65), and
+    // `STU_3A276B3A` sends a message with no target field (`0680`,
+    // `113A`, `0114` as the point is taken, rid165/rid166/rid169). The
+    // server keeps no `E7FEC166` stats and whom the message goes to is
+    // not in the data (docs/dev/loose-ends.md).
+    "STU_1F2DB0E9",
+    "STU_3A276B3A",
+    // A text the client shows (`Action_STU_D6EB7F8D` 0x7FF7899E24E0, its
+    // own execute of the display texts `m_B14A97B7`/`m_7E04D264`; `0E8E`
+    // rid125, remote 19, formats the point's letter `#1753` and owner
+    // `#99e` into `730B.07C` as the point falls). The client runs it from
+    // the frames' remote action pulses, as `STUStatescriptActionEffect`;
+    // nothing on the server.
+    "STU_D6EB7F8D",
+    // Server-only actions of the match with no registration of their own
+    // (the base action's run and `execute` 0x7FF789C44A80, `mov al, 1`;
+    // `python tools/stu.py`): `STU_43B63AD0` (an identifier
+    // `m_9ACAD20A`, a text `m_980D78D3` and `m_targets`; `0E8E` rid70 as
+    // a point falls, `0F4A` rid107/rid109/rid244) and `STU_E160831C` (an
+    // enum `m_5ED79353`, `0F4A` rid241). The client runs the base action;
+    // what the retail server kept of them is not in the data.
+    "STU_43B63AD0",
+    "STU_E160831C",
 ];
 
 /// Unnamed actions the server runs as no-ops without knowing what they do,
@@ -842,6 +869,19 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             }
             return Ok(());
         }
+        // A state of a state group (`m_stateGroup`) ends the group's other
+        // states it lists (`m_4F8F2F3F`, their indices) as it begins. The
+        // bundles' one group is `0F4A`'s round (`0069.023`): st54 hands on
+        // to st65 by its transition, and st65's capture branch begins st54
+        // again for the next objective, which takes st65 down and up anew
+        // (the objective's `#9901` and its `079E`). Inference from the data:
+        // the two list each other; the client's reader was not traced.
+        for other in array_field(&node.fields, "m_4F8F2F3F") {
+            let Some(raw) = other.as_u64().and_then(|raw| u16::try_from(raw).ok()) else {
+                continue;
+            };
+            self.end(StateKey { instance: id, raw }, false, depth + 1)?;
+        }
         let kind = match node.class.as_str() {
             // These client presentation states use the base state lifecycle on
             // the server, as every state class without a model does in the
@@ -880,6 +920,18 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             // if any, is the match's end itself, which the server keeps
             // (`orpheus_sim::match_flow::MatchFlow::follow`).
             "STU_109F9DE0" => StateKind::Plain,
+            // The capture points' `0E8E` stat over time on `m_targets`
+            // (`m_B44A42A0`, an `E7FEC166` enum: 41/42 on the two teams
+            // while both stand on the point, st35/st36; 17 in st34):
+            // server-only, no registration of its own (the base state,
+            // `python tools/stu.py
+            // STU_63D801B1`), so the client runs it plain. The server keeps
+            // no `E7FEC166` stats (docs/dev/loose-ends.md).
+            "STU_63D801B1" => StateKind::Plain,
+            // `0F4A` st124: no fields and no registration of its own (the
+            // base state, `python tools/stu.py STU_7F5C3F95`), so the
+            // client runs it plain.
+            "STU_7F5C3F95" => StateKind::Plain,
             // The authored zero-valued form inherits the base state reader.
             "STU_D9843704"
                 if node.is_networked() && node.remote == -1 && {
