@@ -1,18 +1,18 @@
 //! Ability activation, stacking and cooldowns.
 //!
 //! Client research (PC 1.74): update 0x7FF789B95560, keep 0x7FF789BB87E0,
-//! start 0x7FF789BA9460, stop 0x7FF789BA6BC0, push 0x7FF789BA6D40, stack
-//! hook 0x7FF789B94DC0, output 0x7FF789B94D00. The start check
-//! (0x7FF789BB8D20) is obfuscated; the port follows the PS4 build's code
-//! (unverified): a buffered press of the start button (within the early-press
-//! time, for this activation) or the start button held, cooldown at 0, start
-//! and continue conditions true, and the stack variable taking the "starting"
-//! priority. Keep: with no hold button (or m_755F9921 set) a press of the
-//! stop button stops it, latched (flag 4) when it is the start button; with a
-//! hold button, letting go stops it; then the continue condition and the
-//! stack's "continuing" priority. An ability with a stack variable and a
-//! priority to set (m_5E561E77) pushes itself (flag 2, slot 1, value true) and
-//! starts when its entry is the top; it stops when it is no longer the top.
+//! start check 0x7FF789BB8D20 (`try_start_ability`), start
+//! 0x7FF789BA9460, stop 0x7FF789BA6BC0, push 0x7FF789BA6D40, stack hook
+//! 0x7FF789B94DC0, output 0x7FF789B94D00, button edge 0x7FF789B947C0 (a
+//! press of the start, hold or stop button that no DisableLogicalButton
+//! blocks is kept with its time and the state's activation, 0x7FF789BAE6F0
+//! takes one within the early-press time). Keep: with no hold button (or
+//! m_755F9921 set) a press of the stop button stops it, latched (flag 4)
+//! when it is the start button; with a hold button, letting go stops it;
+//! then the continue condition and the stack's "continuing" priority. An
+//! ability with a stack variable and a priority to set (m_5E561E77) pushes
+//! itself (flag 2, slot 1, value true) and starts when its entry is the
+//! top; it stops when it is no longer the top.
 //! Running is flag 1. The cooldown variable is linked as slot 0 (client
 //! restart 0x7FF789BBB110 → link 0x7FF78AA849B0) at the priority of
 //! `m_5E561E77`, as the stack is, and falls by `rate` per second from the
@@ -268,7 +268,9 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 }
                 return self.stop_ability(key, node, depth);
             }
-        } else if !self.ability_held(hold) {
+        } else if !self.machine.held_buttons.contains(&hold) {
+            // The keep check tests the hold button against the held list
+            // alone (0x7FF789BB8A3C), not against a DisableLogicalButton.
             return self.stop_ability(key, node, depth);
         }
         if !self.ability_condition(key, node, "m_F495731F")
@@ -279,6 +281,26 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         Ok(())
     }
 
+    /// The start check (client 0x7FF789BB8D20). With a hold button
+    /// (`m_A368407D`) the ability may start while that button is held and
+    /// not blocked; a buffered press of it, else of the start button, is
+    /// taken. Without one, a buffered press of the start button
+    /// (`m_A5F1A77B`) within the early-press time (`m_246438AD`) may start
+    /// it, or the start button held while the latch (flag 4) is down: a
+    /// start through the start button sets the latch, and it stays until
+    /// the button comes up. Then every gate: the cooldown at 0, the start
+    /// (`m_150F0D92`) and continue (`m_F495731F`) conditions true, and the
+    /// stack variable taking each of the three priorities it has
+    /// (`m_3C0EB4A6`, `m_343E99EE` and the push's `m_5E561E77`; would-stack
+    /// 0x7FF78AAA5E10). A gate that fails puts the taken press back
+    /// (0x7FF789BB93BF), so it can still start the ability within its time:
+    /// a press while another ability holds the stack at the same priority
+    /// starts this one when that one ends (Rocket Punch pressed during
+    /// Rising Uppercut, Rising Uppercut pressed in the punch's last
+    /// frames). Not modelled: the client's flag 8, the hold button's latch,
+    /// which its code only reads and clears (the server's frames set it),
+    /// and the stun gate (`m_C558D07B` false and the entity's
+    /// 0x7FF789B2CC30).
     pub(super) fn try_start_ability(
         &mut self,
         key: StateKey,
@@ -294,32 +316,44 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         // c239a84, `docs/MCCREE_ROLL.txt`: "Retain the original press until
         // gates pass, consume only on start, and let its authored early-press
         // window expire").
-        let mut pressed = false;
-        if start != 0 {
-            pressed = self.take_ability_press(key, node, start, true);
-            if !pressed {
-                if !self.ability_held(start) {
-                    self.set_ability_flags(key, flags & !ABILITY_HELD);
-                    return Ok(());
-                }
-                if flags & ABILITY_HELD != 0 {
-                    return Ok(());
-                }
+        let mut taken = None;
+        let mut latch = false;
+        if hold != 0 {
+            if !self.ability_held(hold) {
+                return Ok(());
             }
-        } else if hold != 0 && !self.ability_held(hold) {
-            return Ok(());
+            if self.take_ability_press(key, node, hold, true) {
+                taken = Some(hold);
+            } else if start != 0 && self.take_ability_press(key, node, start, true) {
+                taken = Some(start);
+                latch = true;
+            }
+        } else if start != 0 {
+            if self.take_ability_press(key, node, start, true) {
+                taken = Some(start);
+            } else if !self.ability_held(start) {
+                self.set_ability_flags(key, flags & !ABILITY_HELD);
+                return Ok(());
+            } else if flags & ABILITY_HELD != 0 {
+                return Ok(());
+            }
+            latch = true;
         }
         if self.cooldown_remaining(key) > 0.0
             || !self.ability_condition(key, node, "m_150F0D92")
             || !self.ability_condition(key, node, "m_F495731F")
-            || !self.ability_stack_allows(key, node, "m_3C0EB4A6")
+            || ["m_3C0EB4A6", "m_343E99EE", "m_5E561E77"]
+                .into_iter()
+                .any(|priority| !self.ability_stack_allows(key, node, priority))
         {
             return Ok(());
         }
-        if pressed {
-            self.take_ability_press(key, node, start, false);
+        if let Some(button) = taken {
+            self.take_ability_press(key, node, button, false);
         }
-        self.set_ability_flags(key, flags | if start != 0 { ABILITY_HELD } else { 0 });
+        if latch {
+            self.set_ability_flags(key, flags | ABILITY_HELD);
+        }
         if ability_is_stacked(node) {
             self.push_ability(key, node, depth)
         } else {

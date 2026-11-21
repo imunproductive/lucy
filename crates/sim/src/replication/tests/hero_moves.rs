@@ -1582,3 +1582,75 @@ fn doomfists_slam_cooldown_links_for_its_fall_and_he_slams_again() {
         "{vx} {vy} {vz}"
     );
 }
+
+/// Rocket Punch held through Rising Uppercut, and Rising Uppercut pressed
+/// in the punch's last frame, start when the other stops (the user's check
+/// of 2026-11-21, issues 3 and 5; `refs/reports/Doomfist.md` §19). Each of
+/// his abilities pushes itself on #33e at one priority (`0C4…0001`), and
+/// his client's start check (0x7FF789BB8D20) asks the stack for that
+/// priority before it takes a press, puts the press back when the stack
+/// refuses, and runs again when the stack changes. The server took the
+/// press, pushed the ability under the running one, which dropped it, and
+/// latched the button (flag 4), which its frames gave his client too: the
+/// punch never started while secondary fire was held, and the uppercut
+/// his client began at the punch's end was rolled back. The inputs are
+/// game session `before`'s (Practice Range, `D:/Temp/dfc`), frames counted
+/// from the first press: there the uppercut ran 11481-11517 and the punch
+/// 15584-15639 on both sides.
+#[test]
+#[ignore = "requires the derived 104319 data and the Practice Range collision"]
+fn doomfists_ability_pressed_while_another_runs_starts_when_it_stops() {
+    use orpheus_wire::commands::SECONDARY;
+    // Rising Uppercut's subgraph state (`0DD8` st6) and Rocket Punch's
+    // (`0D06` st3) each frame, and the frames where they change.
+    let run = |buttons: fn(u32) -> u32, frames: u32| {
+        let mut doomfist = Player::spawn(DOOMFIST);
+        let (open, _) = open_and_walled(&doomfist.scene);
+        let mut changes = Vec::new();
+        let mut last = (false, false);
+        for frame in 0..frames {
+            doomfist.step(Command {
+                yaw: open,
+                buttons: buttons(frame),
+                ..Command::default()
+            });
+            let now = (doomfist.graph_state(0x0dd8, 6), doomfist.punch_state(3));
+            if now != last {
+                changes.push((frame, now));
+                last = now;
+            }
+        }
+        changes
+    };
+    // Issue 3 (session `up_hold200`): Shift for 3 frames, secondary fire
+    // held from frame 15 (inside the uppercut) to 103. The uppercut stops
+    // at 37 (st21, 0.35 s after its rise) and the punch begins that frame,
+    // as his client's did (`after`, the frame its own uppercut stopped).
+    let uppercut_then_punch = run(
+        |frame| match frame {
+            0..=2 => ABILITY_1,
+            15..=103 => SECONDARY,
+            _ => 0,
+        },
+        110,
+    );
+    assert_eq!(
+        uppercut_then_punch,
+        [(0, (true, false)), (37, (false, true))]
+    );
+    // Issue 5 (session `punch_up528`): secondary fire for 20 frames, Shift
+    // from 55, one frame before the punch stops (its ability ended at 56 on
+    // both sides); his client began the uppercut at 56.
+    let punch_then_uppercut = run(
+        |frame| match frame {
+            0..=19 => SECONDARY,
+            55..=58 => ABILITY_1,
+            _ => 0,
+        },
+        70,
+    );
+    assert_eq!(
+        punch_then_uppercut,
+        [(0, (false, true)), (56, (true, false))]
+    );
+}
