@@ -386,6 +386,19 @@ pub trait OwnerBodyRuntime: Send {
         Ok(None)
     }
 
+    /// Another graph set the cooldown of the body's ability on logical
+    /// button `button` (the Workshop's Set Ability Cooldown,
+    /// `orpheus_script::vm::Component::set_ability_cooldown`).
+    fn set_ability_cooldown(&mut self, _button: i64, _value: f64) -> io::Result<()> {
+        Ok(())
+    }
+
+    /// The cooldown left on the body's ability on logical button `button`
+    /// (the Workshop's Ability Cooldown); 0 without one.
+    fn ability_cooldown(&self, _button: i64) -> f64 {
+        0.0
+    }
+
     /// The scope instances the body's scope states opened or closed on
     /// their targets since the last call (the console's scope 197 from
     /// scope 12, on a re-picked dummy), for the match.
@@ -454,6 +467,12 @@ pub trait OwnerBodyRuntime: Send {
     /// The game messages the body sent other entities since the last call.
     fn take_messages(&mut self) -> Vec<GameMessage> {
         Vec::new()
+    }
+
+    /// Whether the body's graphs revived it since the last call (`0C8E`'s
+    /// `STU_621AF478` on the Workshop's Resurrect).
+    fn take_revive(&mut self) -> bool {
+        false
     }
 
     /// The authored target tags of the body the player just eliminated,
@@ -1330,6 +1349,15 @@ impl InputQueue {
             return false;
         }
         if self.immediate {
+            // Runs as it comes: its buttons are the ones run
+            // ([`Self::take_late`], which the Workshop's Is Button Held reads).
+            let work = match work {
+                InputWork::Command { command, pending } => InputWork::Command {
+                    command: self.take_late(command),
+                    pending,
+                },
+                work => work,
+            };
             self.work.push_back(work);
         } else {
             self.buffer.push_back(work);
@@ -1946,6 +1974,9 @@ struct BodyDeath {
     /// When the respawn is due: from the script's `0685` on, or the next
     /// try while every body id is still reserved; none: not yet.
     due: Option<Duration>,
+    /// Where a revival brings the player back (his graphs revived the
+    /// body: the Workshop's Resurrect); none: the respawn's place.
+    revive_at: Option<[f64; 3]>,
 }
 
 /// How a hit on the player's body ended (combat.py `_damage`): the damage
@@ -2431,11 +2462,37 @@ impl WorldDelivery {
     }
 
     /// What the controller's graphs did outside the controller, after each
-    /// run: the scopes they opened or closed ([`Self::apply_controller_scopes`])
-    /// and the body moves ([`Self::apply_body_moves`]).
+    /// run: the scopes they opened or closed ([`Self::apply_controller_scopes`]),
+    /// the body moves ([`Self::apply_body_moves`]) and the body's
+    /// cooldowns ([`Self::apply_cooldowns`]).
     fn after_controller(&mut self) {
         self.apply_controller_scopes();
         self.apply_body_moves();
+        self.apply_cooldowns();
+    }
+
+    /// The controller's graphs set cooldowns of the current body's
+    /// abilities (a Workshop Set Ability Cooldown's scope, `STU_FFF26F80`):
+    /// its script writes them at once, so the abilities and the owner's
+    /// next frame have them.
+    fn apply_cooldowns(&mut self) {
+        let Some(script) = &mut self.controller_script else {
+            return;
+        };
+        let cooldowns = script.take_cooldowns();
+        for cooldown in cooldowns {
+            if self.current_body() != Some(cooldown.body) {
+                continue;
+            }
+            let written = self.body_script.as_mut().map(|script| {
+                script
+                    .runtime
+                    .set_ability_cooldown(cooldown.button, cooldown.value)
+            });
+            if let Some(Err(error)) = written {
+                self.drop_failed_script(&error.to_string());
+            }
+        }
     }
 
     /// The controller's scope states opened or closed scope instances: on
@@ -2497,9 +2554,6 @@ impl WorldDelivery {
         };
         let moves = script.take_body_moves();
         let body = self.body.map(|body| body.id.entity);
-        let Some(mover) = self.mover.as_mut() else {
-            return;
-        };
         for body_move in moves
             .into_iter()
             .filter(|body_move| Some(body_move.body) == body)
@@ -2507,18 +2561,28 @@ impl WorldDelivery {
             let yaw = body_move
                 .facing
                 .map(|[x, _, z]| (x.atan2(z) * 65_536.0 / std::f64::consts::TAU).round() as i32);
-            mover.teleport(body_move.position, yaw);
-            let pose = mover.pose();
-            let history = self.body_script.as_mut().and_then(|script| {
-                let tail = RECORD_TAIL_MS.div_ceil(script.runtime.frame_ms());
-                script.corrections.as_mut().map(|history| (history, tail))
-            });
-            match history {
-                Some((history, tail)) => {
-                    history.discontinue(pose.frame.map_or(0, |frame| frame + 1), tail);
-                }
-                None => self.teleported = Some(pose),
+            self.teleport_current(body_move.position, yaw);
+        }
+    }
+
+    /// The current body's mover goes to `position` (facing `yaw` when
+    /// given) and the owner's client is corrected to it
+    /// ([`Self::apply_body_moves`]).
+    fn teleport_current(&mut self, position: [f64; 3], yaw: Option<i32>) {
+        let Some(mover) = self.mover.as_mut() else {
+            return;
+        };
+        mover.teleport(position, yaw);
+        let pose = mover.pose();
+        let history = self.body_script.as_mut().and_then(|script| {
+            let tail = RECORD_TAIL_MS.div_ceil(script.runtime.frame_ms());
+            script.corrections.as_mut().map(|history| (history, tail))
+        });
+        match history {
+            Some((history, tail)) => {
+                history.discontinue(pose.frame.map_or(0, |frame| frame + 1), tail);
             }
+            None => self.teleported = Some(pose),
         }
     }
 
@@ -4357,6 +4421,7 @@ impl WorldDelivery {
                 tick: death_tick,
                 died_at: now,
                 due: None,
+                revive_at: None,
             });
         }
         if let Some(error) = failure {
@@ -4719,6 +4784,15 @@ impl WorldDelivery {
         })
     }
 
+    /// The cooldown left on the current body's ability on logical button
+    /// `button`, as its script has it; 0 without a body script.
+    pub fn ability_cooldown(&self, button: i64) -> f64 {
+        self.body_script
+            .as_ref()
+            .filter(|script| Some(script.id) == self.body.map(|body| body.id))
+            .map_or(0.0, |script| script.runtime.ability_cooldown(button))
+    }
+
     /// Workshop player variable `index` of this player: his controller's
     /// entity variable (`orpheus_script::expr::workshop_variable`), a
     /// chase's value included. None without a controller script.
@@ -5000,6 +5074,9 @@ impl WorldDelivery {
             .ok_or_else(|| invalid("the dead body's hero is unknown"))?;
         self.switch(scene, viewer, tick, quanta, entity, (hero, skin), false)?;
         self.revived();
+        if let Some(feet) = death.revive_at {
+            self.teleport_current(feet, None);
+        }
         Ok(true)
     }
 
@@ -5094,6 +5171,7 @@ impl WorldDelivery {
         // controller, whose `0C90` revives the body); the server respawns
         // the player itself (loose ends, "A respawn makes a new body").
         let sender = script.id;
+        let revived = script.runtime.take_revive();
         messages.retain(|message| {
             let ready = message.message == RESPAWN_READY && message.target == GAME_MODE_ENTITY;
             if ready && let Some(death) = self.death.as_mut().filter(|death| death.body == sender) {
@@ -5101,6 +5179,15 @@ impl WorldDelivery {
             }
             !ready
         });
+        // Its graphs revived it (the Workshop's Resurrect, `0C8E` rid76):
+        // back at once where the body lies. Retail revives the same body
+        // (`STU_621AF478`); the server makes a new one there, as for any
+        // respawn.
+        let feet = self.mover.as_ref().map(|mover| mover.pose().position);
+        if revived && let Some(death) = self.death.as_mut().filter(|death| death.body == sender) {
+            death.due = Some(Duration::ZERO);
+            death.revive_at = feet;
+        }
         messages
     }
 

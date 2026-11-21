@@ -394,6 +394,88 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         Ok(true)
     }
 
+    /// `STU_FFF26F80` (client `Action_STU_FFF26F80` 0x7FF789B94EC0; the
+    /// Workshop's Set Ability Cooldown `2735` runs it in its scope on the
+    /// player): the ability of `m_entity` (`STU_0165541D(owner())`, the
+    /// player's body) on logical button `m_logicalButton` gets `m_value`
+    /// as its cooldown when `m_E80E2A1F` is 0 (its `m_out_CooldownVar`;
+    /// 1 and 2 write `m_83CE3EE8` and `m_CFFA1035`, which no Workshop
+    /// graph asks for). The world writes it in the body's script
+    /// ([`World::set_ability_cooldown`]); where it doesn't, the action does
+    /// nothing (refused in a strict build).
+    pub(super) fn set_ability_cooldown_of(
+        &mut self,
+        id: u16,
+        node: &Node,
+        depth: usize,
+    ) -> Result<bool, InitFault> {
+        let site = self.site(id, node);
+        if field(&node.fields, "m_E80E2A1F").as_i64().unwrap_or(0) != 0 {
+            self.report(site, Issue::UnsupportedField("STU_FFF26F80 m_E80E2A1F"));
+            return Ok(false);
+        }
+        let (Some(target), Some(button), Some(value)) = (
+            self.evaluate(id, node, field(&node.fields, "m_entity"), None),
+            self.evaluate(id, node, field(&node.fields, "m_logicalButton"), None),
+            self.evaluate(id, node, field(&node.fields, "m_value"), None),
+        ) else {
+            return Ok(false);
+        };
+        let button = expr::to_int(&button, 0);
+        let value = expr::to_float(&value);
+        let mut set = true;
+        for body in entities(&target) {
+            set &= self.world.set_ability_cooldown(
+                site,
+                CooldownWrite {
+                    body,
+                    button,
+                    value,
+                },
+            );
+        }
+        if !set {
+            if !self.tolerates_unknowns() {
+                self.report(site, Issue::UnsupportedAction(node.class.clone()));
+                return Ok(false);
+            }
+            self.assume(site, &node.class, "sets no cooldown");
+        }
+        self.follow(id, node, "m_outPlug", None, depth)?;
+        Ok(true)
+    }
+
+    /// `STU_621AF478` (server-only: no registration of its own; revive):
+    /// the mode body script `0C8E` revives its own dead body with it on the
+    /// Workshop's Resurrect (`1481` → `0A21`, rid76) and on `0686` (rid10);
+    /// the controller `0C90` (node 4) on its respawn. The world revives
+    /// the bodies `m_targets` names ([`World::revive`]); where it doesn't
+    /// (the controller's respawn, made in Rust), the action is handled as
+    /// one without a model ([`Self::unhandled_action`]). Not read:
+    /// `m_16432044`, `m_6447237A` (`0C90`'s spawn point and facing),
+    /// `m_DB744C76` and `m_B384134B` (`0C8E` gives true and false).
+    pub(super) fn revive_bodies(
+        &mut self,
+        id: u16,
+        node: &Node,
+        depth: usize,
+    ) -> Result<bool, InitFault> {
+        let site = self.site(id, node);
+        let bodies = self
+            .evaluate_quietly(id, node, field(&node.fields, "m_targets"))
+            .map(|targets| entities(&targets))
+            .unwrap_or_default();
+        let mut revived = !bodies.is_empty();
+        for body in bodies {
+            revived &= self.world.revive(site, body);
+        }
+        if !revived {
+            return self.unhandled_action(id, node, depth);
+        }
+        self.follow(id, node, "m_outPlug", None, depth)?;
+        Ok(true)
+    }
+
     /// `STU_A1DF3B2D` (server-only: no registration of its own; the death
     /// layer `01CB` rid14 and rid58, Echo's `19EB`): from the entity
     /// `m_4F64C1D3` (the body's controller) it writes an entity list to

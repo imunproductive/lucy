@@ -2595,7 +2595,14 @@ impl Evaluator<'_> {
             // body of a target player (Teleport `1D45`, Set Ability
             // Cooldown `2735`). Assumption: the possessed body, as
             // `STU_0AC15F78`; its other paths are not traced.
-            "STU_F76C486C" | "STU_F7262B36" | "STU_0AC15F78" | "STU_DB742151" | "STU_0165541D" => {
+            // `STU_CF348C08` (STUConfigVarEntityID, `Eval_STU_CF348C08`
+            // 0x7FF789BD90F0: component 44, then `0x7FF789CB6C30`, the
+            // possessed entity whose component 25 has `+88` bit 0x40000,
+            // else another of component 44's): the Workshop's Kill `1482`
+            // takes its target players' bodies and its killer's body with
+            // it. Assumption: the possessed body too.
+            "STU_F76C486C" | "STU_F7262B36" | "STU_0AC15F78" | "STU_DB742151" | "STU_0165541D"
+            | "STU_CF348C08" => {
                 let (relation, operand) = match class {
                     "STU_F76C486C" => (EntityRelation::Owner, "m_D63CBEC2"),
                     "STU_F7262B36" => (EntityRelation::CurrentPossessor, "m_801B298F"),

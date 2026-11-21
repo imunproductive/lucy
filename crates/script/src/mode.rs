@@ -17,9 +17,9 @@ use crate::{
     map_tags::MapTags,
     placed::{Gaps, MapEntityWorld, PlacedEntity},
     vm::{
-        ACTION_PARAMETERS, ActionOutcome, Component, EntityCreation, GameMessage, InitFault,
-        MAX_INIT_WORK, MapRays, PlayRequest, Root, ScopeChange, ScopeSource, Site, Snapshot,
-        Unknowns, World,
+        ACTION_PARAMETERS, ActionOutcome, Component, EntityCreation, GameMessage, HealthChange,
+        InitFault, MAX_INIT_WORK, MapRays, PlayRequest, Root, ScopeChange, ScopeSource, Site,
+        Snapshot, Unknowns, World,
     },
     wire::{Value, Variables},
 };
@@ -146,6 +146,10 @@ pub struct ModeWorld {
     /// The identifiers 2 whose map placeables the graphs removed, until
     /// the match takes them ([`ModeScript::take_placeable_removals`]).
     placeable_removals: Vec<u64>,
+    /// The bodies the graphs damaged or healed (the Workshop's Kill
+    /// `1482` st0), until the match takes them
+    /// ([`ModeScript::take_health_changes`]).
+    health_changes: Vec<HealthChange>,
     outbox: Vec<GameMessage>,
     /// The messages the graphs sent the mode entity itself, until the match
     /// takes them ([`ModeScript::take_own_messages`]).
@@ -180,6 +184,7 @@ impl ModeWorld {
             scope_changes: Vec::new(),
             plays: Vec::new(),
             placeable_removals: Vec::new(),
+            health_changes: Vec::new(),
             outbox: Vec::new(),
             own: Vec::new(),
             held: Vec::new(),
@@ -398,6 +403,18 @@ impl World for ModeWorld {
     /// `0CBB` st34 removing the health packs, by the match.
     fn remove_placeables(&mut self, _site: Site, identifier: u64) -> bool {
         self.placeable_removals.push(identifier);
+        true
+    }
+
+    /// A body the Workshop's Kill (`1482` st0, 1e9 damage) or another
+    /// action graph's ModifyHealth names, by the match's health code. An
+    /// instigator that names no entity (Kill's Killer Null) is the mode
+    /// entity's own.
+    fn modify_health(&mut self, mut change: HealthChange) -> bool {
+        if !crate::expr::valid_entity(change.instigator) {
+            change.instigator = GAME_MODE_ENTITY;
+        }
+        self.health_changes.push(change);
         true
     }
 
@@ -852,6 +869,12 @@ impl ModeScript {
     /// last call (`STU_A3DC6A25`), for the match to remove.
     pub fn take_placeable_removals(&mut self) -> Vec<u64> {
         std::mem::take(&mut self.world.placeable_removals)
+    }
+
+    /// The health changes the graphs made since the last call, for the
+    /// match's health code (`orpheus_sim::combat::Combat::modify_health`).
+    pub fn take_health_changes(&mut self) -> Vec<HealthChange> {
+        std::mem::take(&mut self.world.health_changes)
     }
 
     /// The match opened a scope instance of a scope state here (the mode

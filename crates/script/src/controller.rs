@@ -37,8 +37,9 @@ use crate::{
     expr::EntityRelation,
     graph::GraphStore,
     vm::{
-        BodyMove, Component, GameMessage, InitFault, MAX_INIT_WORK, PlayRequest, Root, ScopeChange,
-        ScopeSource, Site, Snapshot, StateKind, TrackedStat, Unknowns, VoiceRequest, World,
+        BodyMove, Component, CooldownWrite, GameMessage, InitFault, MAX_INIT_WORK, PlayRequest,
+        Root, ScopeChange, ScopeSource, Site, Snapshot, StateKind, TrackedStat, Unknowns,
+        VoiceRequest, World,
     },
     wire::{Value, Variables},
 };
@@ -172,6 +173,9 @@ pub struct ControllerWorld {
     /// The bodies the graphs put somewhere (`STU_CFCE55DC`: a Workshop
     /// Teleport's scope on this controller).
     body_moves: Vec<BodyMove>,
+    /// The cooldowns the graphs set on the possessed body's abilities
+    /// (`STU_FFF26F80`: a Workshop Set Ability Cooldown's scope).
+    cooldowns: Vec<CooldownWrite>,
     /// The scope instances the graphs' scope states opened or closed on
     /// their targets (a Workshop Set Ability 1 Enabled's `1D42` scope on
     /// the possessed body).
@@ -197,6 +201,7 @@ impl ControllerWorld {
             voices: Vec::new(),
             tracked_stats: Vec::new(),
             body_moves: Vec::new(),
+            cooldowns: Vec::new(),
             scopes: Vec::new(),
         }
     }
@@ -424,6 +429,16 @@ impl World for ControllerWorld {
             return false;
         }
         self.body_moves.push(body_move);
+        true
+    }
+
+    /// The possessed body's cooldown waits for the match, which writes it
+    /// in the body's script ([`ControllerScript::take_cooldowns`]).
+    fn set_ability_cooldown(&mut self, _site: Site, cooldown: CooldownWrite) -> bool {
+        if self.body != Some(cooldown.body) {
+            return false;
+        }
+        self.cooldowns.push(cooldown);
         true
     }
 
@@ -703,6 +718,12 @@ impl ControllerScript {
     /// Teleport on this player), for the match to move.
     pub fn take_body_moves(&mut self) -> Vec<BodyMove> {
         std::mem::take(&mut self.world.body_moves)
+    }
+
+    /// The cooldowns the graphs set on the possessed body's abilities since
+    /// the last call (a Workshop Set Ability Cooldown on this player).
+    pub fn take_cooldowns(&mut self) -> Vec<CooldownWrite> {
+        std::mem::take(&mut self.world.cooldowns)
     }
 
     /// The scope instances the graphs' scope states opened or closed on
