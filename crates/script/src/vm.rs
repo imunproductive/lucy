@@ -2349,6 +2349,15 @@ impl Component {
         })
     }
 
+    /// The variables of `entity` that the active states' expressions read,
+    /// which [`Self::foreign_variable_changed`] re-evaluates.
+    pub fn foreign_reads(&self, entity: u32) -> impl Iterator<Item = u32> + '_ {
+        self.machine
+            .foreign_watchers
+            .range((entity, 0)..=(entity, u32::MAX))
+            .map(|(&(_, id), _)| id)
+    }
+
     /// Another entity's variable `id` changed in the world (as
     /// [`World::entity_variable`] answers it): the active states whose
     /// expressions read it re-evaluate, as for the entity's own variables.

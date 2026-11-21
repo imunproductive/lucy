@@ -36,14 +36,19 @@
 //! - #31435e: only 288B's client-only nodes write it; the frames carry it
 //!   equal to the open state, as Python's hand-built frames did.
 //! - 288B's #25377 (the skin selector) and #8535 (the assemble title hidden):
-//!   288B st33-st35 set #25377 while they hold the mode graph's `06AF`
-//!   (`0D0B`/`0D42`) and the client's global `02DF`; neither reaches the
-//!   server's 288B. The skin selector shows in the PvP modes while heroes
-//!   are assembled, in the Practice Range whenever the screen is open; only
-//!   the Practice Range hides the assemble title (match.py `send_controller`).
+//!   288B st35 sets #25377 while st32 holds the mode graph's `0692` (sent
+//!   only by the PvP mode graphs `0D0B`, `0EC2`, `0F4A`, `0F60`, `0F73`) and
+//!   none of `0DEA`, `06AF` (`0D0B`/`0D42`) and the client's global `02DF`
+//!   (st139, st34, st33 idle); no held `0692` reaches the server's 288B. The
+//!   skin selector shows in the PvP modes while heroes are assembled; never
+//!   in the Practice Range (`13C0` holds no `0692`). Each time #25377 turns
+//!   on, the client's 288B st38 says Athena's hero select line (0.2 s later
+//!   `0918` to the mode entity, whose `03F2` rid86 plays VoiceStimulus
+//!   `0168.078`) and plays effect `0AB7`. Only the Practice Range hides the
+//!   assemble title (match.py `send_controller`).
 //! - The screen stays shown open while heroes assemble (match.py
-//!   `game_message`): 288B closes it on a pick (st95), and what keeps it
-//!   open in retail during the countdown is the mode graph's.
+//!   `game_message`): 288B closes it on a pick (st95); in retail, st37
+//!   stacks #2438e open while #25377 is on.
 //! - 0C90's #4513/#4514/#4515 (rid220, the last hero switch) go only in a
 //!   switch notice's frame (`crate::notices`): the graph keeps them, and the
 //!   client posts the chat line on every frame that sets the three.
@@ -59,7 +64,7 @@ use orpheus_script::{
         PVP_CONTROLLER, PlayableHero,
     },
     graph::{Graph, GraphStore},
-    snapshot::{SnapshotEncoder, SnapshotError, View},
+    snapshot::{ProjectedSnapshot, SnapshotEncoder, SnapshotError, View},
     timeline::FRAME_MS,
     vm::{InitFault, Unknowns},
     wire::{Instance, Layout, Value, Variables, WireError, remote_full},
@@ -185,6 +190,31 @@ impl Controller {
         command_frame: u32,
         input: ControllerFrame,
     ) -> Result<BitWriter, SnapshotError> {
+        let projected = self.controller_projection(script, input)?;
+        self.encode_controller(script, &projected, command_frame)
+    }
+
+    /// An owner full frame of `projected` ([`Self::controller_projection`])
+    /// at command frame `command_frame`.
+    pub fn encode_controller(
+        &self,
+        script: &ControllerScript,
+        projected: &ProjectedSnapshot,
+        command_frame: u32,
+    ) -> Result<BitWriter, SnapshotError> {
+        let encoder =
+            SnapshotEncoder::new(script.graphs(), &self.codecs).with_unknowns(self.unknowns);
+        let frame_ms = u32::try_from(FRAME_MS).map_err(|_| SnapshotError::FrameTime)?;
+        encoder.owner_full(projected, command_frame, frame_ms)
+    }
+
+    /// What an owner frame of the controller carries: its script's
+    /// snapshot as the owner sees it, with `input` on top.
+    pub fn controller_projection(
+        &self,
+        script: &ControllerScript,
+        input: ControllerFrame,
+    ) -> Result<ProjectedSnapshot, SnapshotError> {
         let snapshot = script.snapshot().ok_or(SnapshotError::DifferentStream)?;
         let encoder =
             SnapshotEncoder::new(script.graphs(), &self.codecs).with_unknowns(self.unknowns);
@@ -233,8 +263,7 @@ impl Controller {
                 _ => {}
             }
         }
-        let frame_ms = u32::try_from(FRAME_MS).map_err(|_| SnapshotError::FrameTime)?;
-        encoder.owner_full(&projected, command_frame, frame_ms)
+        Ok(projected)
     }
 
     /// A remote 288D root and the three entity variables used by team selection.

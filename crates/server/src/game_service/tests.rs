@@ -1271,8 +1271,15 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
             }
             *mode = true;
         } else {
-            assert_eq!((script.first, script.span), (0, 1));
             assert_eq!(record.entity, CONTROLLER);
+            // Whole frames (first 0), and after the first one owner acks
+            // with the command frame every 100 ms
+            // (`WorldDelivery::send_controller_ack`).
+            if script.first == 0 {
+                assert_eq!(script.span, 1);
+            } else {
+                assert!(*controller, "an owner ack only after the whole frame");
+            }
             let mut bits = script.bits();
             assert_eq!(bits.bits(3).unwrap(), 2);
             assert!(bits.w_var().unwrap() >= orpheus_core::tick::FIRST_TICK);
@@ -1555,15 +1562,25 @@ fn exercise_hero_selection(
             assert!(client.now() < deadline, "waiting for the selected body");
         }
     };
+    // The controller's whole frames (first 0); its owner acks (the
+    // command frame every 100 ms, `WorldDelivery::send_controller_ack`)
+    // are left out, and they move the whole frames' chunk numbers on.
+    let ack = |record: &WorldRecord| {
+        record.entity == OWNER
+            && record
+                .script
+                .as_ref()
+                .is_some_and(|script| script.first != 0)
+    };
     let describe = |records: &[WorldRecord]| {
         records
             .iter()
-            .filter(|record| matches!(record.entity, OWNER | FIRST | SECOND))
+            .filter(|record| matches!(record.entity, OWNER | FIRST | SECOND) && !ack(record))
             .map(|record| {
                 (
                     record.entity,
                     record.operation,
-                    record.script.as_ref().map(|script| script.span),
+                    record.script.as_ref().map(|script| script.first),
                 )
             })
             .collect::<Vec<_>>()
@@ -1573,7 +1590,7 @@ fn exercise_hero_selection(
     let verify_controller = |records: &[WorldRecord], open, pick: Option<u64>, hero| {
         let script = records
             .iter()
-            .find(|record| record.entity == OWNER && record.script.is_some())
+            .find(|record| record.entity == OWNER && record.script.is_some() && !ack(record))
             .and_then(|record| record.script.as_ref())
             .expect("hero selection controller frame");
         let mut reader = script.bits();
@@ -1591,21 +1608,24 @@ fn exercise_hero_selection(
     let expected = [
         (FIRST, Some(1), None),
         (OWNER, Some(2), None),
-        (OWNER, None, Some(2)),
+        (OWNER, None, Some(0)),
     ];
     // The pick's frame names the new hero with the screen still open;
     // `288B` closes it once the body lives (st95), a tick later: that
-    // frame may share the datagram, after the possession.
+    // frame may share the datagram, after the possession, replaced by a
+    // newer frame queued before it went (the controller's other states
+    // change after the spawn too, and each change sends a frame).
     let pick_batch = |records: &[WorldRecord]| {
         let described = describe(records);
         assert_eq!(described[..3], expected);
         match described[3..] {
             [] => {}
-            [(OWNER, None, Some(3))] => {
+            [(OWNER, None, Some(0))] => {
                 let close = records
                     .iter()
+                    .filter(|record| record.entity == OWNER && !ack(record))
                     .filter_map(|record| record.script.as_ref())
-                    .find(|script| script.span == 3)
+                    .nth(1)
                     .unwrap();
                 assert_eq!(
                     controller_shows(assets.graphs(), close),
@@ -3077,6 +3097,8 @@ fn the_range_console_puts_a_training_partner_on_its_pad_and_a_pick_replaces_it()
         send_input(&mut watcher, &mut frame, yaw, 0, 0, false);
         watcher.pump(&schemas);
     }
+    // His HUD comes back with it (`265F` st13 false on his controller).
+    assert!(!server.bodies(MATCH).unwrap()[0].picker_hides_hud);
     assert!(
         watcher
             .find(0, |record| record.entity == CONSOLE
@@ -3097,10 +3119,22 @@ fn the_range_console_puts_a_training_partner_on_its_pad_and_a_pick_replaces_it()
     // The partners' bodies are another player's to this client: any of
     // their statescript comes as observer frames (H=0), never as owner
     // frames (two more seconds of datagrams).
+    let idle = watcher.datagrams.len();
     for _ in 0..125 {
         send_input(&mut watcher, &mut frame, yaw, 0, 0, false);
         watcher.pump(&schemas);
     }
+    let controller_frames = watcher.datagrams[idle..]
+        .iter()
+        .flat_map(|(_, records)| records)
+        .filter(|record| record.entity == watcher.owner)
+        .filter_map(|record| record.script.as_ref())
+        .filter(|script| script.first == 0)
+        .count();
+    // His controller's projection holds while he stands: no whole
+    // controller frame goes (one goes only when what it carries changed;
+    // the owner acks with his command frame go on every 100 ms).
+    assert_eq!(controller_frames, 0);
     for (_, records) in &watcher.datagrams {
         for chunk in records
             .iter()
@@ -3112,6 +3146,20 @@ fn the_range_console_puts_a_training_partner_on_its_pad_and_a_pick_replaces_it()
             }
         }
     }
+    // The swap posts no chat line: the partners are dummy bots, whose
+    // cards come without "joined the game" or "left the game".
+    let lines: Vec<_> = watcher
+        .datagrams
+        .iter()
+        .flat_map(|(messages, _)| messages)
+        .filter(|message| {
+            message.id == 20308
+                && [0x78, 0x7b]
+                    .iter()
+                    .all(|offset| message.fields.get(offset) == Some(&Value::Bool(true)))
+        })
+        .collect();
+    assert!(lines.is_empty(), "{lines:?}");
 }
 
 /// A Reinhardt picked at the console: his body comes once, with his hero's
@@ -3345,6 +3393,11 @@ fn pick_training_partner(
         send_input(&mut watcher, &mut frame, yaw, 0, 0, false);
         watcher.pump(&schemas);
     }
+    // His controller's scope 126 instance follows his body's `#25456e`
+    // (st13 reads it through `STU_00707E1E`) and his controller frame
+    // carries it: st33, whose client-only st12 hides his HUD while the
+    // picker is open, which his client's rollbacks restore from that frame.
+    assert!(server.bodies(MATCH).unwrap()[0].picker_hides_hud);
     // The pick, from his controller's scope 126 instance: `08E6` an array
     // of the hero, `08E7` an array of true, then two entities
     // (`orpheus_content::parameters` `parameter_rows_read_as_the_client_writes_them`).

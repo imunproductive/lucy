@@ -142,6 +142,9 @@ pub(crate) struct PlayerView<'a> {
     pub(crate) body: Option<RemoteBody<'a>>,
     /// His last hero switch.
     pub(crate) switch: Option<Switch>,
+    /// A dummy bot (`STU_FC3921B1`, the Practice Range's Training Partner):
+    /// his coming and going posts no chat line.
+    pub(crate) dummy: bool,
 }
 
 impl<'a> PlayerView<'a> {
@@ -156,6 +159,7 @@ impl<'a> PlayerView<'a> {
             presented: false,
             body: None,
             switch: None,
+            dummy: false,
         }
     }
 }
@@ -903,10 +907,11 @@ impl Others {
         Ok(output)
     }
 
-    /// A player who left: "left the game" (notices.py `left`); and a body that
-    /// is no longer his current one goes (match.py `destroy_for_others`).
+    /// A player who left: "left the game" (notices.py `left`; not for a
+    /// dummy bot); and a body that is no longer his current one goes
+    /// (match.py `destroy_for_others`).
     fn departed(&mut self, other: &PlayerView<'_>, output: &mut ShowOutput) {
-        if other.entered.is_none() {
+        if other.entered.is_none() && !other.dummy {
             if let Some(shown) = self.shown.get(&other.entity) {
                 output.cards.push(left_message(shown.card.clone()));
             }
@@ -1115,12 +1120,14 @@ impl Others {
             let serial = self.next_serial();
             let card = card_record(other.card);
             // "Joined the game" for a player who came into the world after
-            // this one (notices.py `card`).
-            output.cards.push(if other_entered > entered {
-                joined_message(card.clone())
-            } else {
-                card_message(card.clone())
-            });
+            // this one (notices.py `card`), not for a dummy bot.
+            output
+                .cards
+                .push(if other_entered > entered && !other.dummy {
+                    joined_message(card.clone())
+                } else {
+                    card_message(card.clone())
+                });
             self.destroyed.remove(&other.entity);
             self.shown.insert(
                 other.entity,
@@ -1414,6 +1421,7 @@ mod tests {
             team: 0,
             card,
             entered,
+            dummy: false,
             presented: true,
             body: None,
             switch: None,
@@ -1568,6 +1576,49 @@ mod tests {
             .show(&context, &room, 0, &ViewerReadiness::default())
             .unwrap();
         assert!(output.cards.is_empty() && output.records.is_empty());
+    }
+
+    /// A dummy bot (the Training Partner a console swaps) gets his card
+    /// without "joined the game" when he comes after this client, and
+    /// posts no "left the game" when the console takes him out; his entity
+    /// still goes.
+    #[test]
+    fn a_dummy_bot_comes_and_goes_without_a_chat_line() {
+        let map = GameMap::practice_range();
+        let pools = PoolCatalog::default();
+        let entry = |_| Ok(BitWriter::new());
+        let mut context = ShowContext {
+            map: &map,
+            pools: &pools,
+            entry: &entry,
+            tick: 1010,
+            switch_notices: false,
+        };
+        let (mine, theirs) = (card("viewer#1"), card("Ana"));
+        let mut room = [
+            view(VIEWER, 0, &mine, Some(1000)),
+            PlayerView {
+                dummy: true,
+                ..view(OTHER, 1, &theirs, Some(1005))
+            },
+        ];
+        let mut others = Others::default();
+        let output = others
+            .show(&context, &room, 0, &ViewerReadiness::default())
+            .unwrap();
+        let [_, card] = &output.cards[..] else {
+            panic!("the two cards");
+        };
+        assert!(!flag(card), "no joined line");
+        arrive(&mut others, &output);
+
+        room[1].entered = None;
+        context.tick += 3;
+        let output = others
+            .show(&context, &room, 0, &ViewerReadiness::default())
+            .unwrap();
+        assert!(output.cards.is_empty(), "no left line");
+        assert_eq!(summary(&output), [(OTHER, "destroy")]);
     }
 
     #[test]

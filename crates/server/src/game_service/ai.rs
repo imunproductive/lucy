@@ -145,6 +145,7 @@ impl Room {
                     gone: false,
                     stats: PlayerStats::default(),
                     ai: true,
+                    dummy: false,
                 });
                 let controller = AiController::new(difficulty, rank, missing, random.next_u64());
                 seats.push((
@@ -412,6 +413,7 @@ impl State {
             gone: false,
             stats: PlayerStats::default(),
             ai: true,
+            dummy: true,
         });
         room.dummies.push(DummySeat {
             team: dummy.team,
@@ -476,6 +478,7 @@ impl State {
                 picker: None,
                 console_button: false,
                 picker_raised: false,
+                picker_hides_hud: false,
                 spawn_effect: false,
                 spawn_scope: Vec::new(),
                 hold_to_sprint_delivered: orpheus_script::wire::Value::Null,
@@ -502,6 +505,7 @@ impl State {
             body.picker = peer.world.controller_scope_instance(126);
             body.console_button = peer.world.body_delivered(0x265f, 9, 25456).0;
             body.picker_raised = peer.world.body_delivered(0x265f, 17, 25456).0;
+            body.picker_hides_hud = peer.world.controller_frame_state(0x265f, 33);
             body.spawn_effect = peer.world.body_state_active(0x265f, 21);
             body.spawn_scope = peer.world.body_scope_hits(0x265f, 20);
             body.hold_to_sprint_delivered = peer.world.body_delivered(0x01cf, 117, 0x1ddc).1;
@@ -617,6 +621,10 @@ pub(crate) struct BodyState {
     /// StateStack rid40 (st17), which stacks the picker's condition
     /// `#25456e` = true (the client reads it from that state's payload).
     pub picker_raised: bool,
+    /// His last controller frame runs his controller's scope 126 instance's
+    /// st13 true subgraph (`265F` st33, whose client-only st12 holds `09DE`
+    /// to hide his HUD): st13 reads his body's `#25456e`, which st17 stacks.
+    pub picker_hides_hud: bool,
     /// His body runs the Training Partner console's scope 197 (`265F`
     /// st21: the 2 s Wait with the spawn effect `1F3F.00D`).
     pub spawn_effect: bool,
