@@ -201,41 +201,98 @@ impl Component {
     }
 
     /// The rule engine evaluated a running action's parameters again (its
-    /// Reevaluation enum): `#18739` takes them, and each instance the
-    /// action opened on this entity (Create HUD Text's scope 31) copies
-    /// them again where it copied them at its start, so the copies its
-    /// presenters read change in the frames: the `STU_12F5D52D` entries
-    /// whose value is `STU_70757664` (server-only: 1D8A rid21 and the other
-    /// Create graphs) always, and the plain copies of `#18739` (Create Icon
-    /// `1AB1` rid13 copies Visible To into `#20176`, whose StateStack st2
-    /// evaluates it on each client) where a parameter they copy changed and
-    /// they still hold what they copied. Assumption: retail changed them
-    /// so (Workshop.md §8, question 2); its clients evaluate the value
-    /// trees themselves, where the server sends the values it evaluated.
-    /// Nothing for an action that ended.
+    /// Reevaluation enum): `#18739` takes the `changed` ones (by index),
+    /// and each instance the action opened on this entity (Create HUD
+    /// Text's scope 31) copies them again where it copied them at its
+    /// start, so the copies its presenters read change in the frames: the
+    /// `STU_12F5D52D` entries whose value is `STU_70757664` (server-only:
+    /// 1D8A rid21 and the other Create graphs) always, and the plain copies
+    /// of `#18739` (Create Icon `1AB1` rid13 copies Visible To into
+    /// `#20176`, whose StateStack st2 evaluates it on each client) where a
+    /// parameter they copy changed and they still hold what they copied.
+    /// The others keep what the graph made of them: Create Effect `1CE8`
+    /// freezes each parameter its Reevaluation leaves out to its value
+    /// (rid25-28 write `#18739[i]`), and its clients evaluate only the
+    /// reevaluated ones (a frozen radius, `#2101`, has no StateStack st4 to
+    /// evaluate it, so a value tree there drew no ring). Assumption: retail
+    /// changed them so (Workshop.md §8, question 2); its clients evaluate
+    /// the value trees themselves, where the server sends the values it
+    /// evaluated. Nothing (None) for an action that ended; else the
+    /// parameters now, for the scope instances it opened on other entities
+    /// to copy in their own scripts ([`Self::set_scope_parameters`]).
     pub fn set_action_parameters(
         &mut self,
         instance: u16,
         start_ms: u64,
-        parameters: Vec<Value>,
+        changed: &[(usize, Value)],
+        world: &mut impl World,
+    ) -> Result<Option<Value>, InitFault> {
+        if !self.instance_alive(instance, start_ms) {
+            return Ok(None);
+        }
+        let mut parameters = match self
+            .machine
+            .snapshot
+            .instances
+            .get(&instance)
+            .and_then(|item| item.variables.get(&ACTION_PARAMETERS))
+        {
+            Some(Value::Array(items)) => items.clone(),
+            _ => Vec::new(),
+        };
+        for (index, value) in changed {
+            if let Some(parameter) = parameters.get_mut(*index) {
+                *parameter = value.clone();
+            }
+        }
+        let parameters = Value::Array(parameters);
+        let entity = self.machine.snapshot.entity;
+        self.copy_parameters_again(entity, instance, &parameters, true, world)?;
+        Ok(Some(parameters))
+    }
+
+    /// [`Self::set_action_parameters`] for the scope instances the action
+    /// `instance` of entity `source` opened here: Create Effect `1CE8`'s
+    /// scope 35 on the `304A` it made copies Visible To into `#20176`
+    /// (rid14, a plain copy), which its StateStack st0 evaluates on each
+    /// client.
+    pub fn set_scope_parameters(
+        &mut self,
+        source: u32,
+        instance: u16,
+        parameters: &Value,
         world: &mut impl World,
     ) -> Result<(), InitFault> {
-        if !self.instance_alive(instance, start_ms) {
-            return Ok(());
-        }
-        let entity = self.machine.snapshot.entity;
+        self.copy_parameters_again(source, instance, parameters, false, world)
+    }
+
+    /// The instances here that copied the parameters of action `instance`
+    /// of entity `source` copy `parameters` again: the scope instances it
+    /// opened here, and with `own` (the action runs here, and its
+    /// `#18739` takes them first) its children.
+    fn copy_parameters_again(
+        &mut self,
+        source: u32,
+        instance: u16,
+        parameters: &Value,
+        own: bool,
+        world: &mut impl World,
+    ) -> Result<(), InitFault> {
         let mut children = Vec::new();
         let mut opened = Vec::new();
         for (&id, item) in &self.machine.snapshot.instances {
             let scoped = item.scope.as_ref().is_some_and(|scope| {
-                scope.source.entity == entity && scope.source.instance == instance
+                scope.source.entity == source && scope.source.instance == instance
             });
             if scoped {
                 opened.push(id);
             }
-            if scoped || item.parent.is_some_and(|(parent, _)| parent == instance) {
+            if scoped || (own && item.parent.is_some_and(|(parent, _)| parent == instance)) {
                 children.push(id);
             }
+        }
+        if !own && children.is_empty() {
+            return Ok(());
         }
         // The plain copies as the old parameters gave them.
         let mut copies = Vec::new();
@@ -245,8 +302,9 @@ impl Component {
             }
             Ok(())
         })?;
-        let parameters = Value::Array(parameters);
-        self.set_instance_variable(instance, ACTION_PARAMETERS, parameters.clone(), world)?;
+        if own {
+            self.set_instance_variable(instance, ACTION_PARAMETERS, parameters.clone(), world)?;
+        }
         for id in opened {
             if let Some(scope) = self
                 .machine

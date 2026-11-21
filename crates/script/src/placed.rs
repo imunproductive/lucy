@@ -881,6 +881,34 @@ impl MapEntityWorld {
         opened
     }
 
+    /// The rule engine evaluated again the parameters of the Workshop
+    /// action `instance` of entity `source` (the mode entity): the scope
+    /// instances it opened here copy them again
+    /// ([`Component::set_scope_parameters`]).
+    pub fn set_scope_parameters(&mut self, source: u32, instance: u16, parameters: &Value) {
+        let targets: Vec<u32> = self
+            .entities
+            .iter()
+            .filter(|placed| {
+                placed.snapshot().is_some_and(|snapshot| {
+                    snapshot.instances.values().any(|item| {
+                        item.scope.as_ref().is_some_and(|scope| {
+                            scope.source.entity == source && scope.source.instance == instance
+                        })
+                    })
+                })
+            })
+            .map(|placed| placed.entity)
+            .collect();
+        if targets.is_empty() {
+            return;
+        }
+        self.run_scripts(
+            |entity| targets.contains(&entity),
+            |component, world| component.set_scope_parameters(source, instance, parameters, world),
+        );
+    }
+
     /// Spawn an entity at the current frame: it starts its initial graphs
     /// and runs them at once. False when it has none or one is missing.
     pub fn spawn(&mut self, spawn: Spawn<'_>) -> bool {
