@@ -1660,6 +1660,22 @@ impl Evaluator<'_> {
             "STU_2566340D" => {
                 return self.config(child(config, "m_string"), context, nested);
             }
+            // A formatted string (`Eval_STU_43CFA23F`, Custom String `5C14`
+            // in `1B4A`, `refs/reports/Workshop.md` "WorkshopRuntime"): the
+            // template `m_6C54C35C` with each `{i}` replaced by the text of
+            // `m_367CCBF5[i]` ([`workshop_text`]).
+            "STU_43CFA23F" => {
+                let template =
+                    workshop_text(&self.config(child(config, "m_6C54C35C"), context, nested)?);
+                let mut text = template;
+                if let Some(args) = child(config, "m_367CCBF5").as_array() {
+                    for (index, arg) in args.iter().enumerate() {
+                        let part = workshop_text(&self.config(arg, context, nested)?);
+                        text = text.replace(&format!("{{{index}}}"), &part);
+                    }
+                }
+                Value::String(text)
+            }
             // A Workshop parameter as the action graphs read it from
             // `#18739` (391 uses in 177 graphs): `m_35547D6E` within
             // `m_FDCA1FD0` and `m_68CFF844` (slot 5 `sub_7FF789C19A10`,
