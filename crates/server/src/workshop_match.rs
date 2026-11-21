@@ -330,19 +330,27 @@ impl ScriptMatch {
                 "lobby" => found.lobby(block),
                 "modes" => {
                     for setting in block {
-                        match setting {
+                        // A mode with every setting at its default is its
+                        // bare name (SkyboxDetector's `Assault`): on, on
+                        // every map.
+                        let (name, block): (&str, &[Setting]) = match setting {
                             Setting::Block(name, block) if name == "General" => {
                                 mode_lines.extend(pairs(block));
+                                continue;
                             }
-                            Setting::Block(name, block) => match catalog.game_mode(mode_name(name))
-                            {
-                                Some(mode) if !name.starts_with("disabled ") => {
-                                    blocks.push((mode, block));
-                                }
-                                Some(_) => {}
-                                None => found.skip(format!("modes: {name}: no such game mode")),
-                            },
-                            other => found.skip(format!("modes: {other:?}")),
+                            Setting::Block(name, block) => (name, block),
+                            Setting::Line(name) => (name, &[]),
+                            Setting::Pair(..) => {
+                                found.skip(format!("modes: {setting:?}"));
+                                continue;
+                            }
+                        };
+                        match catalog.game_mode(mode_name(name)) {
+                            Some(mode) if !name.starts_with("disabled ") => {
+                                blocks.push((mode, block));
+                            }
+                            Some(_) => {}
+                            None => found.skip(format!("modes: {name}: no such game mode")),
                         }
                     }
                 }
@@ -766,6 +774,43 @@ mod tests {
             ),
             "{:?}",
             script.skipped
+        );
+    }
+
+    /// A mode with every setting at its default is its bare name
+    /// (SkyboxDetector): on, on every map; `disabled …` bare stays off.
+    #[test]
+    #[ignore = "requires an Overwatch 1.74 install (just test-game <install>)"]
+    fn a_bare_mode_name_is_that_mode_on_every_map() {
+        const TEXT: &str = r#"settings
+{
+	modes
+	{
+		Assault
+		disabled Control
+		Escort
+		General
+		{
+			Limit Roles: 2 Of Each Role Per Team
+		}
+	}
+}
+"#;
+        let data = orpheus_testkit::runtime_dir().join("data");
+        let catalog = Catalog::load(&data).unwrap();
+        let names = SettingNames::load(&data).unwrap();
+        let script = ScriptMatch::parse(TEXT, &catalog, &names).unwrap();
+        let games: Vec<(u64, Option<Vec<u64>>)> = script
+            .games
+            .iter()
+            .map(|game| (game.mode, game.maps.clone()))
+            .collect();
+        assert_eq!(
+            games,
+            [
+                (catalog.game_mode("Assault").unwrap(), None),
+                (catalog.game_mode("Escort").unwrap(), None),
+            ]
         );
     }
 }

@@ -49,4 +49,12 @@ fn workshop_catalog_is_the_installs() {
     assert_eq!(catalog["strings"][1], "{0}:");
     assert_eq!(catalog["heroes"]["Doomfist"], "0x02E000000000012F");
     assert_eq!(catalog["maps"]["Hanamura"], 0x165);
+    // The Escort map, not the disabled Rialto (Retribution) `79F`.
+    assert_eq!(catalog["maps"]["Rialto"], 0x871);
+    // Event Ability's buttons: Rocket Punch on Secondary Fire (29), Quick
+    // Melee on Melee (31), Rising Uppercut on Ability 1 (35).
+    let loadouts = &catalog["loadouts"];
+    assert_eq!(loadouts["0x0B90000000000107"], 29);
+    assert_eq!(loadouts["0x0B900000000002F5"], 31);
+    assert_eq!(loadouts["0x0B90000000000106"], 35);
 }

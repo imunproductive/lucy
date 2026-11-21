@@ -286,10 +286,16 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             }
             "STUStatescriptActionPlayScript" => {
                 let graph = self.graph(id).index;
+                let played = || {
+                    node.field("m_script.m_graph")
+                        .and_then(asset_guid)
+                        .filter(|&played| played >> 48 == 0x0580)
+                        .and_then(|played| u32::try_from(played & 0xFFFF_FFFF_FFFF).ok())
+                };
                 if let Some(played) = wheel::played_graph(graph, node.pos)
                     .or_else(|| play::server_played_graph(graph, node.pos))
                 {
-                    self.play_script(id, node, played)?;
+                    self.play_script(id, node, played, play::Plays::Everywhere)?;
                 } else if self.graphs.is_aura_graph(graph)
                     || self.graphs.is_workshop_action(graph)
                     || play::HEALTH_PACKS.contains(&graph)
@@ -301,14 +307,17 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                     // player's controller, `vm/workshop.rs`); a health
                     // pack `0046` on itself and `0046` its visual's `0EB9`
                     // ([`play::HEALTH_PACKS`]).
-                    let played = node
-                        .field("m_script.m_graph")
-                        .and_then(asset_guid)
-                        .filter(|&played| played >> 48 == 0x0580)
-                        .and_then(|played| u32::try_from(played & 0xFFFF_FFFF_FFFF).ok());
-                    if let Some(played) = played {
-                        self.play_script(id, node, played)?;
+                    if let Some(played) = played() {
+                        self.play_script(id, node, played, play::Plays::Everywhere)?;
                     }
+                } else if self.graphs.ability_button(graph).is_some()
+                    && let Some(played) = played()
+                {
+                    // A hero ability's graph plays its victim's graph on
+                    // the bodies it struck (Rocket Punch `0D06` plays
+                    // `0D07`, Soundwave `0776` plays `0ECA`): on other
+                    // entities only ([`play::Plays::Others`]).
+                    self.play_script(id, node, played, play::Plays::Others)?;
                 }
                 self.follow(id, node, "m_outPlug", None, depth)?;
                 Ok(true)
@@ -486,6 +495,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 Ok(true)
             }
             "STU_621AF478" => self.revive_bodies(id, node, depth),
+            "STU_AFBB59E9" => self.report_knockback(id, node, depth),
             _ => self.unhandled_action(id, node, depth),
         }
     }

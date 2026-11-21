@@ -476,6 +476,60 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         Ok(true)
     }
 
+    /// `STU_AFBB59E9` (server-only: no registration of its own; 4 nodes):
+    /// the retail server's knockback report, attacker `m_C285CBB2`, victim
+    /// `m_0F99C09F`, direction `m_direction`, ability `m_loadout`. Rocket
+    /// Punch's victim graph `0D07` rid63 (the puncher `#40` on its body,
+    /// along `#2083`, loadout `0B9:107`), Junkrat's Concussion Mine `096A`
+    /// and Ashe's Coach Gun `1513` (the owner on himself, their self
+    /// boosts) and the aura graph `00F8` report one right beside the
+    /// velocity action that pushes the body. Its fields are exactly the
+    /// Workshop's knockback context (Attacker, Victim, Event Direction,
+    /// Event Ability); the world keeps it for the match
+    /// ([`World::knockback`]). Not read: `m_96C81186` (0.0 in every use),
+    /// `m_60F4B15F` (false), `m_BA94BAA0` (2). Where the world keeps none,
+    /// handled as an action without a model ([`Self::unhandled_action`]).
+    pub(super) fn report_knockback(
+        &mut self,
+        id: u16,
+        node: &Node,
+        depth: usize,
+    ) -> Result<bool, InitFault> {
+        let site = self.site(id, node);
+        let entity = |vm: &mut Self, name: &str| {
+            vm.evaluate_quietly(id, node, field(&node.fields, name))
+                .and_then(|value| expr::to_entity(&value))
+                .filter(|&entity| expr::valid_entity(entity))
+        };
+        let attacker = entity(self, "m_C285CBB2");
+        let victim = entity(self, "m_0F99C09F");
+        let direction = match self.evaluate_quietly(id, node, field(&node.fields, "m_direction")) {
+            Some(Value::Vector(direction)) => direction,
+            _ => [0.0; 3],
+        };
+        let loadout = match self.evaluate_quietly(id, node, field(&node.fields, "m_loadout")) {
+            Some(Value::Asset(guid)) if guid != 0 => Some(guid),
+            _ => None,
+        };
+        let kept = match (attacker, victim) {
+            (Some(attacker), Some(victim)) => self.world.knockback(
+                site,
+                Knockback {
+                    attacker,
+                    victim,
+                    direction,
+                    loadout,
+                },
+            ),
+            _ => false,
+        };
+        if !kept {
+            return self.unhandled_action(id, node, depth);
+        }
+        self.follow(id, node, "m_outPlug", None, depth)?;
+        Ok(true)
+    }
+
     /// `STU_A1DF3B2D` (server-only: no registration of its own; the death
     /// layer `01CB` rid14 and rid58, Echo's `19EB`): from the entity
     /// `m_4F64C1D3` (the body's controller) it writes an entity list to

@@ -830,6 +830,7 @@ fn a_fall_after_an_enemys_knock_is_the_enemys_kill() {
                 environment: true,
                 direction: None,
                 killed: true,
+                loadout: None,
             },
             PlayerEvent::Elimination {
                 player: ENEMY,

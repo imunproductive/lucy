@@ -169,6 +169,8 @@ pub struct Catalog {
     map_names: HashMap<u32, String>,
     game_modes: HashMap<String, u64>,
     game_mode_names: HashMap<u64, String>,
+    /// Loadout GUID -> its logical button number (Event Ability).
+    loadout_buttons: HashMap<u64, i64>,
 }
 
 #[derive(Deserialize)]
@@ -240,6 +242,8 @@ struct Raw {
     maps: HashMap<String, u32>,
     #[serde(default)]
     game_modes: HashMap<String, String>,
+    #[serde(default)]
+    loadouts: HashMap<String, i64>,
 }
 
 impl Catalog {
@@ -341,7 +345,17 @@ impl Catalog {
             catalog.game_mode_names.insert(guid, name.clone());
             catalog.game_modes.insert(fold(&name), guid);
         }
+        for (guid, button) in raw.loadouts {
+            catalog.loadout_buttons.insert(parse_guid(&guid)?, button);
+        }
         Ok(catalog)
+    }
+
+    /// The logical button number (the hero graphs' and the Workshop's
+    /// button table's: 20 Primary Fire, 29 Secondary Fire, 31 Melee…) of
+    /// the ability `loadout` (a `09E` GUID) is, if it has one.
+    pub fn loadout_button(&self, loadout: u64) -> Option<i64> {
+        self.loadout_buttons.get(&loadout).copied()
     }
 
     pub fn value(&self, id: Id) -> Option<&ValueDef> {

@@ -21,7 +21,8 @@
 //! The literal names the Workshop text uses that live elsewhere come along:
 //! heroes (`data/game_heroes_174.json`), maps (the maps of
 //! `data/game_maps_174.json` by their headers' Workshop names), game modes
-//! (`0C5` display names).
+//! (`0C5` display names). `loadouts` gives each loadout's logical button
+//! (the Workshop's Event Ability).
 
 use std::{collections::BTreeMap, path::Path};
 
@@ -42,13 +43,16 @@ const ACTIONS: u64 = 0x155;
 const VALUES: u64 = 0x162;
 const GAME_MODE: u16 = 0x0C5;
 const MAP_HEADER: u16 = 0x09F;
+const LOADOUT: u16 = 0x09E;
 
 const SOURCE: &str = "Build 1.74.0.0.104319: the Workshop catalog. 054/0154 m_targets (events, in \
 event-type order) and m_16EC4AA9 (conditions); 054/0155 m_35CA5DCD (actions, in action-index \
 order); 054/0162 m_C87139B0 (enums), m_7169E470 (predefined strings), m_values (values by 01C \
 identifier). Parameter kinds are the client's (sub_7FF789CA1D70). Heroes from \
 game_heroes_174.json, maps of game_maps_174.json by their 09F header's m_overrideName or else \
-m_displayName (first index of a name), game modes from 0C5 m_displayName.";
+m_displayName (an enabled map first, then the first index of a name), game modes from 0C5 \
+m_displayName, loadouts: each 09E \
+STULoadout's m_logicalButton input action (0A9 STU_C5243F93) by its m_logicalButton number.";
 
 /// The client's kind code of each parameter class (`sub_7FF789CA1D70`).
 /// `STU_7BF2036D` (Wait's behaviour) has none; the event filters have none.
@@ -150,6 +154,7 @@ pub(crate) fn derive(install: &Install, out: &Path) -> Result<Vec<Output>> {
         "heroes": heroes(out)?,
         "maps": maps(install, out)?,
         "game_modes": game_modes(install)?,
+        "loadouts": loadouts(install)?,
     });
     Ok(vec![Output::json(PATH, &table)])
 }
@@ -275,14 +280,17 @@ fn heroes(out: &Path) -> Result<Json> {
 /// `game_maps_174.json`, named as the Workshop names them: the header's
 /// `m_overrideName`, else its `m_displayName` (`sub_7FF78934C490`, which
 /// `sub_7FF789CA4B50` uses to write a Map constant: "Hanamura Winter",
-/// not the pack's "Hanamura (Winter)"). The lowest index of a name wins.
+/// not the pack's "Hanamura (Winter)"). Of the maps sharing a name, an
+/// enabled one (the pack's `state`) wins over a disabled one, then the
+/// lowest index: "Rialto" is the Escort map `871`, not the disabled
+/// Rialto (Retribution) `79F`, whose header names it "Rialto" too.
 fn maps(install: &Install, out: &Path) -> Result<Json> {
     let maps = read_json(out, "data/game_maps_174.json")?;
     let maps = maps
         .as_object()
         .ok_or_else(|| asset_error("data/game_maps_174.json is not an object"))?;
-    let mut names: BTreeMap<String, u64> = BTreeMap::new();
-    for key in maps.keys() {
+    let mut names: BTreeMap<String, (bool, u64)> = BTreeMap::new();
+    for (key, map) in maps {
         // The pack keys maps by their `002` GUID; the header has the index.
         let index = parse_guid(key)? & INDEX;
         let header = install.stu(typed(index, MAP_HEADER))?;
@@ -292,11 +300,16 @@ fn maps(install: &Install, out: &Path) -> Result<Json> {
             .find(|&text| text != 0)
             .and_then(|text| install.string(text));
         let Some(name) = name else { continue };
+        let rank = (map["state"] != "Enabled", index);
         names
             .entry(name)
-            .and_modify(|first| *first = (*first).min(index))
-            .or_insert(index);
+            .and_modify(|first| *first = (*first).min(rank))
+            .or_insert(rank);
     }
+    let names: BTreeMap<String, u64> = names
+        .into_iter()
+        .map(|(name, (_, index))| (name, index))
+        .collect();
     Ok(json!(names))
 }
 
@@ -312,4 +325,28 @@ fn game_modes(install: &Install) -> Result<Json> {
         }
     }
     Ok(Json::Object(names))
+}
+
+/// Loadout GUID -> the logical button number of its input action, for
+/// the Workshop's Event Ability: each `09E` `STULoadout`'s
+/// `m_logicalButton` names an input action (`STU_C5243F93`, the `0A9`
+/// asset the settings' per-ability entries name too) whose own
+/// `m_logicalButton` is the number the hero graphs' ability states and
+/// the Workshop's button table use (Rocket Punch `0B9:107` -> `0A9:66` ->
+/// 29 Secondary Fire; Quick Melee `0B9:2F5` -> `0A9:72` -> 31). A
+/// loadout without an input action is left out.
+fn loadouts(install: &Install) -> Result<Json> {
+    let mut buttons = Map::new();
+    for (&index, asset) in &load(install, LOADOUT)? {
+        let action = Node::root(asset)?.guid("m_logicalButton");
+        if action == 0 {
+            continue;
+        }
+        let action = install.stu(action)?;
+        let button = Node::root(&action)?.int("m_logicalButton");
+        if button != 0 {
+            buttons.insert(key(typed(index, LOADOUT)), json!(button));
+        }
+    }
+    Ok(Json::Object(buttons))
 }

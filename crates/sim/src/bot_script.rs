@@ -42,8 +42,8 @@ use orpheus_script::{
     stream::{BodyStream, ChangeKey, DeltaKind, ScriptChunk},
     timeline::FRAME_MS,
     vm::{
-        AiMoveRequest, AuraChange, BodyEffects, GameMessage, HealthChange, MapRays, MessageEnd,
-        Motion, Scaled, ShotEvent, Snapshot, TargetCandidate, Unknowns,
+        AiMoveRequest, AuraChange, BodyEffects, GameMessage, HealthChange, Knockback, MapRays,
+        MessageEnd, Motion, PlayRequest, Scaled, ShotEvent, Snapshot, TargetCandidate, Unknowns,
     },
     weapons::{DamageTags, HitDefinition, ProjectileBallistics, authored_number, ray_profile},
     wire::Value,
@@ -825,6 +825,50 @@ impl BotScripts {
             eprintln!("bot {entity:08X}'s body script failed on an aura ({reason})");
             self.slots[slot] = None;
         }
+    }
+
+    /// Another body's ability graph played `request.graph` on the live bot
+    /// at world tick `tick` (Rocket Punch's `0D07`): its body script plays
+    /// it, and its changed frame goes to the clients as a live frame.
+    /// Whether a bot here took it.
+    pub(crate) fn play_script(&mut self, request: &PlayRequest, tick: u32) -> bool {
+        let entity = request.target;
+        let Some(slot) = self.slot(entity) else {
+            return false;
+        };
+        let script = self.slots[slot].as_mut().expect("a running bot script");
+        let result = script
+            .body
+            .play_script(tick, request)
+            .map_err(|error| error.to_string())
+            .and_then(|took| {
+                let script = self.slots[slot].as_mut().expect("a running bot script");
+                self.health_changes
+                    .extend(script.body.take_health_changes());
+                if took {
+                    self.publish_live(slot).map(|()| true)
+                } else {
+                    Ok(false)
+                }
+            });
+        match result {
+            Ok(took) => took,
+            Err(reason) => {
+                eprintln!("bot {entity:08X}'s body script failed on a played graph ({reason})");
+                self.slots[slot] = None;
+                false
+            }
+        }
+    }
+
+    /// The knockbacks the bots' graphs reported since the last call
+    /// (`STU_AFBB59E9`), in order.
+    pub fn take_knockbacks(&mut self) -> Vec<Knockback> {
+        self.slots
+            .iter_mut()
+            .flatten()
+            .flat_map(|script| script.body.take_knockbacks())
+            .collect()
     }
 
     /// The health changes the bots' graphs made since the last call, in

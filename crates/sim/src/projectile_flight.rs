@@ -564,6 +564,11 @@ impl ProjectileFlight {
         Some([away * x, away * y + upward, away * z])
     }
 
+    /// The ability its explosion is (its blast's health change's loadout).
+    pub fn blast_loadout(&self) -> Option<u64> {
+        self.ballistics.blast.as_ref()?.hit.loadout
+    }
+
     /// The unit line from where it is to the centre of a body at `pose`
     /// (half its height above the feet); along its flight when they meet.
     fn blast_line(&self, pose: &TargetPose) -> Vec3 {
