@@ -2048,24 +2048,6 @@ mod tests {
                 (
                     0x0043,
                     Some(10),
-                    "STUStatescriptModifyHealth m_knockbackRings",
-                    "not read"
-                ),
-                (
-                    0x0043,
-                    Some(10),
-                    "STUStatescriptModifyHealth m_C0139FA6",
-                    "not read"
-                ),
-                (
-                    0x0043,
-                    Some(10),
-                    "STUStatescriptModifyHealth m_E33EFEE1",
-                    "not read"
-                ),
-                (
-                    0x0043,
-                    Some(10),
                     "STUStatescriptModifyHealth m_10399AE7",
                     "not read"
                 ),
