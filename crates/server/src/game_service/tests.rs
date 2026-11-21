@@ -5554,9 +5554,9 @@ fn a_skirmish_match_on_another_map_plays_at_once_and_takes_a_third_player() {
         |watchers| {
             watchers.iter().all(|watcher| {
                 watcher.created(watcher.owner | 1).is_some_and(|created| {
-                    controllers(watcher)
-                        .iter()
-                        .any(|(index, chunk)| *index >= created && shows(chunk, false, Some(SOLDIER)))
+                    controllers(watcher).iter().any(|(index, chunk)| {
+                        *index >= created && shows(chunk, false, Some(SOLDIER))
+                    })
                 })
             })
         },

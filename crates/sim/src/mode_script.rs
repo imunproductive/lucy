@@ -302,14 +302,12 @@ impl ModeRunner {
                 5 => match_flow::Phase::MatchEnd,
                 _ => return None,
             },
-            None if root.graph == SKIRMISH_GRAPH => {
-                match root.variables.get(&SKIRMISH_DECIDED) {
-                    Some(value) if *value != orpheus_script::wire::Value::Null => {
-                        match_flow::Phase::MatchEnd
-                    }
-                    _ => match_flow::Phase::Round,
+            None if root.graph == SKIRMISH_GRAPH => match root.variables.get(&SKIRMISH_DECIDED) {
+                Some(value) if *value != orpheus_script::wire::Value::Null => {
+                    match_flow::Phase::MatchEnd
                 }
-            }
+                _ => match_flow::Phase::Round,
+            },
             None => return None,
         };
         let team = |value: &orpheus_script::wire::Value| {

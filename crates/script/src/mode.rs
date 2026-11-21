@@ -15,8 +15,8 @@ use crate::{
     expr::EntityRelation,
     graph::GraphStore,
     map_tags::MapTags,
-    target_tags::TargetTags,
     placed::{DummyChange, Gaps, MapEntityWorld, NextDummy, PlacedEntity},
+    target_tags::TargetTags,
     vm::{
         ACTION_PARAMETERS, ActionOutcome, Component, DummyBot, EntityCreation, GameMessage,
         HealthChange, InitFault, MAX_INIT_WORK, MapRays, MessageEnd, PlayRequest, Root,
@@ -409,7 +409,12 @@ impl World for ModeWorld {
     /// own scripts read their authored tags (as `crate::placed`'s world
     /// keeps its own entity's). One on no entity (a tag query that found
     /// none: Workshop Chamber has no `0405`) tags nothing.
-    fn set_target_tag_effect(&mut self, _site: Site, effect: TargetTagEffect, active: bool) -> bool {
+    fn set_target_tag_effect(
+        &mut self,
+        _site: Site,
+        effect: TargetTagEffect,
+        active: bool,
+    ) -> bool {
         if effect.entity == 0 {
             return true;
         }
