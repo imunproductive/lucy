@@ -35,12 +35,14 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
     }
 
     /// The movement sampler (`STU_96F1DBCF`): its outputs follow the owner's
-    /// 13 movement bits. On a tick (`edges`) a change also follows its two
-    /// plugs, which only Doomfist (graph `0D06`) and Baptiste (`1983`) link:
-    /// `m_2102C541` when the body becomes grounded (bit 1; Doomfist's plug
-    /// sets his copy of the grounded variable `0221`) and `m_E37BC6C2` when it
-    /// becomes airborne (bit 0; Baptiste's checks the jump button for the Exo
-    /// Boots). Which edge each plug takes is an assumption from those uses.
+    /// 13 movement bits. On a tick (`edges`) it also follows its two plugs,
+    /// which only Doomfist (graph `0D06`) and Baptiste (`1983`) link, as the
+    /// client's update `0x7FF789C4D420` does: from airborne (bit 0) to
+    /// grounded `m_2102C541` (Doomfist's sets his grounded variable `0221`),
+    /// from grounded to airborne `m_E37BC6C2` (Baptiste's checks the jump
+    /// button for the Exo Boots), and airborne in both samples with the air
+    /// ticks back at 0 (landed and left again in one move) both, landing
+    /// first.
     pub(super) fn update_movement_sample(
         &mut self,
         key: StateKey,
@@ -58,7 +60,8 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             return Ok(());
         };
         let changed = previous ^ sample;
-        if changed == 0 {
+        let restarted = edges && previous & sample & 1 != 0 && self.world.movement_restarted(site);
+        if changed == 0 && !restarted {
             return Ok(());
         }
         self.state_mut(key).expect("active movement sample").kind =
@@ -78,10 +81,13 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             }
         }
         if edges {
-            for (mask, plug) in [(2, "m_2102C541"), (1, "m_E37BC6C2")] {
-                if changed & sample & mask != 0 {
-                    self.follow(key.instance, node, plug, Some(key), 0)?;
-                }
+            let landed = previous & 1 != 0 && (sample & 1 == 0 || restarted);
+            let took_off = sample & 1 != 0 && (previous & 1 == 0 || restarted);
+            if landed {
+                self.follow(key.instance, node, "m_2102C541", Some(key), 0)?;
+            }
+            if took_off {
+                self.follow(key.instance, node, "m_E37BC6C2", Some(key), 0)?;
             }
         }
         Ok(())

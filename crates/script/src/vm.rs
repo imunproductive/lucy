@@ -594,6 +594,13 @@ pub trait World {
         None
     }
 
+    /// The owner landed and left the ground again within its last move: it
+    /// is airborne with its air ticks (mover state `+0x10`) at 0 on a fresh
+    /// move record.
+    fn movement_restarted(&self, _site: Site) -> bool {
+        false
+    }
+
     fn native(&mut self, _site: Site, _config: &Json) -> Option<Value> {
         None
     }
