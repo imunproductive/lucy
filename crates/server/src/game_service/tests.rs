@@ -3077,6 +3077,8 @@ fn the_range_console_puts_a_training_partner_on_its_pad_and_a_pick_replaces_it()
         send_input(&mut watcher, &mut frame, yaw, 0, 0, false);
         watcher.pump(&schemas);
     }
+    // His HUD comes back with it (`265F` st13 false on his controller).
+    assert!(!server.bodies(MATCH).unwrap()[0].picker_hides_hud);
     assert!(
         watcher
             .find(0, |record| record.entity == CONSOLE
@@ -3097,10 +3099,19 @@ fn the_range_console_puts_a_training_partner_on_its_pad_and_a_pick_replaces_it()
     // The partners' bodies are another player's to this client: any of
     // their statescript comes as observer frames (H=0), never as owner
     // frames (two more seconds of datagrams).
+    let idle = watcher.datagrams.len();
     for _ in 0..125 {
         send_input(&mut watcher, &mut frame, yaw, 0, 0, false);
         watcher.pump(&schemas);
     }
+    let controller_frames = watcher.datagrams[idle..]
+        .iter()
+        .flat_map(|(_, records)| records)
+        .filter(|record| record.entity == watcher.owner && record.script.is_some())
+        .count();
+    // His controller's projection holds while he stands: no controller
+    // frame goes (a frame goes only when what it carries changed).
+    assert_eq!(controller_frames, 0);
     for (_, records) in &watcher.datagrams {
         for chunk in records
             .iter()
@@ -3112,6 +3123,20 @@ fn the_range_console_puts_a_training_partner_on_its_pad_and_a_pick_replaces_it()
             }
         }
     }
+    // The swap posts no chat line: the partners are dummy bots, whose
+    // cards come without "joined the game" or "left the game".
+    let lines: Vec<_> = watcher
+        .datagrams
+        .iter()
+        .flat_map(|(messages, _)| messages)
+        .filter(|message| {
+            message.id == 20308
+                && [0x78, 0x7b]
+                    .iter()
+                    .all(|offset| message.fields.get(offset) == Some(&Value::Bool(true)))
+        })
+        .collect();
+    assert!(lines.is_empty(), "{lines:?}");
 }
 
 /// A Reinhardt picked at the console: his body comes once, with his hero's
@@ -3345,6 +3370,11 @@ fn pick_training_partner(
         send_input(&mut watcher, &mut frame, yaw, 0, 0, false);
         watcher.pump(&schemas);
     }
+    // His controller's scope 126 instance follows his body's `#25456e`
+    // (st13 reads it through `STU_00707E1E`) and his controller frame
+    // carries it: st33, whose client-only st12 hides his HUD while the
+    // picker is open, which his client's rollbacks restore from that frame.
+    assert!(server.bodies(MATCH).unwrap()[0].picker_hides_hud);
     // The pick, from his controller's scope 126 instance: `08E6` an array
     // of the hero, `08E7` an array of true, then two entities
     // (`orpheus_content::parameters` `parameter_rows_read_as_the_client_writes_them`).

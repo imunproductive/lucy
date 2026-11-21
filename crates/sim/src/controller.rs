@@ -59,7 +59,7 @@ use orpheus_script::{
         PVP_CONTROLLER, PlayableHero,
     },
     graph::{Graph, GraphStore},
-    snapshot::{SnapshotEncoder, SnapshotError, View},
+    snapshot::{ProjectedSnapshot, SnapshotEncoder, SnapshotError, View},
     timeline::FRAME_MS,
     vm::{InitFault, Unknowns},
     wire::{Instance, Layout, Value, Variables, WireError, remote_full},
@@ -185,6 +185,31 @@ impl Controller {
         command_frame: u32,
         input: ControllerFrame,
     ) -> Result<BitWriter, SnapshotError> {
+        let projected = self.controller_projection(script, input)?;
+        self.encode_controller(script, &projected, command_frame)
+    }
+
+    /// An owner full frame of `projected` ([`Self::controller_projection`])
+    /// at command frame `command_frame`.
+    pub fn encode_controller(
+        &self,
+        script: &ControllerScript,
+        projected: &ProjectedSnapshot,
+        command_frame: u32,
+    ) -> Result<BitWriter, SnapshotError> {
+        let encoder =
+            SnapshotEncoder::new(script.graphs(), &self.codecs).with_unknowns(self.unknowns);
+        let frame_ms = u32::try_from(FRAME_MS).map_err(|_| SnapshotError::FrameTime)?;
+        encoder.owner_full(projected, command_frame, frame_ms)
+    }
+
+    /// What an owner frame of the controller carries: its script's
+    /// snapshot as the owner sees it, with `input` on top.
+    pub fn controller_projection(
+        &self,
+        script: &ControllerScript,
+        input: ControllerFrame,
+    ) -> Result<ProjectedSnapshot, SnapshotError> {
         let snapshot = script.snapshot().ok_or(SnapshotError::DifferentStream)?;
         let encoder =
             SnapshotEncoder::new(script.graphs(), &self.codecs).with_unknowns(self.unknowns);
@@ -233,8 +258,7 @@ impl Controller {
                 _ => {}
             }
         }
-        let frame_ms = u32::try_from(FRAME_MS).map_err(|_| SnapshotError::FrameTime)?;
-        encoder.owner_full(&projected, command_frame, frame_ms)
+        Ok(projected)
     }
 
     /// A remote 288D root and the three entity variables used by team selection.
