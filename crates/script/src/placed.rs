@@ -1287,7 +1287,7 @@ impl MapEntityWorld {
         std::mem::take(&mut self.out.outbox)
     }
 
-    /// The auras the spawned entities put on bodies or took off, for the
+    /// The auras the entities put on bodies or took off, for the
     /// match to hand to the bodies' scripts.
     pub fn take_auras(&mut self) -> Vec<AuraChange> {
         std::mem::take(&mut self.out.auras)
