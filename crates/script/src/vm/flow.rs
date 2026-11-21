@@ -17,7 +17,7 @@ const ELAPSED_SECONDS: &str = "m_AA6E611E";
 /// The action Switch's indexed form: the value is the case number.
 const SWITCH_INDEXED: &str = "m_F0F0720B";
 
-impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
+impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W> {
     /// A state-input join (`STU_1113EBD5`) reached through `plug` of node
     /// `producer` (`Instance.join` in upstream's `runtime.py`). The client
     /// keeps one record per distinct input (join, producer, plug); a repeat

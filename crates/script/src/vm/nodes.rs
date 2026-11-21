@@ -169,6 +169,13 @@ const ASSUMED_INERT_STATES: &[&str] = &[
 /// (an inference from its users: a native exemption for a body the
 /// ability moves in ways a walk can't, such as the retail server's
 /// movement checks; the server has none to exempt).
+/// And the Workshop chase helpers' `STU_F89A564A` (Chase Player / Global
+/// Variable At Rate's `1CCF`/`1CD0` st2: `m_entity` the owner,
+/// `m_B3867877` the chased variable's index; the base state on the
+/// client, a codec of none), whose subgraph st3 (`STU_1B2CD7F2`, the
+/// event context) the clients get: a mark for the retail rule engine that
+/// the variable moves [inference]; ORPHEUS's engine reads the variables
+/// each tick anyway.
 const ASSUMED_PLAIN_STATES: &[&str] = &[
     "STU_0C3A5D53",
     "STU_AB09B113",
@@ -179,9 +186,10 @@ const ASSUMED_PLAIN_STATES: &[&str] = &[
     "STU_3BC72DE1",
     "STU_582E0D5F",
     "STU_D07EBF01",
+    "STU_F89A564A",
 ];
 
-impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
+impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W> {
     pub(super) fn follow(
         &mut self,
         id: u16,
@@ -491,6 +499,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             "STU_FC3921B1" => self.create_dummy_bot(id, node, depth),
             "STUStatescriptActionCreateEntity" => self.create_entity(id, node, depth),
             "STU_C1561031" => self.remove_dummy_bot(id, node, depth),
+            "STU_5E019216" => self.start_game_mode(id, node, depth),
             "STU_CFCE55DC" => self.move_body(id, node, depth),
             "STU_545AB3B8" => self.credit_environment(id, node, depth),
             "STU_FFF26F80" => self.set_ability_cooldown_of(id, node, depth),

@@ -11,7 +11,7 @@
 
 use super::*;
 
-impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
+impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W> {
     pub(super) fn queue_buttons(&mut self, command: Command) -> Result<(), InitFault> {
         let edges: Vec<_> = button_edges(
             self.machine.command_buttons,

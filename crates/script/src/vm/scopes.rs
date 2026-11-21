@@ -29,6 +29,20 @@
 //! - A target that leaves loses its reference; with none left the instance
 //!   goes, unless the state keeps it (`m_4B7DF406`; `0x7FF789C359F0`): a
 //!   kept instance ends by itself (`265F`'s scope 197 exits after 2 s).
+//! - With the reuse flag (`m_DED58406`, a bool config, false when unset)
+//!   slot 57 first looks among the target's instances for one of the
+//!   state's graph and scope id (`+488`, `+8` = state `+944`) that isn't
+//!   ending (`+792 & 0x104` clear), the last in order. Found, it adds the
+//!   state to that instance's parent references and posts it a state
+//!   event (event type 1, `0x7FF7898881F0`) of kind 2 for the state's copy
+//!   instead of a begin. The event dispatcher (`0x7FF78AAA1690` case 1)
+//!   calls an active copy's event slot 18 (`0x7FF789C56080`: kind 2 follows
+//!   the scope plug `m_C41A9BE2` again, kind 1 `m_0647CAD7`) and an
+//!   inactive copy's slot 19 (`ret 0` here). A copy whose begin aborts it
+//!   (every Workshop action's: Set Status `1C4B`, the HUD switches `298C`,
+//!   `29C3`) is inactive, so a reuse leaves the running instance as it is:
+//!   a second Set Status of a status the player has neither restarts nor
+//!   lengthens it.
 //! - The state's frame record ("hits", `Write_STU_07AD90EE`
 //!   0x7FF789C56790) lists each target: its value, the entity holding its
 //!   instance and the instance's id, its index, the keep flag and a set
@@ -89,6 +103,9 @@ pub enum ScopeChange {
         /// The creating instance's `#27`.
         creator: u32,
         keep: bool,
+        /// Take the target's last live instance of this graph and scope
+        /// instead of opening another (`m_DED58406`).
+        reuse: bool,
         parent: Variables,
     },
     Close {
@@ -138,8 +155,11 @@ impl Component {
     /// Open or close a scope instance on this entity. An open creates an
     /// instance of the scope's graph in the scope, created with the
     /// creator, and begins the scope state's copy in it, which follows its
-    /// scope plug; returns the instance. A close takes the instance away
-    /// unless its state keeps it. None: no instance opened (a missing
+    /// scope plug; returns the instance. A reusing open takes the last live
+    /// instance of the graph and scope instead, if there is one, and posts
+    /// its copy of the state the reuse's event ([`Event::Rescope`]). A
+    /// close takes the instance away unless its state keeps it or another
+    /// scope state still has it. None: no instance opened (a missing
     /// graph).
     pub fn change_scope(
         &mut self,
@@ -153,10 +173,34 @@ impl Component {
                 scope,
                 creator,
                 keep,
+                reuse,
                 parent,
                 ..
             } => {
                 if let Some(&(id, _)) = self.machine.scopes.get(source) {
+                    return Ok(Some(id));
+                }
+                let reused = self
+                    .machine
+                    .snapshot
+                    .instances
+                    .iter()
+                    .rev()
+                    .find(|(_, instance)| {
+                        *reuse
+                            && instance.graph == *graph
+                            && instance
+                                .scope
+                                .as_ref()
+                                .is_some_and(|link| link.id == *scope)
+                    })
+                    .map(|(&id, _)| id);
+                if let Some(id) = reused {
+                    self.run(erase(world), |vm| {
+                        vm.post(id, Event::Rescope(source.state))?;
+                        vm.run()
+                    })?;
+                    self.machine.scopes.insert(*source, (id, *keep));
                     return Ok(Some(id));
                 }
                 let id = u16::try_from(self.machine.next_id)
@@ -167,7 +211,7 @@ impl Component {
                     parent: parent.clone(),
                 };
                 let mut created = false;
-                self.run(world, |vm| {
+                self.run(erase(world), |vm| {
                     created = vm.create_scoped(id, *graph, Some(link), *creator)?;
                     if created {
                         vm.post(id, Event::Begin(source.state))?;
@@ -184,10 +228,11 @@ impl Component {
                 let Some((id, keep)) = self.machine.scopes.remove(source) else {
                     return Ok(None);
                 };
-                if keep || !self.machine.snapshot.instances.contains_key(&id) {
+                let shared = self.machine.scopes.values().any(|&(other, _)| other == id);
+                if keep || shared || !self.machine.snapshot.instances.contains_key(&id) {
                     return Ok(None);
                 }
-                self.run(world, |vm| {
+                self.run(erase(world), |vm| {
                     vm.post(id, Event::ExitInstance)?;
                     vm.run()
                 })?;
@@ -215,7 +260,7 @@ impl Component {
     }
 }
 
-impl<W: World> Vm<'_, '_, '_, W> {
+impl<W: World + ?Sized> Vm<'_, '_, '_, W> {
     /// The scope id of an instance: 0 for one that isn't a scope's.
     pub(super) fn instance_scope(&self, id: u16) -> u32 {
         self.machine.snapshot.instances[&id]
@@ -302,25 +347,20 @@ impl<W: World> Vm<'_, '_, '_, W> {
             };
             // The reuse flag (`m_DED58406`, `+0x110`): slot 57
             // `0x7FF789C512E0` evaluates it as a bool, false when unset
-            // (`sub_7FF7898060F0(state, config, 0)`); true looks on the
-            // target's host for a live instance of the state's graph and
-            // scope id (`+8` = `+944`, flags `+792 & 0x104` clear) and takes
-            // it instead of creating one. False is what the VM does; true
-            // (21 of the bundle's 54 uses) is not. The index outputs
-            // `m_42BA09E3` (`+0x118`, written with the reused instance's
-            // count + 1) and `m_339A63DB` (`+0x100`) are unset in every
-            // use.
+            // (`sub_7FF7898060F0(state, config, 0)`); the target takes it
+            // ([`Component::change_scope`]). The index outputs `m_42BA09E3`
+            // (`+0x118`, written with the reused instance's count + 1) and
+            // `m_339A63DB` (`+0x100`) are unset in every use.
             let reuse = match field(&node.fields, "m_DED58406") {
                 Json::Null => false,
                 config => self
                     .evaluate(id, node, config, Some(key))
-                    .is_none_or(|value| truthy(&value)),
+                    .is_some_and(|value| truthy(&value)),
             };
-            if reuse
-                || !field(&node.fields, "m_42BA09E3").is_null()
+            if !field(&node.fields, "m_42BA09E3").is_null()
                 || !field(&node.fields, "m_339A63DB").is_null()
             {
-                self.assume(site, "STU_550D0C5C reuse and index outputs", "not read");
+                self.assume(site, "STU_550D0C5C index outputs", "not written");
             }
             let parent = self.instance_values(id);
             let creator = self.source_of(id);
@@ -335,6 +375,7 @@ impl<W: World> Vm<'_, '_, '_, W> {
                         scope: scope_id(node),
                         creator,
                         keep,
+                        reuse,
                         parent: parent.clone(),
                     },
                 );

@@ -124,6 +124,20 @@ pub struct NextDummy {
     pub body: u32,
 }
 
+impl NextDummy {
+    /// The next slot's after this one, for a second bot in the same step:
+    /// the match numbers its players' entities `0xA000_0000 | (slot + 1)
+    /// << 8` (`game_service::player_entity`), each one's first body its
+    /// entity | 1.
+    pub fn following(self) -> Self {
+        let player = self.player + 0x100;
+        Self {
+            player,
+            body: player | 1,
+        }
+    }
+}
+
 /// A dummy bot change the scripts asked for, for the match to carry out
 /// ([`MapEntityWorld::take_dummy_changes`]).
 #[derive(Clone, Debug, PartialEq)]

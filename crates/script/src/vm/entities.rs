@@ -12,7 +12,7 @@
 
 use super::*;
 
-impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
+impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W> {
     /// `STU_0F647E55`: give each entity of `m_targets` the team index
     /// `m_67465E75` (-1 none, 0 to 4; leafall903/ORPHEUS (MIT)
     /// `assign_entity_team` in `nodes.py`). The Practice Range's spawn
@@ -330,6 +330,26 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             .remove_dummy_bot(site, expr::to_int(&team, -1), expr::to_int(&slot, -1))
         {
             self.assume(site, &node.class, "the world removes no dummy bot");
+        }
+        self.follow(id, node, "m_outPlug", None, depth)?;
+        Ok(true)
+    }
+
+    /// `STU_5E019216` (the Workshop's Start Game Mode `2FD6`, `m_B0F70984`
+    /// = 5): the client's execute (`Action_STU_5E019216` 0x7FF7898163B0 →
+    /// `0x7FF7895E2080`) sends its server the request the custom game
+    /// menu's Start Game Mode does (value 5); the server leaves the
+    /// waiting phase. The world answers whether the match has left it
+    /// ([`World::start_game_mode`]); one that can't is an assumption.
+    pub(super) fn start_game_mode(
+        &mut self,
+        id: u16,
+        node: &Node,
+        depth: usize,
+    ) -> Result<bool, InitFault> {
+        let site = self.site(id, node);
+        if !self.world.start_game_mode(site) {
+            self.assume(site, &node.class, "the match starts no game mode");
         }
         self.follow(id, node, "m_outPlug", None, depth)?;
         Ok(true)

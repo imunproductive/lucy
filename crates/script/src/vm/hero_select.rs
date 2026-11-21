@@ -67,7 +67,7 @@ fn at_limit(list: Value, limit: &Value) -> Vec<u64> {
     kept
 }
 
-impl<W: World> Vm<'_, '_, '_, W> {
+impl<W: World + ?Sized> Vm<'_, '_, '_, W> {
     /// Evaluate the running HeroSelect's lists again.
     pub(super) fn refresh_hero_select(&mut self, key: StateKey) {
         let id = key.instance;

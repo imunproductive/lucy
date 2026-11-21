@@ -174,7 +174,7 @@ pub(super) struct Hit {
     pub(super) normal: [f64; 3],
 }
 
-impl<W: World> Vm<'_, '_, '_, W> {
+impl<W: World + ?Sized> Vm<'_, '_, '_, W> {
     /// The action: cast once and write the outputs.
     pub(super) fn cast_action(&mut self, id: u16, node: &Node) -> Result<(), InitFault> {
         let Some(hit) = self.cast_node(id, node, ACTION)? else {

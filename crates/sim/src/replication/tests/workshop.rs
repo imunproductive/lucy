@@ -175,6 +175,9 @@ impl Parkour {
         self.world
             .respawn_due(&self.scene, &viewer, self.frame, now, RETAIL_QUANTA)
             .unwrap();
+        self.world
+            .change_to_forced_hero(&self.scene, &viewer, self.frame, now, RETAIL_QUANTA)
+            .unwrap();
     }
 
     /// The match time of the current tick.
@@ -360,6 +363,65 @@ fn the_workshop_sets_the_ultimate_charge_through_its_action_graph() {
         .unwrap()
         .ultimate_charge;
     assert!((percent - 50.0).abs() < 0.01, "{percent}");
+}
+
+/// Set Status `1C4B` again while the status runs takes the running scope
+/// instance on the player's controller (`m_DED58406`, `vm/scopes.rs`): its
+/// copy of the scope state is inactive (its begin aborted it), so the
+/// reuse's event does nothing and the status ends when the first one's
+/// duration does. Rooted is st10, scope 196: `#215` = the duration, a
+/// Wait on it, then the instance exits.
+#[test]
+#[ignore = "requires an Overwatch 1.74 install (just test-affected <install>)"]
+fn a_second_set_status_takes_the_running_one_as_it_is() {
+    const ROOTED_SCOPE: u32 = 196;
+    let mut game = Parkour::with_rules(
+        "rule(\"rooted\")\n{\n\tevent\n\t{\n\t\tOngoing - Each Player;\n\t\tAll;\n\t\tAll;\n\t}\n\n\tactions\n\t{\n\t\tSet Status(Event Player, Null, Rooted, 1);\n\t\tWait(0.5, Ignore Condition);\n\t\tSet Status(Event Player, Null, Rooted, 1);\n\t}\n}\n",
+    );
+    let mut ticks = 0;
+    while game
+        .world
+        .controller_scope_instances(ROOTED_SCOPE)
+        .is_empty()
+    {
+        game.tick();
+        ticks += 1;
+        assert!(ticks < 60, "no status");
+    }
+    let first = game.world.controller_scope_instances(ROOTED_SCOPE);
+    let mut lasted = 0;
+    while !game
+        .world
+        .controller_scope_instances(ROOTED_SCOPE)
+        .is_empty()
+    {
+        assert_eq!(game.world.controller_scope_instances(ROOTED_SCOPE), first);
+        game.tick();
+        lasted += 1;
+        assert!(lasted < 125, "the status never ended");
+    }
+    // The first one's 1 s at 16 ms a tick, not the second's 1.5 s.
+    assert!((62..=64).contains(&lasted), "{lasted} ticks");
+}
+
+/// Start Forcing Player To Be Hero (`1A7B`) sends `0CBC` with the hero to
+/// the player's controller, whose `0C90` rid302 takes it (#18557e, then
+/// #940e for StateHero); the server makes the body: Doomfist becomes Ana
+/// where he stands.
+#[test]
+#[ignore = "requires an Overwatch 1.74 install (just test-affected <install>)"]
+fn forcing_a_hero_changes_the_players_body() {
+    const ANA: u64 = 0x02e0_0000_0000_013b;
+    let mut game = Parkour::with_rules(
+        "rule(\"ana\")\n{\n\tevent\n\t{\n\t\tOngoing - Each Player;\n\t\tAll;\n\t\tAll;\n\t}\n\n\tactions\n\t{\n\t\tWait(0.5, Ignore Condition);\n\t\tStart Forcing Player To Be Hero(Event Player, Hero(Ana));\n\t}\n}\n",
+    );
+    assert_eq!(game.world.current_hero(), Some(DOOMFIST));
+    let mut ticks = 0;
+    while game.world.current_hero() != Some(ANA) {
+        game.tick();
+        ticks += 1;
+        assert!(ticks < 60, "still {:X?}", game.world.current_hero());
+    }
 }
 
 fn distance(a: [f64; 3], b: [f64; 3]) -> f64 {
