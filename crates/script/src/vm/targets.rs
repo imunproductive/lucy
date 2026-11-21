@@ -953,6 +953,10 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                     return Err(Gap::Field(ORDER));
                 }
             }
+            // No body can pass (no any-of mask nor include word: the
+            // capture point `0E8E` st5's search for its floor ring by tag
+            // `0302`): no score orders an empty list.
+            _ if filter.passes_none() => {}
             config => self.score_terms(id, node, config, 1.0, &mut scoring)?,
         }
         let limit = match field(fields, LIMIT) {

@@ -26,6 +26,7 @@ mod nodes;
 mod pickups;
 mod play;
 mod rays;
+mod residency;
 mod scopes;
 mod shockwave;
 mod state_kinds;
@@ -1349,6 +1350,9 @@ pub enum StateKind {
     /// A wall check (`STU_FBFF5DE7`, `vm/walls.rs`): a trial move of the
     /// body each tick, its output true when a wall turns it.
     WallCheck,
+    /// Area residency (`STU_96F571ED`, `vm/residency.rs`): its output says
+    /// each update whether a body stands in an entity's area.
+    AreaResidency,
     /// A placement selector's landing search (`STU_4C96470A`,
     /// `vm/landing.rs`): it searches each tick while its gate holds.
     Landing,

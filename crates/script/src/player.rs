@@ -19,7 +19,7 @@ use crate::{
     expr::{EntityRelation, native_shape, team_from_filter, valid_entity},
     graph::GraphStore,
     map_tags::{MapTags, TaggedEntity},
-    placed::{DummyChange, NextDummy},
+    placed::{DummyChange, EntityVolumes, NextDummy},
     target_tags::{TargetTagLists, TargetTags},
     vitals::{PoolKind, Vitals},
     vm::{
@@ -116,6 +116,14 @@ pub struct PlayerWorld {
     /// The map's tagged placeables the scene tag queries find; none: no
     /// map.
     pub map_tags: Option<Arc<MapTags>>,
+    /// The areas of the map's entities that have one (spawn rooms, capture
+    /// points), for `STU_73E1C5F0` and the area residency of `0F00`; none:
+    /// no map.
+    pub volumes: Option<Arc<dyn EntityVolumes>>,
+    /// The map placeables' entity variables as the match gave them this
+    /// tick (the capture point's owner #99e that its area aura's `0F00`
+    /// reads); none: unknown.
+    pub map_variables: Option<Arc<[(u32, Variables)]>>,
     /// How the body treats graph content the VM doesn't implement; by
     /// default as every script does ([`Unknowns::for_build`]).
     pub unknowns: Unknowns,
@@ -385,9 +393,16 @@ impl World for PlayerWorld {
         self.is_player_site(site) && self.effects.assist(site, link, now_ms)
     }
 
+    /// The mode entity's variables (its mode's, and overtime); a map
+    /// placeable's as the match gave them ([`Self::map_variables`]).
     fn entity_variable(&mut self, entity: u32, id: u32) -> Value {
         if entity != GAME_MODE_ENTITY {
-            return Value::Null;
+            return self
+                .map_variables
+                .as_deref()
+                .and_then(|map| map.iter().find(|(placed, _)| *placed == entity))
+                .and_then(|(_, variables)| variables.get(&id).cloned())
+                .unwrap_or(Value::Null);
         }
         if id == MODE_OVERTIME && self.mode_overtime {
             return Value::Bool(true);
@@ -636,6 +651,12 @@ impl World for PlayerWorld {
         self.trial.as_ref()?.landing(category, search).ok()
     }
 
+    /// The map's areas ([`Self::volumes`]): the capture area aura's `0F00`
+    /// asks whether the body stands in its point's (`vm/residency.rs`).
+    fn in_entity_volume(&self, _site: Site, entity: u32, position: [f64; 3]) -> Option<bool> {
+        self.volumes.as_ref()?.contains(entity, position)
+    }
+
     /// The body's team from its filter bits; the other bodies' as listed.
     fn entity_team(&self, site: Site, entity: u32) -> Option<i64> {
         if !self.is_player_site(site) {
@@ -838,6 +859,8 @@ impl PlayerWorld {
             target_tag_effects: TargetTags::default(),
             map_rays: None,
             map_tags: None,
+            volumes: None,
+            map_variables: None,
             controller_on_fire: false,
             targets: None,
             seen: None,

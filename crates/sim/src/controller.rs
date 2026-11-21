@@ -104,8 +104,9 @@ pub struct Controller {
 pub struct ControllerFrame {
     /// Show hero select open whatever 288B's #2438e says (heroes assemble).
     pub keep_open: bool,
-    /// 288B's #25377: the skin selector.
-    pub skins: bool,
+    /// 288B's #25377: the skin selector; none leaves the graph's own (the
+    /// mode graph drives the match and holds `0692`).
+    pub skins: Option<bool>,
     /// 288B's #8535: the assemble title hidden.
     pub hide_assemble: bool,
     /// A hero switch notice: 0C90's #4513-#4515 in this frame only.
@@ -219,11 +220,13 @@ impl Controller {
                     }
                 }
                 HERO_SELECT_SCREEN => {
-                    projected.set_instance_variable(
-                        id,
-                        ASSEMBLING,
-                        input.skins.then_some(Value::Bool(true)),
-                    );
+                    if let Some(skins) = input.skins {
+                        projected.set_instance_variable(
+                            id,
+                            ASSEMBLING,
+                            skins.then_some(Value::Bool(true)),
+                        );
+                    }
                     projected.set_instance_variable(
                         id,
                         HIDE_ASSEMBLE,

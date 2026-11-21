@@ -148,7 +148,28 @@ pub fn deliver(
     queue.retain(|message| {
         message.target == EVERY_ENTITY || recipients.iter().any(|group| group.runs(message.target))
     });
-    backlog.ends.extend(ends);
+    // A persistent send that ended this tick while another of the same
+    // sender, target and message waits to be delivered (`0F4A` holds `079E`
+    // to its objective in setup, and again from the round's state as the
+    // setup's ends) ends first, so the receiver takes the new one, even when
+    // the new one waits past the cap. [Assumption: a send that began and
+    // ended within one tick while another like it began is not met.]
+    let (first, later): (Vec<MessageEnd>, Vec<MessageEnd>) = ends.into_iter().partition(|end| {
+        queue.iter().any(|message| {
+            (message.sender, message.target, message.message)
+                == (end.sender, end.target, end.message)
+        })
+    });
+    for end in first {
+        // DBG
+        if std::env::var_os("MG3_DEBUG").is_some() && end.message & 0xffff == 0x079e {
+            eprintln!("DBG deliver early end {:08X} found {}", end.target, recipients.iter().position(|group| group.runs(end.target)).map_or(-1, |i| i as i64));
+        }
+        if let Some(group) = recipients.iter_mut().find(|group| group.runs(end.target)) {
+            group.end(&end);
+        }
+    }
+    backlog.ends.extend(later);
     if queue.len() > MAX_MESSAGES {
         backlog.messages = queue.split_off(MAX_MESSAGES);
         eprintln!(
@@ -157,6 +178,10 @@ pub fn deliver(
         );
     }
     for message in &queue {
+        // DBG
+        if std::env::var_os("MG3_DEBUG").is_some() && message.message & 0xffff == 0x079e {
+            eprintln!("DBG deliver msg {:08X} found {}", message.target, recipients.iter().position(|group| group.runs(message.target)).map_or(-1, |i| i as i64));
+        }
         if message.target == EVERY_ENTITY {
             for group in recipients.iter_mut() {
                 group.receive(message);
@@ -172,6 +197,10 @@ pub fn deliver(
         return;
     }
     for end in std::mem::take(&mut backlog.ends) {
+        // DBG
+        if std::env::var_os("MG3_DEBUG").is_some() && end.message & 0xffff == 0x079e {
+            eprintln!("DBG deliver late end {:08X}", end.target);
+        }
         if let Some(group) = recipients.iter_mut().find(|group| group.runs(end.target)) {
             group.end(&end);
         }

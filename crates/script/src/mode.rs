@@ -18,8 +18,8 @@ use crate::{
     placed::{Gaps, MapEntityWorld, PlacedEntity},
     vm::{
         ACTION_PARAMETERS, ActionOutcome, Component, EntityCreation, GameMessage, HealthChange,
-        InitFault, MAX_INIT_WORK, MapRays, PlayRequest, Root, ScopeChange, ScopeSource, Site,
-        Snapshot, Unknowns, World,
+        InitFault, MAX_INIT_WORK, MapRays, MessageEnd, PlayRequest, Root, ScopeChange, ScopeSource,
+        Site, Snapshot, Unknowns, World,
     },
     wire::{Value, Variables},
 };
@@ -129,6 +129,9 @@ pub struct ModeWorld {
     /// (`STU_AFC074B3`) lists them, with their bodies' entity definitions
     /// (`m_gameplayEntity`, `STU_94AED9DC`); none: unknown.
     pub heroes: Option<Vec<(u64, u64)>>,
+    /// Where the map's server placeables stand (the objectives `0F4A`
+    /// places its `0C49` over, `STU_71A87E92(#10551)`).
+    pub placeables: BTreeMap<u32, [f64; 3]>,
     /// Other entities' variables as the mode entity's graphs know them:
     /// the server's ([`ModeScript::set_foreign_variable`]) and the graphs'
     /// own writes (a Workshop action's player variables, `STU_0BDBC7B2`).
@@ -155,6 +158,9 @@ pub struct ModeWorld {
     /// takes them ([`ModeScript::take_own_messages`]).
     own: Vec<GameMessage>,
     held: Vec<GameMessage>,
+    /// The ends of the graphs' persistent sends to other entities, until
+    /// [`ModeScript`] hands them on.
+    ends: Vec<MessageEnd>,
     /// The entities the graphs made that [`ModeScript`] hasn't started
     /// yet, and those it runs.
     made: Vec<CreatedEntity>,
@@ -179,6 +185,7 @@ impl ModeWorld {
             map_tags: None,
             map_rays: None,
             heroes: None,
+            placeables: BTreeMap::new(),
             foreign: BTreeMap::new(),
             variable_writes: Vec::new(),
             scope_changes: Vec::new(),
@@ -188,6 +195,7 @@ impl ModeWorld {
             outbox: Vec::new(),
             own: Vec::new(),
             held: Vec::new(),
+            ends: Vec::new(),
             made: Vec::new(),
             created: Vec::new(),
             next_created: 0,
@@ -345,11 +353,13 @@ impl World for ModeWorld {
     }
 
     /// The mode entity, the players' controllers and bodies, the map's
-    /// tagged placeables and the entities the graphs made exist.
+    /// server placeables and tagged placeables and the entities the graphs
+    /// made exist.
     fn entity_exists(&self, _site: Site, entity: u32) -> Option<bool> {
         let known = entity == GAME_MODE_ENTITY
             || self.player_of(entity).is_some()
             || self.made_entity(entity).is_some()
+            || self.placeables.contains_key(&entity)
             || self
                 .map_tags
                 .as_ref()
@@ -360,6 +370,9 @@ impl World for ModeWorld {
     fn entity_position(&self, _site: Site, entity: u32) -> Option<[f64; 3]> {
         if let Some(made) = self.made_entity(entity) {
             return Some(made.position);
+        }
+        if let Some(&position) = self.placeables.get(&entity) {
+            return Some(position);
         }
         Some(self.map_tags.as_ref()?.get(entity)?.position)
     }
@@ -611,11 +624,20 @@ impl World for ModeWorld {
         true
     }
 
-    /// Only a held broadcast's end is followed; the mode graph's other
-    /// persistent sends end nowhere yet.
+    /// A held broadcast's end drops it ([`ModeScript::held`]); a
+    /// persistent send's to an entity goes to the match (the capture
+    /// point's rates `079E`, which `0F4A` holds to the current objective in
+    /// setup and again in the round: the point's entry st0 takes the
+    /// round's only once the setup's ended), or to an entity the graphs
+    /// made ([`ModeScript::take_message_ends`]).
     fn end_message(&mut self, _source: Site, target: u32, message: u64) -> bool {
         if target != EVERY_ENTITY {
-            return false;
+            self.ends.push(MessageEnd {
+                sender: GAME_MODE_ENTITY,
+                target,
+                message,
+            });
+            return true;
         }
         if let Some(index) = self.held.iter().position(|held| held.message == message) {
             self.held.remove(index);
@@ -654,6 +676,9 @@ pub struct ModeScript {
     /// The messages [`Self::settle`] handed on to the match
     /// ([`Self::take_messages`]).
     routed: Vec<GameMessage>,
+    /// The ends of the graphs' persistent sends that [`Self::settle`]
+    /// handed on to the match ([`Self::take_message_ends`]).
+    routed_ends: Vec<MessageEnd>,
 }
 
 /// A Workshop action graph started on the mode entity
@@ -711,6 +736,7 @@ impl ModeScript {
             frame,
             actions: Vec::new(),
             routed: Vec::new(),
+            routed_ends: Vec::new(),
         };
         script.settle()?;
         Ok(script)
@@ -737,6 +763,7 @@ impl ModeScript {
             frame,
             actions: Vec::new(),
             routed: Vec::new(),
+            routed_ends: Vec::new(),
         };
         script.settle()?;
         Ok(script)
@@ -815,6 +842,38 @@ impl ModeScript {
     /// (a player variable a chase on the player's own script moved).
     pub fn set_foreign_variable(&mut self, entity: u32, id: u32, value: Value) {
         self.world.foreign.insert((entity, id), value);
+    }
+
+    /// Another entity's entity variables now, as the match gives them (a
+    /// map placeable's: the capture point's progress #9866e and owner
+    /// #99e, the objective's times #10552e, which `0F4A` reads through
+    /// `#10551.id(...)`): each that changed is set, and the states that
+    /// read it take the change ([`Component::foreign_variable_changed`]);
+    /// one that went reads null.
+    pub fn set_foreign_variables(
+        &mut self,
+        entity: u32,
+        variables: &Variables,
+    ) -> Result<(), InitFault> {
+        let gone: Vec<u32> = self
+            .world
+            .foreign
+            .range((entity, 0)..=(entity, u32::MAX))
+            .filter(|((_, id), value)| **value != Value::Null && !variables.contains_key(id))
+            .map(|((_, id), _)| *id)
+            .collect();
+        let changed: Vec<(u32, Value)> = variables
+            .iter()
+            .filter(|&(&id, value)| self.world.foreign.get(&(entity, id)) != Some(value))
+            .map(|(&id, value)| (id, value.clone()))
+            .chain(gone.into_iter().map(|id| (id, Value::Null)))
+            .collect();
+        for (id, value) in changed {
+            self.world.foreign.insert((entity, id), value);
+            self.component
+                .foreign_variable_changed(entity, id, &mut self.world)?;
+        }
+        self.settle()
     }
 
     /// Set Workshop global variable `index`: the mode entity's entity
@@ -1057,8 +1116,16 @@ impl ModeScript {
                     self.routed.push(message);
                 }
             }
-            // Their persistent sends end nowhere, as the mode entity's own
-            // but its held broadcasts (`ModeWorld::end_message`).
+            for end in std::mem::take(&mut self.world.ends) {
+                if self.world.made_entity(end.target).is_some() {
+                    self.entities
+                        .end_message(end.target, end.sender, end.message);
+                    moved = true;
+                } else {
+                    self.routed_ends.push(end);
+                }
+            }
+            // The made entities' persistent sends end nowhere yet.
             self.entities.take_message_ends();
             for entity in self.entities.take_destroyed() {
                 self.world
@@ -1151,6 +1218,14 @@ impl ModeScript {
         let mut messages = std::mem::take(&mut self.routed);
         messages.append(&mut self.world.take_messages());
         messages
+    }
+
+    /// The ends of the graphs' persistent sends to the match's other
+    /// entities ([`World::end_message`]), for the match to route.
+    pub fn take_message_ends(&mut self) -> Vec<MessageEnd> {
+        let mut ends = std::mem::take(&mut self.routed_ends);
+        ends.append(&mut self.world.ends);
+        ends
     }
 
     /// The messages of [`Self::take_messages`] to the entities `to`

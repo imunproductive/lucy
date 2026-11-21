@@ -123,6 +123,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             }
             StateKind::Assist => self.end_assist(key, node),
             StateKind::ApplyAura => self.end_auras(key),
+            StateKind::FilterArray => self.end_filter_array(key, node)?,
             StateKind::Scope => self.end_scopes(key),
             StateKind::CreateEntity {
                 entity: Some(entity),

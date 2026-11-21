@@ -77,6 +77,19 @@ const SERVER_NO_OPS: &[&str] = &[
     // (`docs/dev/loose-ends.md`), so they only go on.
     "STU_B80EB51C",
     "STU_61975068",
+    // `0F4A` rid71 at the match's end: the match's record (its round count
+    // `m_1AF7DD3E`, the map's objective name, the attackers, each team's
+    // progress, time bank and score, the winner `m_9870F4ED` = #7525) for
+    // a server-only action (no registration of its own: the base action's
+    // run, `python tools/stu.py STU_86A2C83C`). The server keeps the
+    // match's result itself from #7525 (`orpheus_sim::match_flow`
+    // `MatchFlow::follow`) for the lobby.
+    "STU_86A2C83C",
+    // A SendGameMessage of its own (`Action_STU_1470EF32` 0x7FF7898164B0,
+    // parent `STU_473D3BBD`): `180A` rid39 and `0281`/`0282`/`0EC2` send
+    // `07F1` with it, which only client-only entries take (`0D57` rid141,
+    // `1A52` rid99). Nothing on the server takes it.
+    "STU_1470EF32",
 ];
 
 /// Unnamed actions the server runs as no-ops without knowing what they do,
@@ -846,6 +859,12 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             // (`who_reads.py --component 74 +0x100`, ControllerWorld.md).
             // Codec none. Nothing for the server to keep.
             "STU_D9498E7C" => StateKind::Plain,
+            // `0F4A` st104 at the match's end (#59 5): no fields and no
+            // registration of its own (the base state, `python tools/stu.py
+            // STU_109F9DE0`), so the client runs it plain; a server rule,
+            // if any, is the match's end itself, which the server keeps
+            // (`orpheus_sim::match_flow::MatchFlow::follow`).
+            "STU_109F9DE0" => StateKind::Plain,
             // The authored zero-valued form inherits the base state reader.
             "STU_D9843704"
                 if node.is_networked() && node.remote == -1 && {
@@ -1016,6 +1035,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             "STUStatescriptStateTrackTargets" => StateKind::TrackTargets,
             "STUStatescriptStateRayCast" | "STUStatescriptStateTrackRay" => StateKind::Ray,
             "STU_FBFF5DE7" => StateKind::WallCheck,
+            "STU_96F571ED" => StateKind::AreaResidency,
             "STU_4C96470A" => StateKind::Landing,
             "STU_9935FBC8" => StateKind::ViewLimits { radians: [0; 6] },
             "STUStatescriptStateShockwave" => StateKind::Shockwave { seconds: 0 },
@@ -1206,12 +1226,13 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 let seen = self.evaluate(id, node, field(&node.fields, "m_B7A3CF78"), Some(key));
                 self.state_mut(key).expect("active Watch").watch_seen = seen;
             }
-            StateKind::FilterArray => self.refresh_filter_array(key)?,
+            StateKind::FilterArray => self.begin_filter_array(key)?,
             StateKind::HeroSelect => self.refresh_hero_select(key),
             StateKind::WeaponVolley { .. } => self.begin_volley(key, node, depth)?,
             StateKind::TrackTargets => self.begin_track_targets(key, node)?,
             StateKind::Ray => self.begin_ray(key, node, depth)?,
             StateKind::WallCheck => self.begin_wall_check(key, node)?,
+            StateKind::AreaResidency => self.begin_area_residency(key, node)?,
             StateKind::Landing => self.begin_landing(key, node)?,
             StateKind::ViewLimits { .. } => self.refresh_view_limits(key),
             StateKind::Shockwave { .. } => self.begin_shockwave(key, node)?,
@@ -1221,11 +1242,6 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             StateKind::CombatMod => self.begin_combat_mod(key, node),
             StateKind::Assist => self.begin_assist(key, node),
             StateKind::ApplyAura => {
-                self.assume(
-                    self.site(id, node),
-                    "STU_431F3FCC lifetime",
-                    "on each listed body while listed (server-only rule)",
-                );
                 self.refresh_auras(key, node)?;
                 self.register_tick(key, self.machine.now_ms);
             }

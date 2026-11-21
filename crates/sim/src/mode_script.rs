@@ -14,10 +14,10 @@
 //! ([`crate::messages`]), which routes it those sent to the mode entity or
 //! to every entity and gives every entity the broadcasts it holds
 //! ([`ModeRunner::held`]; in the Range `0724` for the spawn rooms, `06FD`
-//! for the bodies). Otherwise (0EC2 today, see `orpheus_script::mode`;
-//! 0F4A outside a Workshop match, [`WORKSHOP_ONLY`]) the gaps are logged
-//! once and the mode entity gets graph 0CB6's frame with the flow's
-//! variables, as the countdown did before (match.py `_send_countdown`).
+//! for the bodies). Otherwise (0EC2 today, see `orpheus_script::mode`) the
+//! gaps are logged once and the mode entity gets graph 0CB6's frame with
+//! the flow's variables, as the countdown did before (match.py
+//! `_send_countdown`).
 
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -32,7 +32,11 @@ use orpheus_script::{
 };
 use orpheus_wire::entity::GAME_MODE_ENTITY;
 
-use crate::{match_flow, placed_script::PlacedFrame, scene_assets::PreparedScene};
+use crate::{
+    match_flow::{self, MatchState},
+    placed_script::PlacedFrame,
+    scene_assets::PreparedScene,
+};
 
 /// The modes with no match flow, the Practice Range's: the room starts
 /// their graph with itself, not at a match's start.
@@ -56,15 +60,6 @@ pub fn mode_graph(mode: u64) -> Option<u32> {
         _ => return None,
     })
 }
-
-/// The mode graphs that run whole at a match's start but can't play a
-/// match to its end yet, so they drive only a Workshop match, whose rules
-/// hold it in its round ([`ModeRunner::workshop`]): `0F4A` (Assault,
-/// Escort, Hybrid) meets unsupported classes at the match's end (phase 5)
-/// and its capture points can't decide an objective (`0E8E` runs without
-/// the residency natives). `docs/dev/loose-ends.md`, "`0F4A` in the
-/// Workshop match".
-const WORKSHOP_ONLY: [u32; 1] = [0x0f4a];
 
 /// Classes or faults by graph, with how often they were met.
 pub type Gaps = BTreeMap<(u32, String), usize>;
@@ -112,15 +107,16 @@ pub const SHARED_MODE_GRAPH: u32 = 0x0cbb;
 const PHASE: u32 = 59;
 /// The winning team on the same instance (`0F4A` #7525).
 const WINNER: u32 = 7525;
-
-/// The match as the mode's own graph keeps it ([`ModeRunner::match_state`]).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct MatchState {
-    pub phase: match_flow::Phase,
-    /// Seconds on the clock.
-    pub clock: f64,
-    pub winner: Option<u8>,
-}
+/// The server's start of a match whose teams aren't full
+/// ([`ModeRunner::start_match`]).
+const START_MATCH: u64 = 0x0240_0000_0000_0789;
+/// The mode entity's attacking team (`0F4A` #10795e: rid92 at the start,
+/// rid153 at a side swap), the current objective's order (#10548e, which
+/// rid121 counts up as objectives fall) and overtime (#3392e, rid406 st131
+/// while the attackers hold an objective with the clock out).
+const ATTACKERS: u32 = match_flow::ATTACKERS;
+const OBJECTIVE: u32 = 10548;
+const OVERTIME: u32 = 3392;
 
 /// `0727.025` (no parameters), which the mode graphs hold to every entity
 /// from their start (`0F4A` st22 beside its `0CBB` SubScript st12, `13C0`
@@ -153,31 +149,14 @@ impl ModeRunner {
     /// Start the mode graph with the match's `players` now. The start
     /// condition `STU_81A9AB10` (server-only) is the server's own rule:
     /// true once the match's players are in the world, when the room
-    /// starts the mode. A graph of [`WORKSHOP_ONLY`] doesn't drive.
+    /// starts the mode.
     pub fn start(scene: &PreparedScene, frame: u32, players: Vec<ModePlayer>) -> Self {
-        Self::start_graph(scene, frame, players, false)
-    }
-
-    fn start_graph(
-        scene: &PreparedScene,
-        frame: u32,
-        players: Vec<ModePlayer>,
-        workshop: bool,
-    ) -> Self {
         let mode = scene.map().mode_guid;
         let Some(graph) = mode_graph(mode) else {
             return Self::HandBuilt { gaps: Gaps::new() };
         };
         match ModeScript::start(mode_world(scene, players), graph, frame) {
-            Ok(script) if script.complete() && (workshop || !WORKSHOP_ONLY.contains(&graph)) => {
-                Self::graph(scene, script, true)
-            }
-            Ok(script) if script.complete() => {
-                eprintln!(
-                    "mode graph {graph:04X} drives only a Workshop match yet; the match flow drives the mode entity"
-                );
-                Self::HandBuilt { gaps: Gaps::new() }
-            }
+            Ok(script) if script.complete() => Self::graph(scene, script, true),
             Ok(script) => {
                 let gaps = script.gaps();
                 eprintln!(
@@ -207,7 +186,7 @@ impl ModeRunner {
     /// the mode's `0724` from the flow ([`Self::holds_rooms`]). None when
     /// neither starts.
     pub fn workshop(scene: &PreparedScene, frame: u32, players: Vec<ModePlayer>) -> Option<Self> {
-        let started = Self::start_graph(scene, frame, players.clone(), true);
+        let started = Self::start(scene, frame, players.clone());
         if started.graph_driven() {
             return Some(started);
         }
@@ -256,12 +235,12 @@ impl ModeRunner {
         )
     }
 
-    /// The match's phase and clock as the mode's own graph keeps them,
-    /// while it drives the match ([`Self::holds_rooms`]): its root's #59
-    /// (`0F4A`: 0 waiting, 1 assemble, 2 setup, 3 round, 4 round end, 5
-    /// match end), the mode entity's clock #1303 (`match_flow::CLOCK`) and
-    /// the winning team (#7525, which `0F4A` sends in `0695` as `03A6`).
-    /// None before the graph set its phase.
+    /// The match as the mode's own graph keeps it, while it drives the
+    /// match ([`Self::holds_rooms`]): its root's #59 (`0F4A`: 0 waiting, 1
+    /// assemble, 2 setup, 3 round, 4 round end, 5 match end), the mode
+    /// entity's clock #1303 (`match_flow::CLOCK`), the winning team (#7525,
+    /// which `0F4A` sends in `0695` as `03A6`), the attacking team, the
+    /// current objective and overtime. None before the graph set its phase.
     pub fn match_state(&self) -> Option<MatchState> {
         let Self::Graph {
             script,
@@ -281,16 +260,23 @@ impl ModeRunner {
             5 => match_flow::Phase::MatchEnd,
             _ => return None,
         };
-        let winner = root
-            .variables
-            .get(&WINNER)
-            .map(|winner| orpheus_script::expr::to_int(winner, -1))
-            .and_then(|winner| u8::try_from(winner).ok())
-            .filter(|&winner| winner < 2);
+        let team = |value: &orpheus_script::wire::Value| {
+            u8::try_from(orpheus_script::expr::to_int(value, -1))
+                .ok()
+                .filter(|&team| team < 2)
+        };
+        let winner = root.variables.get(&WINNER).and_then(team);
         Some(MatchState {
             phase,
             clock: orpheus_script::expr::to_float(&script.entity_value(match_flow::CLOCK)),
             winner,
+            attackers: team(&script.entity_value(ATTACKERS)),
+            objective: u32::try_from(orpheus_script::expr::to_int(
+                &script.entity_value(OBJECTIVE),
+                0,
+            ))
+            .unwrap_or(0),
+            overtime: orpheus_script::expr::truthy(&script.entity_value(OVERTIME)),
         })
     }
 
@@ -364,6 +350,51 @@ impl ModeRunner {
             script.receive_message(message.sender, message.message, message.parameters.clone())
         {
             self.stop(&error);
+        }
+    }
+
+    /// The server starts the match: `0789.025` to the mode entity, which
+    /// the mode graphs' entries take (`0F4A` rid81, `0EC2` rid76, `0D0B`,
+    /// `0F60`, `0F73`) into #9677, the start their waiting state takes when
+    /// the teams aren't full (`0F4A` st6: rid7 `STU_81A9AB10` false or
+    /// rid14 a team short → rid80 `#9677` → rid12 assemble). No graph and
+    /// no client code sends it (`script query find 0789.025`;
+    /// ModeGraphGaps.md "ModeGraph3"): it is the server's. The server's
+    /// rule, as match.py `_spawn_steps`: the match starts once its first
+    /// player is in the world, whether or not the lobby filled the teams.
+    pub fn start_match(&mut self) {
+        self.receive_message(&GameMessage {
+            sender: 0,
+            target: GAME_MODE_ENTITY,
+            message: START_MATCH,
+            parameters: Variables::new(),
+        });
+    }
+
+    /// The map placeables' entity variables now
+    /// (`PlacedScripts::entity_variables`), which the mode graph reads of
+    /// its objectives (`0F4A`: `#10551.id(10552)` the time an objective
+    /// adds, `#9901.id(9866)` a point's progress, `#9901.id(99)` its owner).
+    /// A failure stops the graph as in [`Self::advance`].
+    pub fn set_map_variables(&mut self, entities: &[(u32, Variables)]) {
+        let Self::Graph { script, .. } = self else {
+            return;
+        };
+        let result = entities
+            .iter()
+            .try_for_each(|(entity, variables)| script.set_foreign_variables(*entity, variables));
+        if let Err(error) = result {
+            self.stop(&error);
+        }
+    }
+
+    /// The ends of the graph's persistent sends to other entities since
+    /// the last call, for the match to route with its messages
+    /// ([`crate::messages::deliver`]).
+    pub fn take_message_ends(&mut self) -> Vec<MessageEnd> {
+        match self {
+            Self::Graph { script, .. } => script.take_message_ends(),
+            Self::HandBuilt { .. } => Vec::new(),
         }
     }
 
@@ -527,6 +558,11 @@ fn mode_world(scene: &PreparedScene, players: Vec<ModePlayer>) -> ModeWorld {
     world.map_modes = Some(scene.map().supported_modes.clone());
     world.map_tags = Some(scene.map_tags());
     world.map_rays = Some(scene.map_rays());
+    world.placeables = scene
+        .server_placeables()
+        .iter()
+        .map(|placed| (placed.entity(), placed.position))
+        .collect();
     world.heroes = Some(
         scene
             .heroes()
@@ -543,6 +579,103 @@ mod tests {
     use crate::scene_assets::SceneAssets;
     use orpheus_content::maps::GameMap;
     use orpheus_script::{mode::EVERY_ENTITY, wire::Value};
+
+    // DBG probe (temporary).
+    #[test]
+    #[ignore = "probe"]
+    fn mg3_probe() {
+        use orpheus_content::maps::MapCatalog;
+        let runtime = orpheus_testkit::runtime_dir();
+        let assets = SceneAssets::load(&runtime).unwrap().with_collision_build(
+            crate::scene_assets::install_collision_build(orpheus_testkit::game_dir()),
+        );
+        let catalog = MapCatalog::load(runtime.join("data")).unwrap();
+        let map = catalog
+            .game_map(0x0800_0000_0000_005b, match_flow::ASSAULT, "Assault", false, &[6, 6])
+            .unwrap();
+        let mut scene = assets.prepare(map).unwrap();
+        let mut mode = ModeRunner::start(&scene, 1, Vec::new());
+        eprintln!("mode driven {} gaps {:?}", mode.graph_driven(), mode.gaps());
+        for tick in 1..4 {
+            scene.advance_placed(tick, &[]);
+            let (messages, _) = scene.take_placed_messages();
+            for message in &messages {
+                eprintln!(
+                    "tick {tick} {:08X} -> {:08X} {:04X} {:?}",
+                    message.sender,
+                    message.target,
+                    message.message & 0xffff,
+                    message.parameters
+                );
+                if message.target == GAME_MODE_ENTITY {
+                    mode.receive_message(message);
+                }
+            }
+            let out = mode.advance(tick + 1, &Variables::new(), Vec::new());
+            eprintln!("mode sent {}", out.len());
+        }
+        let world = scene.placed_scripts().world().unwrap();
+        for placed in world.entities() {
+            if !placed.running() || !placed.complete() {
+                eprintln!("{:08X} running {} complete {} fault {:?} gaps {:?}", placed.entity, placed.running(), placed.complete(), placed.fault(), placed.snapshot().map(|s| &s.diagnostics));
+            }
+        }
+        let script = mode.script_mut().unwrap();
+        eprintln!("#12376e {:?}", script.entity_value(12376));
+        // A body on point A, and the point's rates with contest on.
+        let point = 0x8000_0332;
+        let at = scene.map().objectives_of(orpheus_content::maps::ObjectiveKind::Point).next().unwrap().position;
+        let body = orpheus_script::vm::TargetCandidate {
+            entity: 0xa000_0101,
+            team: Some(1),
+            dead: false,
+            controller: Some(0xa000_0100),
+            player: Some(0xa000_0100),
+            ai: false,
+            ai_control: None,
+            feet: at,
+            height: 2.0,
+            radius: 0.4,
+            yaw: 0.0,
+            tags: None,
+            health: Some([200.0, 200.0]),
+            spawned: Vec::new(),
+        };
+        scene.set_placed_target_candidates(&[body]);
+        let setup = GameMessage {
+            sender: GAME_MODE_ENTITY,
+            target: point,
+            message: 0x0240_0000_0000_079e,
+            parameters: Variables::from([(0x0440, Value::Bool(true))]),
+        };
+        scene.message_recipients(8).1.receive_message(&setup);
+        scene.advance_placed(8, &[]);
+        eprintln!("setup auras {:?}", scene.take_placed_aura_changes());
+        let end = MessageEnd {
+            sender: GAME_MODE_ENTITY,
+            target: point,
+            message: 0x0240_0000_0000_079e,
+        };
+        let rates = GameMessage {
+            sender: GAME_MODE_ENTITY,
+            target: point,
+            message: 0x0240_0000_0000_079e,
+            parameters: Variables::from([(0x0440, Value::Null), (0x0422, Value::Float(5.0))]),
+        };
+        let mut backlog = crate::messages::Backlog::default();
+        crate::messages::deliver(&mut backlog, vec![rates], vec![end], &mut [scene.message_recipients(10).1]);
+        for tick in 10..14 {
+            scene.advance_placed(tick, &[]);
+            eprintln!("auras {:?}", scene.take_placed_aura_changes());
+        }
+        let placed = scene.placed_scripts().world().unwrap().entity(point).unwrap();
+        let snapshot = placed.snapshot().unwrap();
+        eprintln!("vars {:?}", snapshot.variables);
+        eprintln!("diag {:?} assumptions {:?}", snapshot.diagnostics, snapshot.assumptions);
+        for (id, instance) in &snapshot.instances {
+            eprintln!("inst {id} graph {:04X} active {:?} vars {:?}", instance.graph, instance.states.iter().filter(|(_, s)| s.active).map(|(k, _)| *k).collect::<Vec<_>>(), instance.variables);
+        }
+    }
 
     /// The Practice Range's `13C0` runs whole and drives the mode entity.
     /// Mode `005A`'s variable #27534 is true, so #27536 is false and st2

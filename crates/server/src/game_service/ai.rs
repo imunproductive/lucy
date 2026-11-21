@@ -235,6 +235,7 @@ impl AiSeat {
             delivery.deliver_locally(tick, now);
         }
         delivery.set_assembling(room.assembling());
+        delivery.set_mode_graph(room.follows_graph());
         if room.assembled {
             delivery.end_assemble(scene, tick)?;
         }

@@ -132,11 +132,16 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                         let node = self.graph(id).state(usize::from(raw)).expect("wall check");
                         self.update_wall_check(key, node)?;
                     }
+                    Some(StateKind::AreaResidency) => {
+                        let node = self.graph(id).state(usize::from(raw)).expect("residency");
+                        self.update_area_residency(key, node)?;
+                    }
                     Some(StateKind::Landing) => {
                         let node = self.graph(id).state(usize::from(raw)).expect("selector");
                         self.update_landing(key, node)?;
                     }
                     Some(StateKind::Shockwave { .. }) => self.update_shockwave(key)?,
+                    Some(StateKind::FilterArray) => self.refresh_filter_array(key)?,
                     Some(StateKind::GrappleCast) => self.tick_grapple(key, 0)?,
                     Some(StateKind::ModifyHealth { last_ms }) => {
                         let node = self.graph(id).state(usize::from(raw)).expect("health");

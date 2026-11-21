@@ -5786,7 +5786,7 @@ fn an_assault_match_on_anubis_captures_a_and_b_and_sends_the_players_home() {
         &mut [defender, attacker],
         &schemas,
         "the end of the match",
-        Duration::from_secs(60),
+        Duration::from_secs(900),
         |watchers| {
             watchers
                 .iter()

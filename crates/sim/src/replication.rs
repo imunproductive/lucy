@@ -527,6 +527,10 @@ pub trait OwnerBodyRuntime: Send {
     /// the body's search (`0033` st11, `orpheus_script` `vm/pickups.rs`).
     fn set_pickups(&mut self, _pickups: &[Pickup]) {}
 
+    /// The map placeables' entity variables now, which the body's graphs
+    /// read of other entities.
+    fn set_map_variables(&mut self, _variables: &Arc<[(u32, Variables)]>) {}
+
     /// The death layer's parameters of the death message for a kill by the
     /// body `killer` ([`DeathCamera`]), as the body's world knows the
     /// killer and the body; none: the body runs no script that reads them.
@@ -1834,6 +1838,8 @@ pub struct WorldDelivery {
     /// The pickups the placeables held as the match last looked; a new
     /// body starts with them.
     pickups: Vec<Pickup>,
+    /// The map placeables' entity variables now ([`Self::set_map_variables`]).
+    map_variables: Arc<[(u32, Variables)]>,
     /// The current body's death and respawn (combat.py `Vitals.died_at`).
     death: Option<BodyDeath>,
     /// Who last hurt which of the player's bodies, and when: the player
@@ -1857,6 +1863,9 @@ pub struct WorldDelivery {
     /// The PvP "assemble your team" countdown runs (match.py `assembling`):
     /// a pick keeps hero select open, which shows the skin selector.
     assembling: bool,
+    /// The mode's own graph drives the match (`MatchFlow::follows_graph`):
+    /// hero select and its skin selector are the graphs' own.
+    mode_graph: bool,
     /// An AI player's world (`crate::ai`): no client receives it, so it
     /// views nobody, and its records arrive as soon as they are ready
     /// ([`Self::deliver_locally`]).
@@ -2065,6 +2074,7 @@ impl WorldDelivery {
             placed_made: HashSet::new(),
             target_candidates: Vec::new(),
             pickups: Vec::new(),
+            map_variables: Arc::new([]),
             death: None,
             attackers: Vec::new(),
             knocks: KnockCredit::default(),
@@ -2074,6 +2084,7 @@ impl WorldDelivery {
             tag_revision: 0,
             board: BoardDelivery::default(),
             assembling: false,
+            mode_graph: false,
             headless: false,
             ai: None,
             overtime: false,
@@ -2606,11 +2617,14 @@ impl WorldDelivery {
     /// open while `288B` has it open or [`Self::keep_open`]; the skin
     /// selector while open in the Practice Range or while heroes assemble
     /// (match.py `send_controller`); the assemble title hidden in the
-    /// Practice Range only.
+    /// Practice Range only. Where the mode graph drives the match
+    /// ([`Self::set_mode_graph`]) the skin selector is `288B`'s own: its
+    /// st32-st35 set #25377 while the graph holds `0692` (`0F4A` st9).
     fn select_input(&self, practice: bool) -> Option<(SelectShown, ControllerFrame)> {
         let state = self.controller_script.as_ref()?.hero_select_state()?;
         let open = state.open || self.keep_open;
-        let skins = open && (practice || self.assembling);
+        let graph = self.mode_graph && !practice;
+        let skins = !graph && open && (practice || self.assembling);
         let hero = self.body.map(|body| body.hero);
         Some((
             SelectShown {
@@ -2621,7 +2635,7 @@ impl WorldDelivery {
             },
             ControllerFrame {
                 keep_open: self.keep_open,
-                skins,
+                skins: (!graph).then_some(skins),
                 hide_assemble: practice,
                 notice: None,
                 hero,
@@ -3784,6 +3798,13 @@ impl WorldDelivery {
         self.assembling = assembling;
     }
 
+    /// Whether the mode's own graph drives the match: its `0692` opens hero
+    /// select while the heroes assemble and its end closes it (`288B`
+    /// st32-st36), with no hand of the server's ([`Self::select_input`]).
+    pub fn set_mode_graph(&mut self, mode_graph: bool) {
+        self.mode_graph = mode_graph;
+    }
+
     /// The messages the mode graph holds to every entity now
     /// (`ModeRunner::held`), before the world starts and each tick.
     pub fn set_mode_held(&mut self, held: &[GameMessage]) {
@@ -4126,6 +4147,17 @@ impl WorldDelivery {
         self.pickups.extend_from_slice(pickups);
         if let Some(script) = &mut self.body_script {
             script.runtime.set_pickups(pickups);
+        }
+    }
+
+    /// The map placeables' entity variables now
+    /// (`PlacedScripts::entity_variables`), which the body's graphs read
+    /// (the capture area aura's `0F00` st8 asks its point's owner
+    /// `#9901.id(99)`).
+    pub fn set_map_variables(&mut self, variables: &Arc<[(u32, Variables)]>) {
+        self.map_variables = Arc::clone(variables);
+        if let Some(script) = &mut self.body_script {
+            script.runtime.set_map_variables(variables);
         }
     }
 
@@ -6053,6 +6085,7 @@ impl WorldDelivery {
             .and_then(|mut runtime| {
                 runtime.set_target_candidates(&self.target_candidates);
                 runtime.set_pickups(&self.pickups);
+                runtime.set_map_variables(&self.map_variables);
                 // The body starts with the defaults; what the client sent
                 // replaces them.
                 let settings = hero_setting_variables(&self.hero_settings, hero.guid);

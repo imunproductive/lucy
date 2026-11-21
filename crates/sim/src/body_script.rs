@@ -36,7 +36,7 @@ use orpheus_script::{
     expr::{EntityRelation, team_from_filter, to_float},
     graph::GraphStore,
     map_tags::MapTags,
-    placed::{DummyChange, NextDummy},
+    placed::{DummyChange, EntityVolumes, NextDummy},
     player::{MODE_OVERTIME, PlayerWorld},
     snapshot::{SnapshotEncoder, View},
     timeline::FRAME_MS,
@@ -72,6 +72,9 @@ const SPEED_SCALE: &str = "STU_ED807E07";
 pub struct BodyMap {
     pub rays: Arc<dyn MapRays>,
     pub tags: Arc<MapTags>,
+    /// The areas of the map's rooms and capture points
+    /// ([`crate::map_areas::MapVolumes`]).
+    pub volumes: Arc<dyn EntityVolumes>,
 }
 
 /// The mode graph's message that tells a body its respawn time (`06FD.025`),
@@ -277,6 +280,7 @@ impl PlayerBodyFactory {
         if let Some(map) = map {
             world.map_rays = Some(map.rays);
             world.map_tags = Some(map.tags);
+            world.volumes = Some(map.volumes);
         }
         world.movement = spawn.pose;
         // A new mover's (`Mover::speed_scale`): no move yet.
@@ -718,6 +722,10 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
 
     fn set_pickups(&mut self, pickups: &[Pickup]) {
         self.world.pickups = Some(pickups.to_vec());
+    }
+
+    fn set_map_variables(&mut self, variables: &Arc<[(u32, Variables)]>) {
+        self.world.map_variables = Some(Arc::clone(variables));
     }
 
     /// The killer's possessor as the body's graphs would ask it

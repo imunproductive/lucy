@@ -115,7 +115,10 @@ use orpheus_script::{
 };
 use serde::Deserialize;
 
-use crate::objectives::CaptureBox;
+use crate::{
+    objective_data::MapObjectives,
+    objectives::{Area, CaptureBox},
+};
 
 /// The file in the runtime `data` folder.
 pub const FILE: &str = "game_map_areas_174.json";
@@ -157,16 +160,43 @@ impl SpawnRoom {
     }
 }
 
-/// The spawn rooms' areas, as their `0D62` asks for its own
-/// (`STU_73E1C5F0`).
-pub struct RoomVolumes(pub Arc<[SpawnRoom]>);
+/// The areas of the map's entities that have one (`STU_73E1C5F0`,
+/// `STU_96F571ED`): the spawn rooms', as their `0D62` asks for its own, and
+/// the capture points', as the capture area aura's `0F00` asks for its
+/// point (`orpheus_script` `vm/residency.rs`): each point's boxes where
+/// its objective stands ([`Area::of_point`]).
+pub struct MapVolumes {
+    rooms: Arc<[SpawnRoom]>,
+    points: Vec<(u32, Area)>,
+}
 
-impl EntityVolumes for RoomVolumes {
-    fn contains(&self, entity: u32, point: [f64; 3]) -> Option<bool> {
-        self.0
+impl MapVolumes {
+    pub fn new(rooms: Arc<[SpawnRoom]>, map: &GameMap, objectives: &MapObjectives) -> Self {
+        let points = objectives
+            .points
             .iter()
-            .find(|room| room.entity() == entity)
-            .map(|room| room.contains(point))
+            .map(|point| {
+                let at = map
+                    .objectives
+                    .iter()
+                    .find(|objective| objective.placeable == point.placeable)
+                    .map_or(point.position, |objective| objective.position);
+                (0x8000_0000 | point.placeable, Area::of_point(point, at))
+            })
+            .collect();
+        Self { rooms, points }
+    }
+}
+
+impl EntityVolumes for MapVolumes {
+    fn contains(&self, entity: u32, point: [f64; 3]) -> Option<bool> {
+        if let Some(room) = self.rooms.iter().find(|room| room.entity() == entity) {
+            return Some(room.contains(point));
+        }
+        self.points
+            .iter()
+            .find(|(placed, _)| *placed == entity)
+            .map(|(_, area)| area.contains(point))
     }
 }
 

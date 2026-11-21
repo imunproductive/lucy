@@ -14,13 +14,13 @@
 //! The same world runs the entities the game spawns during the match
 //! ([`MapEntityWorld::spawn`]: Soldier: 76's Biotic Field `03DC`, whose
 //! `0258` searches for allies, puts its aura `025F` on them and destroys
-//! itself). A spawned entity has an owner (its hero's controller), puts
+//! itself. A spawned entity has an owner (its hero's controller), puts
 //! auras on the bodies ([`MapEntityWorld::take_auras`]) and removes itself
 //! (`STU_523EE38D`), which ends its graphs, so its ApplyAura takes its
 //! auras off ([`MapEntityWorld::take_destroyed`]). A map placeable removes
-//! itself the same way (a health pack whose ruleset turns packs off).
-//! Assumption: the map's own placeables put no auras on bodies yet (their
-//! auras have no client side here).
+//! itself the same way (a health pack whose ruleset turns packs off), and
+//! puts auras on bodies the same way (a capture point's `0E8E` puts its
+//! area aura `02A2` on every body).
 //!
 //! A script can make and remove dummy bots (`STU_FC3921B1`,
 //! `STU_C1561031`: the Practice Range's Training Partner console `265F`):
@@ -192,6 +192,21 @@ pub struct PlacedEntity {
 impl PlacedEntity {
     pub fn snapshot(&self) -> Option<&Snapshot> {
         self.component.as_ref()?.snapshot()
+    }
+
+    /// Its entity variables as other entities read them (`#E.id(N)`): the
+    /// stored ones with the stacked ones over them.
+    pub fn entity_variables(&self) -> Variables {
+        let Some(snapshot) = self.snapshot() else {
+            return Variables::new();
+        };
+        let mut variables = snapshot.variables.clone();
+        for (&(instance, id), value) in &snapshot.resolved_bindings {
+            if instance == 0 {
+                variables.insert(id, value.clone());
+            }
+        }
+        variables
     }
 
     /// Whether its graphs ran only on what the VM implements: no gap was
@@ -591,21 +606,39 @@ impl World for EntityWorld<'_, '_> {
     }
 
     /// A listed body's word, as the target searches take it
-    /// ([`TargetCandidate::filter_word`]).
+    /// ([`TargetCandidate::filter_word`]); a tagged map placeable's 0: the
+    /// server creates its placeables without component 26 but the moving
+    /// ones (`orpheus_sim::scene::placeable_components`), and the map's own
+    /// entities carry none [assumption: no definition of a tagged map entity
+    /// gives it one]. `0E8E` st1 asks the tagged entities for kind 1 (the
+    /// bodies) so.
     fn entity_filter_flags(&self, _site: Site, entity: u32) -> Option<u64> {
-        self.shared
+        if let Some(body) = self
+            .shared
             .players
             .iter()
             .find(|player| player.entity == entity)
-            .map(TargetCandidate::filter_word)
+        {
+            return Some(body.filter_word());
+        }
+        self.shared.tagged(entity).map(|_| 0)
     }
 
-    /// A spawned entity's ApplyAura puts its auras on the bodies through
-    /// the match.
+    /// The map's tagged placeables, then the listed bodies (every hero
+    /// body's definition has a target tag component), as the mode entity's
+    /// world lists them (`crate::mode`): a tag query with no tag (`0E8E`
+    /// st1, the bodies a capture point puts its area aura on).
+    fn tagged_entities(&self, _site: Site) -> Option<Vec<u32>> {
+        let mut entities: Vec<u32> = self.shared.map_tags?.entities().collect();
+        entities.extend(self.shared.players.iter().map(|player| player.entity));
+        Some(entities)
+    }
+
+    /// An ApplyAura puts its auras on the bodies through the match: a
+    /// spawned entity's (the Biotic Field's `025F`) and a map placeable's
+    /// (a capture point's `0E8E` st37/st38: `02A2`, whose `0F00` on each
+    /// body reports it in the point's area).
     fn change_aura(&mut self, _site: Site, change: AuraChange) -> bool {
-        if self.owner.is_none() {
-            return false;
-        }
         self.shared.out.auras.push(change);
         true
     }
