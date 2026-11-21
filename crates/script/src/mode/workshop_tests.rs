@@ -336,8 +336,8 @@ fn small_message_reaches_its_target_in_the_frames() {
 /// copy), which StateStack st2 evaluates on each client. C32S2's
 /// level-select icons are made at the match start, visible to the players
 /// with `CPData[13]`, then none; when the rules evaluate the player in, the
-/// copy the frames carry follows (in the game the icons then show from
-/// the hub, ParkourMatch9).
+/// copy follows and the stack the frames carry takes it in the next frame
+/// (in the game the icons then show from the hub, ParkourMatch9).
 #[test]
 #[ignore = "requires the derived 104319 graph bundle"]
 fn create_icon_follows_its_reevaluated_visible_to() {
@@ -379,8 +379,13 @@ fn create_icon_follows_its_reevaluated_visible_to() {
         .set_action_parameters(create, parameters(vec![Value::Entity(PLAYER)]))
         .unwrap();
     let (id, copied) = scope(&script);
-    let visible = constant(Value::Array(vec![Value::Entity(PLAYER)]));
-    assert_eq!(copied, Some(visible.clone()));
+    assert_eq!(
+        copied,
+        Some(constant(Value::Array(vec![Value::Entity(PLAYER)])))
+    );
+    // The stack st2 takes the new copy in the next frame, and the frames
+    // carry its value.
+    script.advance(2).unwrap();
     let graphs = Arc::clone(&script.world.graphs);
     let codecs = CodecTable::client();
     let encoder = SnapshotEncoder::new(&graphs, &codecs);
@@ -389,7 +394,7 @@ fn create_icon_follows_its_reevaluated_visible_to() {
         .unwrap();
     assert_eq!(
         projected.instance_variable(id, ICON_VISIBLE_TO),
-        Some(&visible)
+        Some(&Value::Array(vec![Value::Entity(PLAYER)]))
     );
     assert_complete(&script);
 }
