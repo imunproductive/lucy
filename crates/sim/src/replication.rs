@@ -1642,6 +1642,9 @@ struct SwitchNotices {
 pub struct RoomPlayer<'a, 'w> {
     pub appearance: PlayerAppearance<'a>,
     pub world: Option<&'w mut WorldDelivery>,
+    /// A dummy bot (`STU_FC3921B1`, the Practice Range's Training Partner):
+    /// the clients get his card without a "joined" or "left" line.
+    pub dummy: bool,
 }
 
 /// Bring every client of a room up to date on the other players
@@ -1685,11 +1688,14 @@ pub fn show_players(
         let views: Vec<_> = players
             .iter()
             .enumerate()
-            .map(|(slot, player)| match player.world.as_deref() {
-                Some(world) => {
-                    world.player_view(&player.appearance, scene, |body| observed(slot, body))
+            .map(|(slot, player)| PlayerView {
+                dummy: player.dummy,
+                ..match player.world.as_deref() {
+                    Some(world) => {
+                        world.player_view(&player.appearance, scene, |body| observed(slot, body))
+                    }
+                    None => PlayerView::absent(&player.appearance),
                 }
-                None => PlayerView::absent(&player.appearance),
             })
             .collect();
         // What each client can name in a kill feed line besides the other

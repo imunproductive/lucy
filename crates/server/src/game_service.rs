@@ -778,6 +778,9 @@ struct Player {
     stats: PlayerStats,
     /// An AI hero the server plays (Practice vs AI): no game, no result.
     ai: bool,
+    /// A dummy bot a placed script made (the Training Partner, `ai.rs`):
+    /// an AI player whose coming and going the chat doesn't post.
+    dummy: bool,
 }
 
 impl Player {
@@ -884,6 +887,7 @@ impl Room {
                 gone: false,
                 stats: PlayerStats::default(),
                 ai: false,
+                dummy: false,
             });
         }
     }
@@ -3402,6 +3406,7 @@ impl State {
                 .map(|slot| RoomPlayer {
                     appearance: room.appearance(slot).expect("seated player"),
                     world: None,
+                    dummy: room.players[slot].dummy,
                 })
                 .collect();
             for (&connection, peer) in &mut self.peers {

@@ -145,6 +145,7 @@ impl Room {
                     gone: false,
                     stats: PlayerStats::default(),
                     ai: true,
+                    dummy: false,
                 });
                 let controller = AiController::new(difficulty, rank, missing, random.next_u64());
                 seats.push((
@@ -412,6 +413,7 @@ impl State {
             gone: false,
             stats: PlayerStats::default(),
             ai: true,
+            dummy: true,
         });
         room.dummies.push(DummySeat {
             team: dummy.team,
