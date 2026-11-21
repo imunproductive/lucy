@@ -3218,12 +3218,14 @@ impl State {
             }
             // The flow stands in for the mode graph's entries: what the
             // mode entity's graphs sent it (the Workshop's Set Match Time),
-            // unless the mode's own graph took them itself.
+            // unless the mode's own graph took them itself, or has no such
+            // entry (Lúcioball's `0F9D`).
             if let Some(mode) = room.mode.as_mut() {
-                let own = mode.holds_rooms();
+                let stand_in = !mode.holds_rooms()
+                    && orpheus_sim::mode_script::takes_set_match_time(room.map.mode_guid);
                 if let Some(script) = mode.script_mut() {
                     for message in script.take_own_messages() {
-                        if !own {
+                        if stand_in {
                             flow.receive(message.message, &message.parameters);
                         }
                     }

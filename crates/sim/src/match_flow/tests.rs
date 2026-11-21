@@ -269,8 +269,13 @@ fn modes_without_a_flow_or_their_objectives_get_none() {
     assert!(none(&map(ASSAULT, Vec::new())));
     assert!(none(&map(ESCORT, Vec::new())));
     assert!(none(&map(CONTROL, Vec::new())));
-    let skirmish = new_flow(&map(SKIRMISH, Vec::new()), false, Timers::default()).unwrap();
+    let mut skirmish = new_flow(&map(SKIRMISH, Vec::new()), false, Timers::default()).unwrap();
     assert_eq!(skirmish.mode(), Mode::Skirmish);
+    // No assembly: Skirmish's round begins with the players (`0D76` sets
+    // no phase).
+    skirmish.start();
+    assert_eq!(skirmish.phase(), Phase::Round);
+    assert!(!skirmish.assembling());
     assert_eq!(Mode::of(ASSAULT_TEST), Some(Mode::Assault));
     assert_eq!(Mode::of(BOUNTY_HUNTER), Some(Mode::Deathmatch));
 }
