@@ -99,7 +99,16 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 return Ok(());
             }
         };
-        let Some(tag) = expr::target_tag_config(literal).filter(|&tag| tag != 0) else {
+        // A literal, or an expression that gives one (`0FA8` st6:
+        // `#1777 == TeamBlue ? 02B3 : 02B4`).
+        let tag = match expr::target_tag_config(literal) {
+            Some(tag) => Some(tag),
+            None => match self.evaluate_quietly(key.instance, node, literal) {
+                Some(Value::Asset(tag)) => Some(tag),
+                _ => None,
+            },
+        };
+        let Some(tag) = tag.filter(|&tag| tag != 0) else {
             self.report(site, Issue::UnsupportedField("target tag literal"));
             return Ok(());
         };

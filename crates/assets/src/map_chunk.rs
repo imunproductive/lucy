@@ -18,10 +18,19 @@
 //! blob.
 //!
 //! An area placeable (chunk kind [`AREA_CHUNK`], placeable type [`AREA`]) is
-//! a volume other placeables name by its UUID: a body of `{u32 ×3, u32 box
-//! count (low 16 bits), u32, u32 flags, u32 offsets [6..13] from the body
-//! start}`, the boxes from offset [6] to [7], each 40 bytes: rotation `{x, y,
-//! z, w}`, world centre, half extents (refs report `CaptureAreas.md` §3).
+//! a volume other placeables name by its UUID, made of boxes, spheres and
+//! capsules (TankLib's `teMapPlaceableArea`). Its body: a 72-byte header with
+//! `u16` counts at +12 (boxes), +14 (spheres), +16 (capsules), +18 and +20
+//! (two unknown shapes, none in 1.74), then `u32` offsets from the body's
+//! start at +24 (boxes), +28 (spheres), +32 (capsules), +36 and +40 (the
+//! unknown shapes; in 1.74 both are the body's end). Each kind ends where
+//! the next starts. A box is 40 bytes: rotation `{x, y, z, w}`, world
+//! centre, half extents (refs report `CaptureAreas.md` §3); a sphere 16:
+//! world centre, radius; a capsule 40: rotation, world centre, `f32` height,
+//! radius and a zero. 1.74 data for the capsule: one turned 90° about z with
+//! `{30.76, 5.0}` sits among boxes of half extents about `{19.5, 5.0}` along
+//! the same axes, so the second is the radius; whether the height counts the
+//! caps is an assumption left open.
 
 use std::collections::HashMap;
 
@@ -37,7 +46,11 @@ pub(crate) const ENTITY: u16 = 0x0B;
 pub(crate) const COLLISION: u16 = 0x11;
 /// The chunk kind of the area placeables.
 pub(crate) const AREA_CHUNK: u16 = 0x0A;
+/// An area body's header and its shapes' sizes (see the module notes).
+const AREA_HEADER: usize = 72;
 const BOX_SIZE: usize = 40;
+const SPHERE_SIZE: usize = 16;
+const CAPSULE_SIZE: usize = 40;
 
 /// The placeable types, byte 19 of each placeable.
 pub(crate) const LIGHT: u8 = 7;
@@ -309,9 +322,34 @@ fn u32_at(data: &[u8], at: usize) -> u32 {
     read_u32(&data[at..at + 4])
 }
 
-/// The box areas of a map: area UUID -> its boxes as
-/// `{"centre", "half", "rotation"}` (an area that lists no box is left out).
-pub(crate) fn area_boxes(chunks: &[(u64, Vec<u8>)]) -> HashMap<[u8; 16], Vec<Json>> {
+/// An area placeable's shapes, each as JSON: boxes `{"centre", "half",
+/// "rotation"}`, spheres `{"centre", "radius"}`, capsules `{"centre",
+/// "rotation", "height", "radius"}`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Area {
+    pub boxes: Vec<Json>,
+    pub spheres: Vec<Json>,
+    pub capsules: Vec<Json>,
+}
+
+impl Area {
+    /// The boxes of an area that is only boxes, the error naming `what`
+    /// otherwise: the server tests bodies against boxes only.
+    pub fn only_boxes(&self, what: &str) -> Result<&[Json]> {
+        if self.boxes.is_empty() || !self.spheres.is_empty() || !self.capsules.is_empty() {
+            return Err(asset_error(format!(
+                "{what}: its area is not a box area ({} boxes, {} spheres, {} capsules)",
+                self.boxes.len(),
+                self.spheres.len(),
+                self.capsules.len()
+            )));
+        }
+        Ok(&self.boxes)
+    }
+}
+
+/// The areas of a map by UUID.
+pub(crate) fn areas(chunks: &[(u64, Vec<u8>)]) -> Result<HashMap<[u8; 16], Area>> {
     let mut out = HashMap::new();
     for (guid, data) in chunks {
         if chunk_kind(*guid) != AREA_CHUNK {
@@ -326,36 +364,74 @@ pub(crate) fn area_boxes(chunks: &[(u64, Vec<u8>)]) -> HashMap<[u8; 16], Vec<Jso
                 .expect("16 bytes");
             let size = u32_at(data, placeable.offset + 20) as usize;
             let body = &data[placeable.offset + 24..placeable.offset + size];
-            if let Some(boxes) = boxes(body) {
-                out.insert(uuid, boxes);
-            }
+            let area = area(body).map_err(|reason| {
+                asset_error(format!(
+                    "chunk {guid:016X} area at {:#X}: {reason}",
+                    placeable.offset
+                ))
+            })?;
+            out.insert(uuid, area);
         }
     }
-    out
+    Ok(out)
 }
 
-/// An area placeable's boxes, `None` for a body that lists none or that
-/// runs past its placeable.
-fn boxes(body: &[u8]) -> Option<Vec<Json>> {
-    let word = |k: usize| (k * 4 + 4 <= body.len()).then(|| u32_at(body, k * 4));
-    let count = (word(3)? & 0xFFFF) as usize;
-    let (start, end) = (word(6)? as usize, word(7)? as usize);
-    if count == 0 || end != start + count * BOX_SIZE || end > body.len() {
-        return None;
+/// An area placeable's body.
+fn area(body: &[u8]) -> std::result::Result<Area, String> {
+    if body.len() < AREA_HEADER {
+        return Err(format!("{} bytes, shorter than its header", body.len()));
     }
-    Some(
-        (0..count)
-            .map(|k| {
-                let at = start + k * BOX_SIZE;
-                let floats = |from: usize, n: usize| -> Vec<f64> {
-                    (0..n)
-                        .map(|i| short(f32_at(body, at + from + 4 * i)))
-                        .collect()
-                };
-                json!({"centre": floats(16, 3), "half": floats(28, 3), "rotation": floats(0, 4)})
+    let count = |at: usize| usize::from(u16::from_le_bytes([body[at], body[at + 1]]));
+    let offset = |k: usize| u32_at(body, 24 + 4 * k) as usize;
+    let unknown = [count(18), count(20)];
+    if unknown != [0, 0] {
+        return Err(format!("unknown shape counts {unknown:?}"));
+    }
+    // Where each shape starts, by kind: boxes, spheres, capsules.
+    let mut kinds: [Vec<usize>; 3] = Default::default();
+    for (k, size) in [BOX_SIZE, SPHERE_SIZE, CAPSULE_SIZE]
+        .into_iter()
+        .enumerate()
+    {
+        let (start, count) = (offset(k), count(12 + 2 * k));
+        if start + count * size != offset(k + 1) {
+            return Err(format!(
+                "shape kind {k}: {count} at {start:#X} do not end at the next kind"
+            ));
+        }
+        kinds[k] = (0..count).map(|n| start + n * size).collect();
+    }
+    if offset(3) != body.len() || offset(4) != body.len() {
+        return Err("the shapes do not end at the body's end".to_owned());
+    }
+    let floats = |at: usize, n: usize| -> Vec<f64> {
+        (0..n).map(|i| short(f32_at(body, at + 4 * i))).collect()
+    };
+    let float = |at: usize| short(f32_at(body, at));
+    let [boxes, spheres, capsules] = kinds;
+    Ok(Area {
+        boxes: boxes
+            .into_iter()
+            .map(|at| {
+                json!({"centre": floats(at + 16, 3), "half": floats(at + 28, 3), "rotation": floats(at, 4)})
             })
             .collect(),
-    )
+        spheres: spheres
+            .into_iter()
+            .map(|at| json!({"centre": floats(at, 3), "radius": float(at + 12)}))
+            .collect(),
+        capsules: capsules
+            .into_iter()
+            .map(|at| {
+                json!({
+                    "centre": floats(at + 16, 3),
+                    "rotation": floats(at, 4),
+                    "height": float(at + 28),
+                    "radius": float(at + 32),
+                })
+            })
+            .collect(),
+    })
 }
 
 fn u64_at(data: &[u8], at: usize) -> u64 {
@@ -405,4 +481,100 @@ pub(crate) fn round(value: f64, digits: usize) -> f64 {
     format!("{value:.digits$}")
         .parse()
         .expect("a float formats")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An area body with `counts` (boxes, spheres, capsules) of shapes
+    /// whose floats count up from 1.
+    fn area_body(counts: [u16; 3]) -> Vec<u8> {
+        let mut body = vec![0; AREA_HEADER];
+        let mut at = AREA_HEADER;
+        let mut offsets = Vec::new();
+        for (k, (count, size)) in counts
+            .into_iter()
+            .zip([BOX_SIZE, SPHERE_SIZE, CAPSULE_SIZE])
+            .enumerate()
+        {
+            body[12 + 2 * k..14 + 2 * k].copy_from_slice(&count.to_le_bytes());
+            offsets.push(at);
+            at += usize::from(count) * size;
+        }
+        offsets.extend([at, at]);
+        for (k, offset) in offsets.into_iter().enumerate() {
+            body[24 + 4 * k..28 + 4 * k].copy_from_slice(&(offset as u32).to_le_bytes());
+        }
+        let floats = (at - AREA_HEADER) / 4;
+        for n in 1..=floats {
+            body.extend_from_slice(&(n as f32).to_le_bytes());
+        }
+        body
+    }
+
+    #[test]
+    fn an_area_reads_its_boxes_spheres_and_capsules() {
+        let area = area(&area_body([1, 1, 1])).unwrap();
+        assert_eq!(
+            area.boxes,
+            [
+                json!({"rotation": [1.0, 2.0, 3.0, 4.0], "centre": [5.0, 6.0, 7.0], "half": [8.0, 9.0, 10.0]})
+            ]
+        );
+        assert_eq!(
+            area.spheres,
+            [json!({"centre": [11.0, 12.0, 13.0], "radius": 14.0})]
+        );
+        assert_eq!(
+            area.capsules,
+            [
+                json!({"rotation": [15.0, 16.0, 17.0, 18.0], "centre": [19.0, 20.0, 21.0], "height": 22.0, "radius": 23.0})
+            ]
+        );
+        assert!(area.only_boxes("x").is_err());
+        let boxes = super::area(&area_body([2, 0, 0])).unwrap();
+        assert_eq!(boxes.only_boxes("x").unwrap().len(), 2);
+    }
+
+    #[test]
+    fn an_area_with_unknown_shapes_or_loose_offsets_is_an_error() {
+        let mut body = area_body([1, 0, 0]);
+        body[18] = 1;
+        assert!(area(&body).unwrap_err().contains("unknown shape"));
+        let mut body = area_body([1, 1, 0]);
+        // The spheres start a word late.
+        body[28..32].copy_from_slice(&(AREA_HEADER as u32 + 44).to_le_bytes());
+        assert!(area(&body).is_err());
+        assert!(area(&[0; 40]).is_err());
+    }
+
+    /// Every area of the 1.74 maps reads; boxes are the rule, 13 areas have
+    /// spheres and 65 capsules (none of them named by a capture point, spawn
+    /// room or damage area: their derivations refuse areas that are not all
+    /// boxes, and the pack tests pass).
+    #[test]
+    #[ignore = "requires an Overwatch 1.74 install (just test-game <install>)"]
+    fn every_area_of_the_install_reads() {
+        let install = Install::open(&orpheus_testkit::game_dir(), "enUS").unwrap();
+        let (mut areas, mut spheres, mut capsules) = (0, 0, 0);
+        for chunk in install.guids(MAP_CHUNK) {
+            if chunk_kind(chunk) != AREA_CHUNK {
+                continue;
+            }
+            let data = install.raw(chunk).unwrap();
+            for placeable in placeables(&data) {
+                if placeable.kind != AREA {
+                    continue;
+                }
+                let size = u32_at(&data, placeable.offset + 20) as usize;
+                let read = area(&data[placeable.offset + 24..placeable.offset + size])
+                    .unwrap_or_else(|error| panic!("{chunk:016X}: {error}"));
+                areas += 1;
+                spheres += usize::from(!read.spheres.is_empty());
+                capsules += usize::from(!read.capsules.is_empty());
+            }
+        }
+        assert_eq!((areas, spheres, capsules), (2340, 13, 65));
+    }
 }

@@ -212,3 +212,82 @@ fn the_shuffled_picker_takes_each_entry_once_a_round_and_keeps_the_last_apart() 
     assert_eq!(picks(0, Value::Array(list)), Vec::new());
     assert_eq!(picks(2, Value::Array(Vec::new())), Vec::new());
 }
+
+/// The environment credits a world was given (`World::credit_environment`).
+#[derive(Default)]
+struct Credits(Vec<EnvironmentCredit>);
+
+impl World for Credits {
+    fn credit_environment(&mut self, _site: Site, credit: EnvironmentCredit) -> bool {
+        self.0.push(credit);
+        true
+    }
+}
+
+/// `STU_545AB3B8` (`0D07` rid46's shape): each body of `m_target` (#20e)
+/// is credited to `m_0B897113` (#21e, none when unset), then the out plug
+/// runs (#12).
+#[test]
+fn set_environment_credit_player_names_the_credit_and_goes_on() {
+    let graphs = Arc::new(store(vec![graph(
+        42,
+        vec![
+            node(
+                0,
+                "STUStatescriptEntry",
+                None,
+                json!({"m_outPlug":plug(&[(1, "m_inPlug")], &[])}),
+            ),
+            node(
+                1,
+                "STU_545AB3B8",
+                None,
+                json!({
+                    "m_target":var(20, true),
+                    "m_0B897113":var(21, true),
+                    "m_loadout":null,
+                    "m_outPlug":plug(&[(2, "m_inPlug")], &[]),
+                }),
+            ),
+            node(
+                2,
+                "STUStatescriptActionSetVar",
+                None,
+                json!({"m_out_Var":var(12, false), "m_value":true}),
+            ),
+        ],
+        json!([]),
+        json!([0]),
+    )]));
+    let run = |variables: Variables| {
+        let mut world = Credits::default();
+        let component = Component::start(
+            Arc::clone(&graphs),
+            42,
+            variables,
+            vec![Root::new(1, 42)],
+            0,
+            &mut world,
+            MAX_INIT_WORK,
+        )
+        .unwrap();
+        assert_eq!(variable(&component, 12), Value::Bool(true));
+        world.0
+    };
+    let body = 0x0a00_0100;
+    let puncher = 0x0a00_0200;
+    assert_eq!(
+        run(Variables::from([
+            (20, Value::Entity(body)),
+            (21, Value::Entity(puncher)),
+        ])),
+        [EnvironmentCredit {
+            body,
+            by: Some(puncher)
+        }]
+    );
+    assert_eq!(
+        run(Variables::from([(20, Value::Entity(body))])),
+        [EnvironmentCredit { body, by: None }]
+    );
+}

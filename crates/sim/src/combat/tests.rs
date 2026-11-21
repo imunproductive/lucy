@@ -436,7 +436,8 @@ fn a_kill_credits_recent_damagers_and_the_assist_states_assisters() {
 /// (`KNOCKBACK_CREDIT`, KarQ's measure) and no other body's; a later knock
 /// takes it over; the body's own explosion, a jump, or a landing it lives
 /// through (forgotten once the tick's environment kills are dealt) cancels
-/// it, while the landing that kills (the catch floor) still credits it.
+/// it, while the landing that kills (the catch floor) still credits it. A
+/// graph's Set Environment Credit Player names it as a knock would.
 #[test]
 fn an_environment_kill_credits_the_last_knock_until_a_jump_or_a_landing() {
     const BODY: u32 = 0xa000_0201;
@@ -473,6 +474,12 @@ fn an_environment_kill_credits_the_last_knock_until_a_jump_or_a_landing() {
     credit.knocked(BODY, SHOOTER, at);
     credit.own_push();
     assert_eq!(credit.credit(BODY, at), None, "his own explosion");
+
+    // A graph names the credit (`STU_545AB3B8`): as a knock, or nobody.
+    credit.named(BODY, Some(other), at);
+    assert_eq!(credit.credit(BODY, at), Some(other), "a named credit");
+    credit.named(BODY, None, at);
+    assert_eq!(credit.credit(BODY, at), None, "named nobody");
 }
 
 #[test]

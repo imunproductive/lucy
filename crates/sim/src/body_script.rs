@@ -671,6 +671,10 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
         self.world.take_tracked_stats()
     }
 
+    fn take_environment_credits(&mut self) -> Vec<orpheus_script::vm::EnvironmentCredit> {
+        self.world.take_environment_credits()
+    }
+
     fn move_requests(&self) -> Vec<MoveRequest> {
         self.component.move_requests()
     }

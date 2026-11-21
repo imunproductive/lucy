@@ -112,6 +112,20 @@ const ASSUMED_NO_OPS: &[&str] = &[
     // -1, which the camera state STU_D75CDECC then reads.
     "STU_3218BAEB",
     "STU_5EAA04BB",
+    // Mode actions with no registration of their own (the base action's
+    // run 0x7FF78AA7EBA0: the client follows m_outPlug; leafall903/ORPHEUS
+    // (MIT) `rust` `vm/nodes.rs`, the 104319 class registry, checked with
+    // `tools/stu.py`). Server-only meaning unknown: STU_88DE7AD3 (one
+    // dynamic m_F97A13C6; the phase handoff of 0D0B, 0D76, 0EC2, 0F4A
+    // rid57, 0F60), STU_147B34C6 (no fields; 0D76, 180A rid17's phase
+    // cleanup), STU_7947FBE4 (no fields; 181D), STU_5B025A5D and
+    // STU_8A8255AF (an integer m_5FAC4660, the latter a float m_5CF63914;
+    // 0D94).
+    "STU_88DE7AD3",
+    "STU_147B34C6",
+    "STU_7947FBE4",
+    "STU_5B025A5D",
+    "STU_8A8255AF",
 ];
 
 /// Melee's states (graph 0043): knockback and three unnamed ones. The client
@@ -436,6 +450,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             "STUStatescriptActionCreateEntity" => self.create_entity(id, node, depth),
             "STU_C1561031" => self.remove_dummy_bot(id, node, depth),
             "STU_CFCE55DC" => self.move_body(id, node, depth),
+            "STU_545AB3B8" => self.credit_environment(id, node, depth),
             "STU_1E93FE1F" | "STU_DC325C52" | "STU_ADAFD7FF" | "STU_99ED4486" => {
                 self.action_result(id, node, depth)
             }

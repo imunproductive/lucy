@@ -47,14 +47,18 @@ struct Parkour {
 impl Parkour {
     /// C32S2 on Hanamura Assault, its player's Doomfist at his spawn.
     fn start() -> Self {
+        let path =
+            orpheus_testkit::dpk_archive().join("workshop.codes/C32S2_OG_doom_parkur_hanamura.txt");
+        Self::with_rules(&std::fs::read_to_string(path).unwrap())
+    }
+
+    /// The Workshop script `text` on Hanamura Assault, its player's
+    /// Doomfist at his spawn.
+    fn with_rules(text: &str) -> Self {
         let runtime = orpheus_testkit::runtime_dir();
         let data = runtime.join("data");
         let catalog = Arc::new(Catalog::load(&data).unwrap());
-        let path =
-            orpheus_testkit::dpk_archive().join("workshop.codes/C32S2_OG_doom_parkur_hanamura.txt");
-        let logic = parse(&std::fs::read_to_string(path).unwrap(), &catalog)
-            .unwrap()
-            .logic;
+        let logic = parse(text, &catalog).unwrap().logic;
         let maps = MapCatalog::load(&data)
             .unwrap()
             .with_modes(GameModes::load(data.join(MODES_FILE)).unwrap());
@@ -297,6 +301,51 @@ fn number(value: &ScriptValue) -> f64 {
         ScriptValue::Null => 0.0,
         other => panic!("{other:?}"),
     }
+}
+
+/// The body's ultimate charge and cost, entity variables #342 and #338 of
+/// its script.
+fn ultimate(world: &WorldDelivery) -> (f64, f64) {
+    let script = world.body_script.as_ref().unwrap();
+    let snapshot = script.runtime.snapshot().unwrap();
+    let read = |id| number(snapshot.variables.get(&id).unwrap_or(&ScriptValue::Null));
+    (
+        read(orpheus_script::ultimate::ULT_CHARGE),
+        read(orpheus_script::ultimate::ULT_COST),
+    )
+}
+
+/// Set Ultimate Charge (`1DAB`; C32S2's Meteor Strike easter egg sets 100
+/// once): its scope on the player's controller opens one on his body
+/// (`STU_69DBE90D(owner())`), whose rid8 sets #342e to the percent of the
+/// cost #338e (the cost itself from 99.999 up) in the tick the action
+/// runs, without the `14F2.025` message `0B8B` rid82 also takes.
+#[test]
+#[ignore = "requires an Overwatch 1.74 install (just test-affected <install>)"]
+fn the_workshop_sets_the_ultimate_charge_through_its_action_graph() {
+    let mut game = Parkour::with_rules(
+        "rule(\"half\")\n{\n\tevent\n\t{\n\t\tOngoing - Each Player;\n\t\tAll;\n\t\tAll;\n\t}\n\n\tactions\n\t{\n\t\tWait(1, Ignore Condition);\n\t\tSet Ultimate Charge(Event Player, 50);\n\t}\n}\n",
+    );
+    let (_, cost) = ultimate(&game.world);
+    assert!(cost > 0.0);
+    let half = cost * 50.0 * 0.010_000_001;
+    let mut ticks = 0;
+    while ultimate(&game.world).0 < half * 0.9 {
+        game.tick();
+        ticks += 1;
+        assert!(ticks < 125, "no charge set: {:?}", ultimate(&game.world));
+    }
+    // The Wait's 1 s at 16 ms a tick, give or take the rule's start.
+    assert!((62..=64).contains(&ticks), "{ticks} ticks");
+    let (charge, _) = ultimate(&game.world);
+    assert!((charge - half).abs() < 0.01, "{charge} of {cost}");
+    // Ultimate Charge Percent reads it back.
+    let percent = game
+        .world
+        .workshop_view(&game.scene)
+        .unwrap()
+        .ultimate_charge;
+    assert!((percent - 50.0).abs() < 0.01, "{percent}");
 }
 
 fn distance(a: [f64; 3], b: [f64; 3]) -> f64 {

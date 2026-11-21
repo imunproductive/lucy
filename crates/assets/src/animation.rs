@@ -14,7 +14,10 @@
 //! the three key frame lists, then the three value lists. A key frame is a
 //! `u8` when the clip has at most 255 frames, else an `i16`, taken as its
 //! absolute value modulo the frame count. A position is three `f32`; a
-//! scale three `u16` (OWLib's unpacking, `1 + (1 - v/1024)/1024`); a
+//! scale three `u16`, each `v/1024` (OWLib `a1023ef`; 1.74's 10,523 clips
+//! key 4.47M scale parts, 1.08M of them not 1024, spread from 0 to above
+//! 4096, so these are whole scales, not the near-1 deltas OWLib's earlier
+//! `1 + (1 - v/1024)/1024` made of them); a
 //! rotation three `u16` packing a unit quaternion's three smallest parts
 //! (each 15 bits, the top bits of the first two naming the left-out part)
 //! and the left-out part rebuilt as the positive square root.
@@ -26,6 +29,14 @@
 //! along the shorter arc) and hold the first and last keys outside them
 //! (assumption: OWLib exports keys only, and the client's sampling is not
 //! in the data).
+//!
+//! **Track flags.** OWLib names bits of a track's flags word for newer
+//! builds: `0x100` new scale packing, `0x200` the 12-byte positions (else
+//! 10-byte ones), `0x400` new rotation packing. 1.74 does not follow that:
+//! over its 10,523 clips `0x200` and `0x400` are never set, `0x100` is set on
+//! most tracks, and every position list (with or without `0x100`) is 12
+//! bytes a key. So we refuse only `0x400` (a packing we do not read) and do
+//! not port OWLib's "no `0x200` means 10-byte positions".
 //!
 //! **Additive clips.** The first word is `0x100` on every clip the
 //! Training Bot's blend trees play as its whole pose (they key all 43
@@ -52,6 +63,9 @@ const TRACKS: usize = 72;
 const TRACK_TABLE: usize = 32;
 /// The flags word's bit for a clip of deltas (see the module notes).
 const ADDITIVE: u16 = 0x4;
+/// A track flag for rotations in OWLib's newer packing (see the module
+/// notes).
+const NEW_ROTATIONS: u16 = 0x400;
 
 /// A decoded clip.
 #[derive(Clone, Debug, PartialEq)]
@@ -130,7 +144,7 @@ fn rotation(a: u16, b: u16, c: u16) -> [f32; 4] {
 
 /// OWLib's `UnpackScale`.
 fn scale(a: u16, b: u16, c: u16) -> [f32; 3] {
-    [a, b, c].map(|v| (1.0 + (1.0 - f64::from(v) / 1024.0) / 1024.0) as f32)
+    [a, b, c].map(|v| (f64::from(v) / 1024.0) as f32)
 }
 
 /// Reads a clip.
@@ -163,6 +177,9 @@ pub(crate) fn read(data: &[u8]) -> Result<Animation, String> {
             u16_at(data, table + 2)?,
             u16_at(data, table + 4)?,
         ];
+        if u16_at(data, table + 6)? & NEW_ROTATIONS != 0 {
+            return Err(format!("bone {bone:X}: rotations in OWLib's newer packing"));
+        }
         let offset = |k: usize| i32_at(data, table + 8 + 4 * k).and_then(|o| words(table, o));
         let [scale_count, position_count, rotation_count] = counts;
         let mut track = Track {
@@ -370,7 +387,8 @@ mod tests {
             bones: vec![
                 Keys {
                     bone: 0x11,
-                    scales: vec![(0, [1024, 1024, 1024])],
+                    // Whole scales, `v/1024`: 1, then half, double and none.
+                    scales: vec![(0, [1024, 1024, 1024]), (15, [512, 2048, 0])],
                     positions: vec![(0, [0.0, 1.0, 0.0]), (30, [0.0, 2.0, 0.5])],
                     rotations: vec![(0, pack(0.0, 0.0, 0.0)), (30, pack(x, 0.0, 0.0))],
                 },
@@ -391,6 +409,7 @@ mod tests {
         };
         assert_eq!(head.bone, 0x11);
         assert_eq!(head.scales[&0], [1.0; 3]);
+        assert_eq!(head.scales[&15], [0.5, 2.0, 0.0]);
         assert_eq!(head.positions[&30], [0.0, 2.0, 0.5]);
         let turn = head.rotations[&30];
         assert!((turn[0] - x as f32).abs() < 1e-4, "{turn:?}");
@@ -403,6 +422,40 @@ mod tests {
             ..clip
         };
         assert!(read(&layer.bytes()).unwrap().additive);
+        // A track flagged with OWLib's newer rotation packing is refused;
+        // `0x100` (set on most 1.74 tracks) is not.
+        let mut flagged = layer.bytes();
+        let tables = i64::from_le_bytes(flagged[TRACKS..TRACKS + 8].try_into().unwrap()) as usize;
+        flagged[tables + 6..tables + 8].copy_from_slice(&0x0111u16.to_le_bytes());
+        assert!(read(&flagged).is_ok());
+        flagged[tables + 6..tables + 8].copy_from_slice(&0x0511u16.to_le_bytes());
+        assert!(read(&flagged).unwrap_err().contains("newer packing"));
+    }
+
+    /// Every 1.74 clip reads: no track has the newer rotation packing, and
+    /// the scales are whole scales around 1 (mostly 1, some far from it).
+    #[test]
+    #[ignore = "requires an Overwatch 1.74 install (just test-game <install>)"]
+    fn every_clip_of_the_install_reads() {
+        let install = crate::Install::open(&orpheus_testkit::game_dir(), "enUS").unwrap();
+        let clips = install.guids(0x006);
+        assert_eq!(clips.len(), 10_523);
+        let (mut parts, mut unit, mut doubled) = (0usize, 0usize, 0usize);
+        for clip in clips {
+            let animation = read(&install.raw(clip).unwrap())
+                .unwrap_or_else(|error| panic!("{}: {error}", crate::guid_hex(clip)));
+            for scale in animation
+                .tracks
+                .iter()
+                .flat_map(|track| track.scales.values())
+            {
+                parts += 3;
+                unit += scale.iter().filter(|part| **part == 1.0).count();
+                doubled += scale.iter().filter(|part| **part >= 2.0).count();
+            }
+        }
+        assert!(unit * 3 > parts * 2, "{unit} of {parts} parts are 1");
+        assert!(doubled > 1000, "{doubled} parts at least 2");
     }
 
     #[test]

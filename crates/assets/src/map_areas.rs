@@ -64,6 +64,21 @@
 //! `00F6` overrides `0877` = 0 and `0878` = 1. Strong guess: these are the
 //! doorways' glowing barrier frames.
 //!
+//! A team wall is a server placeable that runs graph `0FA8` (definitions
+//! `1C90` and `1C91`: 263 and 264 placeables on 24 map records; 237 of the
+//! `1C90` stand exactly where a `1C91` stands). Its model's static
+//! physics shapes (`crate::props`) are one mesh, a 5.28 by 5.28 by 0.35 m
+//! box of 12 triangles: model `09A0` (`1C90`) with mask 0x88, which stops
+//! the team 0 mover (category 0x08), and `099D` (`1C91`) with 0x90, team 1
+//! (0x10); upstream leafall903/ORPHEUS (MIT) `tools/extract_game_maps.py`
+//! `ROOM_BARRIER_TEAMS` maps the two definitions to teams 0 and 1 the same
+//! way. Each wall's `0FA8` override of v1777 (where it has one) is that
+//! team too: 0 on `1C90`, 1 on `1C91`. The wall is written with its
+//! rotation, its scale and those shapes in model space (`collision`: each
+//! mesh's holder mask, vertices and triangles `[corners, wings, mask,
+//! surface]` as `crate::collision` keeps a prop's), for the server's mover
+//! (`orpheus_physics` `ContactWorld::with_switched`).
+//!
 //! The tagged entities are what the scene tag queries find
 //! (`orpheus_script::map_tags`): every entity placeable the server's world
 //! holds (on the loading list, or server-owned) with target tags of its
@@ -82,8 +97,9 @@ use crate::{
         Components, Placed, REQUIRED, SPAWN, TARGET_AREA, TARGET_TAG_DATA, chunk_index, graph_vars,
         instance, map_chunks, placed_script, read_map, target_tags,
     },
-    guid_hex,
-    map_chunk::{COLLISION, area_boxes, chunk_kind, guid_of, name_index, short},
+    guid_hex, guid_name,
+    map_chunk::{COLLISION, areas, chunk_kind, guid_of, name_index, short},
+    props::{self, Shape},
 };
 
 pub(crate) const PATH: &str = "data/game_map_areas_174.json";
@@ -101,6 +117,8 @@ const DAMAGE: usize = 24;
 /// model plays an idle animation that moves it (the Practice Range's
 /// platforms, definition `0516`).
 const MIRRORED_IDLE_ANIM: u32 = 0x3AA5_CB04;
+/// The team walls' graph.
+const TEAM_WALL_GRAPH: u64 = 0x0FA8;
 const TARGET_TAG: u16 = 0x06C;
 const MAP: u16 = 0x002;
 /// The collision mask of a kill volume: query category `0x02` alone.
@@ -118,7 +136,10 @@ its damage areas: every entity placeable with STUECDamageAreaInstanceData whose 
 area of the map, its first identifier (a placeable with one exists only in the modes that list it), \
 its damage (m_B81F7395) and its boxes; its server placeables: every entity placeable with client id 0 \
 whose definition (003) has neither component 0x737C5C41 nor 0xCA1FB0B8 (those are on the loading \
-list), with its definition, its first identifier and its second identifier (body +16); its tagged entities: every entity placeable on \
+list), with its definition, its first identifier and its second identifier (body +16), and for a \
+team wall (a server placeable whose statescript instance data names graph 0FA8) its rotation x y z w, \
+its scale and its model's static physics shapes that stop the team proxies 0x18 (STUModel \
+m_CB4D298D, meshes: holder mask, vertices, triangles as corners, wings, mask, surface); its tagged entities: every entity placeable on \
 the loading list or with client id 0 that has target tags (STUTargetTagInstanceData.m_targetTags, then \
 its definition's STUTargetTagComponent.m_targetTags, each once), with its first identifier, \
 position and rotation x y z w; its kill volumes: the boxes the triangles of the \
@@ -131,6 +152,8 @@ pub(crate) fn derive(install: &Install, _out: &Path) -> Result<Vec<Output>> {
     maps.sort_unstable();
     let mut derived = Map::new();
     let mut components = Components::default();
+    // A team wall definition's shapes.
+    let mut walls = HashMap::new();
     for map in maps {
         let data = map_chunks(install, &chunks, map);
         // A map whose rooms don't fit keeps the reason instead: the server
@@ -142,8 +165,10 @@ pub(crate) fn derive(install: &Install, _out: &Path) -> Result<Vec<Output>> {
         };
         let (damage_areas, server_placeables, tagged) = match read_map(&data) {
             Ok((base, entities)) => (
-                damage_areas(&data, base, &entities),
-                server_placeables(install, &mut components, base, &entities),
+                damage_areas(&data, base, &entities)
+                    .map_err(|error| asset_error(format!("map {map:X}: {error}")))?,
+                server_placeables(install, &mut components, &mut walls, base, &entities)
+                    .map_err(|error| asset_error(format!("map {map:X}: {error}")))?,
                 tagged(&components, base, &entities),
             ),
             Err(_) => (Vec::new(), Vec::new(), Vec::new()),
@@ -347,75 +372,133 @@ fn unit(v: [f64; 3]) -> [f64; 3] {
     v.map(|part| part / length)
 }
 
-/// The damage areas of a map with a box area, in placeable order.
-fn damage_areas(chunks: &[(u64, Vec<u8>)], base: usize, entities: &[Placed<'_>]) -> Vec<Json> {
-    let areas = area_boxes(chunks);
-    entities
-        .iter()
-        .enumerate()
-        .filter_map(|(number, placed)| {
-            let (stu, root) = instance(placed, DAMAGE_AREA_DATA)?;
-            let boxes = areas.get(&stu.uuid(root + DAMAGE_AREA)?)?;
-            let damage = stu.f32(root + DAMAGE)?;
-            let mut area = placeable_entry(base + number, placed);
-            area.insert("damage".into(), json!(short(damage)));
-            area.insert("boxes".into(), json!(boxes));
-            Some(Json::Object(area))
-        })
-        .collect()
+/// The damage areas of a map with an area, in placeable order.
+fn damage_areas(
+    chunks: &[(u64, Vec<u8>)],
+    base: usize,
+    entities: &[Placed<'_>],
+) -> Result<Vec<Json>> {
+    let areas = areas(chunks)?;
+    let mut out = Vec::new();
+    for (number, placed) in entities.iter().enumerate() {
+        let Some((stu, root)) = instance(placed, DAMAGE_AREA_DATA) else {
+            continue;
+        };
+        let (Some(found), Some(damage)) = (
+            stu.uuid(root + DAMAGE_AREA)
+                .and_then(|uuid| areas.get(&uuid)),
+            stu.f32(root + DAMAGE),
+        ) else {
+            continue;
+        };
+        let boxes = found.only_boxes(&format!("damage area {}", base + number))?;
+        let mut area = placeable_entry(base + number, placed);
+        area.insert("damage".into(), json!(short(damage)));
+        area.insert("boxes".into(), json!(boxes));
+        out.push(Json::Object(area));
+    }
+    Ok(out)
 }
 
 /// The server-owned placeables of a map that are not on the loading list,
 /// in placeable order, each with its definition and its second identifier
 /// when it has one (`STU_A3DC6A25` removes the placeables of one: the
-/// health packs' `2AB0.01C`).
+/// health packs' `2AB0.01C`), and a team wall with its collision (see the
+/// module notes; `walls` keeps each definition's shapes).
 fn server_placeables(
     install: &Install,
     components: &mut Components,
+    walls: &mut HashMap<u64, Json>,
     base: usize,
     entities: &[Placed<'_>],
-) -> Vec<Json> {
+) -> Result<Vec<Json>> {
     components.load(
         install,
         entities.iter().map(|placed| placed.entity.definition),
     );
-    entities
-        .iter()
-        .enumerate()
-        .filter(|(_, placed)| {
-            placed.entity.client_id == 0
-                && components
-                    .of(placed.entity.definition)
-                    .is_none_or(|found| !found.contains(&SPAWN) && !found.contains(&REQUIRED))
-        })
-        .map(|(number, placed)| {
-            let mut entry = placeable_entry(base + number, placed);
+    let mut out = Vec::new();
+    for (number, placed) in entities.iter().enumerate() {
+        let entity = &placed.entity;
+        if entity.client_id != 0
+            || components
+                .of(entity.definition)
+                .is_some_and(|found| found.contains(&SPAWN) || found.contains(&REQUIRED))
+        {
+            continue;
+        }
+        let mut entry = placeable_entry(base + number, placed);
+        entry.insert("definition".into(), json!(guid_hex(entity.definition)));
+        if entity.second_identifier != 0 {
             entry.insert(
-                "definition".into(),
-                json!(guid_hex(placed.entity.definition)),
+                "second_identifier".into(),
+                json!(guid_hex(entity.second_identifier)),
             );
-            if placed.entity.second_identifier != 0 {
-                entry.insert(
-                    "second_identifier".into(),
-                    json!(guid_hex(placed.entity.second_identifier)),
-                );
+        }
+        entry.insert("position".into(), json!(entity.translation.map(short)));
+        if let Some(script) = placed_script(&placed.instances) {
+            if names_graph(&script, TEAM_WALL_GRAPH) {
+                let collision = match walls.get(&entity.definition) {
+                    Some(collision) => collision.clone(),
+                    None => {
+                        let collision = wall_collision(install, entity.definition)?;
+                        walls.insert(entity.definition, collision.clone());
+                        collision
+                    }
+                };
+                entry.insert("rotation".into(), json!(entity.rotation.map(short)));
+                entry.insert("scale".into(), json!(entity.scale.map(short)));
+                entry.insert("collision".into(), collision);
             }
-            entry.insert(
-                "position".into(),
-                json!(placed.entity.translation.map(short)),
-            );
-            if let Some(script) = placed_script(&placed.instances) {
-                entry.insert("script".into(), script);
-            }
-            if components
-                .of(placed.entity.definition)
-                .is_some_and(|found| found.contains(&MIRRORED_IDLE_ANIM))
-            {
-                entry.insert("moving".into(), json!(true));
-            }
-            Json::Object(entry)
+            entry.insert("script".into(), script);
+        }
+        if components
+            .of(entity.definition)
+            .is_some_and(|found| found.contains(&MIRRORED_IDLE_ANIM))
+        {
+            entry.insert("moving".into(), json!(true));
+        }
+        out.push(Json::Object(entry));
+    }
+    Ok(out)
+}
+
+/// Whether a placeable's statescript instance data ([`placed_script`])
+/// names `graph` among its overrides or extra graphs.
+fn names_graph(script: &Json, graph: u64) -> bool {
+    ["overrides", "extra"].into_iter().any(|list| {
+        script[list]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|binding| binding["graph"].as_u64() == Some(graph))
+    })
+}
+
+/// A team wall definition's static physics shapes that stop the mover, in
+/// model space: meshes only (every team wall's in 1.74).
+fn wall_collision(install: &Install, definition: u64) -> Result<Json> {
+    props::definition_shapes(install, definition, props::MOVER)?
+        .into_iter()
+        .map(|shape| match shape {
+            Shape::Mesh(mask, vertices, records) => Ok(json!({
+                "mask": mask,
+                "vertices": vertices.iter().map(|vertex| vertex.map(short)).collect::<Vec<_>>(),
+                "triangles": records
+                    .iter()
+                    .map(|(corners, mask, surface)| {
+                        let mut row = corners.map(i64::from).to_vec();
+                        row.extend([i64::from(*mask), i64::from(*surface)]);
+                        row
+                    })
+                    .collect::<Vec<_>>(),
+            })),
+            _ => Err(asset_error(format!(
+                "team wall {}: a physics shape other than a mesh",
+                guid_name(definition)
+            ))),
         })
-        .collect()
+        .collect::<Result<Vec<_>>>()
+        .map(Json::from)
 }
 
 /// The map's entities with target tags that the server's world holds, in
@@ -478,7 +561,7 @@ fn placeable_entry(flat: usize, placed: &Placed<'_>) -> Map<String, Json> {
 /// The spawn rooms of a map, in placeable order.
 fn spawn_rooms(chunks: &[(u64, Vec<u8>)]) -> Result<Vec<Json>> {
     let (base, entities) = read_map(chunks)?;
-    let areas = area_boxes(chunks);
+    let areas = areas(chunks)?;
     let mut rooms = Vec::new();
     for (number, placed) in entities.iter().enumerate() {
         let graphs = graph_vars(&placed.instances);
@@ -495,7 +578,8 @@ fn spawn_rooms(chunks: &[(u64, Vec<u8>)]) -> Result<Vec<Json>> {
             .ok_or_else(|| asset_error(format!("spawn room {flat} names no area")))?;
         let boxes = areas
             .get(&area)
-            .ok_or_else(|| asset_error(format!("spawn room {flat}: its area is not a box area")))?;
+            .ok_or_else(|| asset_error(format!("spawn room {flat} names a missing area")))?
+            .only_boxes(&format!("spawn room {flat}"))?;
         let tags: Vec<String> = target_tags(&placed.instances)
             .into_iter()
             .map(|tag| guid_hex(guid_of(name_index(tag), TARGET_TAG)))

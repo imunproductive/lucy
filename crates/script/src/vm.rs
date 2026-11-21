@@ -1062,6 +1062,13 @@ pub trait World {
         false
     }
 
+    /// A graph named who an environment kill of a body credits
+    /// (`STU_545AB3B8`, Set Environment Credit Player): the match keeps it
+    /// as the body's knock credit. False: this world credits none.
+    fn credit_environment(&mut self, _site: Site, _credit: EnvironmentCredit) -> bool {
+        false
+    }
+
     /// A `PlayScript` action played its graph on another entity (the
     /// Workshop's Chase Variable `1CCC` plays `1CCF` on each target
     /// player): the match plays it in that entity's script
@@ -1253,6 +1260,14 @@ pub struct BodyMove {
     pub body: u32,
     pub position: [f64; 3],
     pub facing: Option<[f64; 3]>,
+}
+
+/// Who an environment kill of `body` credits ([`World::credit_environment`]):
+/// the entity `by` (none: nobody).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EnvironmentCredit {
+    pub body: u32,
+    pub by: Option<u32>,
 }
 
 #[derive(Default)]
