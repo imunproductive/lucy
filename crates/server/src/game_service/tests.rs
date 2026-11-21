@@ -1595,17 +1595,19 @@ fn exercise_hero_selection(
     ];
     // The pick's frame names the new hero with the screen still open;
     // `288B` closes it once the body lives (st95), a tick later: that
-    // frame may share the datagram, after the possession.
+    // frame may share the datagram, after the possession, replaced by a
+    // newer frame queued before it went (the controller's other states
+    // change after the spawn too, and each change sends a frame).
     let pick_batch = |records: &[WorldRecord]| {
         let described = describe(records);
         assert_eq!(described[..3], expected);
         match described[3..] {
             [] => {}
-            [(OWNER, None, Some(3))] => {
+            [(OWNER, None, Some(span))] if span > 2 => {
                 let close = records
                     .iter()
                     .filter_map(|record| record.script.as_ref())
-                    .find(|script| script.span == 3)
+                    .find(|script| script.span == span)
                     .unwrap();
                 assert_eq!(
                     controller_shows(assets.graphs(), close),
