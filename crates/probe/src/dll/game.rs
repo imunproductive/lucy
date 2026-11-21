@@ -5,13 +5,12 @@
 //! statescript instances.
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::VecDeque,
     sync::{
-        Condvar, Mutex,
+        Mutex,
         atomic::{AtomicU32, AtomicU64, Ordering},
     },
-    thread,
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use serde_json::{Map, Value, json};
@@ -26,19 +25,6 @@ use crate::{
     },
     ring::{Event, FrameSample},
 };
-
-/// The components the scanner finds by their vtables: (component id,
-/// vtable as an ORPHEUS VA).
-const SCANNED: [(u8, u64); 4] = [
-    (4, COMP4_VTABLE),
-    (31, COMP31_VTABLE),
-    (44, COMP44_VTABLE),
-    (47, COMP47_VTABLE),
-];
-
-/// How long a component the sampler needs and the last scan did not find
-/// waits before it asks for another scan (each takes seconds of a core).
-const RESCAN: Duration = Duration::from_secs(10);
 
 #[derive(Default)]
 pub struct Game {
@@ -55,11 +41,6 @@ pub struct Game {
     /// The body's entity id: set by `sampler {"body"}`, else 0 for the one
     /// the player possesses (its component 44).
     pub body: AtomicU32,
-    /// What the last scan found: (component id, owner entity id) → component.
-    found: Mutex<HashMap<(u8, u32), u64>>,
-    /// A scan is wanted.
-    scan: Mutex<bool>,
-    scan_wake: Condvar,
     pub frame_hook: Mutex<Option<u32>>,
 }
 
@@ -146,8 +127,6 @@ pub struct State {
     /// Where the position last changed, for the velocity.
     moved: Option<(Instant, [f32; 3])>,
     velocity: Option<[f32; 3]>,
-    /// When the sampler last asked for a scan for a missing component.
-    asked: HashMap<(u8, u32), Instant>,
     /// The last camera error, logged once.
     camera_error: Option<String>,
 }
@@ -164,7 +143,6 @@ impl Default for State {
             last: None,
             moved: None,
             velocity: None,
-            asked: HashMap::new(),
             camera_error: None,
         }
     }
@@ -230,93 +208,79 @@ pub fn components(probe: &Probe, vtable: u64, max: usize) -> Vec<(u64, u64, u32)
         .collect()
 }
 
-/// The thread that finds the components the sampler needs (a heap scan of
-/// a few seconds) whenever it asks.
-pub fn start_scanner(probe: &'static Probe) {
-    let _ = thread::Builder::new()
-        .name("owprobe-scan".into())
-        .spawn(move || {
-            let game = &probe.game;
-            let vtables: Vec<u64> = SCANNED
-                .iter()
-                .map(|&(_, vtable)| probe.runtime(vtable))
-                .collect();
-            loop {
-                {
-                    let Ok(mut wanted) = game.scan.lock() else {
-                        return;
-                    };
-                    while !*wanted {
-                        wanted = match game.scan_wake.wait(wanted) {
-                            Ok(guard) => guard,
-                            Err(_) => return,
-                        };
-                    }
-                    *wanted = false;
-                }
-                let started = Instant::now();
-                let mut found = HashMap::new();
-                for (component, vtable) in mem::scan_values(&mem::heap_regions(), &vtables, 1 << 20)
-                {
-                    let Some(id) = owner(probe, component).and_then(entity_id) else {
-                        continue;
-                    };
-                    let kind = SCANNED[vtables.iter().position(|&v| v == vtable).unwrap_or(0)].0;
-                    // The newest of several (a destroyed one keeps its owner
-                    // until reused) is a guess; the sampler checks each frame.
-                    found.insert((kind, id), component);
-                }
-                probe.log(&format!(
-                    "scan: {} components in {:.1} s",
-                    found.len(),
-                    started.elapsed().as_secs_f32()
-                ));
-                if let Ok(mut map) = game.found.lock() {
-                    *map = found;
-                }
-                // Not again at once when something is still missing.
-                thread::sleep(Duration::from_secs(2));
-            }
-        });
+/// The process's `PEB.Ldr`, part of the client's pointer mask.
+fn peb_loader() -> u64 {
+    let peb: u64;
+    // SAFETY: reads the PEB address from the TEB (`gs:[0x60]` on x64).
+    unsafe { std::arch::asm!("mov {}, gs:[0x60]", out(reg) peb, options(nostack, readonly)) };
+    mem::read_u64(peb + 0x18).unwrap_or(0)
 }
 
-/// Component `kind` of entity `id`, from the last scan when it is still
-/// that entity's; else a scan is asked for (at most every [`RESCAN`] for the
-/// same one).
-fn component(probe: &Probe, state: &mut State, kind: u8, id: u32) -> u64 {
-    let game = &probe.game;
-    if id == 0 || id == u32::MAX {
+/// A component pointer as the client stores it in an entity's array,
+/// unmasked (the inlined code after `Prot_MaskingStub` in each lookup).
+fn unmask(probe: &Probe, slot: u64) -> Option<u64> {
+    let index = MASK_INDEX
+        .wrapping_mul(2)
+        .wrapping_sub(probe.runtime(MASK_STUB));
+    let seed = MASK_SEED ^ peb_loader() ^ MASK_LDR_KEY;
+    let table = probe.runtime(MASK_TABLE);
+    let near = mem::read_u64(table + (index & 0xFFF))?;
+    let far = mem::read_u64(table + (index >> 52))? as u32;
+    let (low, high) = (slot as u32, (slot >> 32) as u32);
+    let high = near as u32 ^ low ^ high;
+    let low9 = seed as u32 ^ low;
+    let high9 = (seed >> 32) as u32 ^ low.wrapping_sub(MASK_ADD) ^ high;
+    let high10 = far.rotate_right(3).wrapping_mul(2).wrapping_sub(low9) ^ high9;
+    let high = ((near >> 32) as u32).wrapping_sub(low9) ^ high10;
+    Some(u64::from(low9) | u64::from(high) << 32)
+}
+
+/// Component `kind` of `entity`, as the client's own lookup finds it.
+pub fn entity_component(probe: &Probe, entity: u64, kind: u8) -> Option<u64> {
+    let word = u64::from(kind / 64);
+    let bit = kind % 64;
+    let bits = mem::read_u64(entity + COMPONENT_BITS + 8 * word)?;
+    if bits >> bit & 1 == 0 {
+        return None;
+    }
+    let mut first = [0u8];
+    if !mem::read(entity + COMPONENT_FIRST + word, &mut first) {
+        return None;
+    }
+    let index = u64::from(first[0]) + u64::from((bits & ((1u64 << bit) - 1)).count_ones());
+    let array = mem::read_u64(entity + COMPONENT_ARRAY)?;
+    let component = unmask(probe, mem::read_u64(array + 8 * index)?)?;
+    (component != 0).then_some(component)
+}
+
+/// The entity with id `id` in the world of `entity` (any entity of it).
+pub fn entity_by_id(probe: &Probe, entity: u64, id: u32) -> Option<u64> {
+    let world = mem::read_u64(entity + ENTITY_WORLD)? ^ WORLD_KEY;
+    let key = mem::read_u64(probe.runtime(ENTITIES_KEY_GLOBAL))?;
+    let buckets = mem::read_u64(world + WORLD_ENTITIES)?
+        ^ key
+            .rotate_right(4)
+            .wrapping_mul(2)
+            .wrapping_add(ENTITIES_KEY);
+    let bucket = buckets + 16 * u64::from(id & 0xFFF);
+    let count = mem::read_u32(bucket + 8)? as usize;
+    let entries = read_u64s(mem::read_u64(bucket)?, 2 * count.min(4096))?;
+    entries
+        .chunks_exact(2)
+        .find(|entry| entry[0] as u32 == id)
+        .map(|entry| entry[1])
+        .filter(|&found| found != 0)
+}
+
+/// Component `kind` of the entity with id `id`, found through the world of
+/// `entity` (0: none).
+pub fn component(probe: &Probe, entity: u64, kind: u8, id: u32) -> u64 {
+    if entity == 0 || id == 0 || id == u32::MAX {
         return 0;
     }
-    let vtable = SCANNED
-        .iter()
-        .find(|&&(k, _)| k == kind)
-        .map_or(0, |&(_, vtable)| probe.runtime(vtable));
-    let cached = game
-        .found
-        .lock()
-        .ok()
-        .and_then(|map| map.get(&(kind, id)).copied());
-    if let Some(component) = cached {
-        if mem::read_u64(component) == Some(vtable)
-            && owner(probe, component).and_then(entity_id) == Some(id)
-        {
-            return component;
-        }
-    }
-    let now = Instant::now();
-    let due = state
-        .asked
-        .get(&(kind, id))
-        .is_none_or(|&at| now.duration_since(at) >= RESCAN);
-    if due {
-        state.asked.insert((kind, id), now);
-        if let Ok(mut wanted) = game.scan.lock() {
-            *wanted = true;
-            game.scan_wake.notify_one();
-        }
-    }
-    0
+    entity_by_id(probe, entity, id)
+        .and_then(|owner| entity_component(probe, owner, kind))
+        .unwrap_or(0)
 }
 
 /// One input sample (the frame hook's handler).
@@ -336,15 +300,15 @@ pub fn on_frame(probe: &Probe, regs: &mut hook::Regs) {
         return;
     };
     let body_id = match game.body.load(Ordering::Relaxed) {
-        0 => match component(probe, &mut state, 44, player_id) {
+        0 => match component(probe, entity, 44, player_id) {
             0 => 0,
             comp44 => mem::read_u32(comp44 + POSSESSED).unwrap_or(0),
         },
         body => body,
     };
-    let comp4 = component(probe, &mut state, 4, body_id);
+    let comp4 = component(probe, entity, 4, body_id);
     game.comp4.store(comp4, Ordering::Relaxed);
-    let comp31 = component(probe, &mut state, 31, body_id);
+    let comp31 = component(probe, entity, 31, body_id);
     game.comp31.store(comp31, Ordering::Relaxed);
     let now_ms = probe.started.elapsed().as_millis() as u64;
     if state.script.active() {
@@ -418,10 +382,9 @@ pub fn on_frame(probe: &Probe, regs: &mut hook::Regs) {
         }
     }
     if record && !state.watches.is_empty() {
-        let watches = state.watches.clone();
-        for watch in &watches {
+        for watch in &state.watches {
             let id = if watch.player { player_id } else { body_id };
-            let comp47 = component(probe, &mut state, 47, id);
+            let comp47 = component(probe, entity, 47, id);
             if comp47 != 0 {
                 sample
                     .scripts
