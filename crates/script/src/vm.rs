@@ -857,6 +857,12 @@ pub trait World {
         false
     }
 
+    /// Leave the match's waiting phase (`STU_5E019216`, the Workshop's
+    /// Start Game Mode). False: this world can't.
+    fn start_game_mode(&mut self, _site: Site) -> bool {
+        false
+    }
+
     fn body_on_fire(&mut self, _site: Site, _entity: u32) -> Option<bool> {
         None
     }
@@ -2906,6 +2912,11 @@ enum Event {
     /// ([`Component::ai_move_arrived`]).
     AiMoveArrived(u16),
     WatchChanged(u16),
+    /// A reusing scope state took this scope instance
+    /// ([`Component::change_scope`]): the client's state event of kind 2,
+    /// which follows an active copy's scope plug again and does nothing to
+    /// an inactive one (`vm/scopes.rs`).
+    Rescope(u16),
     Message {
         position: u16,
         /// The sending entity; 0 when unknown.
@@ -2928,6 +2939,7 @@ impl Event {
             | Self::ChaseReached(state)
             | Self::AiMoveArrived(state)
             | Self::WatchChanged(state)
+            | Self::Rescope(state)
             | Self::Timer(state, _) => Some(state),
         }
     }
@@ -3244,6 +3256,12 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 }
                 Event::AiMoveArrived(raw) => self.ai_move_arrived(key(raw))?,
                 Event::WatchChanged(raw) => self.deliver_watch(key(raw))?,
+                Event::Rescope(raw) => {
+                    if self.state(key(raw)).is_some_and(|state| state.active) {
+                        let node = self.graph(id).state(usize::from(raw)).expect("scope state");
+                        self.follow(id, node, "m_C41A9BE2", Some(key(raw)), 0)?;
+                    }
+                }
                 Event::Message {
                     position,
                     sender,

@@ -157,6 +157,13 @@ const ASSUMED_INERT_STATES: &[&str] = &[
 /// retail server did with them is not known. Server-only too: the mode
 /// graphs' `STU_0FAD550D` (`m_41F2FA6C`, a bool; `0F4A` st34 as a round
 /// starts, false, before the ForCodeSynced st33 rows `2271`/`226F`/`2270`).
+/// And the Workshop chase helpers' `STU_F89A564A` (Chase Player / Global
+/// Variable At Rate's `1CCF`/`1CD0` st2: `m_entity` the owner,
+/// `m_B3867877` the chased variable's index; the base state on the
+/// client, a codec of none), whose subgraph st3 (`STU_1B2CD7F2`, the
+/// event context) the clients get: a mark for the retail rule engine that
+/// the variable moves [inference]; ORPHEUS's engine reads the variables
+/// each tick anyway.
 const ASSUMED_PLAIN_STATES: &[&str] = &[
     "STU_0C3A5D53",
     "STU_AB09B113",
@@ -164,6 +171,7 @@ const ASSUMED_PLAIN_STATES: &[&str] = &[
     "STU_7F488C3E",
     "STU_54BBC96C",
     "STU_0FAD550D",
+    "STU_F89A564A",
 ];
 
 impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
@@ -458,6 +466,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             "STU_FC3921B1" => self.create_dummy_bot(id, node, depth),
             "STUStatescriptActionCreateEntity" => self.create_entity(id, node, depth),
             "STU_C1561031" => self.remove_dummy_bot(id, node, depth),
+            "STU_5E019216" => self.start_game_mode(id, node, depth),
             "STU_CFCE55DC" => self.move_body(id, node, depth),
             "STU_545AB3B8" => self.credit_environment(id, node, depth),
             "STU_FFF26F80" => self.set_ability_cooldown_of(id, node, depth),

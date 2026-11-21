@@ -1792,6 +1792,27 @@ impl Evaluator<'_> {
                     value => value,
                 }
             }
+            // A Workshop team as a team index (`Eval_STU_382A5949`
+            // 0x7FF789BFE930, Create/Destroy Dummy Bot `203A`/`2080`): Team 1
+            // (`4D4F`) 0, Team 2 (`4D50`) 1, anything else (All Teams `4D4E`)
+            // -1.
+            "STU_382A5949" => Value::Integer(
+                match self.config(child(config, "m_A66DE11B"), context, nested)? {
+                    Value::Asset(0x0d80_0000_0000_4d4f) => 0,
+                    Value::Asset(0x0d80_0000_0000_4d50) => 1,
+                    _ => -1,
+                },
+            ),
+            // An icon in text (`Eval_STU_69D510F1` 0x7FF789BED630, the
+            // Workshop's Icon String in `1B4A`): `m_texture`'s GUID written
+            // with the format `<tx%16llx>` (decrypted from 0x7FF78BC29874;
+            // `%16llx` pads to 16 with spaces), empty for none.
+            "STU_69D510F1" => Value::String(
+                match self.config(child(config, "m_texture"), context, nested)? {
+                    Value::Asset(texture) if texture != 0 => format!("<tx{texture:16x}>"),
+                    _ => String::new(),
+                },
+            ),
             // A Workshop value's parameters as `1B4A`'s configs read them
             // (slot 5: the parameter array at `+0x370` plus 16 bytes per
             // index; evaluate `sub_7FF78AA88550`, shared).

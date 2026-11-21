@@ -41,7 +41,7 @@
 use std::{error, fmt};
 
 use crate::{
-    catalog::{Catalog, Id, Param, ParamKind},
+    catalog::{Catalog, Id, Param, ParamKind, UNWRITTEN},
     logic::{
         Action, Arg, Compare, Condition, Event, Logic, Rule, Value, WorkshopSetting, actions,
         default_arg, events, ids,
@@ -110,11 +110,6 @@ pub fn parse(text: &str, catalog: &Catalog) -> Result<Script> {
     script.logic.normalise(catalog);
     Ok(script)
 }
-
-/// The characters the writer leaves out of names (`sub_7FF789CA11E0`'s
-/// table, used by `sub_7FF789CA4490` and the rule writer): "Visible To,
-/// Position, and Radius" is written "Visible To Position and Radius".
-const UNWRITTEN: &[char] = &['(', ')', '{', '|', '}', '"', ';', '/', '\\', ','];
 
 /// Names of one kind as the text writes them, longest first.
 struct Names<T> {

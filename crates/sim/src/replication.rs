@@ -1917,6 +1917,10 @@ pub struct WorldDelivery {
     shield: (bool, u64),
     /// A hero picked while the body was dead: the respawn plays it.
     respawn_hero: Option<(u64, SkinTheme)>,
+    /// The hero the controller's graph forced on him (the Workshop's Start
+    /// Forcing Player To Be Hero, `ControllerScript::forced_hero`), until
+    /// [`Self::change_to_forced_hero`] makes its body.
+    forced_hero: Option<u64>,
     /// A body placed at a spawn point and its facing (1/65536 turns): the
     /// view turn (25008) waits for its possession to arrive
     /// ([`Self::take_spawn_view`]).
@@ -2109,6 +2113,7 @@ impl WorldDelivery {
             spawn_flag: (true, 0),
             shield: (false, 0),
             respawn_hero: None,
+            forced_hero: None,
             spawn_view: None,
             hurt: Vec::new(),
             controller_script: None,
@@ -2685,6 +2690,10 @@ impl WorldDelivery {
         if let Err(error) = script.receive_from(tick, message) {
             eprintln!("controller script of {owner:08X} stopped ({error})");
             self.controller_script = None;
+            return;
+        }
+        if let Some(hero) = script.forced_hero() {
+            self.forced_hero = Some(hero);
         }
     }
 
@@ -4154,17 +4163,25 @@ impl WorldDelivery {
         }
     }
 
-    /// Tests: the player's controller's instance of scope `scope`
-    /// (`vm/scopes.rs`), the one a client's 21616 from it names (the
-    /// Training Partner console's scope 126, where its picker sends `1213`).
+    /// Tests: the player's controller's instances of scope `scope`
+    /// (`vm/scopes.rs`), in order: the first is the one a client's 21616
+    /// from it names (the Training Partner console's scope 126, where its
+    /// picker sends `1213`).
     #[cfg(any(test, feature = "fixtures"))]
-    pub fn controller_scope_instance(&self, scope: u32) -> Option<u16> {
-        let snapshot = self.controller_script.as_ref()?.snapshot()?;
+    pub fn controller_scope_instances(&self, scope: u32) -> Vec<u16> {
+        let Some(snapshot) = self
+            .controller_script
+            .as_ref()
+            .and_then(|script| script.snapshot())
+        else {
+            return Vec::new();
+        };
         snapshot
             .instances
             .iter()
-            .find(|(_, instance)| instance.scope.as_ref().is_some_and(|link| link.id == scope))
+            .filter(|(_, instance)| instance.scope.as_ref().is_some_and(|link| link.id == scope))
             .map(|(&id, _)| id)
+            .collect()
     }
 
     /// Tests: whether state `state` of the current body's instance of graph
@@ -5119,6 +5136,47 @@ impl WorldDelivery {
             message,
             parameters,
         });
+    }
+
+    /// The hero the controller's graph forced on him
+    /// ([`orpheus_script::controller::ControllerScript::forced_hero`]):
+    /// `0C90`'s StateHero plays #940e, and the server makes the body, as
+    /// for a pick: a living body changes where it stands, a dead one's
+    /// respawn plays it. The skin is his card's.
+    pub fn change_to_forced_hero(
+        &mut self,
+        scene: &PreparedScene,
+        viewer: &PlayerAppearance<'_>,
+        tick: u32,
+        now: Duration,
+        quanta: u32,
+    ) -> io::Result<()> {
+        let Some(hero) = self
+            .forced_hero
+            .take()
+            .and_then(|hero| scene.heroes().get(hero))
+        else {
+            return Ok(());
+        };
+        let skin = viewer
+            .card
+            .skins
+            .get(&hero.guid)
+            .copied()
+            .unwrap_or_default();
+        if self.death.is_some() {
+            self.respawn_hero = Some((hero.guid, skin));
+            return Ok(());
+        }
+        if self.body.is_some_and(|body| body.hero == hero.guid) {
+            return Ok(());
+        }
+        match self.next_body(now) {
+            Some(entity) => self.switch(scene, viewer, tick, quanta, entity, (hero, skin), true)?,
+            // Every id of his body ring is still reserved: next tick.
+            None => self.forced_hero = Some(hero.guid),
+        }
+        Ok(())
     }
 
     /// combat.py `_respawn`: once the body's respawn is due ([`BodyDeath`]:

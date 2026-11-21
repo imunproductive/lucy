@@ -335,6 +335,26 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         Ok(true)
     }
 
+    /// `STU_5E019216` (the Workshop's Start Game Mode `2FD6`, `m_B0F70984`
+    /// = 5): the client's execute (`Action_STU_5E019216` 0x7FF7898163B0 →
+    /// `0x7FF7895E2080`) sends its server the request the custom game
+    /// menu's Start Game Mode does (value 5); the server leaves the
+    /// waiting phase. The world answers whether the match has left it
+    /// ([`World::start_game_mode`]); one that can't is an assumption.
+    pub(super) fn start_game_mode(
+        &mut self,
+        id: u16,
+        node: &Node,
+        depth: usize,
+    ) -> Result<bool, InitFault> {
+        let site = self.site(id, node);
+        if !self.world.start_game_mode(site) {
+            self.assume(site, &node.class, "the match starts no game mode");
+        }
+        self.follow(id, node, "m_outPlug", None, depth)?;
+        Ok(true)
+    }
+
     /// `STU_CFCE55DC` (server-only: no registration of its own,
     /// ControllerWorld.md): put the body `m_target` at `m_AF774F7D` facing
     /// `m_E3779CD0` (strong guess from its uses: Reinhardt's Charge `007D`

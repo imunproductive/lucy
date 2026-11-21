@@ -2998,6 +2998,17 @@ impl State {
                 {
                     eprintln!("{:08X} could not respawn ({error})", viewer.entity);
                 }
+                // A hero the controller's graph forced on him (the
+                // Workshop's Start Forcing Player To Be Hero).
+                if let Err(error) = peer.world.change_to_forced_hero(
+                    &world.scene,
+                    &viewer,
+                    tick,
+                    now,
+                    room.players[slot].quanta(),
+                ) {
+                    eprintln!("{:08X} could not change hero ({error})", viewer.entity);
+                }
                 peer.world.area_step(&world.scene, &viewer);
             }
         }
@@ -3045,6 +3056,7 @@ impl State {
     /// everyone goes home.
     fn update_flows(&mut self, tick: u32, now: Duration) {
         let mut home = Vec::new();
+        let mut dummies = Vec::new();
         for (&id, room) in &mut self.rooms {
             room.assembled = false;
             room.mode_frame = None;
@@ -3092,6 +3104,8 @@ impl State {
                 }
                 continue;
             }
+            // The player the next dummy bot a Workshop action makes gets.
+            let next_dummy = room.next_dummy();
             let (Some(flow), Some(world)) = (room.flow.as_mut(), room.world.as_ref()) else {
                 continue;
             };
@@ -3131,7 +3145,8 @@ impl State {
                 }
             }
             // The Workshop's rules after the mode entity's frame, against
-            // the players in the world.
+            // the players in the world. The dummy bots its actions make or
+            // remove are AI players of the room (`ai.rs`).
             if let (Some(run), Some(mode)) = (
                 room.workshop
                     .as_mut()
@@ -3147,11 +3162,19 @@ impl State {
                             .find(|(seated, _)| seated == connection)?;
                         let player = &room.players[slot];
                         // The Workshop's slots count within a team (Players
-                        // In Slot(0, Team 2) is Team 2's first player).
-                        let team_slot = room.players[..slot]
+                        // In Slot(0, Team 2) is Team 2's first player); a
+                        // dummy bot is in the slot he was made for.
+                        let dummy = room
+                            .dummies
                             .iter()
-                            .filter(|other| other.info.team == player.info.team)
-                            .count();
+                            .find(|dummy| dummy.player == slot)
+                            .and_then(|dummy| usize::try_from(dummy.slot).ok());
+                        let team_slot = dummy.unwrap_or_else(|| {
+                            room.players[..slot]
+                                .iter()
+                                .filter(|other| other.info.team == player.info.team)
+                                .count()
+                        });
                         (!player.gone && peer.world.world_started()).then_some(WorkshopPlayer {
                             controller: player.entity,
                             slot: team_slot,
@@ -3160,7 +3183,14 @@ impl State {
                         })
                     })
                     .collect();
+                if let Some(script) = mode.script_mut() {
+                    script.set_next_dummy(Some(next_dummy));
+                }
                 run.step(tick, &world.scene, mode, &mut players);
+                if let Some(script) = mode.script_mut() {
+                    script.set_next_dummy(None);
+                    dummies.push((id, script.take_dummy_changes()));
+                }
             }
             // The flow stands in for the mode graph's entries: what the
             // mode entity's graphs sent it (the Workshop's Set Match Time),
@@ -3318,6 +3348,9 @@ impl State {
                     peer.world.set_overtime(overtime);
                 }
             }
+        }
+        for (id, changes) in dummies {
+            self.change_dummies(id, changes);
         }
         for connection in home {
             if !self.links.cancel_handoff(connection) && self.peers.contains_key(&connection) {

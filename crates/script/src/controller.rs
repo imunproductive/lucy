@@ -65,6 +65,10 @@ pub const ELIMINATION: u64 = 0x0240_0000_0000_0093;
 /// `0687.025` {`03A1` spawn point, `03D9` camera seconds}: the mode's
 /// respawn hand-off.
 pub const RESPAWN_HERE: u64 = 0x0240_0000_0000_0687;
+/// #18557e: the hero a Workshop Start Forcing Player To Be Hero gives the
+/// controller (`0C90` rid302), for a server frame
+/// ([`ControllerScript::forced_hero`]).
+const FORCED_HERO: u32 = 18557;
 
 /// Target tag `04CE.06C`: a controller with it skips `0687`'s respawn
 /// camera (`0C90` st73).
@@ -752,6 +756,20 @@ impl ControllerScript {
         let id = crate::expr::workshop_variable(index);
         self.component
             .set_entity_variable(id, value, &mut self.world)
+    }
+
+    /// The hero the Workshop's Start Forcing Player To Be Hero (`1A7B`'s
+    /// `0CBC` {`005D`}) makes this player's, while `0C90` holds it: rid302
+    /// takes the hero into #18557e when All Heroes has it; st102 (a test of
+    /// the mode entity's #22368e) then holds `080D` with it alone to
+    /// himself (st90: hero select allows only it) and rid299 sets #940e,
+    /// the hero StateHero (st0) plays, to it; a server frame later rid307
+    /// clears #18557e. The server makes StateHero's bodies itself.
+    pub fn forced_hero(&self) -> Option<u64> {
+        match self.component.entity_value(FORCED_HERO) {
+            Value::Asset(hero) if hero != 0 => Some(hero),
+            _ => None,
+        }
     }
 
     /// The mode entity played a graph on this controller (a Workshop
