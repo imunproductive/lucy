@@ -853,7 +853,8 @@ fn ability_cooldown_and_push_binding_match_python_bytes() {
         146,
         "081500001d40003c200000e84f0000801f0000",
     );
-    // The owner's full frame head: the pushed value and its Stack link.
+    // The owner's full frame head: the pushed value and its Stack link,
+    // not volatile (the client's push `0x7FF789BA6D40` links it so).
     let head = crate::wire::read_full_head(
         encoder.owner_full(&owner, 1001, 16).unwrap().as_bytes(),
         |graph| {
@@ -865,14 +866,29 @@ fn ability_cooldown_and_push_binding_match_python_bytes() {
     .unwrap();
     assert_eq!(head.command_frame, Some(1001));
     assert_eq!(head.variables, Variables::from([(7, Value::Bool(true))]));
+    let links = |owner: &ProjectedSnapshot| {
+        crate::wire::read_full_head(
+            encoder.owner_full(owner, 1001, 16).unwrap().as_bytes(),
+            |graph| {
+                graphs
+                    .graph(u32::from(graph))
+                    .map(|graph| graph.header.states_bits)
+            },
+        )
+        .unwrap()
+        .links
+    };
     assert_eq!(
-        head.links,
-        std::collections::BTreeMap::from([(7, vec![(1, 0)])])
+        links(&owner),
+        std::collections::BTreeMap::from([(7, vec![(1, 0, false)])])
     );
 
     // A cooldown's link (slot 0) goes to the owner with the variable's own
     // value, the one the cooldown falls from: the owner's client works the
-    // rest out from the state's timing block (`0x7FF789B94D00`).
+    // rest out from the state's timing block (`0x7FF789B94D00`) at every
+    // read, as the link is volatile (`+0x29`, as the client's restart
+    // `0x7FF789BBB110` links it). Sent without it, the client read the
+    // value once and its HUD showed the cooldown's start until a reset.
     snapshot.variables.insert(7, Value::Float(1.25));
     snapshot
         .resolved_bindings
@@ -881,6 +897,10 @@ fn ability_cooldown_and_push_binding_match_python_bytes() {
     let owner = encoder.project(&snapshot, View::Owner).unwrap();
     assert_eq!(owner.variables.values[&7], Value::Float(1.25));
     assert_eq!(owner.variables.bindings[&7][0].slot, 0);
+    assert_eq!(
+        links(&owner),
+        std::collections::BTreeMap::from([(7, vec![(1, 0, true)])])
+    );
     let observer = encoder.project(&snapshot, View::Observer).unwrap();
     assert_eq!(observer.variables.values[&7], Value::Float(0.75));
 }
@@ -1215,8 +1235,20 @@ fn a_timed_chase_keeps_its_begin_payload_and_binding_until_it_arrives() {
     assert_eq!(begun.payload["last"], Value::Integer(16_000));
     assert_eq!(begun.payload["remaining"], Value::Integer(125));
     assert_eq!(owner.instance_variable(1, 100), Some(&Value::Float(0.5)));
+    // Volatile, as the client's chase begin links it (`0x7FF78AAAF430`):
+    // sent without it, the client worked the value out once and kept it,
+    // and Doomfist's Rocket Punch charge (`0D06` st11/st36) stood still
+    // from the server's first frame of the charge.
     let bound = &owner.instances[&1].variables.bindings[&100];
-    assert_eq!((bound.len(), bound[0].state, bound[0].slot), (1, 0, 0));
+    assert_eq!(
+        (
+            bound.len(),
+            bound[0].state,
+            bound[0].slot,
+            bound[0].volatile
+        ),
+        (1, 0, 0, true)
+    );
     assert!(send(&owner, DeltaKind::InitialOwner(1000)).contains(&timed));
 
     // 16 000 + 125 ms is in frame 1007 (16 112..16 127).
