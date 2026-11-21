@@ -79,11 +79,11 @@ pub struct LandingSearch {
     pub ceiling: Option<f64>,
 }
 
-struct Sweep {
-    fraction: f64,
-    point: [f64; 3],
-    normal: [f64; 3],
-    surface: u16,
+pub(crate) struct Sweep {
+    pub(crate) fraction: f64,
+    pub(crate) point: [f64; 3],
+    pub(crate) normal: [f64; 3],
+    pub(crate) surface: u16,
 }
 
 /// Where the body lands, or None when the search finds no ground.
@@ -330,7 +330,7 @@ impl Samples<'_> {
 /// A sphere of `radius` (a ray when 0), or the segment from it by `span`
 /// when given, swept from `start` to `end` through the static shapes of
 /// `category`: the first contact.
-fn sweep(
+pub(crate) fn sweep(
     world: &ContactWorld,
     category: u16,
     start: [f64; 3],

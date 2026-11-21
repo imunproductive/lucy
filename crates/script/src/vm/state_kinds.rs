@@ -171,29 +171,53 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             current
         };
         let kind = pool_kind(field(&node.fields, "m_7E8B666C")).expect("validated pool kind");
-        let Some(pool) = self.world.add_health_pool(site, kind, maximum, current) else {
+        let pool = if health_pool_form(node) == Some(true) {
+            let name = match field(&node.fields, "m_7BE02F89") {
+                Json::Null => None,
+                config => match self.evaluate(id, node, config, None) {
+                    Some(Value::Asset(name)) => Some(name),
+                    _ => {
+                        self.report(site, Issue::UnsupportedField("health pool name"));
+                        return Ok(());
+                    }
+                },
+            };
+            self.world
+                .add_temporary_pool(site, kind, maximum, current, name)
+        } else {
+            self.world.add_health_pool(site, kind, maximum, current)
+        };
+        let Some(pool) = pool else {
             self.report(site, Issue::UnsupportedField("health pool registration"));
             return Ok(());
         };
         self.state_mut(key).expect("active health pool").kind =
             StateKind::HealthPool { pool: Some(pool) };
+        if let Ok(Some(handle)) = expr::lvalue(field(&node.fields, "m_C99FAFDD")) {
+            self.write(source_key(id, handle), Value::Integer(i64::from(pool)))?;
+        }
         self.register_tick(key, self.machine.now_ms);
         self.publish_health_pool(key, node, current)
     }
 
+    /// The pool's current amount to its output, the body's totals to theirs;
+    /// a temporary pool that has run out finishes its state, which takes it
+    /// off the body (its `onEnd`: `0DF3` exits its instance).
     pub(super) fn publish_health_pool(
         &mut self,
         key: StateKey,
         node: &Node,
         current: f64,
     ) -> Result<(), InitFault> {
-        let output = expr::lvalue(field(&node.fields, "m_CEAB19E8"))
-            .expect("validated health pool output")
-            .expect("health pool output variable");
-        let output = source_key(key.instance, output);
-        let current = Value::Float(current);
-        if !same(&self.machine.value(output, None), &current) {
-            self.write(output, current)?;
+        if let Ok(Some(output)) = expr::lvalue(field(&node.fields, "m_CEAB19E8")) {
+            let output = source_key(key.instance, output);
+            let current = Value::Float(current);
+            if !same(&self.machine.value(output, None), &current) {
+                self.write(output, current)?;
+            }
+        }
+        if current <= 0.0 && health_pool_form(node) == Some(true) {
+            self.post(key.instance, Event::Finish(key.raw))?;
         }
         self.publish_health_totals(self.site(key.instance, node))
     }

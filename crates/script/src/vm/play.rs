@@ -59,6 +59,14 @@ pub(super) enum Plays {
     Others,
 }
 
+/// Doomfist's passive The Best Defense `0DDD`: on each damage his abilities
+/// deal (`0012.025`, tags `245A` 30 shields, `01FD` 75) its rid4 plays
+/// `0DF3` on him with the grant (`002A`, `min` of the room under the 150
+/// cap and the grant) and the cap (`03D1`); `0DF3` st0 is the grant's
+/// temporary shield pool, named `249D.01C`, and exits when it runs out.
+/// `0DDD` st1 drains the named pools 3 a second, 1 s after the last grant.
+pub const BEST_DEFENSE: u32 = 0x0ddd;
+
 /// The graph a server PlayScript node (not the wheel's) plays, if it is one.
 pub(super) fn server_played_graph(graph: u32, node: u16) -> Option<u32> {
     let (site, played) = ATTACKER_LIST;

@@ -378,8 +378,8 @@ impl Found {
 }
 
 /// A line of sight's rays as evaluated now (see the module notes).
-struct Sight {
-    origin: [f64; 3],
+pub(super) struct Sight {
+    pub(super) origin: [f64; 3],
     profile: u64,
     sides: bool,
 }
@@ -423,6 +423,25 @@ impl Sight {
             }
         }
         Some(Sighting::Guessed(false))
+    }
+
+    /// The point of `body` its first clear ray reaches, rays 2 and 3 in
+    /// order without the hardpoints or the side rays (a shockwave's sight
+    /// line, `0x7FF789BB3570` from `0x7FF789BBD0D0`, keeps it); None: the
+    /// map can't answer.
+    pub(super) fn seen_point(
+        &self,
+        map: &dyn MapRays,
+        body: &TargetCandidate,
+    ) -> Option<Option<[f64; 3]>> {
+        let [x, y, z] = body.feet;
+        for share in [SIGHT_LOW, SIGHT_HIGH] {
+            let point = [x, y + body.height * share, z];
+            if self.clear(map, point)? {
+                return Some(Some(point));
+            }
+        }
+        Some(None)
     }
 
     /// Whether the ray from the origin to `point` meets nothing of the map.
@@ -856,7 +875,12 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
 
     /// The line of sight's origin, ray profile and side rays, or the field
     /// the server can't evaluate.
-    fn sight(&mut self, id: u16, node: &Node, centre: [f64; 3]) -> Result<Sight, &'static str> {
+    pub(super) fn sight(
+        &mut self,
+        id: u16,
+        node: &Node,
+        centre: [f64; 3],
+    ) -> Result<Sight, &'static str> {
         let fields = &node.fields;
         let origin = match field(fields, SIGHT_ORIGIN) {
             Json::Null => centre,
@@ -1334,10 +1358,10 @@ fn closest_points(p1: [f64; 3], q1: [f64; 3], p2: [f64; 3], q2: [f64; 3]) -> [[f
 /// cylinder shape (`m_E474FFD6`) the sine of the half-angle times each
 /// scale (times the radius, the most a body's axis may lie off the
 /// diameter).
-struct Cone {
-    direction: [f64; 3],
-    cos: [f64; 2],
-    cylinder: Option<[f64; 2]>,
+pub(super) struct Cone {
+    pub(super) direction: [f64; 3],
+    pub(super) cos: [f64; 2],
+    pub(super) cylinder: Option<[f64; 2]>,
 }
 
 /// Whether a body within the sphere is in the cone (the client's shape test
@@ -1348,7 +1372,7 @@ struct Cone {
 /// cylinder, the point is ahead of the centre and within the sine's share
 /// of the radius of the diameter, taken between the two by the rise
 /// between the points (clamped to 1).
-fn in_cone(body: &TargetCandidate, centre: [f64; 3], cone: &Cone, radius: f64) -> bool {
+pub(super) fn in_cone(body: &TargetCandidate, centre: [f64; 3], cone: &Cone, radius: f64) -> bool {
     // The client's test of a half-angle wider than the whole sphere.
     const WHOLE: f64 = -0.9999;
     if cone.cos.iter().all(|&cos| cos <= WHOLE) {
