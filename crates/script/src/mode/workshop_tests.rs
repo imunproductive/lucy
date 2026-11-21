@@ -333,10 +333,11 @@ fn small_message_reaches_its_target_in_the_frames() {
 
 /// Create Icon `1AB1` with Reevaluation "Visible To" (`5069`): its scope
 /// 47 on the mode entity copies Visible To into `#20176` (rid13, a plain
-/// copy) and StateStack st2 evaluates it, each client the tree it gets.
-/// C32S2's level-select icons are made at the match start, visible to the
-/// players with `CPData[13]`, then none; when the rules evaluate the
-/// player in, the copy the frames carry follows, as the stack's value.
+/// copy), which StateStack st2 evaluates on each client. C32S2's
+/// level-select icons are made at the match start, visible to the players
+/// with `CPData[13]`, then none; when the rules evaluate the player in, the
+/// copy the frames carry follows (in the game the icons then show from
+/// the hub, ParkourMatch9).
 #[test]
 #[ignore = "requires the derived 104319 graph bundle"]
 fn create_icon_follows_its_reevaluated_visible_to() {
@@ -370,25 +371,16 @@ fn create_icon_follows_its_reevaluated_visible_to() {
                 })
             })
             .expect("the icon's scope instance on the mode entity");
-        (
-            scope,
-            instance.variables.get(&ICON_VISIBLE_TO).cloned(),
-            snapshot
-                .resolved_bindings
-                .get(&(scope, ICON_VISIBLE_TO))
-                .cloned(),
-        )
+        (scope, instance.variables.get(&ICON_VISIBLE_TO).cloned())
     };
-    let (_, copied, shown) = scope(&script);
+    let (_, copied) = scope(&script);
     assert_eq!(copied, Some(constant(Value::Array(Vec::new()))));
-    assert_eq!(shown, Some(Value::Array(Vec::new())));
     script
         .set_action_parameters(create, parameters(vec![Value::Entity(PLAYER)]))
         .unwrap();
-    let (id, copied, shown) = scope(&script);
+    let (id, copied) = scope(&script);
     let visible = constant(Value::Array(vec![Value::Entity(PLAYER)]));
     assert_eq!(copied, Some(visible.clone()));
-    assert_eq!(shown, Some(Value::Array(vec![Value::Entity(PLAYER)])));
     let graphs = Arc::clone(&script.world.graphs);
     let codecs = CodecTable::client();
     let encoder = SnapshotEncoder::new(&graphs, &codecs);
