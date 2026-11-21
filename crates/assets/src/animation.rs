@@ -14,9 +14,11 @@
 //! the three key frame lists, then the three value lists. A key frame is a
 //! `u8` when the clip has at most 255 frames, else an `i16`, taken as its
 //! absolute value modulo the frame count. A position is three `f32`; a
-//! scale three `u16`, each `v/1024` (OWLib `a1023ef`; 1.74's 10,523 clips
-//! key 4.47M scale parts, 1.08M of them not 1024, spread from 0 to above
-//! 4096, so these are whole scales, not the near-1 deltas OWLib's earlier
+//! scale three `u16`, each `v/1024` (the client's sampler of a clip with
+//! `u8` key frames, `0x7FF78A6937C0`, multiplies each part by
+//! `0.0009765625`; OWLib `a1023ef` agrees. 1.74's 10,523 clips key 4.47M
+//! scale parts, 1.08M of them not 1024, spread from 0 to above 4096, so
+//! these are whole scales, not the near-1 deltas OWLib's earlier
 //! `1 + (1 - v/1024)/1024` made of them); a
 //! rotation three `u16` packing a unit quaternion's three smallest parts
 //! (each 15 bits, the top bits of the first two naming the left-out part)
@@ -35,7 +37,8 @@
 //! 10-byte ones), `0x400` new rotation packing. 1.74 does not follow that:
 //! over its 10,523 clips `0x200` and `0x400` are never set, `0x100` is set on
 //! most tracks, and every position list (with or without `0x100`) is 12
-//! bytes a key. So we refuse only `0x400` (a packing we do not read) and do
+//! bytes a key (the same sampler reads 12 bytes a position key whatever
+//! the flags). So we refuse only `0x400` (a packing we do not read) and do
 //! not port OWLib's "no `0x200` means 10-byte positions".
 //!
 //! **Additive clips.** The first word is `0x100` on every clip the
