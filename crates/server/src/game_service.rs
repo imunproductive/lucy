@@ -2607,6 +2607,7 @@ impl State {
                     stats: &mut player.stats,
                 })
                 .collect();
+            combat.apply_environment_credits(scene, &mut room, now);
             let (notices, mut events) = apply_player_hits(scene, hits, &mut room, tick, now);
             events.extend(apply_player_pushes(pushes, &mut room, now));
             if let Some(run) = workshop.as_mut().and_then(|workshop| workshop.run.as_mut()) {

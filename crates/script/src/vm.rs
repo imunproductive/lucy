@@ -1062,6 +1062,13 @@ pub trait World {
         false
     }
 
+    /// A graph named who an environment kill of a body credits
+    /// (`STU_545AB3B8`, Set Environment Credit Player): the match keeps it
+    /// as the body's knock credit. False: this world credits none.
+    fn credit_environment(&mut self, _site: Site, _credit: EnvironmentCredit) -> bool {
+        false
+    }
+
     /// A graph set the cooldown of an ability of a body (`STU_FFF26F80`:
     /// the Workshop's Set Ability Cooldown `2735` on its player's
     /// possessed body): the match writes it in that body's script
@@ -1268,6 +1275,14 @@ pub struct BodyMove {
     pub body: u32,
     pub position: [f64; 3],
     pub facing: Option<[f64; 3]>,
+}
+
+/// Who an environment kill of `body` credits ([`World::credit_environment`]):
+/// the entity `by` (none: nobody).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EnvironmentCredit {
+    pub body: u32,
+    pub by: Option<u32>,
 }
 
 /// A cooldown another entity's graph sets ([`World::set_ability_cooldown`]):

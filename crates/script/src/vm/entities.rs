@@ -394,6 +394,43 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         Ok(true)
     }
 
+    /// `STU_545AB3B8`, Set Environment Credit Player (server-only: no
+    /// registration of its own, the client follows `m_outPlug`; the name
+    /// from `refs/reports/Workshop.md`): an environment kill of each body
+    /// of `m_target` credits the entity `m_0B897113` (none: nobody), for
+    /// the ability `m_loadout`. 11 nodes in 10 graphs, every `m_target`
+    /// the owner: the Rocket
+    /// Punch victim `0D07` rid46 credits the puncher (#40) before its
+    /// wall slam; `1DBC`, `01C9`, `0B1F`, `0E7D`, `224E`, `0083`, `00F8`,
+    /// `0261`, `0CCE`. The world keeps it as the body's knock credit
+    /// ([`World::credit_environment`]); one that doesn't credits nothing
+    /// (an assumption). The loadout isn't read.
+    pub(super) fn credit_environment(
+        &mut self,
+        id: u16,
+        node: &Node,
+        depth: usize,
+    ) -> Result<bool, InitFault> {
+        let Some(target) = self.evaluate(id, node, field(&node.fields, "m_target"), None) else {
+            return Ok(false);
+        };
+        let by = self
+            .evaluate_quietly(id, node, field(&node.fields, "m_0B897113"))
+            .as_ref()
+            .and_then(expr::to_entity);
+        let site = self.site(id, node);
+        for body in entities(&target) {
+            if !self
+                .world
+                .credit_environment(site, EnvironmentCredit { body, by })
+            {
+                self.assume(site, &node.class, "credits no environment kill");
+            }
+        }
+        self.follow(id, node, "m_outPlug", None, depth)?;
+        Ok(true)
+    }
+
     /// `STU_FFF26F80` (client `Action_STU_FFF26F80` 0x7FF789B94EC0; the
     /// Workshop's Set Ability Cooldown `2735` runs it in its scope on the
     /// player): the ability of `m_entity` (`STU_0165541D(owner())`, the

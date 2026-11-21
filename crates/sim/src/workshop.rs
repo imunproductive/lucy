@@ -135,6 +135,8 @@ pub struct WorkshopView {
     pub hero: u64,
     pub health: f64,
     pub max_health: f64,
+    /// The ultimate's charge in percent of its cost (#342e of #338e).
+    pub ultimate_charge: f64,
 }
 
 /// A player of the match as the room gives him each tick.
@@ -824,8 +826,8 @@ impl World for Host<'_, '_> {
     fn max_health(&self, player: EntityId) -> f64 {
         self.view(player).map_or(0.0, |view| view.max_health)
     }
-    fn ultimate_charge_percent(&self, _player: EntityId) -> f64 {
-        0.0
+    fn ultimate_charge_percent(&self, player: EntityId) -> f64 {
+        self.view(player).map_or(0.0, |view| view.ultimate_charge)
     }
     /// The cooldown left on the player's body's ability on the button
     /// ([`WorldDelivery::ability_cooldown`]): C32S2's "Reset Ability CDs

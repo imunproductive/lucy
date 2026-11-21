@@ -56,7 +56,7 @@ use crate::{
         map_chunks, read_map,
     },
     guid_hex,
-    map_chunk::{area_boxes, name_index, short},
+    map_chunk::{areas, name_index, short},
 };
 
 pub(crate) const OBJECTIVES: &str = "data/game_objectives_174.json";
@@ -261,7 +261,7 @@ struct Waypoint {
 /// The points, objectives and payloads of a map.
 fn map_objectives(chunks: &[(u64, Vec<u8>)], defaults: &Defaults) -> Result<Map<String, Json>> {
     let (base, entities) = read_map(chunks)?;
-    let areas = area_boxes(chunks);
+    let areas = areas(chunks)?;
     let mut points = Vec::new();
     let mut objectives = Vec::new();
     let mut payloads = Vec::new();
@@ -288,9 +288,10 @@ fn map_objectives(chunks: &[(u64, Vec<u8>)], defaults: &Defaults) -> Result<Map<
             let Some(area) = area else {
                 return Err(asset_error(format!("capture point {flat} names no area")));
             };
-            let boxes = areas.get(&area).ok_or_else(|| {
-                asset_error(format!("capture point {flat}: its area is not a box area"))
-            })?;
+            let boxes = areas
+                .get(&area)
+                .ok_or_else(|| asset_error(format!("capture point {flat} names a missing area")))?
+                .only_boxes(&format!("capture point {flat}"))?;
             let number = |key| defaults.number(POINT_GRAPH, vars, key);
             points.push(json!({
                 "placeable": flat,

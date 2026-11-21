@@ -283,6 +283,23 @@ fn root_model(install: &Install, definition: u64) -> Option<u64> {
         .map(|(model, _)| model)
 }
 
+/// The static physics shapes of a definition's model ([`root_model`]) that
+/// stop `category`, in model space, as a prop's ([`map_shapes`]); none when
+/// it has no model. The server-owned placeables' team walls use it
+/// (`crate::map_areas`).
+pub(crate) fn definition_shapes(
+    install: &Install,
+    definition: u64,
+    category: u16,
+) -> Result<Vec<Shape>> {
+    let Some(model) = root_model(install, definition) else {
+        return Ok(Vec::new());
+    };
+    read_model(&install.raw(model)?, category)
+        .map(|read| read.shapes)
+        .map_err(|reason| asset_error(format!("{}: {reason}", guid_name(model))))
+}
+
 /// The entity's STUModelComponent models and whether each is a client-only
 /// breakable (m_breakableConfig m_clientOnly = 1), in component map order.
 pub(crate) fn model_components(asset: &Asset) -> Vec<(u64, bool)> {
