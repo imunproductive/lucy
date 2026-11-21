@@ -2,6 +2,16 @@
 //!
 //! The damage and healing order follows the Python reference. Original-client
 //! validation of the armour reduction and healing order remains open.
+//!
+//! A temporary pool (`STUStatescriptStateHealthPool` with `m_0E8A5C8E`,
+//! Doomfist's The Best Defense `0DF3` st0, Wrecking Ball's Adaptive Shield
+//! `1566` st6) takes damage before every other pool ("temporary HP first",
+//! `RulesNotes.md` 137), heals never refill it, and a pool name
+//! (`m_7BE02F89`) lets a ModifyHealth drain it alone ([`Vitals::drain_named`]).
+//! Its record carries the flag in byte 16 (`STU_F9FBB994.m_0E8A5C8E`); the
+//! client keeps no name: its named read (`Eval_STU_783B4CF0`
+//! 0x7FF789BEFCC0 → component 51 slot 14 `0x7FF7894D0530`) sums every pool of
+//! the kind.
 
 use orpheus_wire::entity::{
     ARMOUR_POOL, Component, HEALTH_POOL, POOLS, SHIELDS_POOL, pool, pool_component,
@@ -39,6 +49,8 @@ struct Pool {
     id: u32,
     maximum: f64,
     current: f64,
+    temporary: bool,
+    name: Option<u64>,
 }
 
 impl Pool {
@@ -47,12 +59,14 @@ impl Pool {
     }
 
     fn wire(&self) -> [u8; 20] {
-        pool(
+        let mut bytes = pool(
             self.id,
             self.kind() as u32,
             self.maximum as f32,
             self.current as f32,
-        )
+        );
+        bytes[16] = u8::from(self.temporary);
+        bytes
     }
 }
 
@@ -104,6 +118,28 @@ impl Vitals {
     }
 
     pub fn add_pool(&mut self, kind: PoolKind, maximum: f64, current: f64) -> Option<u32> {
+        self.insert_pool(kind, maximum, current, false, None)
+    }
+
+    /// A temporary pool (see the module notes), named or not.
+    pub fn add_temporary_pool(
+        &mut self,
+        kind: PoolKind,
+        maximum: f64,
+        current: f64,
+        name: Option<u64>,
+    ) -> Option<u32> {
+        self.insert_pool(kind, maximum, current, true, name)
+    }
+
+    fn insert_pool(
+        &mut self,
+        kind: PoolKind,
+        maximum: f64,
+        current: f64,
+        temporary: bool,
+        name: Option<u64>,
+    ) -> Option<u32> {
         if !(0.0..=f64::from(f32::MAX)).contains(&maximum) || !(0.0..=maximum).contains(&current) {
             return None;
         }
@@ -129,12 +165,32 @@ impl Vitals {
                 id,
                 maximum,
                 current,
+                temporary,
+                name,
             },
         );
         self.last_id = id;
         self.used |= 1 << field;
         self.changed |= 1 << field;
         Some(id)
+    }
+
+    /// Takes up to `amount` from the pools named `name`, first pool first;
+    /// what it took.
+    pub fn drain_named(&mut self, name: u64, amount: f64) -> f64 {
+        if !amount.is_finite() || amount <= 0.0 {
+            return 0.0;
+        }
+        let mut left = amount;
+        for pool in self.pools.iter_mut().filter(|pool| pool.name == Some(name)) {
+            let taken = left.min(pool.current);
+            if taken > 0.0 {
+                pool.current -= taken;
+                self.changed |= 1 << pool.field;
+                left -= taken;
+            }
+        }
+        amount - left
     }
 
     pub fn pool_current(&self, id: u32) -> Option<f64> {
@@ -184,29 +240,31 @@ impl Vitals {
         }
         let mut left = amount;
         let mut dealt = 0.0;
-        'damage: for kind in DAMAGE_ORDER {
-            let mut reduce_armour = kind == PoolKind::Armour;
-            for pool in self
-                .pools
-                .iter_mut()
-                .filter(|pool| pool.kind() == kind as usize)
-            {
-                if left <= 0.0 {
-                    break 'damage;
-                }
-                if pool.current == 0.0 {
-                    continue;
-                }
-                if reduce_armour {
-                    left = (left - ARMOUR_BLOCK).max(left / 2.0);
-                    reduce_armour = false;
-                }
-                let taken = left.min(pool.current);
-                if taken > 0.0 {
-                    pool.current -= taken;
-                    self.changed |= 1 << pool.field;
-                    left -= taken;
-                    dealt += taken;
+        let mut reduce_armour = true;
+        'damage: for temporary in [true, false] {
+            for kind in DAMAGE_ORDER {
+                for pool in self
+                    .pools
+                    .iter_mut()
+                    .filter(|pool| pool.kind() == kind as usize && pool.temporary == temporary)
+                {
+                    if left <= 0.0 {
+                        break 'damage;
+                    }
+                    if pool.current == 0.0 {
+                        continue;
+                    }
+                    if reduce_armour && kind == PoolKind::Armour {
+                        left = (left - ARMOUR_BLOCK).max(left / 2.0);
+                        reduce_armour = false;
+                    }
+                    let taken = left.min(pool.current);
+                    if taken > 0.0 {
+                        pool.current -= taken;
+                        self.changed |= 1 << pool.field;
+                        left -= taken;
+                        dealt += taken;
+                    }
                 }
             }
         }
@@ -232,7 +290,7 @@ impl Vitals {
             return 0.0;
         }
         let mut left = amount;
-        for pool in &mut self.pools {
+        for pool in self.pools.iter_mut().filter(|pool| !pool.temporary) {
             if left <= 0.0 {
                 break;
             }

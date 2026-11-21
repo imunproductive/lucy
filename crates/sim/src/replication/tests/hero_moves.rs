@@ -1318,6 +1318,85 @@ fn doomfists_grounded_slam_leaps_lands_and_ends() {
     }
 }
 
+/// Seismic Slam's shockwave (`0B27` st44, `vm/shockwave.rs`): at the
+/// landing the wave hits, once, the enemies within its 8 m (`#422`) in the
+/// 60° cone along his heading (`#501`) that its sight line from 1.8 m over
+/// the landing sees and its walk over the ground reaches; the hits go to
+/// `#375` and st42's ModifyHealth strikes them for `#476` from Doomfist.
+/// An enemy behind him, one out of reach and an ally ahead are not hit.
+#[test]
+#[ignore = "requires the derived 104319 data and the Practice Range collision"]
+fn doomfists_slam_shockwave_strikes_the_enemies_ahead_of_its_landing() {
+    use crate::combat::PosedShot;
+    use orpheus_script::vm::TargetCandidate;
+
+    const ENEMY: u32 = 0xa000_0201;
+    let mut doomfist = Player::spawn(DOOMFIST);
+    let (open, _) = open_and_walled(&doomfist.scene);
+    let start = doomfist.position();
+    let heading = f64::from(open) * std::f64::consts::TAU / 65536.0;
+    let (ahead, side) = (
+        [heading.sin(), heading.cos()],
+        [heading.cos(), -heading.sin()],
+    );
+    // The leap lands 7.0918 m along the heading on this floor
+    // (`doomfists_grounded_slam_leaps_lands_and_ends`).
+    let at = |forward: f64, across: f64| {
+        let along = 7.0918 + forward;
+        [
+            start[0] + ahead[0] * along + side[0] * across,
+            start[1],
+            start[2] + ahead[1] * along + side[1] * across,
+        ]
+    };
+    let body = |entity, team, feet| TargetCandidate {
+        entity,
+        team: Some(team),
+        dead: false,
+        controller: None,
+        player: None,
+        ai: false,
+        ai_control: None,
+        feet,
+        height: 1.8,
+        radius: 0.4,
+        yaw: 0.0,
+        tags: None,
+        health: None,
+        spawned: Vec::new(),
+    };
+    let candidates = [
+        body(OWNER | 1, 0, start),
+        // 4 m ahead and 1 m aside: in the cone.
+        body(ENEMY, 1, at(4.0, 1.0)),
+        // Behind and aside, away from the leap's path.
+        body(ENEMY + 1, 1, at(-3.0, 3.0)),
+        // Ahead, past the 8 m.
+        body(ENEMY + 2, 1, at(9.0, 0.0)),
+        body(ENEMY + 3, 0, at(3.0, -1.0)),
+    ];
+    doomfist.world.set_target_candidates(&candidates);
+    doomfist.press(ABILITY_2, open);
+    let mut struck = Vec::new();
+    let mut damage = None;
+    for _ in 0..64 {
+        doomfist.idle(1, open);
+        for shot in doomfist.world.take_shots() {
+            if let PosedShot::Health(change) = shot {
+                struck.push((change.target, change.instigator, change.amount, change.heal));
+            }
+        }
+        if doomfist.graph_activation(0x0b27, 44) > 0 && damage.is_none() {
+            damage = doomfist.graph_variable(0x0b27, 476).cloned();
+        }
+    }
+    let Some(ScriptValue::Float(damage)) = damage else {
+        panic!("the slam's damage #476: {damage:?}");
+    };
+    assert!(damage > 0.0, "{damage}");
+    assert_eq!(struck, [(ENEMY, OWNER | 1, damage, false)]);
+}
+
 /// The punch jump: a jump pressed at least 0.1 s into Rocket Punch's dash
 /// (st63, then the jump button st62 sets #11432) ends the dash (st5) and
 /// launches him (`rid112` adds the facing × 25 and 5 up on channel 1 to

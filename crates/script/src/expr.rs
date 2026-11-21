@@ -3040,18 +3040,23 @@ impl Evaluator<'_> {
             // 0x7FF789C055D0 → 0x7FF7894CFBA0, `Eval_STU_005D99E6`
             // 0x7FF789BDBD10 → 0x7FF7894D01F0; no entity reads 0; BotVoice.md,
             // "Client tools pass (2026-11-16)"). `05AD` rid147 rates the
-            // sender of Need Healing's `0307` by them. `m_7BE02F89` (a named
-            // pool, read as an identifier: 0x7FF789E75540) is not modelled;
-            // an identifier literal of none (Zenyatta's `0176`) reads 0, as
-            // when it is unset (`Eval_STU_783B4CF0` 0x7FF789BEFCC0).
+            // sender of Need Healing's `0307` by them. 783B4CF0 with a named
+            // pool `m_7BE02F89` (read as an identifier: 0x7FF789E75540) reads
+            // the same sum: `Eval_STU_783B4CF0` 0x7FF789BEFCC0 passes kind and
+            // name to `0x7FF789C2AC30`, whose component 51 slot 14
+            // (`0x7FF7894D0530`) sums the current of every pool of the kind
+            // with an id and never reads the name (The Best Defense `0DDD`
+            // rid8 and `0DF3` rid3 compare the shields with the cap so). The
+            // other three refuse a named pool (not read).
             "STU_783B4CF0" | "STU_68883EAC" | "STU_F1C45C59" | "STU_005D99E6" => {
                 let unsupported = || EvalError::UnsupportedConfig(class.into());
                 let pool = child(config, "m_7BE02F89");
+                let named = native_fields(pool, &["m_identifier", "m_resourceKey"])
+                    && self::class(pool) == Some("STUConfigVarIdentifier")
+                    && child(pool, "m_resourceKey").is_null();
                 let no_pool = pool.is_null()
-                    || (native_fields(pool, &["m_identifier", "m_resourceKey"])
-                        && self::class(pool) == Some("STUConfigVarIdentifier")
-                        && child(pool, "m_identifier").is_null()
-                        && child(pool, "m_resourceKey").is_null());
+                    || (named && child(pool, "m_identifier").is_null())
+                    || (named && class == "STU_783B4CF0");
                 if !native_fields(config, &["m_entity", "m_7E8B666C", "m_7BE02F89"]) || !no_pool {
                     return Err(unsupported());
                 }

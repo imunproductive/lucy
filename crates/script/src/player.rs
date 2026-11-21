@@ -33,7 +33,8 @@ use crate::{
 };
 use orpheus_content::maps::TUTORIAL_MODE;
 use orpheus_physics::mover::{
-    landing::LandingSearch, movement_restarted, sample_movement_flags, trial::TrialMove,
+    ground_walk::GroundWalk, landing::LandingSearch, movement_restarted, sample_movement_flags,
+    trial::TrialMove,
 };
 use orpheus_wire::entity::{GAME_MODE_ENTITY, Movement};
 
@@ -517,6 +518,27 @@ impl World for PlayerWorld {
         self.vitals.remove_pool(pool)
     }
 
+    fn add_temporary_pool(
+        &mut self,
+        site: Site,
+        kind: PoolKind,
+        maximum: f64,
+        current: f64,
+        name: Option<u64>,
+    ) -> Option<u32> {
+        if !self.is_player_site(site) || !self.pool_types_known {
+            return None;
+        }
+        self.vitals.add_temporary_pool(kind, maximum, current, name)
+    }
+
+    fn drain_named_pool(&mut self, site: Site, name: u64, amount: f64) -> Option<f64> {
+        if !self.is_player_site(site) || !self.pool_types_known {
+            return None;
+        }
+        Some(self.vitals.drain_named(name, amount))
+    }
+
     fn has_target_tag(&self, site: Site, entity: u32, tag: u64) -> Option<bool> {
         if !self.is_player_site(site) {
             return None;
@@ -686,6 +708,22 @@ impl World for PlayerWorld {
         }
         let category = self.map_rays.as_deref()?.map_mask(profile);
         self.trial.as_ref()?.landing(category, search).ok()
+    }
+
+    /// The walk in the body's own world.
+    fn ground_walk(
+        &self,
+        site: Site,
+        walk: &GroundWalk,
+        sphere_profile: Option<u64>,
+        ray_profile: Option<u64>,
+    ) -> Option<bool> {
+        if !self.is_player_site(site) {
+            return None;
+        }
+        let map = self.map_rays.as_deref()?;
+        let (sphere, ray) = (map.map_mask(sphere_profile), map.map_mask(ray_profile));
+        self.trial.as_ref()?.ground_walk(sphere, ray, walk).ok()
     }
 
     /// The body's team from its filter bits; the other bodies' as listed.
