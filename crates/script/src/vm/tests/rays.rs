@@ -193,10 +193,19 @@ fn assumed(component: &Component, class: &str) -> bool {
         .any(|item| item.class == class)
 }
 
+/// The values of instance 1's variables `ids`, through their bindings
+/// (a RayCast's outputs).
 fn outputs(component: &Component, ids: &[u32]) -> Vec<Value> {
-    let variables = &component.snapshot().unwrap().instances[&1].variables;
+    let snapshot = component.snapshot().unwrap();
     ids.iter()
-        .map(|id| variables.get(id).cloned().unwrap_or(Value::Null))
+        .map(|id| {
+            snapshot
+                .resolved_bindings
+                .get(&(1, *id))
+                .or_else(|| snapshot.instances[&1].variables.get(id))
+                .cloned()
+                .unwrap_or(Value::Null)
+        })
         .collect()
 }
 
@@ -261,7 +270,10 @@ fn the_cast_action_meets_the_nearest_body_its_filter_passes_or_the_map() {
 }
 
 /// RayCast casts at its begin and again each tick: the enemy walking off
-/// leaves the wall; the wall gone, it misses and keeps the last point.
+/// leaves the wall; the wall gone, it misses and keeps the last point. Its
+/// begin binds the outputs to the state (slots 0-3: hit, entity, point,
+/// normal) and leaves their own values alone, as his client's begin
+/// `0x7FF789B940E0` does, so the owner's frames carry the bindings.
 #[test]
 fn a_ray_cast_state_follows_what_its_ray_meets() {
     let mut world = Range::new(Some(8.0));
@@ -273,6 +285,17 @@ fn a_ray_cast_state_follows_what_its_ray_meets() {
         outputs(&component, &[10, 11]),
         [Value::Bool(true), Value::Entity(ENEMY)]
     );
+    let snapshot = component.snapshot().unwrap();
+    for (variable, slot) in [(10, 0), (11, 1), (12, 2), (13, 3)] {
+        assert_eq!(
+            snapshot.bindings[&(1, variable)]
+                .iter()
+                .map(|binding| (binding.raw_state, binding.slot))
+                .collect::<Vec<_>>(),
+            [(0, slot)]
+        );
+        assert_eq!(snapshot.instances[&1].variables[&variable], Value::Null);
+    }
     world.bodies[2].feet = [5.0, 0.0, 9.0];
     component.advance_frame(1, &mut world).unwrap();
     let values = outputs(&component, &[10, 11, 12]);
@@ -340,8 +363,10 @@ fn a_track_ray_writes_its_targets_fields() {
     assert!(close(&values[5], [-1.0, 0.0, 0.0]), "{values:?}");
 }
 
-/// Type 1 is not modelled: the state casts nothing and says so; a
-/// world without a map does the same.
+/// Type 1 is not modelled: the state casts nothing and says so (its
+/// outputs keep the cleared block its begin bound them to: no hit, no
+/// entity, point and normal zero); a world without a map makes the action
+/// write nothing.
 #[test]
 fn a_ray_the_server_cant_cast_writes_nothing() {
     let mut fields = cast_fields(enemies());
@@ -351,8 +376,16 @@ fn a_ray_the_server_cant_cast_writes_nothing() {
         one_node("STUStatescriptStateRayCast", true, fields),
         &mut world,
     );
+    assert_eq!(
+        outputs(&component, &[10, 11, 12, 13]),
+        [
+            Value::Bool(false),
+            Value::Entity(0),
+            Value::Vector([0.0; 3]),
+            Value::Vector([0.0; 3])
+        ]
+    );
     let snapshot = component.snapshot().unwrap();
-    assert!(!snapshot.instances[&1].variables.contains_key(&10));
     assert!(
         snapshot
             .assumptions

@@ -343,7 +343,9 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             return Some(None);
         }
         let value = self.evaluate(id, node, field(&node.fields, "m_5BEFF040"), None)?;
-        Some(Some((expr::to_float(&value) * 1000.0) as i64))
+        // The client's begin `0x7FF78AAAF430`: `mulss` by 1000 then
+        // `cvttss2si`, so 1.4 s is 1400 ms (1399 in f64).
+        Some(Some((expr::to_float(&value) as f32 * 1000.0) as i64))
     }
 
     /// `0x7FF78AAB0400`'s test for a [`TimedChase`]: no destination bone or

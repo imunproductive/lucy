@@ -4128,6 +4128,41 @@ fn conditions_branch_on_containers_held_buttons_and_a_state_age_without_a_state(
     );
 }
 
+/// A timed chase's duration in milliseconds is worked out in `f32` as his
+/// client's begin (`0x7FF78AAAF430`: `mulss` by 1000, `cvttss2si`) does:
+/// Rocket Punch's charge `0D06` st36 over `#9271` = 1.4 s (the `f32`
+/// 1.39999997615814 in the bundle) is 1400 ms (1399 in `f64`, which put
+/// its payload a millisecond off his client's).
+#[test]
+fn a_timed_chases_duration_is_its_clients_f32_milliseconds() {
+    let graphs = store(vec![graph(
+        42,
+        vec![
+            entry(&[(1, "m_beginPlug")]),
+            node(
+                1,
+                "STUStatescriptStateChaseVar",
+                Some(0),
+                json!({"m_out_Var":var(100,false),"m_EB0FC261":0.0,"m_destination":1.0,
+                    "m_5BEFF040":{"$":"STUConfigVarFloat","m_value":1.399_999_976_158_142}}),
+            ),
+        ],
+        json!([1]),
+        json!([0]),
+    )]);
+    let snapshot = initialize(
+        &graphs,
+        42,
+        Variables::new(),
+        vec![Root::new(1, 42)],
+        &mut EmptyWorld,
+        MAX_INIT_WORK,
+    )
+    .unwrap();
+    let chase = snapshot.instances[&1].states[&0].chase.as_ref().unwrap();
+    assert_eq!(chase.remaining_ms, Some(1400));
+}
+
 #[test]
 fn keyed_set_var_replaces_equal_keys_and_an_uncastable_ray_only_follows_its_plug() {
     let keyed = |position, key: i64, value: i64, next: u16| {

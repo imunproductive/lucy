@@ -24,12 +24,21 @@
 //!   `m_2158DFDE` (a value of the hit's component 4) is set in no node and
 //!   not written.
 //! - RayCast (the same fields): its begin (`0x7FF789B940E0`) binds its
-//!   outputs to the state (slot 49 `0x7FF789B94580` answers them: hit,
-//!   entity, point, normal) and clears point and normal to zero; slot 14
-//!   (`0x7FF789B941F0`) casts again each update; a miss keeps the last point
-//!   and normal and makes the entity none. Here the outputs are written at
-//!   the begin and whenever a cast changes them, and keep their last value
-//!   when the state ends.
+//!   outputs to the state (`0x7FF78AA82F90(state, variable, slot, no
+//!   priority, 1, 0)`, slots 0-3: hit, entity, point, normal; slot 49
+//!   `0x7FF789B94580` answers them from the state's block) without writing
+//!   the variables' own values, and clears the block: no hit, no entity,
+//!   point and normal zero; slot 14 (`0x7FF789B941F0`) casts again each
+//!   update; a miss keeps the last point and normal and makes the entity
+//!   none. Here the same bindings ([`LinkValue::Output`]), their values
+//!   the block's; the end releases them and each variable is back at its
+//!   own value. The owner's frames list the bindings, so his client keeps
+//!   casting the ray into the variables itself: a frame that lists such a
+//!   variable without them unbinds it there (`0x7FF78AAB7420`), and from
+//!   then on only the server's frames change it, as restores that wake no
+//!   watcher (df10 s2 cp4_bufslam: Doomfist's `0B27` st8 ground ray
+//!   `#2413` turned false on his client only when the server's frame came,
+//!   so st7 never watched `#10473e` and the slam flew 2 frames late).
 //! - TrackRay (the winner's slot 55 `0x7FF78980FBB0` runs the base's cast
 //!   and records it; slot 60 stores; slot 14 casts again each update): from
 //!   `m_3BC31C57`, in the transform of entity `m_56B8547E` when it is a
@@ -91,6 +100,13 @@ use super::{
 const ACTION: &str = "STU_08D6BA6E";
 const RAY_CAST: &str = "STUStatescriptStateRayCast";
 const TRACK_RAY: &str = "STUStatescriptStateTrackRay";
+/// RayCast's outputs and the slots its begin binds them with.
+const RAY_CAST_OUTPUTS: [(&str, u8); 4] = [
+    ("m_out_HitSomething", 0),
+    ("m_out_HitEntity", 1),
+    ("m_out_HitPointWS", 2),
+    ("m_out_HitNormal", 3),
+];
 
 /// The filter field a cast reads itself: the map's ray profile.
 const PROFILE: &str = "m_C1903771";
@@ -175,11 +191,22 @@ impl<W: World> Vm<'_, '_, '_, W> {
 
     /// A RayCast or TrackRay state's begin: cast, and again each tick when
     /// the form runs.
-    pub(super) fn begin_ray(&mut self, key: StateKey, node: &Node) -> Result<(), InitFault> {
+    pub(super) fn begin_ray(
+        &mut self,
+        key: StateKey,
+        node: &Node,
+        depth: usize,
+    ) -> Result<(), InitFault> {
         if node.class == RAY_CAST {
-            // The begin clears the bound point and normal.
-            for name in ["m_out_HitPointWS", "m_out_HitNormal"] {
-                self.put(key.instance, node, name, Value::Vector([0.0; 3]))?;
+            // The begin binds the outputs to the state's block and clears
+            // it: no hit, no entity, point and normal zero.
+            for (name, slot) in RAY_CAST_OUTPUTS {
+                let value = match slot {
+                    0 => Value::Bool(false),
+                    1 => hit_entity(None),
+                    _ => Value::Vector([0.0; 3]),
+                };
+                self.bind_ray_output(key, node, name, slot, value, depth)?;
             }
         }
         if self.update_ray(key, node)? {
@@ -195,11 +222,23 @@ impl<W: World> Vm<'_, '_, '_, W> {
             let Some(hit) = self.cast_node(id, node, RAY_CAST)? else {
                 return Ok(false);
             };
-            self.put(id, node, "m_out_HitSomething", Value::Bool(hit.is_some()))?;
-            self.put(id, node, "m_out_HitEntity", hit_entity(hit.as_ref()))?;
-            if let Some(hit) = hit {
-                self.put(id, node, "m_out_HitPointWS", Value::Vector(hit.point))?;
-                self.put(id, node, "m_out_HitNormal", Value::Vector(hit.normal))?;
+            let (point, normal) = match hit {
+                Some(hit) => (
+                    Some(Value::Vector(hit.point)),
+                    Some(Value::Vector(hit.normal)),
+                ),
+                None => (None, None),
+            };
+            let values = [
+                Some(Value::Bool(hit.is_some())),
+                Some(hit_entity(hit.as_ref())),
+                point,
+                normal,
+            ];
+            for ((name, _), value) in RAY_CAST_OUTPUTS.into_iter().zip(values) {
+                if let Some(value) = value {
+                    self.set_ray_output(key, node, name, value)?;
+                }
             }
             return Ok(true);
         }
@@ -636,6 +675,64 @@ impl<W: World> Vm<'_, '_, '_, W> {
             Err(error) => self.report(self.site(id, node), Issue::Expression(error)),
         }
         Ok(())
+    }
+
+    /// A RayCast's begin binds output `name` with `slot` to the state.
+    fn bind_ray_output(
+        &mut self,
+        key: StateKey,
+        node: &Node,
+        name: &str,
+        slot: u8,
+        value: Value,
+        depth: usize,
+    ) -> Result<(), InitFault> {
+        let Some(target) = self.output_key(key.instance, node, name) else {
+            return Ok(());
+        };
+        self.insert_link(
+            target,
+            VariableLink {
+                state: key,
+                priority: LINK_PRIORITY,
+                output: LinkValue::Output { slot, value },
+                stack: false,
+            },
+            depth,
+        )
+    }
+
+    /// A cast's new value of RayCast output `name`: into its binding, when
+    /// it changes it.
+    fn set_ray_output(
+        &mut self,
+        key: StateKey,
+        node: &Node,
+        name: &str,
+        value: Value,
+    ) -> Result<(), InitFault> {
+        let Some(target) = self.output_key(key.instance, node, name) else {
+            return Ok(());
+        };
+        let old = self.machine.value(target, None);
+        let Some(bound) = self
+            .machine
+            .links
+            .get_mut(&target)
+            .into_iter()
+            .flatten()
+            .find_map(|entry| match &mut entry.output {
+                LinkValue::Output { value, .. } if entry.state == key => Some(value),
+                _ => None,
+            })
+        else {
+            return Ok(());
+        };
+        if *bound == value {
+            return Ok(());
+        }
+        *bound = value;
+        self.notify_value(target, &old, None)
     }
 }
 

@@ -958,8 +958,18 @@ impl<'a> SnapshotEncoder<'a> {
                 // her scoped walk stopping once she had owner corrections.
                 // Python sent the stacked value (driver.py `_add_var`:
                 // `var.value()`); it still goes where a binding stays on the
-                // server or is an Ability's stack (slot 1).
-                if links.len() == bindings.len() && links.iter().all(|link| link.slot == 0) {
+                // server or is an Ability's stack (slot 1). A RayCast's
+                // bindings (slots 0-3) leave the own value alone too: its
+                // begin binds them without writing it (`vm/rays.rs`).
+                let own = |binding: &StackBinding| {
+                    binding.slot == 0
+                        || snapshot
+                            .instances
+                            .get(&binding.instance)
+                            .and_then(|instance| instance.states.get(&binding.raw_state))
+                            .is_some_and(|state| state.kind == StateKind::Ray)
+                };
+                if links.len() == bindings.len() && bindings.iter().all(own) {
                     value = base;
                 }
                 if !links.is_empty() {
@@ -998,6 +1008,7 @@ impl<'a> SnapshotEncoder<'a> {
                         (StateKind::Stack { .. } | StateKind::ChaseVar, 0)
                             | (StateKind::Ability { .. }, 0 | 1)
                             | (StateKind::GrappleCast, 0 | 1)
+                            | (StateKind::Ray, 0..=3)
                     )
             }) {
                 return Err(invalid());
