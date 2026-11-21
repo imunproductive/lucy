@@ -5,8 +5,10 @@
 
 use super::*;
 use crate::{
+    combat::{PlayerHit, Shooter},
     match_flow::ASSAULT,
-    mode_script::ModeRunner,
+    messages::{Backlog, HeldReach, Players, Recipients, deliver, deliver_held},
+    mode_script::{ModeRunner, held},
     scene_assets::install_collision_build,
     workshop::{WorkshopPlayer, WorkshopRun},
 };
@@ -26,6 +28,8 @@ const EFFECT_ENTITY: u64 = 0x0400_0000_0000_304a;
 const EFFECT_SCOPE: u32 = 35;
 /// Create HUD Text's scope on the mode entity (`1D8A` st36).
 const HUD_TEXT_SCOPE: u32 = 31;
+/// The command button of Ability 1, Doomfist's Rising Uppercut.
+const ABILITY_1: u32 = 0x08;
 
 struct Parkour {
     scene: PreparedScene,
@@ -35,6 +39,9 @@ struct Parkour {
     run: WorkshopRun,
     logic: Logic,
     frame: u32,
+    /// The room's message routing, as the game service's.
+    held_reach: HeldReach,
+    backlog: Backlog,
 }
 
 impl Parkour {
@@ -95,18 +102,26 @@ impl Parkour {
             mode,
             logic,
             frame: FIRST_TICK,
+            held_reach: HeldReach::default(),
+            backlog: Backlog::default(),
         }
     }
 
     /// One server tick: the player's idle command, the mode entity, the
-    /// rules.
+    /// rules, the room's messages, a respawn that is due.
     fn tick(&mut self) {
+        self.step(0);
+    }
+
+    /// One server tick with the player's command holding `buttons`.
+    fn step(&mut self, buttons: u32) {
         self.frame += 1;
         let viewer = viewer(&self.card);
         self.world.queue_commands(
             self.frame,
             &[Command {
                 frame: self.frame,
+                buttons,
                 ..Command::default()
             }],
         );
@@ -121,7 +136,7 @@ impl Parkour {
             hero: self.world.current_hero(),
             team: 0,
         }];
-        self.mode.advance(self.frame, &Variables::new(), players);
+        let sent = self.mode.advance(self.frame, &Variables::new(), players);
         let mut players = [WorkshopPlayer {
             controller: OWNER,
             slot: 0,
@@ -131,6 +146,57 @@ impl Parkour {
         self.run
             .step(self.frame, &self.scene, &mut self.mode, &mut players);
         assert_eq!(self.run.engine().faults(), [] as [String; 0]);
+        // The room's messages, as the game service routes them
+        // (`route_messages`): a dead body's `0C8E` takes `06FD` from the
+        // mode graph and sends `0685`, which makes his respawn due.
+        let held = held(Some(&self.mode));
+        let mut worlds = [&mut self.world];
+        let mut players = Players::new(&mut worlds, self.frame);
+        let mut messages = players.take_messages();
+        messages.extend(sent);
+        let mut recipients: [&mut dyn Recipients; 2] = [&mut players, &mut self.mode];
+        deliver_held(&held, &mut self.held_reach, &mut recipients);
+        deliver(&mut self.backlog, messages, Vec::new(), &mut recipients);
+        let now = self.now();
+        self.world
+            .respawn_due(&self.scene, &viewer, self.frame, now, RETAIL_QUANTA)
+            .unwrap();
+    }
+
+    /// The match time of the current tick.
+    fn now(&self) -> Duration {
+        Duration::from_millis(u64::from(self.frame - FIRST_TICK) * 16)
+    }
+
+    /// The environment kills his body (`Combat::environment_kill`).
+    fn kill(&mut self) {
+        let body = self.world.current_body().unwrap();
+        let hit = PlayerHit {
+            body,
+            shooter: Shooter {
+                source: body,
+                team: 0,
+                bot: false,
+            },
+            amount: 10_000.0,
+            critical: false,
+            loadout: None,
+            frame: self.frame,
+            world_tick: Some(self.frame),
+            heal: false,
+            tags: orpheus_script::weapons::DamageTags::NONE,
+            direction: None,
+            environment: true,
+            from: None,
+            source: None,
+            health_pack: false,
+        };
+        let now = self.now();
+        let damage = self
+            .world
+            .damage_body(&self.scene, &hit, self.frame, now)
+            .unwrap();
+        assert!(damage.killed);
     }
 
     fn run(&mut self, seconds: f64) {
@@ -178,6 +244,10 @@ impl Parkour {
 
     fn feet(&self) -> [f64; 3] {
         self.world.mover.as_ref().unwrap().pose().position
+    }
+
+    fn velocity(&self) -> [f64; 3] {
+        self.world.mover.as_ref().unwrap().pose().velocity
     }
 
     fn on_ground(&self) -> bool {
@@ -351,6 +421,14 @@ fn dpk_archive_c32s2_times_the_run_and_resets_it_on_a_fall() {
 /// finished (here he spawns with the match; in a game he picks his hero
 /// later), so his list was the hub's at that time: a fall resets him and
 /// takes the hub's list again.
+///
+/// Level 1's first checkpoint (`Prime[1]` 78 = 2 × 3 × 13) locks Rocket
+/// Punch and Rising Uppercut ("AbilityEnableDisable": Set Secondary Fire
+/// Enabled and Set Ability 1 Enabled false): `1D3F` plays `1D42` on his
+/// controller, whose scope on the possessed body (`STU_69DBE90D(owner())`)
+/// stacks `#9535e` false there, which Doomfist's `0DD8` tests. The press
+/// lifts him at 40 m/s when the uppercut runs
+/// (`doomfists_grounded_slam_leaps_lands_and_ends`); here it doesn't.
 #[test]
 #[ignore = "requires an Overwatch 1.74 install and the DPK archive (just test-dpk <install> <archive>)"]
 fn dpk_archive_c32s2_landing_in_level_ones_ring_selects_it() {
@@ -380,4 +458,34 @@ fn dpk_archive_c32s2_landing_in_level_ones_ring_selects_it() {
         "{:?}",
         parkour.feet()
     );
+    let rises: Vec<f64> = (0..20)
+        .map(|_| {
+            parkour.step(ABILITY_1);
+            parkour.velocity()[1]
+        })
+        .collect();
+    assert!(rises.iter().all(|&vy| vy <= 0.0), "{rises:?}");
+}
+
+/// "Death Reset": Player Died → Respawn (`1383`: `06B6` {`0919` true} to
+/// his body, whose `0C8E` rid14 sets #30857 and sends `0685` to the mode
+/// at once, rid8 → rid6 → rid2), so a new body comes on the next ticks,
+/// not after `0C8E`'s own count (#9575, at least 1 s, rid55 st34).
+#[test]
+#[ignore = "requires an Overwatch 1.74 install and the DPK archive (just test-dpk <install> <archive>)"]
+fn dpk_archive_c32s2_respawns_a_killed_player_at_once() {
+    let mut parkour = Parkour::start();
+    parkour.run(5.0);
+    let body = parkour.world.current_body().unwrap();
+    parkour.kill();
+    let mut ticks = 0;
+    while parkour.world.current_body() == Some(body) {
+        parkour.tick();
+        ticks += 1;
+        assert!(ticks < 200, "no respawn");
+    }
+    // The tick after the kill: the rules see him dead (Player Died),
+    // Respawn's `06B6` reaches his body, whose `0685` makes the respawn
+    // due, and the new body comes, all in that tick.
+    assert_eq!(ticks, 1);
 }

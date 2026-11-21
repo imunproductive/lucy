@@ -331,6 +331,74 @@ fn small_message_reaches_its_target_in_the_frames() {
     );
 }
 
+/// Create Icon `1AB1` with Reevaluation "Visible To" (`5069`): its scope
+/// 47 on the mode entity copies Visible To into `#20176` (rid13, a plain
+/// copy), which StateStack st2 evaluates on each client. C32S2's
+/// level-select icons are made at the match start, visible to the players
+/// with `CPData[13]`, then none; when the rules evaluate the player in, the
+/// copy follows and the stack the frames carry takes it in the next frame
+/// (in the game the icons then show from the hub, ParkourMatch9).
+#[test]
+#[ignore = "requires the derived 104319 graph bundle"]
+fn create_icon_follows_its_reevaluated_visible_to() {
+    const CREATE_ICON: u32 = 0x1AB1;
+    const ICON_SCOPE: u32 = 47;
+    /// The scope instance's copy of Visible To.
+    const ICON_VISIBLE_TO: u32 = 20176;
+    let mut script = host();
+    let identifier = |id: u64| Value::Asset(0x0D80_0000_0000_0000 | id);
+    let parameters = |visible: Vec<Value>| {
+        vec![
+            constant(Value::Array(visible)),
+            constant(Value::Vector([18.363, 5.867, 9.094])),
+            // Checkmark; "Visible To".
+            identifier(0x551C),
+            identifier(0x5069),
+            constant(Value::Null),
+            constant(Value::Bool(false)),
+        ]
+    };
+    let create = run(&mut script, CREATE_ICON, parameters(Vec::new()));
+    assert_eq!(finished(&script, create), ActionOutcome::Done);
+    let scope = |script: &ModeScript| {
+        let snapshot = script.snapshot().unwrap();
+        let (&scope, instance) = snapshot
+            .instances
+            .iter()
+            .find(|(_, instance)| {
+                instance.scope.as_ref().is_some_and(|scope| {
+                    scope.id == ICON_SCOPE && scope.source.instance == create.instance
+                })
+            })
+            .expect("the icon's scope instance on the mode entity");
+        (scope, instance.variables.get(&ICON_VISIBLE_TO).cloned())
+    };
+    let (_, copied) = scope(&script);
+    assert_eq!(copied, Some(constant(Value::Array(Vec::new()))));
+    script
+        .set_action_parameters(create, parameters(vec![Value::Entity(PLAYER)]))
+        .unwrap();
+    let (id, copied) = scope(&script);
+    assert_eq!(
+        copied,
+        Some(constant(Value::Array(vec![Value::Entity(PLAYER)])))
+    );
+    // The stack st2 takes the new copy in the next frame, and the frames
+    // carry its value.
+    script.advance(2).unwrap();
+    let graphs = Arc::clone(&script.world.graphs);
+    let codecs = CodecTable::client();
+    let encoder = SnapshotEncoder::new(&graphs, &codecs);
+    let projected = encoder
+        .project(script.snapshot().unwrap(), View::Observer)
+        .unwrap();
+    assert_eq!(
+        projected.instance_variable(id, ICON_VISIBLE_TO),
+        Some(&Value::Array(vec![Value::Entity(PLAYER)]))
+    );
+    assert_complete(&script);
+}
+
 /// Teleport `1D45` opens its scope on each target player for the match
 /// to run there, and is done at once.
 #[test]

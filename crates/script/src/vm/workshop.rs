@@ -40,6 +40,31 @@ pub const ACTION_PARAMETERS: u32 = 18739;
 /// dynamic `#12` in all 25 uses).
 const LOOP_INDEX: u32 = 12;
 
+/// A scope or child instance's plain copy of an action's parameter
+/// ([`Vm::parameter_copies`]): its `STU_12F5D52D` entry, its variable and
+/// what it copied.
+struct ParameterCopy {
+    instance: u16,
+    node: usize,
+    entry: usize,
+    variable: VarKey,
+    copied: Value,
+}
+
+/// Whether `config` reads variable `id` anywhere (an expression's dynamic
+/// variables, a variable config).
+fn reads_variable(config: &Json, id: u32) -> bool {
+    match config {
+        Json::Object(map) => {
+            (map.get("$").and_then(Json::as_str) == Some("STUConfigVarDynamic")
+                && map.get("m_identifier").and_then(Json::as_u64) == Some(u64::from(id)))
+                || map.values().any(|value| reads_variable(value, id))
+        }
+        Json::Array(items) => items.iter().any(|item| reads_variable(item, id)),
+        _ => false,
+    }
+}
+
 /// The ClientOnlySharedVars states (`STU_9D7BF987`, which
 /// EntryClientOnlySharedVars `STU_571CC72E` begins, and `STU_1B2CD7F2`):
 /// they share the rule's event context with the clients, `#19467` Event
@@ -178,11 +203,16 @@ impl Component {
     /// The rule engine evaluated a running action's parameters again (its
     /// Reevaluation enum): `#18739` takes them, and each instance the
     /// action opened on this entity (Create HUD Text's scope 31) copies
-    /// them again where it copied them at its start (the `STU_12F5D52D`
-    /// entries whose value is `STU_70757664`, server-only: 1D8A rid21 and
-    /// the other Create graphs), so the copies its presenters read change
-    /// in the frames. Assumption: retail changed them so (Workshop.md §8,
-    /// question 2). Nothing for an action that ended.
+    /// them again where it copied them at its start, so the copies its
+    /// presenters read change in the frames: the `STU_12F5D52D` entries
+    /// whose value is `STU_70757664` (server-only: 1D8A rid21 and the other
+    /// Create graphs) always, and the plain copies of `#18739` (Create Icon
+    /// `1AB1` rid13 copies Visible To into `#20176`, whose StateStack st2
+    /// evaluates it on each client) where a parameter they copy changed and
+    /// they still hold what they copied. Assumption: retail changed them
+    /// so (Workshop.md §8, question 2); its clients evaluate the value
+    /// trees themselves, where the server sends the values it evaluated.
+    /// Nothing for an action that ended.
     pub fn set_action_parameters(
         &mut self,
         instance: u16,
@@ -193,13 +223,10 @@ impl Component {
         if !self.instance_alive(instance, start_ms) {
             return Ok(());
         }
-        let parameters = Value::Array(parameters);
-        self.set_instance_variable(instance, ACTION_PARAMETERS, parameters.clone(), world)?;
         let entity = self.machine.snapshot.entity;
-        let instances = &mut self.machine.snapshot.instances;
         let mut children = Vec::new();
         let mut opened = Vec::new();
-        for (&id, item) in &*instances {
+        for (&id, item) in &self.machine.snapshot.instances {
             let scoped = item.scope.as_ref().is_some_and(|scope| {
                 scope.source.entity == entity && scope.source.instance == instance
             });
@@ -210,14 +237,33 @@ impl Component {
                 children.push(id);
             }
         }
+        // The plain copies as the old parameters gave them.
+        let mut copies = Vec::new();
+        self.run(world, |vm| {
+            for &child in &children {
+                copies.extend(vm.parameter_copies(child));
+            }
+            Ok(())
+        })?;
+        let parameters = Value::Array(parameters);
+        self.set_instance_variable(instance, ACTION_PARAMETERS, parameters.clone(), world)?;
         for id in opened {
-            if let Some(scope) = instances[&id].scope.as_mut() {
+            if let Some(scope) = self
+                .machine
+                .snapshot
+                .instances
+                .get_mut(&id)
+                .and_then(|item| item.scope.as_mut())
+            {
                 scope.parent.insert(ACTION_PARAMETERS, parameters.clone());
             }
         }
         self.run(world, |vm| {
-            for child in children {
+            for &child in &children {
                 vm.copy_parameters(child)?;
+            }
+            for copy in &copies {
+                vm.copy_again(copy)?;
             }
             Ok(())
         })
@@ -260,7 +306,8 @@ impl<W: World> Vm<'_, '_, '_, W> {
         }
     }
 
-    /// [`Component::set_action_parameters`]: the copies again.
+    /// [`Component::set_action_parameters`]: the `STU_70757664` copies
+    /// again.
     fn copy_parameters(&mut self, id: u16) -> Result<(), InitFault> {
         let graph = self.graph(id);
         for node in graph
@@ -274,6 +321,59 @@ impl<W: World> Vm<'_, '_, '_, W> {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// Instance `id`'s other `STU_12F5D52D` entries that read `#18739`,
+    /// each with its variable and what it gives now.
+    fn parameter_copies(&mut self, id: u16) -> Vec<ParameterCopy> {
+        let graph = self.graph(id);
+        let mut copies = Vec::new();
+        for (index, node) in graph.nodes.iter().enumerate() {
+            if node.class != "STU_12F5D52D" {
+                continue;
+            }
+            for (entry, item) in array_field(&node.fields, "m_143D4C5B").iter().enumerate() {
+                let value = field(item, "m_value");
+                if value.get("$").and_then(Json::as_str) == Some("STU_70757664")
+                    || !reads_variable(value, ACTION_PARAMETERS)
+                {
+                    continue;
+                }
+                let Ok(Some(variable)) = expr::lvalue(field(item, "m_out_Var")) else {
+                    continue;
+                };
+                if let Some(copied) = self.evaluate_value(id, node, value, None) {
+                    copies.push(ParameterCopy {
+                        instance: id,
+                        node: index,
+                        entry,
+                        variable: source_key(id, variable),
+                        copied,
+                    });
+                }
+            }
+        }
+        copies
+    }
+
+    /// A plain copy of `#18739` again ([`Self::parameter_copies`]), when
+    /// it gives another value now and its variable still holds the copy.
+    fn copy_again(&mut self, copy: &ParameterCopy) -> Result<(), InitFault> {
+        if !self.machine.snapshot.instances.contains_key(&copy.instance)
+            || stored(&self.machine.snapshot, copy.variable) != copy.copied
+        {
+            return Ok(());
+        }
+        let graph = self.graph(copy.instance);
+        let node = &graph.nodes[copy.node];
+        let item = &array_field(&node.fields, "m_143D4C5B")[copy.entry];
+        if self.evaluate_value(copy.instance, node, field(item, "m_value"), None)
+            == Some(copy.copied.clone())
+        {
+            return Ok(());
+        }
+        self.store(copy.instance, node, item, false)?;
         Ok(())
     }
 
