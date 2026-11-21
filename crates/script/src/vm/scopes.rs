@@ -196,7 +196,7 @@ impl Component {
                     })
                     .map(|(&id, _)| id);
                 if let Some(id) = reused {
-                    self.run(world, |vm| {
+                    self.run(erase(world), |vm| {
                         vm.post(id, Event::Rescope(source.state))?;
                         vm.run()
                     })?;
@@ -211,7 +211,7 @@ impl Component {
                     parent: parent.clone(),
                 };
                 let mut created = false;
-                self.run(world, |vm| {
+                self.run(erase(world), |vm| {
                     created = vm.create_scoped(id, *graph, Some(link), *creator)?;
                     if created {
                         vm.post(id, Event::Begin(source.state))?;
@@ -232,7 +232,7 @@ impl Component {
                 if keep || shared || !self.machine.snapshot.instances.contains_key(&id) {
                     return Ok(None);
                 }
-                self.run(world, |vm| {
+                self.run(erase(world), |vm| {
                     vm.post(id, Event::ExitInstance)?;
                     vm.run()
                 })?;
@@ -260,7 +260,7 @@ impl Component {
     }
 }
 
-impl<W: World> Vm<'_, '_, '_, W> {
+impl<W: World + ?Sized> Vm<'_, '_, '_, W> {
     /// The scope id of an instance: 0 for one that isn't a scope's.
     pub(super) fn instance_scope(&self, id: u16) -> u32 {
         self.machine.snapshot.instances[&id]

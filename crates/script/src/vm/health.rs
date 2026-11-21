@@ -99,7 +99,7 @@ pub struct HealthChange {
 const UNREAD: &[&str] = &["m_B12BFE8B"];
 const UNREAD_CHANGE: &[&str] = &["m_knockbackRings", "m_C0139FA6", "m_E33EFEE1", "m_10399AE7"];
 
-impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
+impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W> {
     pub(super) fn begin_modify_health(
         &mut self,
         key: StateKey,

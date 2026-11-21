@@ -22,7 +22,7 @@ use super::*;
 
 const WALL_CHECK: &str = "STU_FBFF5DE7";
 
-impl<W: World> Vm<'_, '_, '_, W> {
+impl<W: World + ?Sized> Vm<'_, '_, '_, W> {
     /// The begin writes false; the checks follow each update.
     pub(super) fn begin_wall_check(&mut self, key: StateKey, node: &Node) -> Result<(), InitFault> {
         self.put(key.instance, node, "m_26DA7CF8", Value::Bool(false))?;

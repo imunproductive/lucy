@@ -86,7 +86,7 @@ fn has_masks(filter: &Json) -> bool {
         .any(|word| field(filter, word).as_u64().is_some_and(|value| value != 0))
 }
 
-impl<W: World> Vm<'_, '_, '_, W> {
+impl<W: World + ?Sized> Vm<'_, '_, '_, W> {
     /// The begin filters and puts the state on the update list.
     pub(super) fn begin_filter_array(&mut self, key: StateKey) -> Result<(), InitFault> {
         self.refresh_filter_array(key)?;

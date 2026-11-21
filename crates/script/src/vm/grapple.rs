@@ -93,7 +93,7 @@ pub(super) struct Cast {
     hit: Option<Hit>,
 }
 
-impl<W: World> Vm<'_, '_, '_, W> {
+impl<W: World + ?Sized> Vm<'_, '_, '_, W> {
     /// The cast's begin.
     pub(super) fn begin_grapple(
         &mut self,

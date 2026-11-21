@@ -7,7 +7,7 @@
 
 use super::*;
 
-impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
+impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W> {
     pub(super) fn changed(&mut self, key: StateKey) -> Result<(), InitFault> {
         if let Some(state) = self.state_mut(key) {
             state.pending_change = false;

@@ -12,7 +12,7 @@
 
 use super::*;
 
-impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
+impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W> {
     /// `STU_0F647E55`: give each entity of `m_targets` the team index
     /// `m_67465E75` (-1 none, 0 to 4; leafall903/ORPHEUS (MIT)
     /// `assign_entity_team` in `nodes.py`). The Practice Range's spawn

@@ -78,7 +78,7 @@ const UNMODELLED: &[&str] = &[
 /// Fields a form the server runs sets.
 const REQUIRED: &[&str] = &["m_7A61C4A9", "m_95FFC3C5"];
 
-impl<W: World> Vm<'_, '_, '_, W> {
+impl<W: World + ?Sized> Vm<'_, '_, '_, W> {
     pub(super) fn begin_shockwave(&mut self, key: StateKey, node: &Node) -> Result<(), InitFault> {
         if !self.wave_flag(key.instance, node, "m_04F3240D") {
             self.send_wave(key, node, 0.0)?;

@@ -214,7 +214,7 @@ const ASSUMED_PLAIN_STATES: &[&str] = &[
     "STU_F89A564A",
 ];
 
-impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
+impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W> {
     pub(super) fn follow(
         &mut self,
         id: u16,
