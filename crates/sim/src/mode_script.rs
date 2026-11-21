@@ -63,6 +63,13 @@ pub fn mode_graph(mode: u64) -> Option<u32> {
     })
 }
 
+/// The modes with a payload, which the match flow drives outside a
+/// Workshop match: `0F4A` would drive them too, but the payload's `1225`
+/// stops at its start (`STU_C5B280AA` on Gibraltar, more classes behind
+/// it), so the payload could never move; the flow's payload stands in
+/// (docs/dev/loose-ends.md).
+pub const PAYLOAD_ON_FLOW: [u64; 2] = [match_flow::ESCORT, match_flow::HYBRID];
+
 /// Classes or faults by graph, with how often they were met.
 pub type Gaps = BTreeMap<(u32, String), usize>;
 
@@ -151,8 +158,17 @@ impl ModeRunner {
     /// Start the mode graph with the match's `players` now. The start
     /// condition `STU_81A9AB10` (server-only) is the server's own rule:
     /// true once the match's players are in the world, when the room
-    /// starts the mode.
+    /// starts the mode. Escort and Hybrid stay on the match flow
+    /// ([`PAYLOAD_ON_FLOW`]).
     pub fn start(scene: &PreparedScene, frame: u32, players: Vec<ModePlayer>) -> Self {
+        if PAYLOAD_ON_FLOW.contains(&scene.map().mode_guid) {
+            return Self::HandBuilt { gaps: Gaps::new() };
+        }
+        Self::start_graph(scene, frame, players)
+    }
+
+    /// The mode graph whole when it runs so, else the hand-built frame.
+    fn start_graph(scene: &PreparedScene, frame: u32, players: Vec<ModePlayer>) -> Self {
         let mode = scene.map().mode_guid;
         let Some(graph) = mode_graph(mode) else {
             return Self::HandBuilt { gaps: Gaps::new() };
@@ -188,7 +204,7 @@ impl ModeRunner {
     /// the mode's `0724` from the flow ([`Self::holds_rooms`]). None when
     /// neither starts.
     pub fn workshop(scene: &PreparedScene, frame: u32, players: Vec<ModePlayer>) -> Option<Self> {
-        let started = Self::start(scene, frame, players.clone());
+        let started = Self::start_graph(scene, frame, players.clone());
         if started.graph_driven() {
             return Some(started);
         }
@@ -605,9 +621,10 @@ const OBJECTIVES: u32 = 12376;
 /// the other messages and writes the same.
 fn reported_objectives(messages: &[GameMessage]) -> Variables {
     let mut objectives = Vec::new();
-    for report in messages.iter().filter(|message| {
-        message.target == GAME_MODE_ENTITY && message.message == OBJECTIVE_REPORT
-    }) {
+    for report in messages
+        .iter()
+        .filter(|message| message.target == GAME_MODE_ENTITY && message.message == OBJECTIVE_REPORT)
+    {
         let index = report
             .parameters
             .get(&REPORT_INDEX)
@@ -660,120 +677,10 @@ mod tests {
             reported_objectives(&messages),
             Variables::from([(
                 OBJECTIVES,
-                Value::Array(vec![
-                    Value::Entity(0x8000_0332),
-                    Value::Entity(0x8000_034b)
-                ])
+                Value::Array(vec![Value::Entity(0x8000_0332), Value::Entity(0x8000_034b)])
             )])
         );
         assert_eq!(reported_objectives(&[]), Variables::new());
-    }
-
-    // DBG probe (temporary).
-    #[test]
-    #[ignore = "probe"]
-    fn mg3_probe() {
-        use orpheus_content::maps::MapCatalog;
-        let runtime = orpheus_testkit::runtime_dir();
-        let assets = SceneAssets::load(&runtime).unwrap().with_collision_build(
-            crate::scene_assets::install_collision_build(orpheus_testkit::game_dir()),
-        );
-        let catalog = MapCatalog::load(runtime.join("data")).unwrap();
-        let map = catalog
-            .game_map(0x0800_0000_0000_005b, match_flow::ASSAULT, "Assault", false, &[6, 6])
-            .unwrap();
-        let mut scene = assets.prepare(map).unwrap();
-        let mut mode = ModeRunner::start(&scene, 1, Vec::new());
-        eprintln!("mode driven {} gaps {:?}", mode.graph_driven(), mode.gaps());
-        for tick in 1..4 {
-            scene.advance_placed(tick, &[]);
-            let (messages, _) = scene.take_placed_messages();
-            for message in &messages {
-                eprintln!(
-                    "tick {tick} {:08X} -> {:08X} {:04X} {:?}",
-                    message.sender,
-                    message.target,
-                    message.message & 0xffff,
-                    message.parameters
-                );
-                if message.target == GAME_MODE_ENTITY {
-                    mode.receive_message(message);
-                }
-            }
-            let out = mode.advance(tick + 1, &Variables::new(), Vec::new());
-            eprintln!("mode sent {}", out.len());
-        }
-        let world = scene.placed_scripts().world().unwrap();
-        for placed in world.entities() {
-            if !placed.running() || !placed.complete() {
-                eprintln!("{:08X} running {} complete {} fault {:?} gaps {:?}", placed.entity, placed.running(), placed.complete(), placed.fault(), placed.snapshot().map(|s| &s.diagnostics));
-            }
-        }
-        let script = mode.script_mut().unwrap();
-        eprintln!("#12376e {:?}", script.entity_value(12376));
-        let tags = scene.map_tags();
-        for tag in [0x0d60_0000_0000_0341u64, 0x0d60_0000_0000_0310] {
-            eprintln!("tag {tag:016X} on {:08X?}", tags.placed_with_tag(tag));
-        }
-        for entity in tags.entities() {
-            let placed = tags.get(entity).unwrap();
-            let spawn: Vec<String> = placed.tags.iter().map(|t| format!("{t:X}")).collect();
-            eprintln!("tagged {entity:08X} {spawn:?}");
-        }
-        eprintln!("rooms {:08X?}", scene.room_holds(|_| orpheus_content::maps::SpawnChoice::First));
-        // A body on point A, and the point's rates with contest on.
-        let point = 0x8000_0332;
-        let at = scene.map().objectives_of(orpheus_content::maps::ObjectiveKind::Point).next().unwrap().position;
-        let body = orpheus_script::vm::TargetCandidate {
-            entity: 0xa000_0101,
-            team: Some(1),
-            dead: false,
-            controller: Some(0xa000_0100),
-            player: Some(0xa000_0100),
-            ai: false,
-            ai_control: None,
-            feet: at,
-            height: 2.0,
-            radius: 0.4,
-            yaw: 0.0,
-            tags: None,
-            health: Some([200.0, 200.0]),
-            spawned: Vec::new(),
-        };
-        scene.set_placed_target_candidates(&[body]);
-        let setup = GameMessage {
-            sender: GAME_MODE_ENTITY,
-            target: point,
-            message: 0x0240_0000_0000_079e,
-            parameters: Variables::from([(0x0440, Value::Bool(true))]),
-        };
-        scene.message_recipients(8).1.receive_message(&setup);
-        scene.advance_placed(8, &[]);
-        eprintln!("setup auras {:?}", scene.take_placed_aura_changes());
-        let end = MessageEnd {
-            sender: GAME_MODE_ENTITY,
-            target: point,
-            message: 0x0240_0000_0000_079e,
-        };
-        let rates = GameMessage {
-            sender: GAME_MODE_ENTITY,
-            target: point,
-            message: 0x0240_0000_0000_079e,
-            parameters: Variables::from([(0x0440, Value::Null), (0x0422, Value::Float(5.0))]),
-        };
-        let mut backlog = crate::messages::Backlog::default();
-        crate::messages::deliver(&mut backlog, vec![rates], vec![end], &mut [scene.message_recipients(10).1]);
-        for tick in 10..14 {
-            scene.advance_placed(tick, &[]);
-            eprintln!("auras {:?}", scene.take_placed_aura_changes());
-        }
-        let placed = scene.placed_scripts().world().unwrap().entity(point).unwrap();
-        let snapshot = placed.snapshot().unwrap();
-        eprintln!("vars {:?}", snapshot.variables);
-        eprintln!("diag {:?} assumptions {:?}", snapshot.diagnostics, snapshot.assumptions);
-        for (id, instance) in &snapshot.instances {
-            eprintln!("inst {id} graph {:04X} active {:?} vars {:?}", instance.graph, instance.states.iter().filter(|(_, s)| s.active).map(|(k, _)| *k).collect::<Vec<_>>(), instance.variables);
-        }
     }
 
     /// The Practice Range's `13C0` runs whole and drives the mode entity.

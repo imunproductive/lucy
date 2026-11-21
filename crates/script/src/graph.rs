@@ -277,7 +277,9 @@ impl Graph {
             if let Some(message) = node.message() {
                 self.by_message.entry(message).or_default().push(index);
             } else if node.class == "STUStatescriptStateGameMessageEntry"
-                && node.field("m_gameMessage").is_some_and(|value| !value.is_null())
+                && node
+                    .field("m_gameMessage")
+                    .is_some_and(|value| !value.is_null())
             {
                 self.computed_message.push(index);
             }
@@ -379,7 +381,9 @@ impl Graph {
     /// expression, evaluated as a message comes (`m_gameMessage`), in node
     /// order.
     pub fn computed_message_nodes(&self) -> impl Iterator<Item = &Node> {
-        self.computed_message.iter().map(|&index| &self.nodes[index])
+        self.computed_message
+            .iter()
+            .map(|&index| &self.nodes[index])
     }
 
     pub fn node(&self, pos: u16) -> Option<&Node> {

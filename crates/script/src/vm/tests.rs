@@ -6431,14 +6431,23 @@ fn a_receiving_state_takes_the_message_its_expression_names() {
     .unwrap();
     assert_eq!(active(component.snapshot().unwrap(), 1), [0, 1]);
     component
-        .receive_message(0x8000_0332, 0x0240_0000_0000_0006, Variables::new(), &mut EmptyWorld)
+        .receive_message(
+            0x8000_0332,
+            0x0240_0000_0000_0006,
+            Variables::new(),
+            &mut EmptyWorld,
+        )
         .unwrap();
     assert_eq!(active(component.snapshot().unwrap(), 1), [0, 1]);
     component
         .receive_message(0x8000_0332, NAMED, Variables::new(), &mut EmptyWorld)
         .unwrap();
     let snapshot = component.snapshot().unwrap();
-    assert!(snapshot.initialization_complete(), "{:?}", snapshot.diagnostics);
+    assert!(
+        snapshot.initialization_complete(),
+        "{:?}",
+        snapshot.diagnostics
+    );
     assert_eq!(active(snapshot, 1), [0, 2]);
     component
         .end_message(0x8000_0332, NAMED, &mut EmptyWorld)

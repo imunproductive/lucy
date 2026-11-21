@@ -161,10 +161,6 @@ pub fn deliver(
         })
     });
     for end in first {
-        // DBG
-        if std::env::var_os("MG3_DEBUG").is_some() && end.message & 0xffff == 0x079e {
-            eprintln!("DBG deliver early end {:08X} found {}", end.target, recipients.iter().position(|group| group.runs(end.target)).map_or(-1, |i| i as i64));
-        }
         if let Some(group) = recipients.iter_mut().find(|group| group.runs(end.target)) {
             group.end(&end);
         }
@@ -178,10 +174,6 @@ pub fn deliver(
         );
     }
     for message in &queue {
-        // DBG
-        if std::env::var_os("MG3_DEBUG").is_some() && message.message & 0xffff == 0x079e {
-            eprintln!("DBG deliver msg {:08X} found {}", message.target, recipients.iter().position(|group| group.runs(message.target)).map_or(-1, |i| i as i64));
-        }
         if message.target == EVERY_ENTITY {
             for group in recipients.iter_mut() {
                 group.receive(message);
@@ -197,10 +189,6 @@ pub fn deliver(
         return;
     }
     for end in std::mem::take(&mut backlog.ends) {
-        // DBG
-        if std::env::var_os("MG3_DEBUG").is_some() && end.message & 0xffff == 0x079e {
-            eprintln!("DBG deliver late end {:08X}", end.target);
-        }
         if let Some(group) = recipients.iter_mut().find(|group| group.runs(end.target)) {
             group.end(&end);
         }

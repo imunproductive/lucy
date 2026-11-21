@@ -319,7 +319,11 @@ fn a_workshop_match_keeps_each_team_in_its_own_spawn_room() {
     let runtime = orpheus_testkit::runtime_dir();
     let data = runtime.join("data");
     let catalog = Arc::new(orpheus_workshop::Catalog::load(&data).unwrap());
-    let logic = Arc::new(orpheus_workshop::parse(ROOM_TELEPORT, &catalog).unwrap().logic);
+    let logic = Arc::new(
+        orpheus_workshop::parse(ROOM_TELEPORT, &catalog)
+            .unwrap()
+            .logic,
+    );
     let maps = MapCatalog::load(&data)
         .unwrap()
         .with_modes(GameModes::load(data.join(MODES_FILE)).unwrap());
@@ -429,7 +433,12 @@ fn a_workshop_match_keeps_each_team_in_its_own_spawn_room() {
         second.pump(&schemas);
     };
     let deadline = server.now() + Duration::from_secs(5);
-    while server.bodies(MATCH).unwrap().iter().any(|body| body.health.is_none()) {
+    while server
+        .bodies(MATCH)
+        .unwrap()
+        .iter()
+        .any(|body| body.health.is_none())
+    {
         assert!(server.now() < deadline, "{:?}", server.bodies(MATCH));
         step(first, second);
     }
@@ -444,7 +453,11 @@ fn a_workshop_match_keeps_each_team_in_its_own_spawn_room() {
         }
     }
     for body in server.bodies(MATCH).unwrap() {
-        assert_eq!((body.spawn_room, body.room_heal), (Some(true), true), "{body:?}");
+        assert_eq!(
+            (body.spawn_room, body.room_heal),
+            (Some(true), true),
+            "{body:?}"
+        );
     }
     // Team 1 on point A, out of his room.
     let on_point = |server: &Lockstep| {
@@ -468,7 +481,12 @@ fn a_workshop_match_keeps_each_team_in_its_own_spawn_room() {
         "{team1:?}"
     );
     assert_eq!(
-        (team2.spawn_room, team2.room_heal, team2.room_hurt, team2.health),
+        (
+            team2.spawn_room,
+            team2.room_heal,
+            team2.room_hurt,
+            team2.health
+        ),
         (Some(true), true, false, Some(1.0)),
         "{team2:?}"
     );

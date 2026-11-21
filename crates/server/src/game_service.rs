@@ -2693,12 +2693,6 @@ impl State {
         changes.extend(world.scene.take_bot_aura_changes());
         changes.extend(world.scene.take_placed_aura_changes());
         changes.extend(combat.take_field_auras());
-        // DBG
-        if std::env::var_os("MG3_DEBUG").is_some() {
-            for change in &changes {
-                eprintln!("DBG tick {tick} aura {change:?} bodies {:?}", peers.iter().flatten().map(|peer| peer.world.current_body()).collect::<Vec<_>>());
-            }
-        }
         for change in &changes {
             let target = change.target();
             if world.scene.bots().iter().any(|bot| bot.entity == target) {
@@ -3093,18 +3087,7 @@ impl State {
                     let variables = orpheus_script::wire::Variables::new();
                     messages = mode.advance(tick, &variables, players);
                     events = match mode.match_state() {
-                        Some(state) => {
-                            // DBG
-                            if std::env::var_os("MG3_DEBUG").is_some() && (state.phase != flow.phase() || tick % 300 == 0) {
-                                eprintln!("DBG tick {tick}: {state:?} held {:?}", mode.held().iter().map(|m| format!("{:04X}", m.message & 0xFFFF)).collect::<Vec<_>>());
-                                if let Some(point) = world.scene.placed_scripts().world().and_then(|w| w.entity(0x8000_0332)) {
-                                    let snapshot = point.snapshot().unwrap();
-                                    let instance = &snapshot.instances[&1];
-                                    eprintln!("DBG point diag {:?} fault {:?} active {:?} vars {:?}", snapshot.diagnostics, point.fault(), instance.states.iter().filter(|(_, s)| s.active).map(|(k, _)| *k).collect::<Vec<_>>(), instance.variables);
-                                }
-                            }
-                            flow.follow(seconds, state)
-                        }
+                        Some(state) => flow.follow(seconds, state),
                         None => Vec::new(),
                     };
                 }
@@ -3181,9 +3164,8 @@ impl State {
             // hand only where the flow drives the match: the mode graph's
             // close is its own (`0F4A` st9's `0692` ends, `288B` st36's stack
             // with it).
-            room.assembled = !flow.follows_graph()
-                && was == Phase::Assemble
-                && flow.phase() != Phase::Assemble;
+            room.assembled =
+                !flow.follows_graph() && was == Phase::Assemble && flow.phase() != Phase::Assemble;
             let mut respawn = None;
             for event in &events {
                 match event {
@@ -3340,12 +3322,6 @@ impl State {
             for world in &mut worlds {
                 world.set_next_dummy(Some(next));
             }
-            // DBG
-            if std::env::var_os("MG3_DEBUG").is_some() && tick % 300 == 0 {
-                for world in &worlds {
-                    eprintln!("DBG tick {tick} body {:?} 0F00 {}", world.body_position(), world.dbg_body_graph(0x0f00));
-                }
-            }
             let mut players = Players::new(&mut worlds, tick);
             let mut messages = players.take_messages();
             messages.append(&mut room.mail);
@@ -3362,18 +3338,6 @@ impl State {
                 let (sent, ended) = spawned.take_messages();
                 messages.extend(sent);
                 ends.extend(ended);
-            }
-            // DBG
-            if std::env::var_os("MG3_DEBUG").is_some() {
-                for m in &messages {
-                    let id = m.message & 0xFFFF;
-                    if [0x0724, 0x0723, 0x0b7b, 0x0813, 0x07a1, 0x07a2, 0x079e, 0x07a0, 0x08ae, 0x08af, 0x0789, 0x07cb, 0x079f, 0x000f, 0x0695, 0x0694, 0x09a3].contains(&id) {
-                        eprintln!("DBG tick {tick} msg {id:04X} {:08X} -> {:08X} {:?}", m.sender, m.target, m.parameters);
-                    }
-                }
-                for e in &ends {
-                    eprintln!("DBG tick {tick} end {:04X} {:08X} -> {:08X}", e.message & 0xFFFF, e.sender, e.target);
-                }
             }
             let held = orpheus_sim::mode_script::held(room.mode.as_ref());
             let (mut bots, placed) = world.scene.message_recipients(tick);

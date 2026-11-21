@@ -65,6 +65,7 @@ impl Machine {
             applied_auras: BTreeMap::new(),
             scopes: BTreeMap::new(),
             outcomes: BTreeMap::new(),
+            sent: BTreeMap::new(),
         })
     }
 

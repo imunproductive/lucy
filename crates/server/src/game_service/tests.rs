@@ -6106,20 +6106,21 @@ fn slow_a_practice_vs_ai_match_plays_its_ai_heroes_to_the_end() {
     server.stop().unwrap();
 }
 
-/// A Competitive Assault match on Temple of Anubis plays both sides on a
-/// time scale of 1/50 (orpheus_sim::match_flow): team 1 attacks first and
-/// takes A, then time runs out on B; before the second side hero select
-/// reopens and both players get a new body in their new side's spawn room
-/// (team 0 now in the attackers' room, team 1 in the defenders'), where
-/// team 0 takes A too. Equal progress: a draw for both (rules 63-64).
+/// A Competitive Assault match on Temple of Anubis, driven by `0F4A` in
+/// its own time, plays both sides: team 1 attacks first and takes A, then
+/// time runs out on B; before the second side both players get a new body
+/// in their new side's spawn room (team 0 now in the attackers' room, team
+/// 1 in the defenders'), where team 0 takes A too. Equal progress with no
+/// time left: a draw for both. The server's wait after the match's end is
+/// 1/50 of it (orpheus_sim::match_flow `Timers`).
 ///
 /// A stands in the attackers' first room and B in the defenders' room, so
 /// each attacker captures A where he spawns and no one can reach B: the
 /// test client plays no movement. Team 0 can only take A if the side swap
 /// moved him.
 #[test]
-#[ignore = "plays both sides of a whole Competitive Assault match at 1/50 scale on Anubis' collision (built once); requires an Overwatch 1.74 install (ORPHEUS_GAME_DIR)"]
-fn a_competitive_assault_on_anubis_swaps_sides_and_spawn_rooms() {
+#[ignore = "slow: plays both sides of a whole Competitive Assault match in the mode graph's time on Anubis' collision (built once); requires an Overwatch 1.74 install (ORPHEUS_GAME_DIR)"]
+fn slow_a_competitive_assault_on_anubis_swaps_sides_and_spawn_rooms() {
     use orpheus_content::{
         heroes::SOLDIER,
         maps::{MapCatalog, ObjectiveKind, SpawnChoice},
@@ -6129,6 +6130,9 @@ fn a_competitive_assault_on_anubis_swaps_sides_and_spawn_rooms() {
 
     const ANUBIS: u64 = 0x0800_0000_0000_005b;
     const SCALE: f64 = 0.02;
+    /// "Assault - Competitive", the Competitive cards' ruleset
+    /// (`game_queues_174.json`), as the matchmaker gives the map.
+    const COMPETITIVE: u64 = 0x0fd0_0000_0000_002b;
 
     let runtime = orpheus_testkit::runtime_dir();
     let assets = Arc::new(
@@ -6140,6 +6144,7 @@ fn a_competitive_assault_on_anubis_swaps_sides_and_spawn_rooms() {
     let mut map = catalog
         .game_map(ANUBIS, ASSAULT, "Assault", false, &[6, 6])
         .expect("Temple of Anubis in Assault");
+    map.ruleset = COMPETITIVE;
     let room = |attack| SpawnChoice::Objective {
         objective: 0,
         attack,
@@ -6265,19 +6270,20 @@ fn a_competitive_assault_on_anubis_swaps_sides_and_spawn_rooms() {
             .iter()
             .all(|watcher| watcher.created(watcher.owner | 1).is_some())
     });
-    // Per side: 0.5-0.6 s of hero select, 0.9 s of setup, 7.8 s of round
-    // (A in 0.6 s adds 3.6 s), 0.23 s of round end; then 0.4 s of match end.
-    pump_within(
-        &mut [blue, red],
-        &schemas,
-        "the end of the match",
-        Duration::from_secs(120),
-        |watchers| {
-            watchers
-                .iter()
-                .all(|watcher| received(watcher, 20304).is_some())
-        },
-    );
+    // `0F4A`'s times; the clients send their (idle) commands, which run
+    // their bodies' scripts, the capture area aura's `0F00` among them.
+    let (mut blue_input, mut red_input) = (blue.tick + 1, red.tick + 1);
+    let deadline = server.now() + Duration::from_secs(1200);
+    while [&*blue, &*red]
+        .iter()
+        .any(|watcher| received(watcher, 20304).is_none())
+    {
+        assert!(server.now() < deadline, "the match didn't end");
+        send_input(blue, &mut blue_input, 0, 0, 0, false);
+        send_input(red, &mut red_input, 0, 0, 0, false);
+        blue.pump(&schemas);
+        red.pump(&schemas);
+    }
     // The second side's bodies, in the swapped rooms.
     for watcher in [&*blue, &*red] {
         assert!(

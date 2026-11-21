@@ -2969,6 +2969,9 @@ struct Machine {
     /// The Workshop action results reported, by instance, with the
     /// instance's start (`vm/workshop.rs`).
     outcomes: BTreeMap<u16, (u64, ActionOutcome)>,
+    /// The parameters each running targeted SendGameMessage state last
+    /// sent ([`Vm::refresh_send_state`]).
+    sent: BTreeMap<StateKey, Variables>,
 }
 
 struct Vm<'graph, 'world, 'machine, W> {
@@ -3500,13 +3503,24 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 .map(|&entity| TrackedTarget { entity, since_ms })
                 .collect();
         }
+        if !recipients.entities.is_empty()
+            && let Some(parameters) = self.send_parameters(key.instance, node)?
+        {
+            self.machine.sent.insert(key, parameters);
+        }
         self.register_tick(key, since_ms);
         Ok(())
     }
 
     /// A running sender's tick ([`Self::begin_send_state`]): the message
     /// goes to the entities its target names that don't hold it yet, and
-    /// ends for those it no longer names.
+    /// ends for those it no longer names. When its parameters changed it
+    /// goes again to every entity it names, which take the new ones: `0F4A`
+    /// st23/st90 hold `0724` to the spawn rooms with their team (`0473`,
+    /// #10795e/#10796e), which a Competitive side swap changes for the
+    /// rooms both sides' lists keep. [Inference: the client's sender was
+    /// not read for this; without it the swapped defenders' room stays the
+    /// other team's and hurts them, `0C8E` st45.]
     pub(super) fn refresh_send_state(
         &mut self,
         key: StateKey,
@@ -3530,11 +3544,27 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             .copied()
             .filter(|entity| !recipients.entities.contains(entity))
             .collect();
-        if joined.is_empty() && left.is_empty() {
+        let parameters = if recipients.entities.is_empty() {
+            None
+        } else {
+            self.send_parameters(key.instance, node)?
+        };
+        let changed = parameters
+            .as_ref()
+            .is_some_and(|parameters| self.machine.sent.get(&key) != Some(parameters));
+        if joined.is_empty() && left.is_empty() && !changed {
             return Ok(());
         }
-        if !self.deliver_game_message(key.instance, node, &recipients, &joined)? {
+        let to = if changed {
+            &recipients.entities
+        } else {
+            &joined
+        };
+        if !self.deliver_game_message(key.instance, node, &recipients, to)? {
             return Ok(());
+        }
+        if let Some(parameters) = parameters {
+            self.machine.sent.insert(key, parameters);
         }
         for &entity in &left {
             self.end_game_message(key.instance, node, recipients.message, entity)?;
@@ -3555,6 +3585,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
 
     /// A sender's end: every entity that holds its message lets it go.
     pub(super) fn end_send_state(&mut self, key: StateKey, node: &Node) -> Result<(), InitFault> {
+        self.machine.sent.remove(&key);
         let Some(message) = message_of(node) else {
             return Ok(());
         };
@@ -3708,6 +3739,25 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             broadcast,
             held: false,
         })
+    }
+
+    /// A persistent sender's parameters evaluated now, to tell whether
+    /// they changed ([`Self::refresh_send_state`]); none when it has none
+    /// or one can't be evaluated (reported).
+    fn send_parameters(&mut self, id: u16, node: &Node) -> Result<Option<Variables>, InitFault> {
+        let rows = array_field(&node.fields, "m_params");
+        if !rows.iter().any(Json::is_object) {
+            return Ok(None);
+        }
+        let mut parameters = Variables::new();
+        for parameter in rows.iter().filter(|value| value.is_object()) {
+            self.spend("game message parameter")?;
+            let Some(value) = self.evaluate(id, node, field(parameter, "m_value"), None) else {
+                return Ok(None);
+            };
+            parameters.insert(parameter_id(parameter), value);
+        }
+        Ok(Some(parameters))
     }
 
     /// The message with its parameters, evaluated now, to `entities` (and
