@@ -652,6 +652,25 @@ pub trait World {
         None
     }
 
+    /// A temporary pool on the body of `site`, named `name` when given
+    /// ([`crate::vitals::Vitals::add_temporary_pool`]); its id.
+    fn add_temporary_pool(
+        &mut self,
+        _site: Site,
+        _kind: PoolKind,
+        _maximum: f64,
+        _current: f64,
+        _name: Option<u64>,
+    ) -> Option<u32> {
+        None
+    }
+
+    /// Takes up to `amount` from the pools named `name` of the body of
+    /// `site`; what it took. None: this world has no such pools.
+    fn drain_named_pool(&mut self, _site: Site, _name: u64, _amount: f64) -> Option<f64> {
+        None
+    }
+
     /// Whether `controller` may play `hero` (`STU_9AE5FC4C`) by the heroes
     /// it may play at all; None: this world can't tell. The controller's own
     /// HeroSelect limits apply on top ([`Context::hero_available`]).
@@ -4095,7 +4114,14 @@ fn for_code_transport(node: &Node) -> bool {
     node.class == FOR_CODE_SYNCED && field(&node.fields, "m_598E32D5").as_u64() == Some(1)
 }
 
-fn is_base_health_pool(node: &Node) -> bool {
+/// The HealthPool forms the VM runs, or None: the body's own pools (`0033`:
+/// `m_4895B8B6`, an output `m_CEAB19E8`, no name), Some(false); and the
+/// temporary ones (`m_0E8A5C8E`: Doomfist's `0DF3` st0, Wrecking Ball's
+/// `1566` st6, `073B`, `12C1`, `1721`, `1D03`), named (`m_7BE02F89`, an
+/// identifier) or not, with or without the outputs `m_CEAB19E8` (its
+/// current amount) and `m_C99FAFDD` (its pool, which `073B`'s ModifyHealth
+/// names in `m_C744A524`), Some(true).
+fn health_pool_form(node: &Node) -> Option<bool> {
     let config = |name| field(&node.fields, name);
     let is_owner = |value| expr::native_shape(value, "STU_B5A0CAF0", None);
     let flag = |name, expected| {
@@ -4107,25 +4133,41 @@ fn is_base_health_pool(node: &Node) -> bool {
                 _ => false,
             }
     };
+    let output = |name| {
+        let value = config(name);
+        value.is_null() || matches!(expr::lvalue(value), Ok(Some(_)))
+    };
     let source = config("m_69A20070");
-    node.is_networked()
-        && [
-            "m_7BE02F89",
-            "m_C99FAFDD",
-            "m_FF79E783",
-            "m_AF1104D0",
-            "m_BFA825EA",
-        ]
-        .into_iter()
-        .all(|name| config(name).is_null())
+    let common = node.is_networked()
+        && ["m_FF79E783", "m_AF1104D0", "m_BFA825EA"]
+            .into_iter()
+            .all(|name| config(name).is_null())
         && pool_kind(config("m_7E8B666C")).is_some()
         && is_owner(config("m_FA3ECC43"))
         && expr::native_shape(source, "STU_FEDD683C", Some("m_entity"))
         && is_owner(field(source, "m_entity"))
+        && flag("m_64839023", false);
+    if !common {
+        return None;
+    }
+    if flag("m_0E8A5C8E", false)
+        && config("m_7BE02F89").is_null()
+        && config("m_C99FAFDD").is_null()
         && flag("m_4895B8B6", true)
-        && flag("m_64839023", false)
-        && flag("m_0E8A5C8E", false)
         && matches!(expr::lvalue(config("m_CEAB19E8")), Ok(Some(_)))
+    {
+        return Some(false);
+    }
+    let name = config("m_7BE02F89");
+    (flag("m_0E8A5C8E", true)
+        && config("m_4895B8B6").is_null()
+        && (name.is_null()
+            || (field(name, "$").as_str() == Some("STUConfigVarIdentifier")
+                && field(name, "m_identifier").is_string()
+                && field(name, "m_resourceKey").is_null()))
+        && output("m_CEAB19E8")
+        && output("m_C99FAFDD"))
+    .then_some(true)
 }
 
 fn pool_kind(value: &Json) -> Option<PoolKind> {

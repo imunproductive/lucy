@@ -489,6 +489,27 @@ impl World for PlayerWorld {
         self.vitals.remove_pool(pool)
     }
 
+    fn add_temporary_pool(
+        &mut self,
+        site: Site,
+        kind: PoolKind,
+        maximum: f64,
+        current: f64,
+        name: Option<u64>,
+    ) -> Option<u32> {
+        if !self.is_player_site(site) || !self.pool_types_known {
+            return None;
+        }
+        self.vitals.add_temporary_pool(kind, maximum, current, name)
+    }
+
+    fn drain_named_pool(&mut self, site: Site, name: u64, amount: f64) -> Option<f64> {
+        if !self.is_player_site(site) || !self.pool_types_known {
+            return None;
+        }
+        Some(self.vitals.drain_named(name, amount))
+    }
+
     fn has_target_tag(&self, site: Site, entity: u32, tag: u64) -> Option<bool> {
         if !self.is_player_site(site) {
             return None;

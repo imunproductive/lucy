@@ -307,6 +307,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 } else if self.graphs.is_aura_graph(graph)
                     || self.graphs.is_workshop_action(graph)
                     || play::HEALTH_PACKS.contains(&graph)
+                    || graph == play::BEST_DEFENSE
                 {
                     // An aura's graph plays its effect on the body
                     // (`vm/auras.rs`: `0C71` plays `0B99` or `0C72`); a
@@ -314,7 +315,8 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                     // Player Variable At Rate `1CCC` plays `1CCF` on each
                     // player's controller, `vm/workshop.rs`); a health
                     // pack `0046` on itself and `0046` its visual's `0EB9`
-                    // ([`play::HEALTH_PACKS`]).
+                    // ([`play::HEALTH_PACKS`]); Doomfist's passive its
+                    // shield grant ([`play::BEST_DEFENSE`]).
                     let played = node
                         .field("m_script.m_graph")
                         .and_then(asset_guid)
@@ -946,7 +948,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             // 43, 0x7FF789821920, 0x7FF78988F1C0). None ends by itself; the
             // server has no camera or HUD: plain states its frames carry.
             "STU_D75CDECC" | "STU_96333BBE" | "STU_A103C85E" => StateKind::Plain,
-            "STUStatescriptStateHealthPool" if is_base_health_pool(node) => {
+            "STUStatescriptStateHealthPool" if health_pool_form(node).is_some() => {
                 StateKind::HealthPool { pool: None }
             }
             "STU_E56BA8D8" if node.is_networked() && node.remote == -1 => {

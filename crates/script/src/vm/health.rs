@@ -211,6 +211,28 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         if !(amount.is_finite() && amount > 0.0) {
             return;
         }
+        // A pool name (`m_7BE02F89`: The Best Defense's decay, `0DDD` st1)
+        // drains the body's pools of that name alone. Assumed (the retail
+        // server's health code is its own; the client has no runtime for
+        // ModifyHealth): no damage message and no stats. Damage only.
+        let pool = field(&node.fields, "m_7BE02F89");
+        if !pool.is_null() {
+            let name = match self.evaluate(id, node, pool, None) {
+                Some(Value::Asset(name)) if field(change, "m_93CDFD2F").as_i64() == Some(1) => name,
+                _ => {
+                    self.assume(site, &format!("{} m_7BE02F89", node.class), "no effect");
+                    return;
+                }
+            };
+            for &target in targets {
+                if target != site.entity
+                    || self.world.drain_named_pool(site, name, amount).is_none()
+                {
+                    self.assume(site, &format!("{} m_7BE02F89", node.class), "no effect");
+                }
+            }
+            return;
+        }
         // An entity, or the first of an array: an aura's graph takes its
         // instigator as a PlayScript parameter, an array (Biotic Grenade's
         // `0C72` and `0B99` st0 read `#40`, which `0C71` passes). Read as

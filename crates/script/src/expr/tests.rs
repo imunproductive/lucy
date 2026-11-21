@@ -331,10 +331,12 @@ fn entity_filter_with_a_condition_answers_only_rejections() {
 }
 
 /// `STU_783B4CF0` with `m_7BE02F89` an identifier of none (Zenyatta's
-/// `0176`) reads the pool kind as when it is unset; a named pool is not
-/// modelled.
+/// `0176`) or a named pool (Doomfist's `249D`, `0DDD` rid8) reads the pool
+/// kind as when it is unset: the client's component 51 slot 14
+/// (`0x7FF7894D0530`) sums the kind's pools without the name. The maximum's
+/// class (`STU_68883EAC`) refuses a named pool.
 #[test]
-fn pool_health_takes_an_identifier_of_none_as_no_pool() {
+fn pool_health_reads_a_named_pool_as_its_kind() {
     struct Pools;
     impl Context for Pools {
         fn owner(&mut self) -> Value {
@@ -352,18 +354,23 @@ fn pool_health_takes_an_identifier_of_none_as_no_pool() {
         }
     }
     let identifier = |guid: Json| json!({"$":"STUConfigVarIdentifier", "m_identifier":guid, "m_resourceKey":null, "m_EE729DCB":0});
-    let health = |pool: Json| {
-        json!({"$":"STU_783B4CF0", "m_entity":{"$":"STU_B5A0CAF0"},
+    let health = |class: &str, pool: Json| {
+        json!({"$":class, "m_entity":{"$":"STU_B5A0CAF0"},
             "m_7E8B666C":{"$":"STU_297E1A30", "m_7E8B666C":0}, "m_7BE02F89":pool})
     };
     let mut world = Pools;
+    for pool in [Json::Null, json!("0x0D8000000000249D")] {
+        assert_eq!(
+            evaluate(&health("STU_783B4CF0", identifier(pool)), &mut world),
+            Ok(Value::Float(50.0))
+        );
+    }
     assert_eq!(
-        evaluate(&health(identifier(Json::Null)), &mut world),
-        Ok(Value::Float(50.0))
-    );
-    assert_eq!(
-        evaluate(&health(identifier(json!("0x0D8000000000249D"))), &mut world),
-        Err(EvalError::UnsupportedConfig("STU_783B4CF0".into()))
+        evaluate(
+            &health("STU_68883EAC", identifier(json!("0x0D8000000000249D"))),
+            &mut world
+        ),
+        Err(EvalError::UnsupportedConfig("STU_68883EAC".into()))
     );
 }
 
