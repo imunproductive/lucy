@@ -1407,7 +1407,12 @@ fn owner_correction_respects_create_budget_and_failed_transport() {
         frame: Some(112),
         ..Movement::default()
     });
-    for i in 0..MAX_ENTITY_RECORDS {
+    // The owner's correction has its room before the queued records (the
+    // policy changed on purpose, DoomfistMoves12: it used to wait until
+    // every queued record fit, and a Workshop burst after a checkpoint's
+    // teleport held the teleport back for ~0.5 s): at the record cap it
+    // goes beside 126 records.
+    for i in 0..MAX_ENTITY_RECORDS - 1 {
         world.push(Record::baseline(EntityUpdate {
             entity: 0x8000_0100 + i as u32,
             operation: Some(Operation::Destroy),
@@ -1415,16 +1420,11 @@ fn owner_correction_respects_create_budget_and_failed_transport() {
         }));
     }
     let (crowded, sent) = transmit(&mut world, &mut egress, 107, 2);
-    assert_eq!(read_ack(&crowded), 102);
+    assert_eq!(read_ack(&crowded), 108);
     assert_eq!(sent.records.len(), MAX_ENTITY_RECORDS);
-    assert!(!sent.records.contains(&RecordSource::Movement(0)));
+    assert_eq!(sent.records.last(), Some(&RecordSource::Movement(0)));
     transport_outcome(&mut world, &mut egress, 2, true);
-    let rejected = world.send_frame(107, Vec::new(), false, &mut egress, |payload| {
-        assert_eq!(read_ack(&payload), 108);
-        Err(())
-    });
-    assert!(matches!(rejected, Err(SendError::Transport(()))));
-    assert_eq!(
+    let corrected = |world: &WorldDelivery| {
         world
             .body_script
             .as_ref()
@@ -1432,15 +1432,22 @@ fn owner_correction_respects_create_budget_and_failed_transport() {
             .corrections
             .as_ref()
             .unwrap()
-            .corrected(),
-        Some(100)
-    );
-    let (selected, sent) = transmit(&mut world, &mut egress, 107, 3);
-    assert_eq!(read_ack(&selected), 108);
+            .corrected()
+    };
+    assert_eq!(corrected(&world), Some(106));
+    // A send the transport refuses commits nothing.
+    let rejected = world.send_frame(112, Vec::new(), false, &mut egress, |payload| {
+        assert_eq!(read_ack(&payload), 114);
+        Err(())
+    });
+    assert!(matches!(rejected, Err(SendError::Transport(()))));
+    assert_eq!(corrected(&world), Some(106));
+    let (selected, sent) = transmit(&mut world, &mut egress, 112, 3);
+    assert_eq!(read_ack(&selected), 114);
     assert_eq!(sent.records, [RecordSource::Movement(0)]);
     assert!(egress.acknowledge(4, 0).packets.is_empty());
     assert!(
-        transmit(&mut world, &mut egress, 107, 4)
+        transmit(&mut world, &mut egress, 112, 4)
             .1
             .records
             .is_empty()

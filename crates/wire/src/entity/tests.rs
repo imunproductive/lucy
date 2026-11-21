@@ -507,8 +507,13 @@ fn budget_reuses_trimmed_space_and_only_displaces_remote_movement() {
     assert!(result.payload.len() <= MAX_PAYLOAD);
 }
 
+/// At the record cap the owner's correction takes the last slot: the queued
+/// records keep their order and the 127th waits a packet. (The policy
+/// changed on purpose, DoomfistMoves12: the correction used to go only once
+/// every queued record fit, and a Workshop burst after a checkpoint's
+/// teleport held the teleport back for ~0.5 s.)
 #[test]
-fn record_cap_keeps_fifo_and_allows_a_valid_owner_replacement() {
+fn record_cap_keeps_fifo_and_reserves_the_owner_correction() {
     let queued: Vec<_> = (1..=127)
         .map(|id| EntityUpdate {
             entity: 0x8000_0000 | id,
@@ -549,21 +554,115 @@ fn record_cap_keeps_fifo_and_allows_a_valid_owner_replacement() {
         .unwrap();
         assert_eq!(result.entities.len(), MAX_ENTITY_RECORDS);
         assert!(
-            result.entities[..count]
+            result.entities[..126]
                 .iter()
                 .zip(&queued)
                 .all(|(&selected, original)| std::ptr::eq(selected, original))
         );
-        let has_owner = count == 126;
-        assert_eq!(
-            result.entities[126].entity,
-            if has_owner { 0xa000_0100 } else { 0x8000_007f }
-        );
+        assert_eq!(result.entities[126].entity, 0xa000_0100);
         let mut reader = BitReader::new(&result.payload);
         assert_eq!(reader.var_a().unwrap(), 5000);
         assert!(!reader.bit().unwrap()); // Empty message channel.
-        assert_eq!(reader.var_a().unwrap(), u32::from(has_owner));
+        assert_eq!(reader.var_a().unwrap(), 1);
     }
+}
+
+/// A burst of queued records larger than many packets drains in bounded
+/// ticks while the owner's correction goes in every packet: each packet
+/// carries the correction and the longest prefix of the rest that fits.
+#[test]
+fn a_queued_burst_drains_while_the_owner_correction_goes_every_packet() {
+    let mut chunk = BitWriter::new();
+    chunk.raw(&[0x5a; 300]);
+    let burst: Vec<_> = (1..=40)
+        .map(|id| EntityUpdate {
+            entity: 0x8000_0000 | id,
+            chunk: Some(chunk.clone()),
+            ..EntityUpdate::default()
+        })
+        .collect();
+    let movements = [EntityUpdate {
+        entity: 0xa000_0100,
+        movement: Some(moving()),
+        ..EntityUpdate::default()
+    }];
+    let mut left = &burst[..];
+    let mut ticks = 0;
+    while !left.is_empty() {
+        let result = select_frame(
+            FrameCandidates {
+                tick: 5000 + ticks,
+                clock: 0,
+                reliable: &[],
+                unreliable: &[],
+                queued: left,
+                movements: &movements,
+                owner_correction: true,
+                reliable_only: false,
+            },
+            |_| 0,
+        )
+        .unwrap();
+        let (last, records) = result.entities.split_last().unwrap();
+        assert!(std::ptr::eq(*last, &movements[0]), "tick {ticks}");
+        assert!(!records.is_empty(), "tick {ticks}: no queued record went");
+        assert!(
+            records
+                .iter()
+                .zip(left)
+                .all(|(&selected, original)| std::ptr::eq(selected, original))
+        );
+        assert!(result.payload.len() <= MAX_PAYLOAD);
+        left = &left[records.len()..];
+        ticks += 1;
+    }
+    // 40 records of ~300 bytes: at most four beside the correction in a
+    // packet, so ten packets or more, and never more than one a record.
+    assert!((10..=40).contains(&ticks), "{ticks}");
+}
+
+/// A queued record that fits only alone still goes: the correction then
+/// waits, so a burst can't starve behind it.
+#[test]
+fn a_record_that_fits_only_alone_goes_before_the_owner_correction() {
+    let record = |len: usize| {
+        let mut chunk = BitWriter::new();
+        chunk.raw(&vec![0x5a; len]);
+        EntityUpdate {
+            entity: 0x8000_0001,
+            chunk: Some(chunk),
+            ..EntityUpdate::default()
+        }
+    };
+    // The largest record that fits a datagram alone.
+    let alone = (0..MAX_PAYLOAD)
+        .rev()
+        .find(|&len| {
+            frame(5000, 0, 0, &[], &[], &[&record(len)])
+                .is_ok_and(|bytes| bytes.len() <= MAX_PAYLOAD)
+        })
+        .unwrap();
+    let queued = [record(alone)];
+    let movements = [EntityUpdate {
+        entity: 0xa000_0100,
+        movement: Some(moving()),
+        ..EntityUpdate::default()
+    }];
+    let result = select_frame(
+        FrameCandidates {
+            tick: 5000,
+            clock: 0,
+            reliable: &[],
+            unreliable: &[],
+            queued: &queued,
+            movements: &movements,
+            owner_correction: true,
+            reliable_only: false,
+        },
+        |_| 0,
+    )
+    .unwrap();
+    assert_eq!(result.entities, [&queued[0]]);
 }
 
 #[test]
