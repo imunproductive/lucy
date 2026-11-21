@@ -308,6 +308,12 @@ pub trait Context {
         None
     }
 
+    /// Where a body's model hardpoint (a `0DC` GUID) is in the world; None:
+    /// the world doesn't know it.
+    fn hardpoint(&mut self, _entity: u32, _hardpoint: u64) -> Option<[f64; 3]> {
+        None
+    }
+
     /// A body's yaw and pitch in turns of 65536 (the command's units; the
     /// pitch is positive looking down); None: unknown.
     fn entity_facing(&mut self, _entity: u32) -> Option<[i32; 2]> {
@@ -2339,6 +2345,32 @@ impl Evaluator<'_> {
                         Value::Vector(position)
                     }
                     _ => Value::Null,
+                }
+            }
+            // Where an entity's model hardpoint `m_hardPoint` is
+            // (`Eval_STU_FC99C77E` 0x7FF789BEBDE0), as the world places it
+            // (`World::hardpoint`); no entity gives null. Soldier: 76's
+            // Tactical Visor aims its rifle at its target's `0DC.0001`
+            // (`0254` st10's `m_E2FD6F04`). A world's own answer comes
+            // first.
+            "STU_FC99C77E" if native_fields(config, &["m_entity", "m_hardPoint"]) => {
+                if let Some(value) = context.native(config) {
+                    return Ok(value);
+                }
+                let unsupported = || EvalError::UnsupportedConfig(class.into());
+                let Value::Asset(hardpoint) =
+                    self.config(child(config, "m_hardPoint"), context, nested)?
+                else {
+                    return Err(unsupported());
+                };
+                let entity = self.config(child(config, "m_entity"), context, nested)?;
+                match to_entity(&entity).filter(|&entity| valid_entity(entity)) {
+                    Some(entity) => Value::Vector(
+                        context
+                            .hardpoint(entity, hardpoint)
+                            .ok_or_else(unsupported)?,
+                    ),
+                    None => Value::Null,
                 }
             }
             // An entity's position (`Eval_STU_309B0570` 0x7FF789C028B0 →

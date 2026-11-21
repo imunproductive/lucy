@@ -164,11 +164,14 @@
 //!   class]). The fields that override the point or add hardpoint lists
 //!   (`m_48837057`, `m_294660A6`, `m_229DD034`, `m_BA6C9F75`,
 //!   `m_9E1426F6`, `m_E8474EE8`, `m_C1B724B2`) are among those a search
-//!   can't run with. The server has no hardpoints, so it casts rays 2,
-//!   0.6 up and 4: a body ray 2 sees is seen as the client sees it; any
-//!   other answer is an assumption naming the hardpoints, as is a seen
-//!   body of a search with a sweep, or a world with no map. The search's
-//!   own sight lines `m_47AB1887` (`in_sight`) take the place of the rays.
+//!   can't run with. The server casts rays 1 and 3 to a listed body's
+//!   model hardpoints when it knows them ([`TargetCandidate::hardpoints`],
+//!   `game_hitboxes_174.json`, since 2026-11-21), so it answers as the
+//!   client does. A body without them gets rays 2, 0.6 up and 4: a body
+//!   ray 2 sees is seen as the client sees it; any other answer is an
+//!   assumption naming the hardpoints, as is a seen body of a search with
+//!   a sweep, or a world with no map. The search's own sight lines
+//!   `m_47AB1887` (`in_sight`) take the place of the rays.
 //! - `m_1C2A9945`: when the searcher has a player (component 43 → 29; a
 //!   projectile through its shooter, component 50), bodies are tested
 //!   where that player saw them, rewound (`0x7FF789CBB340`,
@@ -272,6 +275,9 @@ const SIGHT_PROFILE: u64 = 0x0690_0000_0000_002D;
 const SIGHT_LOW: f64 = 0.3;
 const SIGHT_HIGH: f64 = 0.6;
 const SIGHT_SIDE: f64 = 0.45;
+/// The model hardpoints rays 1 and 3 aim at.
+const SIGHT_CHEST: u64 = 0x0DC0_0000_0000_0001;
+const SIGHT_UPPER: u64 = 0x0DC0_0000_0000_01CD;
 
 /// `m_1C2A9945`: the bodies where the searcher's player saw them.
 const REWIND: &str = "m_1C2A9945";
@@ -390,9 +396,10 @@ pub(super) struct Sight {
 
 /// What a line of sight says of one body.
 enum Sighting {
-    /// Ray 2 sees it: the client sees it too.
-    Seen,
-    /// Another ray sees it, or none does; the client's hardpoint rays could
+    /// The client's rays answer it: seen or not, as the client sees it.
+    Known(bool),
+    /// A body whose hardpoints the server doesn't know: another ray than
+    /// ray 2 sees it, or none does; the client's hardpoint rays could
     /// answer otherwise.
     Guessed(bool),
 }
@@ -402,12 +409,24 @@ impl Sight {
     fn sees(&self, map: &dyn MapRays, body: &TargetCandidate) -> Option<Sighting> {
         let [x, y, z] = body.feet;
         let up = |share: f64| [x, y + body.height * share, z];
+        let hardpoint = |id| body.hardpoint_at(id, body.feet, body.yaw);
+        let known = body.hardpoints.is_some();
+        if let Some(chest) = hardpoint(SIGHT_CHEST).filter(|_| !body.dead)
+            && self.clear(map, chest)?
+        {
+            return Some(Sighting::Known(true));
+        }
         let low = up(SIGHT_LOW);
         if self.clear(map, low)? {
-            return Some(Sighting::Seen);
+            return Some(Sighting::Known(true));
         }
-        if self.clear(map, up(SIGHT_HIGH))? {
-            return Some(Sighting::Guessed(true));
+        let upper = hardpoint(SIGHT_UPPER);
+        if self.clear(map, upper.unwrap_or_else(|| up(SIGHT_HIGH)))? {
+            return Some(if known {
+                Sighting::Known(true)
+            } else {
+                Sighting::Guessed(true)
+            });
         }
         if self.sides {
             // Up × the ray to point 2, of unit length; along x without one.
@@ -423,10 +442,18 @@ impl Sight {
             if self.clear(map, along(middle, side, half))?
                 || self.clear(map, along(middle, side, -half))?
             {
-                return Some(Sighting::Guessed(true));
+                return Some(if known {
+                    Sighting::Known(true)
+                } else {
+                    Sighting::Guessed(true)
+                });
             }
         }
-        Some(Sighting::Guessed(false))
+        Some(if known {
+            Sighting::Known(false)
+        } else {
+            Sighting::Guessed(false)
+        })
     }
 
     /// The point of `body` its first clear ray reaches, rays 2 and 3 in
@@ -939,7 +966,7 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
                     assumed.push((SIGHT, "no line-of-sight test"));
                     true
                 }
-                Some(Sighting::Seen) => true,
+                Some(Sighting::Known(visible)) => visible,
                 Some(Sighting::Guessed(visible)) => {
                     assumed.push((
                         "m_95FFC3C5 hardpoints",

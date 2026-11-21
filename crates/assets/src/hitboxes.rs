@@ -119,12 +119,27 @@
 //! one, Winston two, untested); the heroes stay at rest (players are hit by
 //! the capsule, and the file keeps their shapes for later).
 //!
+//! **Hardpoints.** A model's STUModel lists its hardpoints in `m_C45F5F6F`:
+//! `STU_BE9DDFDF` {`m_EDF0511C` id, a `0DC` GUID; `m_FF592924` the bone it
+//! hangs on, an `088` GUID whose low half is the skeleton's bone id;
+//! `m_7DC1550F` its translation and `m_AF9D3A0C` its rotation in that
+//! bone's frame} (the props module reads the same records as nodes). The
+//! graphs ask for a body's hardpoint with `STU_FC99C77E` (Soldier: 76's
+//! Tactical Visor aims its rifle at `0DC.0001` of its target, `0254` st10's
+//! `m_E2FD6F04`). The Training Bot's model lists 23, `0001` at the origin
+//! of bone `0x3` (1.32 m up, posed); every body has a `0001` at its chest
+//! (Tracer 1.30 m, Soldier: 76 1.52 m, Reinhardt 1.75 m). A model without
+//! a list of its own takes the one of the model it names. Each is placed
+//! by its bone in the pose the shapes have (the bots' idle pose, the
+//! heroes' rest).
+//!
 //! The file: `{body: {"name", "model" (the model whose list was read),
 //! "pose" (the idle clip, bots only), "shapes": [{"kind": "sphere",
 //! "centre", "radius", "critical"} | {"kind": "capsule", "a", "b",
-//! "radius", "critical"}]}}`, sorted by body, the shapes in list order, the
-//! numbers as `f32`. A body without a model, skeleton or parts has no
-//! shapes.
+//! "radius", "critical"}], "hardpoints": {GUID: point}}}`, sorted by body,
+//! the shapes in list order, the numbers as `f32`. A body without a model,
+//! skeleton or parts has no shapes; one whose bones hold no hardpoints has
+//! none.
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -166,6 +181,12 @@ const CENTRE: u32 = 0xA8D1_2F28;
 const POINT_A: u32 = 0x10EF_DE90;
 const POINT_B: u32 = 0xC320_C90B;
 const RADIUS: u32 = 0xED61_D926;
+/// STUModel's hardpoints and their fields (see the module notes).
+const HARDPOINTS: u32 = 0xC45F_5F6F;
+const HARDPOINT: u32 = 0xBE9D_DFDF;
+const NODE_ID: u32 = 0xEDF0_511C;
+const NODE_PARENT: u32 = 0xFF59_2924;
+const NODE_TRANSLATION: u32 = 0x7DC1_550F;
 /// Byte 92 of the skeleton header: the bone count.
 const BONE_COUNT: usize = 92;
 /// The header's offsets (i64 each): the hierarchy, the 4×3 matrices and
@@ -406,21 +427,78 @@ fn parts(stu: &Asset) -> Result<Vec<Part>, String> {
     Ok(parts)
 }
 
-/// The model's hit parts and skeleton: the parts of the model it names, if
-/// it names one, else its own (see the module notes); `None` without an
+/// A hardpoint: its id (a `0DC` GUID), the skeleton bone id it hangs on
+/// and its point in that bone's frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Hardpoint {
+    id: u64,
+    bone: u32,
+    translation: [f32; 3],
+}
+
+/// The model's hardpoints (see the module notes), in list order.
+fn hardpoints(stu: &Asset) -> Vec<Hardpoint> {
+    let Some(Value::Array(list)) = stu.root().and_then(|root| field(root, HARDPOINTS)) else {
+        return Vec::new();
+    };
+    list.iter()
+        .filter_map(|item| stu.resolve(item))
+        .filter(|node| node.class == HARDPOINT)
+        .filter_map(|node| {
+            let (Some(Value::UInt(id)), Some(Value::UInt(parent))) =
+                (field(node, NODE_ID), field(node, NODE_PARENT))
+            else {
+                return None;
+            };
+            Some(Hardpoint {
+                id: *id,
+                bone: *parent as u32,
+                translation: floats(node, NODE_TRANSLATION).unwrap_or_default(),
+            })
+        })
+        .collect()
+}
+
+/// What a body's model gives its hit shapes and hardpoints.
+struct HitModel {
+    /// The model whose parts were read.
+    source: u64,
+    parts: Vec<Part>,
+    hardpoints: Vec<Hardpoint>,
+    skeleton: Skeleton,
+}
+
+/// The model's hit parts, hardpoints and skeleton: the parts of the model
+/// it names, if it names one, else its own; its own hardpoints, else those
+/// of the model it names (see the module notes); `None` without an
 /// STUModel or a skeleton.
-fn hit_model(install: &Install, model: u64) -> Result<Option<(u64, Vec<Part>, Skeleton)>, String> {
+fn hit_model(install: &Install, model: u64) -> Result<Option<HitModel>, String> {
     let data = install.raw(model).map_err(|error| error.to_string())?;
     let (Some(stu), Some(skeleton)) = (model_stu(&data)?, Skeleton::read(&data)?) else {
         return Ok(None);
     };
+    let own = hardpoints(&stu);
     let linked = stu.root().map_or(0, |root| reference(root, LINKED));
     if linked == 0 {
-        return Ok(Some((model, parts(&stu)?, skeleton)));
+        return Ok(Some(HitModel {
+            source: model,
+            parts: parts(&stu)?,
+            hardpoints: own,
+            skeleton,
+        }));
     }
     let named = install.raw(linked).map_err(|error| error.to_string())?;
     let named = model_stu(&named)?.ok_or("the named model has no STUModel")?;
-    Ok(Some((linked, parts(&named)?, skeleton)))
+    Ok(Some(HitModel {
+        source: linked,
+        parts: parts(&named)?,
+        hardpoints: if own.is_empty() {
+            hardpoints(&named)
+        } else {
+            own
+        },
+        skeleton,
+    }))
 }
 
 /// The body's damage zones and each one's multiplier (see the module
@@ -583,10 +661,17 @@ pub(crate) fn derive(install: &Install, out: &Path) -> Result<Vec<Output>> {
             record.get("name").cloned().unwrap_or_default(),
         );
         let mut listed = Vec::new();
+        let mut placed = Map::new();
         if let Some((model, _)) = model_components(&asset).into_iter().find(|(_, c)| !c) {
             let failed =
                 |reason: String| asset_error(format!("{key} model {}: {reason}", guid_hex(model)));
-            if let Some((source, parts, skeleton)) = hit_model(install, model).map_err(failed)? {
+            if let Some(HitModel {
+                source,
+                parts,
+                hardpoints,
+                skeleton,
+            }) = hit_model(install, model).map_err(failed)?
+            {
                 entry.insert("model".into(), json!(guid_hex(source)));
                 let set = blend_tree_set(&asset, model);
                 let pose = if bots.contains(key) && set != 0 {
@@ -603,6 +688,15 @@ pub(crate) fn derive(install: &Install, out: &Path) -> Result<Vec<Output>> {
                 };
                 let zones = zones(install, &asset)?;
                 listed = shapes(&parts, &skeleton, &places, &zones).map_err(failed)?;
+                // A hardpoint on a bone the skeleton lacks has no place.
+                for hardpoint in hardpoints {
+                    if let Some(index) = skeleton.bone(hardpoint.bone) {
+                        placed.insert(
+                            guid_hex(hardpoint.id),
+                            point(place(&places[index], hardpoint.translation)),
+                        );
+                    }
+                }
                 if bots.contains(key) && set != 0 {
                     let rig = format!("{}/{}", guid_hex(model), guid_hex(set));
                     if !rigs.contains_key(&rig) {
@@ -623,6 +717,7 @@ pub(crate) fn derive(install: &Install, out: &Path) -> Result<Vec<Output>> {
             }
         }
         entry.insert("shapes".into(), json!(listed));
+        entry.insert("hardpoints".into(), serde_json::Value::Object(placed));
         table.insert(key.to_owned(), serde_json::Value::Object(entry));
     }
     let table: Map<String, serde_json::Value> = table.into_iter().collect();

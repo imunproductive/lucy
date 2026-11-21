@@ -1126,6 +1126,7 @@ mod tests {
             radius: 0.4,
             yaw: 0.0,
             health: None,
+            hardpoints: None,
             spawned: Vec::new(),
             tags: None,
         }

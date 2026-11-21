@@ -60,7 +60,7 @@ use orpheus_script::{
     vm::{
         ASSIST_DEFENSIVE, ASSIST_OFFENSIVE, AssistLink, AuraChange, BodyEffects, CombatMod,
         DAMAGE_DEALT, DAMAGE_TAKEN, GameMessage, HEALING_DEALT, HEALING_TAKEN, HEALTH_PACK,
-        HealthChange, SeenBody, ShotEvent, TargetCandidate, TrackedStat, combat_scale,
+        Hardpoints, HealthChange, SeenBody, ShotEvent, TargetCandidate, TrackedStat, combat_scale,
     },
     weapons::{AllyHits, DamageTags, HitDefinition, ProjectileBallistics},
     wire::{Value, Variables},
@@ -578,6 +578,9 @@ pub struct PlayerTarget {
     /// Its body definition's target tags, if the data gives them
     /// ([`PreparedScene::body_tags`]).
     pub tags: Option<Arc<BTreeSet<u64>>>,
+    /// Its body definition's model hardpoints, if the data gives them
+    /// ([`PreparedScene::body_hardpoints`]).
+    pub hardpoints: Option<Arc<Hardpoints>>,
     /// An AI hero's AI entity, which possesses the body; none for a
     /// human's.
     pub ai: Option<AiControl>,
@@ -797,6 +800,7 @@ impl Combat {
                 tags,
                 health,
                 spawned: Vec::new(),
+                hardpoints: None,
             };
         self.players
             .iter()
@@ -808,6 +812,7 @@ impl Combat {
                     player: Some(player),
                     ai_control: target.ai,
                     spawned: self.spawned.owned_by(target.body),
+                    hardpoints: target.hardpoints.clone(),
                     ..candidate(
                         target.body,
                         target.team,
@@ -824,16 +829,19 @@ impl Combat {
                 let controller = bot_controller_entity(slot).ok();
                 let pose = scene.bot_target(bot);
                 let vitals = self.targets.get(slot).map(|target| &target.vitals);
-                candidate(
-                    bot.entity,
-                    bot.spawn.team,
-                    bot.dead,
-                    controller,
-                    true,
-                    &pose,
-                    scene.body_tags(bot.spawn.body),
-                    vitals.map(|vitals| [vitals.total(), vitals.maximum()]),
-                )
+                TargetCandidate {
+                    hardpoints: scene.body_hardpoints(bot.spawn.body),
+                    ..candidate(
+                        bot.entity,
+                        bot.spawn.team,
+                        bot.dead,
+                        controller,
+                        true,
+                        &pose,
+                        scene.body_tags(bot.spawn.body),
+                        vitals.map(|vitals| [vitals.total(), vitals.maximum()]),
+                    )
+                }
             }))
             .collect()
     }
