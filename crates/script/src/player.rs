@@ -687,11 +687,12 @@ impl World for PlayerWorld {
         entity: u32,
         direction: [f64; 3],
         distance: f64,
+        form: orpheus_physics::mover::trial::TrialForm,
     ) -> Option<f64> {
         if !self.is_player_site(site) || entity != self.entity {
             return None;
         }
-        self.trial.as_ref()?.turn(direction, distance).ok()
+        self.trial.as_ref()?.cosine(direction, distance, form).ok()
     }
 
     /// The search in the body's own world, meeting the map's categories of

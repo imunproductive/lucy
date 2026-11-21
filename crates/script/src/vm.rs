@@ -796,8 +796,8 @@ pub trait World {
     }
 
     /// How far the walls turn a move of `entity`'s body along the flat
-    /// unit `direction` for `distance`, as the cosine of the angle (1: free,
-    /// 0: stopped) a wall check's trial move finds (`STU_FBFF5DE7`,
+    /// unit `direction` for `distance`, as the cosine (1: free, 0: stopped)
+    /// a wall check's trial in `form` finds (`STU_FBFF5DE7`,
     /// [`orpheus_physics::mover::trial`]). None: unknown here.
     fn trial_turn(
         &mut self,
@@ -805,6 +805,7 @@ pub trait World {
         _entity: u32,
         _direction: [f64; 3],
         _distance: f64,
+        _form: orpheus_physics::mover::trial::TrialForm,
     ) -> Option<f64> {
         None
     }

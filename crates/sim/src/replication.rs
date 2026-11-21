@@ -49,7 +49,7 @@ use crate::{
 };
 use orpheus_content::{
     hero_settings::{HeroSetting, HeroSettings, SENT_SETTINGS, SettingDefault, script_settings},
-    heroes::{ANA, Hero, SOLDIER, WIDOWMAKER},
+    heroes::{ANA, DOOMFIST, Hero, SOLDIER, WIDOWMAKER},
     parameters::{ClientGameMessage, HeroSelectRequest, OPEN_OR_CLOSE, PICK_HERO, ParameterValue},
 };
 use orpheus_core::tick::{MAX_LEASE_FRAME, TICK_PERIOD};
@@ -65,7 +65,7 @@ use orpheus_script::controller::{
 };
 use orpheus_script::{
     ai_definitions::AiControl,
-    graph::{GraphStore, Node},
+    graph::GraphStore,
     mode::EVERY_ENTITY,
     placed::{DummyChange, NextDummy},
     snapshot::{ProjectedSnapshot, ProjectionCache, SnapshotEncoder, View},
@@ -178,11 +178,19 @@ fn clock_flags(depth: usize) -> u8 {
 /// one pull: checkpoint at the feet, lateral count 0) while the server's
 /// run kept its own, so her client drifted from the server's body (0.12 to
 /// 0.5 m) and was pulled back. A ledge pull whose navigation path her
-/// client finds (`STU_1F5ED928`) would still pull her back. The other
-/// heroes stay out until the server runs all of their movement
-/// (`docs/notes/behavior.md`, "Owner corrections"); they get their body's
-/// records only in windows ([`server_shows_owner_movement`]).
-const CORRECTED_HEROES: [u64; 3] = [SOLDIER, ANA, WIDOWMAKER];
+/// client finds (`STU_1F5ED928`) would still pull her back. Doomfist is
+/// corrected since 2026-11-21 (DoomfistMoves15, refs report Doomfist.md
+/// §23): his abilities' movement matched his client's frame for frame, but
+/// without corrections whatever moved his client off the server's body
+/// stayed (a client stall, a slam leap his client applied twice after a
+/// rollback, a corner contact turning a few millimetres into a metre);
+/// Practice Range runs ended 0.7-1.5 m off uncorrected and at 0.000 m
+/// corrected. His Rocket Punch's dash is server-only (`0D06` st42), so his
+/// client follows it from these records. The other heroes stay out until
+/// the server runs all of their movement (`docs/notes/behavior.md`, "Owner
+/// corrections"); they get their body's records only in windows
+/// ([`server_shows_owner_movement`]).
+const CORRECTED_HEROES: [u64; 4] = [SOLDIER, ANA, WIDOWMAKER, DOOMFIST];
 
 /// How long an uncorrected hero's owner still gets his body's records after
 /// the movement that needed them (upstream `SERVER_MOTION_TAIL_US`,
@@ -192,28 +200,16 @@ const RECORD_TAIL_MS: u32 = 250;
 
 /// Whether a body's statescript moves it now in a way only the server's
 /// records show its owner, so he gets them although his hero isn't
-/// corrected (refs report Doomfist.md):
-///
-/// - a server-only MovementMod is on (Rocket Punch's dash, `0D06` st42,
-///   st44, st74, the only ones in 1.74): his client runs no server-only
-///   state, so it doesn't predict the move;
-/// - a `STU_4773DA56` registration is on (`0D06` st67 in the dash,
-///   Reinhardt's `007D` st2 and `0083` st9, `01C9` st8, `0CCE` st1): his
-///   client then draws his first-person view from the movement states it
-///   keeps of his body, which only the records bring up to date
-///   (upstream 266b28fd, checked with the original client; without
-///   records the view sat where the create left it);
-/// - an ability runs whose graph has a server-only MovementMod (Rocket
-///   Punch's charge; an ability state is on as long as the hero has it, so
-///   it counts once its button started it): his client begins the dash's
-///   registration itself, at its own release, before the server's frame,
-///   so the kept states must be current by then. Reinhardt's Charge
-///   (`007D`) needs no lead: its registration st2 is on through the whole
-///   charge (#435, st18 under the charge's MovementMod st36).
+/// corrected: a `STU_4773DA56` registration is on (Reinhardt's `007D` st2
+/// and `0083` st9, `01C9` st8, `0CCE` st1; Rocket Punch's `0D06` st67, now
+/// corrected): his client then draws his first-person view from the
+/// movement states it keeps of his body, which only the records bring up
+/// to date (upstream 266b28fd, checked with the original client; without
+/// records the view sat where the create left it). Reinhardt's Charge
+/// (`007D`) needs no lead: its registration st2 is on through the whole
+/// charge (#435, st18 under the charge's MovementMod st36).
 pub(crate) fn server_shows_owner_movement(snapshot: &Snapshot, graphs: &GraphStore) -> bool {
     const REGISTRATION: &str = "STU_4773DA56";
-    const MOVEMENT_MOD: &str = "STU_316CFEF2";
-    let server_moves = |node: &Node| node.server_only && node.class == MOVEMENT_MOD;
     snapshot.instances.values().any(|instance| {
         let Some(graph) = graphs.graph(instance.graph) else {
             return false;
@@ -222,12 +218,10 @@ pub(crate) fn server_shows_owner_movement(snapshot: &Snapshot, graphs: &GraphSto
             .states
             .iter()
             .filter(|(_, state)| state.active)
-            .any(|(&raw, state)| {
-                graph.state(usize::from(raw)).is_some_and(|node| {
-                    node.class == REGISTRATION
-                        || server_moves(node)
-                        || (state.kind.runs_ability() && graph.nodes.iter().any(server_moves))
-                })
+            .any(|(&raw, _)| {
+                graph
+                    .state(usize::from(raw))
+                    .is_some_and(|node| node.class == REGISTRATION)
             })
     })
 }
