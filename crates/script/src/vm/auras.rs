@@ -46,7 +46,7 @@
 //! registration of its own (the client runs the base state, codec none)
 //! and no client reader of the aura's fields (`tools/who_reads.py
 //! STU_76F2C784 m_5A4051BC`, `m_14AA219A`). So its rule is the server's
-//! own; modelled here, as an assumption, after the data: while the state
+//! own (not an assumption, as `STU_81A9AB10`'s), modelled after the data: while the state
 //! runs, each body its `m_targets` (an entity or an array, mostly a
 //! TrackTargets' output) lists gets the aura `m_A76A8CF6` (`STU_0E766B33`)
 //! once, dealt by `m_3273B2AB` (the owner in its two uses; unset: the

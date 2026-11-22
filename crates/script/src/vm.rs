@@ -26,6 +26,7 @@ mod nodes;
 mod pickups;
 mod play;
 mod rays;
+mod residency;
 mod scopes;
 mod shockwave;
 mod state_kinds;
@@ -76,7 +77,7 @@ use crate::{
     wire::{Value, Variables},
 };
 use orpheus_physics::mover::{
-    Behaviour, MoveTo, PathWalk, Speed,
+    Behaviour, MoveTo, PathWalk, Rise, Speed,
     modifiers::{
         MOVE_HEADING, Modifier, ModifierKey, Operation, VectorOperation, VelocityElement, heading,
     },
@@ -883,6 +884,14 @@ pub trait World {
         None
     }
 
+    /// Whether a ray from `start` down to `end`, stopped by the map, enters
+    /// a zone that kills (the kill height, a lethal damage area:
+    /// [`orpheus_physics::mover::rise::fatal_drop`], `STU_88687E54`). None:
+    /// unknown here.
+    fn fatal_drop(&self, _site: Site, _start: [f64; 3], _end: [f64; 3]) -> Option<bool> {
+        None
+    }
+
     /// Whether the match's map lists game mode `mode` among its supported
     /// modes (`STU_02514B6A.m_supportedGamemodes`, `STU_16753B11`). None:
     /// unknown here.
@@ -1052,6 +1061,19 @@ pub trait World {
     /// world delivers no ends, and the receiver stays as it is.
     fn end_message(&mut self, _source: Site, _target: u32, _message: u64) -> bool {
         false
+    }
+
+    /// A persistent sender's parameters changed while `target` holds its
+    /// message: the target's receiving states that hold it take the new
+    /// values into their outputs ([`Component::update_message`]). A world
+    /// that routes none leaves the receiver with the values it took.
+    fn update_message(
+        &mut self,
+        _source: Site,
+        _target: u32,
+        _message: u64,
+        _parameters: &Variables,
+    ) {
     }
 
     /// A `STUStatescriptActionCriteria` raised a criteria on an entity
@@ -1485,6 +1507,9 @@ pub enum StateKind {
     /// A wall check (`STU_FBFF5DE7`, `vm/walls.rs`): a trial move of the
     /// body each tick, its output true when a wall turns it.
     WallCheck,
+    /// Area residency (`STU_96F571ED`, `vm/residency.rs`): its output says
+    /// each update whether a body stands in an entity's area.
+    AreaResidency,
     /// A placement selector's landing search (`STU_4C96470A`,
     /// `vm/landing.rs`): it searches each tick while its gate holds.
     Landing,
@@ -1560,6 +1585,10 @@ pub enum StateKind {
     /// block is in [`Component::move_requests`] while it runs, and each
     /// tick it writes the mover's rate to its output.
     Turn,
+    /// Meteor Strike's flight (`STU_6154B909`, kind 13, `vm/state_kinds.rs`
+    /// `rise_block`): its block, evaluated again each frame, is in
+    /// [`Component::move_requests`] while it runs.
+    Rise,
     /// An AI movement state (`STU_ECAEE401`): the point its move goal names
     /// for the server's walker, in [`Component::ai_move_requests`].
     AiMove,
@@ -2627,6 +2656,61 @@ impl Component {
         })
     }
 
+    /// The ends of the persistent sends its running SendGameMessage states
+    /// hold to other entities: what goes with a body whose script stops
+    /// (its `0F00`'s `08AE` to the capture point it stood on), as the
+    /// client's message manager drops a destroyed sender's messages.
+    pub fn held_sends(&self) -> Vec<MessageEnd> {
+        let sender = self.machine.snapshot.entity;
+        let mut ends = Vec::new();
+        for instance in self.machine.snapshot.instances.values() {
+            let Some(graph) = self.graphs.graph(instance.graph) else {
+                continue;
+            };
+            for (&raw, state) in &instance.states {
+                if !state.active || state.kind != StateKind::SendMessage {
+                    continue;
+                }
+                let Some(message) = graph.state(usize::from(raw)).and_then(message_of) else {
+                    continue;
+                };
+                ends.extend(
+                    state
+                        .tracked
+                        .iter()
+                        .filter(|held| {
+                            held.entity != sender && held.entity != crate::mode::EVERY_ENTITY
+                        })
+                        .map(|held| MessageEnd {
+                            sender,
+                            target: held.entity,
+                            message,
+                        }),
+                );
+            }
+        }
+        ends
+    }
+
+    /// A persistent sender (`sender`) that this entity's receiving states
+    /// hold changed its parameters ([`World::update_message`]): they take
+    /// the new values into their outputs, and what reads them runs; their
+    /// subgraphs don't begin again (the client's receiver refreshes its
+    /// parameter cache, `D4CB70`, refs/orpheus-upstream
+    /// `docs/MESSAGE_RECEIVER.txt`).
+    pub fn update_message(
+        &mut self,
+        sender: u32,
+        message: u64,
+        parameters: Variables,
+        world: &mut impl World,
+    ) -> Result<(), InitFault> {
+        self.run(world, |vm| {
+            vm.refresh_received(sender, message, Arc::new(parameters))?;
+            vm.run()
+        })
+    }
+
     /// A new root instance of `graph` with the next free id and its own
     /// `variables` (a spawner's overrides). Its entries queue at the current
     /// clock and run at the next update (`Component.create` in
@@ -3044,6 +3128,7 @@ enum Event {
     Rescope(u16),
     Message {
         position: u16,
+        message: u64,
         /// The sending entity; 0 when unknown.
         sender: u32,
         parameters: Arc<Variables>,
@@ -3111,6 +3196,10 @@ struct Machine {
     command_buttons: u32,
     held_buttons: Vec<u8>,
     owner_dead: bool,
+    /// The button edge whose listening states re-check their transitions
+    /// now (the client's host `+1083`/`+1084` while it dispatches a button
+    /// event to them; `vm/buttons.rs` `recheck_button_conditions`).
+    current_edge: Option<ButtonEdge>,
     /// Each instance's `Defer` states due in its deferred phase: priority and
     /// raw state, sorted by priority.
     deferred: BTreeMap<u16, Vec<(f64, u16)>>,
@@ -3137,6 +3226,13 @@ struct Machine {
     /// The Workshop action results reported, by instance, with the
     /// instance's start (`vm/workshop.rs`).
     outcomes: BTreeMap<u16, (u64, ActionOutcome)>,
+    /// The parameters each running targeted SendGameMessage state last
+    /// sent ([`Vm::refresh_send_state`]).
+    sent: BTreeMap<StateKey, Variables>,
+    /// The parameters each holder of a running collecting receiving state
+    /// (`m_39B47960` nonzero) sent, in the order the holders came in
+    /// ([`Vm::write_message_parameters`]).
+    collected: BTreeMap<StateKey, Vec<(u32, Arc<Variables>)>>,
 }
 
 struct Vm<'graph, 'world, 'machine, W: ?Sized> {
@@ -3389,10 +3485,11 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
                 }
                 Event::Message {
                     position,
+                    message,
                     sender,
                     parameters,
                 } => {
-                    self.deliver(id, position, sender, parameters)?;
+                    self.deliver(id, position, message, sender, parameters)?;
                 }
             }
         }
@@ -3463,12 +3560,16 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
         &mut self,
         id: u16,
         position: u16,
+        message: u64,
         sender: u32,
         parameters: Arc<Variables>,
     ) -> Result<(), InitFault> {
         let Some(node) = self.graph(id).node(position) else {
             return Ok(());
         };
+        if node.message().is_none() && !self.computed_message_is(id, node, message) {
+            return Ok(());
+        }
         self.parameters = Some(parameters);
         self.sender = expr::valid_entity(sender).then_some(sender);
         let result = self.deliver_entry(id, node, sender);
@@ -3477,20 +3578,21 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
         result
     }
 
+    /// Whether a receiving state whose `m_gameMessage` is an expression
+    /// names `message` now (`0F4A` st53 takes `07A1` or `07A2` by the
+    /// attacking team #10795e).
+    fn computed_message_is(&mut self, id: u16, node: &Node, message: u64) -> bool {
+        let config = field(&node.fields, "m_gameMessage");
+        self.evaluate(id, node, config, None)
+            .is_some_and(|value| value == Value::Asset(message))
+    }
+
     /// Parameter `id` of the message being delivered: `0009` is its
     /// sender, whatever the message carries (the dispatch's parameter
     /// source `sub_7FF78AAA32F0` answers it from the message's `+152`
     /// before its own parameters), the others the message's.
     fn message_parameter(&self, id: u32) -> Value {
-        match self.sender {
-            Some(sender) if id == MESSAGE_SENDER => Value::Entity(sender),
-            _ => self
-                .parameters
-                .as_deref()
-                .and_then(|parameters| parameters.get(&id))
-                .cloned()
-                .unwrap_or(Value::Null),
-        }
+        held_parameter(self.sender, self.parameters.as_deref(), id)
     }
 
     /// Whether a message entry's filter (`m_filter`) lets the message in.
@@ -3566,6 +3668,14 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
                     since_ms,
                 });
             }
+            if collects(node) {
+                let parameters = self.parameters.clone().unwrap_or_default();
+                let rows = self.machine.collected.entry(key).or_default();
+                match rows.iter_mut().find(|(holder, _)| *holder == sender) {
+                    Some(row) => row.1 = parameters,
+                    None => rows.push((sender, parameters)),
+                }
+            }
             ("m_452862E6", Some(key))
         } else {
             if !self.message_filter_admits(id, node) {
@@ -3573,22 +3683,10 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
             }
             ("m_outPlug", None)
         };
-        let site = self.site(id, node);
-        for field in array_field(&node.fields, "m_params") {
-            if !field.is_object() {
-                continue;
-            }
-            let target = match expr::lvalue(field.get("m_out_Var").unwrap_or(&Json::Null)) {
-                Ok(Some(target)) => source_key(id, target),
-                Ok(None) => continue,
-                Err(error) => {
-                    self.report(site, Issue::Expression(error));
-                    return Ok(());
-                }
-            };
-            let value = self.message_parameter(parameter_id(field));
-            self.write(target, value)?;
+        if !self.write_message_parameters(id, node, path.1)? {
+            return Ok(());
         }
+        let site = self.site(id, node);
         if expr::valid_entity(sender) {
             match expr::lvalue(field(&node.fields, "m_B60ABDA4")) {
                 Ok(Some(target)) => self.write(source_key(id, target), Value::Entity(sender))?,
@@ -3601,6 +3699,54 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
         }
         self.follow(id, node, path.0, path.1, 0)?;
         Ok(())
+    }
+
+    /// The message being delivered's parameters into the entry's outputs
+    /// (`m_params` rows with `m_out_Var`); false when one can't be written
+    /// (reported). A collecting receiving state (`m_39B47960` nonzero,
+    /// `key`) outputs each holder's value instead, in the order they came
+    /// in: the client's receiver returns its cached array in a nonzero
+    /// collection mode (`D4B800`, refs/orpheus-upstream
+    /// `docs/MESSAGE_RECEIVER.txt`). `0E8E` st49/st50 so list the bodies on
+    /// a capture point by team, each body's `0F00` holding `08AE`/`08AF`
+    /// with itself, and count them.
+    fn write_message_parameters(
+        &mut self,
+        id: u16,
+        node: &Node,
+        key: Option<StateKey>,
+    ) -> Result<bool, InitFault> {
+        let site = self.site(id, node);
+        let collected = key
+            .and_then(|key| self.machine.collected.get(&key))
+            .cloned();
+        for field in array_field(&node.fields, "m_params") {
+            if !field.is_object() {
+                continue;
+            }
+            let target = match expr::lvalue(field.get("m_out_Var").unwrap_or(&Json::Null)) {
+                Ok(Some(target)) => source_key(id, target),
+                Ok(None) => continue,
+                Err(error) => {
+                    self.report(site, Issue::Expression(error));
+                    return Ok(false);
+                }
+            };
+            let parameter = parameter_id(field);
+            let value = match &collected {
+                Some(rows) => Value::Array(
+                    rows.iter()
+                        .map(|(holder, parameters)| {
+                            let holder = expr::valid_entity(*holder).then_some(*holder);
+                            held_parameter(holder, Some(parameters), parameter)
+                        })
+                        .collect(),
+                ),
+                None => self.message_parameter(parameter),
+            };
+            self.write(target, value)?;
+        }
+        Ok(true)
     }
 
     /// A SendGameMessage action: the message goes once to the recipients
@@ -3660,13 +3806,25 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
                 .map(|&entity| TrackedTarget { entity, since_ms })
                 .collect();
         }
+        if !recipients.entities.is_empty()
+            && let Some(parameters) = self.send_parameters(key.instance, node)?
+        {
+            self.machine.sent.insert(key, parameters);
+        }
         self.register_tick(key, since_ms);
         Ok(())
     }
 
     /// A running sender's tick ([`Self::begin_send_state`]): the message
     /// goes to the entities its target names that don't hold it yet, and
-    /// ends for those it no longer names.
+    /// ends for those it no longer names. When its parameters changed, the
+    /// entities that still hold it take the new values
+    /// ([`World::update_message`]): the client's receiver evaluates the
+    /// sender's parameters in the sender and refreshes its cache when they
+    /// change (refs/orpheus-upstream `docs/MESSAGE_PARAMETERS.txt`,
+    /// `MESSAGE_RECEIVER.txt`). `0F4A` st23/st90 hold `0724` to the spawn
+    /// rooms with their team (`0473`, #10795e/#10796e), which a Competitive
+    /// side swap changes for the rooms both sides' lists keep.
     pub(super) fn refresh_send_state(
         &mut self,
         key: StateKey,
@@ -3690,11 +3848,37 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
             .copied()
             .filter(|entity| !recipients.entities.contains(entity))
             .collect();
-        if joined.is_empty() && left.is_empty() {
+        let parameters = if recipients.entities.is_empty() {
+            None
+        } else {
+            self.send_parameters(key.instance, node)?
+        };
+        let changed = parameters
+            .as_ref()
+            .is_some_and(|parameters| self.machine.sent.get(&key) != Some(parameters));
+        if joined.is_empty() && left.is_empty() && !changed {
             return Ok(());
         }
         if !self.deliver_game_message(key.instance, node, &recipients, &joined)? {
             return Ok(());
+        }
+        if let Some(parameters) = parameters {
+            if changed {
+                let site = self.site(key.instance, node);
+                for &entity in held.iter().filter(|entity| !left.contains(entity)) {
+                    if entity == site.entity {
+                        self.refresh_received(
+                            site.entity,
+                            recipients.message,
+                            Arc::new(parameters.clone()),
+                        )?;
+                    } else {
+                        self.world
+                            .update_message(site, entity, recipients.message, &parameters);
+                    }
+                }
+            }
+            self.machine.sent.insert(key, parameters);
         }
         for &entity in &left {
             self.end_game_message(key.instance, node, recipients.message, entity)?;
@@ -3715,6 +3899,7 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
 
     /// A sender's end: every entity that holds its message lets it go.
     pub(super) fn end_send_state(&mut self, key: StateKey, node: &Node) -> Result<(), InitFault> {
+        self.machine.sent.remove(&key);
         let Some(message) = message_of(node) else {
             return Ok(());
         };
@@ -3775,16 +3960,84 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
                 .graph(graph)
                 .and_then(|graph| graph.state(usize::from(key.raw)))
                 .expect("active receiving state");
-            if message_of(node) != Some(message) {
+            let named = match node.message() {
+                Some(_) => message_of(node) == Some(message),
+                None => self.computed_message_is(key.instance, node, message),
+            };
+            if !named {
                 continue;
             }
             let state = self.state_mut(key).expect("active receiving state");
             state.tracked.retain(|held| held.entity != sender);
-            if !state.tracked.is_empty() {
+            let holders = state.tracked.len();
+            if let Some(rows) = self.machine.collected.get_mut(&key) {
+                rows.retain(|(holder, _)| *holder != sender);
+            }
+            // A collecting receiver lists the holders left: none once the
+            // last one goes (the client's cached array is empty then).
+            if self.machine.collected.contains_key(&key) {
+                self.write_message_parameters(key.instance, node, Some(key))?;
+            }
+            if holders != 0 {
                 continue;
             }
+            self.machine.collected.remove(&key);
             self.exit_subgraph(key.instance, node, "m_452862E6", 1)?;
             self.follow(key.instance, node, "m_33DA5163", Some(key), 0)?;
+        }
+        Ok(())
+    }
+
+    /// The receiving states of `message` that hold it from `sender` take
+    /// its new `parameters` into their outputs, without beginning their
+    /// subgraphs again ([`Component::update_message`]).
+    pub(super) fn refresh_received(
+        &mut self,
+        sender: u32,
+        message: u64,
+        parameters: Arc<Variables>,
+    ) -> Result<(), InitFault> {
+        let held: Vec<StateKey> = self
+            .machine
+            .snapshot
+            .instances
+            .iter()
+            .flat_map(|(&instance, item)| {
+                item.states
+                    .iter()
+                    .filter(|(_, state)| {
+                        state.active
+                            && state.kind == StateKind::MessageIdle
+                            && state.tracked.iter().any(|held| held.entity == sender)
+                    })
+                    .map(move |(&raw, _)| StateKey { instance, raw })
+            })
+            .collect();
+        for key in held {
+            let graphs = self.graphs;
+            let graph = self.machine.snapshot.instances[&key.instance].graph;
+            let node = graphs
+                .graph(graph)
+                .and_then(|graph| graph.state(usize::from(key.raw)))
+                .expect("active receiving state");
+            let named = match node.message() {
+                Some(_) => message_of(node) == Some(message),
+                None => self.computed_message_is(key.instance, node, message),
+            };
+            if !named {
+                continue;
+            }
+            if let Some(rows) = self.machine.collected.get_mut(&key)
+                && let Some(row) = rows.iter_mut().find(|(holder, _)| *holder == sender)
+            {
+                row.1 = Arc::clone(&parameters);
+            }
+            self.parameters = Some(Arc::clone(&parameters));
+            self.sender = expr::valid_entity(sender).then_some(sender);
+            let written = self.write_message_parameters(key.instance, node, Some(key));
+            self.parameters = None;
+            self.sender = None;
+            written?;
         }
         Ok(())
     }
@@ -3864,6 +4117,25 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
             broadcast,
             held: false,
         })
+    }
+
+    /// A persistent sender's parameters evaluated now, to tell whether
+    /// they changed ([`Self::refresh_send_state`]); none when it has none
+    /// or one can't be evaluated (reported).
+    fn send_parameters(&mut self, id: u16, node: &Node) -> Result<Option<Variables>, InitFault> {
+        let rows = array_field(&node.fields, "m_params");
+        if !rows.iter().any(Json::is_object) {
+            return Ok(None);
+        }
+        let mut parameters = Variables::new();
+        for parameter in rows.iter().filter(|value| value.is_object()) {
+            self.spend("game message parameter")?;
+            let Some(value) = self.evaluate(id, node, field(parameter, "m_value"), None) else {
+                return Ok(None);
+            };
+            parameters.insert(parameter_id(parameter), value);
+        }
+        Ok(Some(parameters))
     }
 
     /// The message with its parameters, evaluated now, to `entities` (and
@@ -4348,6 +4620,26 @@ fn parameter_id(config: &Json) -> u32 {
         .get("m_B5051BCE")
         .and_then(asset_guid)
         .map_or(0, |guid| u32::from(guid as u16))
+}
+
+/// One parameter of a message from `sender` with `parameters`: `0009` is
+/// the sender, the others the message's own.
+fn held_parameter(sender: Option<u32>, parameters: Option<&Variables>, id: u32) -> Value {
+    match sender {
+        Some(sender) if id == MESSAGE_SENDER => Value::Entity(sender),
+        _ => parameters
+            .and_then(|parameters| parameters.get(&id))
+            .cloned()
+            .unwrap_or(Value::Null),
+    }
+}
+
+/// Whether a receiving state collects every holder's parameters
+/// (`m_39B47960`, its collection mode, nonzero).
+fn collects(node: &Node) -> bool {
+    field(&node.fields, "m_39B47960")
+        .as_i64()
+        .is_some_and(|mode| mode != 0)
 }
 
 fn field<'a>(fields: &'a Json, name: &str) -> &'a Json {

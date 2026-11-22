@@ -339,6 +339,12 @@ pub trait Context {
         None
     }
 
+    /// Whether a ray from `start` down to `end`, stopped by the map, enters
+    /// a zone that kills (`STU_88687E54`); None: unknown.
+    fn fatal_drop(&mut self, _start: [f64; 3], _end: [f64; 3]) -> Option<bool> {
+        None
+    }
+
     /// The map point a ray from `origin` along unit `direction` meets
     /// within `reach` (a cast without a ray profile); Some(None) when it
     /// meets none, None when this world has no map.
@@ -1719,14 +1725,11 @@ impl Evaluator<'_> {
             "STU_92CA44CC" if !json_truthy(child(config, "m_EE729DCB")) && value.is_string() => {
                 Value::String(value.as_str().unwrap_or_default().into())
             }
-            "STU_58AA0A3B" => {
-                // The authored weapon-manager defaults take the false branch on an unset value.
-                // Populated input still lacks a verified predicate.
-                if self.config(value, context, nested)? != Value::Null {
-                    return Err(EvalError::UnsupportedConfig(class.into()));
-                }
-                Value::Bool(false)
-            }
+            // Whether its value is set: the client's evaluate
+            // (0x7FF78AA878E0) clears the result to type 255 (null),
+            // evaluates `m_value` into it and answers whether the type is
+            // no longer null; false with no value or no context.
+            "STU_58AA0A3B" => Value::Bool(self.config(value, context, nested)? != Value::Null),
             "STUConfigVarAnimCategory"
                 if fields.get("m_category") == Some(&Json::Null)
                     && child(config, "m_resourceKey").is_null() =>
@@ -2319,6 +2322,39 @@ impl Evaluator<'_> {
             // passes its value through.
             "STU_A8FB8712" if native_shape(config, class, Some("m_094F4D35")) => {
                 self.config(child(config, "m_094F4D35"), context, nested)?
+            }
+            // `Eval_STU_9622CAD6` 0x7FF789BD8000 (no fields, an EntityID):
+            // `ScriptValue_SetEntity` of the global no-entity id
+            // `dword_7FF78C151288` (0 in the dump), the null entity. 32
+            // nodes in 19 graphs compare with it (`03F2` rid47, `01CA`,
+            // `01D8`).
+            "STU_9622CAD6" if native_fields(config, &[]) => Value::Entity(0),
+            // `Eval_STU_856F363B` 0x7FF789BFDB00 (no fields): it makes the
+            // asking state depend on the game object's channel 0x34
+            // (`sub_7FF789AEBA60`) and writes the float constant at
+            // 0x7FF78B4F17C0, 1.0 in the dump (`python -m tools.owsearch
+            // read`). Its one use is the capture rate scale of `0F4A` rid247
+            // (#12304 = #10354 × ruleset #9518 × it; ModeGraphGaps.md
+            // "ModeGraph3").
+            "STU_856F363B" if native_fields(config, &[]) => Value::Float(1.0),
+            // A point within `m_radius` of `m_position` (`STU_94E489DB`, a
+            // vec config with no client code: the base config's evaluate,
+            // `python tools/stu.py STU_94E489DB`, so a rule of the server's
+            // own). Its one use, the capture point's `0E8E` rid86, keeps it
+            // in #11672e, which no graph reads (`script query var 11672`):
+            // the server gives the centre, the position as an entity's
+            // position or a vector (ModeGraphGaps.md "ModeGraph3").
+            "STU_94E489DB" if native_fields(config, &["m_position", "m_radius"]) => {
+                let value = self.config(child(config, "m_position"), context, nested)?;
+                match (to_entity(&value), value) {
+                    (Some(entity), _) if valid_entity(entity) => Value::Vector(
+                        context
+                            .entity_position(entity)
+                            .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?,
+                    ),
+                    (None, Value::Vector(position)) => Value::Vector(position),
+                    _ => Value::Null,
+                }
             }
             // Where an entity stands (CCC750): a bound entity's position; a
             // vector that isn't zero passes through; anything else fails,
@@ -3197,6 +3233,29 @@ impl Evaluator<'_> {
                 let scale = context.body_scale(entity).ok_or_else(unsupported)?;
                 Value::Float(f64::from(radius as f32 * (scale as f32).max(0.35)))
             }
+            // Whether falling from a point would kill (`Eval_STU_88687E54`
+            // 0x7FF789BFE570): a ray from `m_A8D12F28` (a vector, else the
+            // origin) down `m_83C99CE5` metres (unset or no number: 20) by
+            // `0x7FF789B2F280`, which stops at the map and answers whether
+            // the rest enters the kill height or a damage area. Meteor
+            // Strike's floor (`0C51` st59: from 0.2 m over his feet, 50 m).
+            "STU_88687E54" if native_fields(config, &["m_A8D12F28", "m_83C99CE5"]) => {
+                let unsupported = || EvalError::UnsupportedConfig(class.into());
+                let start = match self.config(child(config, "m_A8D12F28"), context, nested)? {
+                    Value::Vector(point) => point,
+                    _ => [0.0; 3],
+                };
+                let depth = match child(config, "m_83C99CE5") {
+                    depth if depth.is_null() => 20.0,
+                    depth => match self.config(depth, context, nested)? {
+                        Value::Float(depth) => f64::from(depth as f32),
+                        Value::Integer(depth) => depth as f64,
+                        _ => 20.0,
+                    },
+                };
+                let end = [start[0], f64::from((start[1] - depth) as f32), start[2]];
+                Value::Bool(context.fatal_drop(start, end).ok_or_else(unsupported)?)
+            }
             // GetGameRulesetValue (`Eval_STU_3832D36C` 0x7FF789BDFAC0,
             // GameSettings.md 15.2): `m_value` first, and a value wins (an
             // entity variable of the key's id); else the ruleset default of
@@ -3541,6 +3600,54 @@ fn filter_facts(
     entity: u32,
     context: &mut impl Context,
 ) -> Result<Option<bool>, EvalError> {
+    let (passes, mut has_fact) = masks_facts(masks, entity, context)?;
+    let mut unknown = passes.is_none();
+    if passes == Some(false) {
+        return Ok(Some(false));
+    }
+    // The client's filter tag test (0x7FF789C1EC70 → 0x7FF789CC2FD0, the
+    // rule of 0x7FF789CC5310): any of `m_9C7BD8B8`, all of `m_B486603E`,
+    // none of `m_8B2A4DF3`.
+    for (field, condition) in [
+        ("m_9C7BD8B8", TagCondition::Any),
+        ("m_B486603E", TagCondition::All),
+        ("m_8B2A4DF3", TagCondition::Exclude),
+    ] {
+        match check_tag_set(child(filter, field), condition, entity, context)? {
+            TagCheck::Unused => (),
+            TagCheck::Accept => has_fact = true,
+            TagCheck::Reject => return Ok(Some(false)),
+            TagCheck::Unknown => unknown = true,
+        }
+    }
+    if unknown {
+        return Err(EvalError::UnsupportedConfig("STU_AC829876".into()));
+    }
+    Ok(has_fact.then_some(true))
+}
+
+/// Whether `entity` passes the team, kind and relation words of `filter`
+/// (`Filter_TestTeamMasks` 0x7FF789ADAAE0, as `ScriptHost_EntityPassesFilter`
+/// tests them before the tags and the condition). Unsupported when a fact
+/// they need is unknown.
+pub(crate) fn masks_pass(
+    filter: &Json,
+    entity: u32,
+    context: &mut impl Context,
+) -> Result<bool, EvalError> {
+    let masks = FilterMasks::words(filter);
+    masks_facts(&masks, entity, context)?
+        .0
+        .ok_or_else(|| EvalError::UnsupportedConfig("STU_AC829876".into()))
+}
+
+/// The masks on `entity`: whether it passes (None: a fact they need is
+/// unknown) and whether a fact about it was known.
+fn masks_facts(
+    masks: &FilterMasks,
+    entity: u32,
+    context: &mut impl Context,
+) -> Result<(Option<bool>, bool), EvalError> {
     let flags = context.entity_filter_flags(entity);
     let mut has_fact = flags.is_some();
     let mut unknown = masks.read_word() && flags.is_none();
@@ -3568,28 +3675,13 @@ fn filter_facts(
     } else {
         (true, false)
     };
-    if !unknown && !masks.passes(flags.unwrap_or(0), friendly, searcher) {
-        return Ok(Some(false));
-    }
-    // The client's filter tag test (0x7FF789C1EC70 → 0x7FF789CC2FD0, the
-    // rule of 0x7FF789CC5310): any of `m_9C7BD8B8`, all of `m_B486603E`,
-    // none of `m_8B2A4DF3`.
-    for (field, condition) in [
-        ("m_9C7BD8B8", TagCondition::Any),
-        ("m_B486603E", TagCondition::All),
-        ("m_8B2A4DF3", TagCondition::Exclude),
-    ] {
-        match check_tag_set(child(filter, field), condition, entity, context)? {
-            TagCheck::Unused => (),
-            TagCheck::Accept => has_fact = true,
-            TagCheck::Reject => return Ok(Some(false)),
-            TagCheck::Unknown => unknown = true,
-        }
-    }
     if unknown {
-        return Err(EvalError::UnsupportedConfig("STU_AC829876".into()));
+        return Ok((None, has_fact));
     }
-    Ok(has_fact.then_some(true))
+    Ok((
+        Some(masks.passes(flags.unwrap_or(0), friendly, searcher)),
+        has_fact,
+    ))
 }
 
 impl Evaluator<'_> {

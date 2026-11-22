@@ -70,6 +70,7 @@ pub mod path_walk;
 #[cfg(test)]
 mod ported_tests;
 pub(crate) mod posture;
+pub mod rise;
 pub mod settings;
 pub mod trial;
 pub mod turn;
@@ -102,16 +103,19 @@ use orpheus_wire::{
     entity::{Movement, NO_INPUT, POSITION_UNITS, TURNING},
 };
 pub use path_walk::PathWalk;
+pub use rise::{DeathZones, Rise};
 pub use turn::Turn;
 
 /// What a state of the body's graphs hands the mover while it runs: a
 /// `MoveTo`'s move ([`move_to`], kind 1), a path walk ([`path_walk`],
-/// kind 10) or the Charge's turn ([`turn`], kind 7).
+/// kind 10), the Charge's turn ([`turn`], kind 7) or Meteor Strike's
+/// flight ([`rise`], kind 13).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Behaviour {
     MoveTo(MoveTo),
     PathWalk(PathWalk),
     Turn(Turn),
+    Rise(Rise),
 }
 
 impl Behaviour {
@@ -121,6 +125,7 @@ impl Behaviour {
             Self::MoveTo(_) => 1,
             Self::Turn(_) => 7,
             Self::PathWalk(_) => 10,
+            Self::Rise(_) => 13,
         }
     }
 }
@@ -187,6 +192,11 @@ pub struct Mover {
     walk: Option<path_walk::Walk>,
     /// The turn the body's graphs run ([`turn`]).
     turn: Option<turn::Run>,
+    /// Meteor Strike's flight the body's graphs run ([`rise`]), with the
+    /// block of the frame before.
+    rise: Option<(MoveKey, Rise)>,
+    /// What kills a body that falls into it ([`rise::fatal_drop`]).
+    zones: Option<Arc<dyn DeathZones>>,
     /// The map's navigation, whose AI cells a path walk searches.
     navigation: Option<Arc<Navigation>>,
     /// A dash or rewind the body's graphs started ([`motion`]).
@@ -235,6 +245,8 @@ impl Mover {
             move_to: None,
             walk: None,
             turn: None,
+            rise: None,
+            zones: None,
             navigation: None,
             motion: None,
             history: motion::History::with_capacity(motion::HISTORY),
@@ -250,6 +262,13 @@ impl Mover {
     /// ([`path_walk`]); without it a walk finds no path.
     pub fn with_navigation(mut self, navigation: Option<Arc<Navigation>>) -> Self {
         self.navigation = navigation;
+        self
+    }
+
+    /// The zones that kill a body that falls into them, which Meteor
+    /// Strike's flight and floor test ([`rise::fatal_drop`]).
+    pub fn with_death_zones(mut self, zones: Option<Arc<dyn DeathZones>>) -> Self {
+        self.zones = zones;
         self
     }
 
@@ -310,6 +329,7 @@ impl Mover {
     /// ([`trial::TrialMove`]).
     pub fn trial(&self) -> trial::TrialMove {
         trial::TrialMove::new(self.body.shared_world(), self.body.pose(), self.category)
+            .with_death_zones(self.zones.clone())
     }
 
     /// The other characters that block the body's moves from now on
@@ -447,6 +467,7 @@ impl Mover {
         self.take_push();
         self.begin_move(behaviour)?;
         let driven = self.move_to.as_ref().is_some_and(move_to::Run::drives);
+        let rising = self.rise.map(|(_, rise)| rise);
         let once = std::mem::take(&mut self.once);
         let mut changes = std::mem::take(&mut self.velocity_changes);
         changes.sort_by(|(left, _), (right, _)| left.total_cmp(right));
@@ -470,6 +491,10 @@ impl Mover {
                 .hold(command.frame, &self.base, input.aim_held, |radius, top| {
                     self.body.try_resize(radius, top)
                 })?;
+            [0.0, 1.0, 0.0]
+        } else if rising.is_some() {
+            // Kind 13's slot 8: no ground probe and no transitions.
+            self.posture.rise_hold();
             [0.0, 1.0, 0.0]
         } else {
             let probe = self.probe.probe(
@@ -540,7 +565,10 @@ impl Mover {
                 self.posture.take_off();
             }
             let grounded = self.posture.ground() == Ground::Standing;
-            let vertical = self.move_body(rays, velocity, normal, grounded, dt)?;
+            let vertical = match rising {
+                Some(rise) => self.rise_to(rise, velocity, command.frame, dt)?,
+                None => self.move_body(rays, velocity, normal, grounded, dt)?,
+            };
             self.posture.finish_fall(settings.gravity_scale, vertical);
             match self.walk.as_mut() {
                 Some(walk) => walk.take_end(),
@@ -599,6 +627,12 @@ impl Mover {
         // record; kind 7's (slot 5 `0x7FF789B53A10`) its flag.
         self.walk.take_if(|walk| !running(walk.key, 10));
         self.turn.take_if(|turn| !running(turn.key, 7));
+        // Kind 13 begins and ends with nothing (slots 4, 5); each frame's
+        // block replaces the last.
+        self.rise = match request {
+            Some((key, Behaviour::Rise(rise))) => Some((key, *rise)),
+            _ => None,
+        };
         let Some((key, behaviour)) = request else {
             return Ok(());
         };
@@ -676,6 +710,39 @@ impl Mover {
         let run = self.move_to.as_mut().expect("a driving move");
         run.after_move(self.pose.position);
         Ok(run.take_end())
+    }
+
+    /// A frame Meteor Strike's flight moves ([`rise`]): the spring pinned
+    /// to the pogo below the feet (slot 10), the capsule put where the
+    /// search finds (slot 16) and the feet under it; the velocity stays as
+    /// the step left it. The velocity's vertical part, as
+    /// [`Mover::move_body`] gives it.
+    fn rise_to(
+        &mut self,
+        rise: Rise,
+        velocity: [f64; 3],
+        frame: u32,
+        dt: f64,
+    ) -> Result<f64, HullContactError> {
+        self.posture
+            .pin_spring(-(pogo(&self.base, self.posture.crouched()) as f32));
+        let travel = velocity.map(|axis| axis as f32);
+        let at = rise.search(
+            &mut self.body,
+            self.category,
+            self.zones.as_deref(),
+            travel,
+            dt as f32,
+            frame,
+        )?;
+        let lift = self.lift();
+        self.pose.position =
+            [f64::from(at[0]), f64::from(at[1] - lift), f64::from(at[2])].map(snap);
+        let [x, y, z] = self.pose.position;
+        self.body
+            .teleport([x as f32, (y + f64::from(lift)) as f32, z as f32]);
+        self.pose.velocity = velocity.map(snap);
+        Ok(self.pose.velocity[1])
     }
 
     /// The capsule's lowest point above the feet: the pogo plus the spring

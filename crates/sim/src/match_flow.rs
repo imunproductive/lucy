@@ -5,10 +5,12 @@
 //! In retail the mode's own graph drives this on the game mode entity
 //! (`0F4A` for Assault, Escort and Hybrid, `0EC2` for Control): its phase
 //! variable v59 (`003B`), its clock v1303 (`0517`) and its phase messages.
-//! The VM can't run those graphs whole yet (see `mode_script.rs`), so this
-//! machine drives the same phases and publishes what the HUD and the bodies
-//! read: the clock, the phase banner text, the objective's name, the
-//! attacking team, and the phase messages. Its phase values are v59's
+//! Assault runs on `0F4A` here too (`crate::mode_script`): the flow only
+//! follows it ([`MatchFlow::follow`]) and plays no Assault of its own. The
+//! VM can't run the other modes' graphs whole yet, so for them this
+//! machine drives the same phases and publishes what the HUD and the
+//! bodies read: the clock, the phase banner text, the objective's name,
+//! the attacking team, and the phase messages. Its phase values are v59's
 //! (ow1-preservation `Assault flow on Anubis`): 0 waiting, 1 assemble,
 //! 2 setup, 3 round, 4 round end, 5 match end.
 //!
@@ -16,13 +18,15 @@
 //! named where it is used.
 //!
 //! Spawn rooms: the flow names the rooms each team uses
-//! ([`MatchFlow::spawn_choice`]): in Assault, Escort and Hybrid the current
+//! ([`MatchFlow::spawn_choice`]): in Escort and Hybrid the current
 //! objective's attackers' or defenders' rooms (they move forward as the
-//! objectives fall, and swap with the sides), in Control the stage's.
-//! Spawn doors: the map data names no door entities (the doors run graph
-//! 0D32, related-projects.md, but the `game_maps` derivation doesn't list
-//! them), so the server opens none. Assumption: the doors are map entities
-//! the client drives itself; nothing holds the attackers in during setup.
+//! objectives fall, and swap with the sides), in Control the stage's, in
+//! Assault the mode graph's objective's.
+//! Spawn doors: the doors are server placeables that run `0D32` (map
+//! entities stage A); the mode graph holds them open with `0702`. Where
+//! the flow drives, no `0702` goes, and the server's mover has no door
+//! collision either way (docs/dev/loose-ends.md, refs `ModeGraphGaps.md`
+//! "ModeGraph4"): nothing holds a human attacker in during setup.
 
 use std::{collections::VecDeque, sync::Arc};
 
@@ -129,6 +133,12 @@ impl Mode {
     pub fn has_objectives(self) -> bool {
         self.sided() || matches!(self, Self::Control | Self::Elimination)
     }
+
+    /// The mode's own graph drives its matches (`0F4A`, Assault): the flow
+    /// follows it ([`MatchFlow::follow`]) and never plays it itself.
+    pub fn graph_driven(self) -> bool {
+        self == Self::Assault
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -200,7 +210,6 @@ pub enum FlowEvent {
 /// What the attackers of a sided round play for.
 #[derive(Clone, Debug)]
 enum Course {
-    Points(Vec<CapturePoint>),
     /// Hybrid: the point, then the payload (rule 51), which waits parked
     /// until the point falls.
     Hybrid {
@@ -216,14 +225,6 @@ impl Course {
     /// the share of the next one that counts, its last capture mark.
     fn progress(&self) -> (u32, f64) {
         match self {
-            Self::Points(points) => {
-                let taken = points.iter().filter(|point| point.captured()).count() as u32;
-                let next = points
-                    .iter()
-                    .find(|point| !point.captured())
-                    .map_or(0.0, CapturePoint::mark);
-                (taken, next)
-            }
             Self::Hybrid { point, payload, .. } => match payload {
                 Some(payload) => (1 + payload.reached() as u32, payload.best()),
                 None => (0, point.mark()),
@@ -238,10 +239,6 @@ impl Course {
     /// checkpoints 1 and 2). The derived orders run 0, 1, 2 in the map.
     fn objective(&self) -> u32 {
         match self {
-            Self::Points(points) => {
-                let taken = points.iter().filter(|point| point.captured()).count();
-                taken.min(points.len().saturating_sub(1)) as u32
-            }
             Self::Hybrid { payload: None, .. } => 0,
             Self::Hybrid {
                 payload: Some(payload),
@@ -256,7 +253,6 @@ impl Course {
 
     fn complete(&self) -> bool {
         match self {
-            Self::Points(points) => points.iter().all(CapturePoint::captured),
             Self::Hybrid { payload, .. } => payload.as_ref().is_some_and(Payload::delivered),
             Self::Payload(payload) => payload.delivered(),
         }
@@ -264,10 +260,6 @@ impl Course {
 
     fn name(&self) -> Option<&str> {
         match self {
-            Self::Points(points) => points
-                .iter()
-                .find(|point| !point.captured())
-                .and_then(|point| point.name.as_deref()),
             Self::Hybrid {
                 point,
                 payload: None,
@@ -280,10 +272,6 @@ impl Course {
     /// Where the attackers play: the next point, or the payload.
     fn position(&self) -> Option<[f64; 3]> {
         match self {
-            Self::Points(points) => points
-                .iter()
-                .find(|point| !point.captured())
-                .map(|point| point.position),
             Self::Hybrid {
                 payload: Some(payload),
                 ..
@@ -296,12 +284,6 @@ impl Course {
     /// Whether an attacker stands on the objective (it keeps overtime).
     fn presence(&self, participants: &[Participant], attackers: u8) -> Presence {
         match self {
-            Self::Points(points) => points
-                .iter()
-                .find(|point| !point.captured())
-                .map_or_else(Presence::default, |point| {
-                    point.area.presence(participants, attackers)
-                }),
             Self::Hybrid {
                 payload: Some(payload),
                 ..
@@ -312,15 +294,14 @@ impl Course {
     }
 }
 
-/// One side's round of Assault, Escort or Hybrid.
+/// One side's round of Escort or Hybrid.
 ///
 /// The clock: each objective adds its own time when it becomes the current
 /// one (`objective_data.rs`, 0F4A uids 646-648), the first one's to the
 /// team's bank at the round's start (0 in rounds 1 and 2, uid 620). With
-/// Competitive rules: Escort and Hybrid 4:00, +2:30, +1:30, Assault 4:00,
-/// +3:00; without them: Escort and Hybrid 5:00, +3:00, +2:00. In the extra
-/// rounds only Assault's B adds time (30 s). Assumption: a match with a
-/// ranked player plays the Competitive rulesets, whose "Competitive Rules"
+/// Competitive rules: 4:00, +2:30, +1:30; without them: 5:00, +3:00,
+/// +2:00; nothing in the extra rounds. Assumption: a match with a ranked
+/// player plays the Competitive rulesets, whose "Competitive Rules"
 /// (ruleset entry 9544) is on (`Payloads.md` §1); others play with it off.
 #[derive(Clone, Debug)]
 struct SidedRound {
@@ -342,6 +323,24 @@ struct Overtime {
     elapsed: f64,
     /// Fuse seconds left.
     fuse: f64,
+}
+
+/// The match as the mode's own graph keeps it
+/// (`crate::mode_script::ModeRunner::match_state`), which the flow follows
+/// where the graph drives the match ([`MatchFlow::follow`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MatchState {
+    pub phase: Phase,
+    /// Seconds on the clock.
+    pub clock: f64,
+    pub winner: Option<u8>,
+    /// The attacking team (`0F4A` #10795e).
+    pub attackers: Option<u8>,
+    /// The current objective's order (#10548e, 0x2934): the rooms the teams
+    /// spawn in.
+    pub objective: u32,
+    /// Overtime (#3392e).
+    pub overtime: bool,
 }
 
 /// The match flow of a room.
@@ -387,13 +386,18 @@ pub struct MatchFlow {
     /// The match's result per team or, in a free-for-all, per slot.
     standings: Vec<Standing>,
     events: Vec<FlowEvent>,
+    /// The mode graph's match while the flow follows it ([`Self::follow`]):
+    /// its attackers, objective and overtime stand for the flow's own.
+    graph: Option<MatchState>,
 }
 
 impl MatchFlow {
     /// The flow of a map's mode by the mode graphs' values, `rules` (the
     /// mode's) and the map's objective data; none for the modes the server
     /// doesn't run a flow for (Practice Range, Arcade brawls), or when the
-    /// map lacks the objectives its mode plays for or their data.
+    /// map lacks the objectives its mode plays for or their data. A mode
+    /// its graph drives ([`Mode::graph_driven`]) gets a flow that only
+    /// follows the graph.
     pub fn new(
         map: &GameMap,
         competitive: bool,
@@ -427,8 +431,9 @@ impl MatchFlow {
             overtime: None,
             standings: Vec::new(),
             events: Vec::new(),
+            graph: None,
         };
-        if mode.sided() {
+        if mode.sided() && !mode.graph_driven() {
             // game_maps.rs: team 1 attacks first; in Competitive team 0
             // attacks second, both from an empty bank.
             flow.sided = Some(flow.sided_round(1, 0.0, false)?);
@@ -482,11 +487,6 @@ impl MatchFlow {
             Some(CapturePoint::new(objective, data, capture, marks))
         };
         match self.mode {
-            Mode::Assault => {
-                (!points.is_empty()).then_some(())?;
-                let points = points.into_iter().map(point).collect::<Option<_>>()?;
-                Some(Course::Points(points))
-            }
             Mode::Hybrid => Some(Course::Hybrid {
                 point: Box::new(point(points.first()?)?),
                 payload: None,
@@ -556,8 +556,18 @@ impl MatchFlow {
         self.round
     }
 
+    /// Overtime: the mode graph's (#3392e) while the flow follows it.
     pub fn in_overtime(&self) -> bool {
-        self.overtime.is_some()
+        match &self.graph {
+            Some(graph) => graph.overtime,
+            None => self.overtime.is_some(),
+        }
+    }
+
+    /// Whether the mode's own graph drives the match ([`Self::follow`]):
+    /// its phases, hero select and the bodies' overtime are its own.
+    pub fn follows_graph(&self) -> bool {
+        self.graph.is_some()
     }
 
     /// The seconds the clock shows.
@@ -569,16 +579,29 @@ impl MatchFlow {
         self.left.max(0.0)
     }
 
-    /// The attacking team of a sided round.
+    /// The attacking team of a sided round: the mode graph's (#10795e)
+    /// while the flow follows it.
     pub fn attackers(&self) -> Option<u8> {
-        self.sided.as_ref().map(|round| round.attackers)
+        match &self.graph {
+            Some(graph) => graph.attackers,
+            None => self.sided.as_ref().map(|round| round.attackers),
+        }
     }
 
     /// The spawn rooms `team` uses now: the current objective's attackers'
     /// or defenders' (rules 36 and 47: they move forward as objectives
     /// fall; the teams swap them with the sides), the Control stage's
-    /// (rule 60), else the first round's.
+    /// (rule 60), else the first round's. While the flow follows the mode
+    /// graph, its objective (#10548e) and attackers (#10795e) name them.
     pub fn spawn_choice(&self, team: u8) -> SpawnChoice {
+        if let Some(graph) = &self.graph
+            && let Some(attackers) = graph.attackers
+        {
+            return SpawnChoice::Objective {
+                objective: self.graph_objective(graph.objective),
+                attack: team == attackers,
+            };
+        }
         if let Some(round) = &self.sided {
             return SpawnChoice::Objective {
                 objective: round.course.objective(),
@@ -591,9 +614,30 @@ impl MatchFlow {
         SpawnChoice::First
     }
 
-    /// Hero select stays open while the heroes assemble.
+    /// Hero select stays open while the heroes assemble, by the flow's
+    /// hand (the mode graph that drives the match holds it open itself:
+    /// `0F4A` st9's `0692` → `288B` st32-st36).
     pub fn assembling(&self) -> bool {
-        self.phase == Phase::Assemble
+        self.graph.is_none() && self.phase == Phase::Assemble
+    }
+
+    /// The mode graph's objective order, past the last once the attackers
+    /// took it (`0F4A` rid121 counts on), as the map's last objective.
+    fn graph_objective(&self, order: u32) -> u32 {
+        let last = self
+            .map
+            .objectives
+            .iter()
+            .filter(|objective| {
+                matches!(
+                    objective.kind,
+                    ObjectiveKind::Point | ObjectiveKind::Checkpoint
+                )
+            })
+            .map(|objective| objective.order)
+            .max()
+            .unwrap_or(0);
+        order.min(last)
     }
 
     /// Whether the dead come back: not within an Elimination round (rule
@@ -636,10 +680,6 @@ impl MatchFlow {
     /// distance in metres.
     pub fn objective_progress(&self) -> Option<f64> {
         match &self.sided.as_ref()?.course {
-            Course::Points(points) => points
-                .iter()
-                .find(|point| !point.captured())
-                .map(CapturePoint::progress),
             Course::Hybrid {
                 payload: Some(payload),
                 ..
@@ -652,8 +692,25 @@ impl MatchFlow {
     /// Where the round is played, for the AI heroes (`crate::ai`): the
     /// attackers' next point or the payload, the Control point (the next
     /// round's stage between rounds). `None` in the modes without an
-    /// objective.
+    /// objective. While the flow follows the mode graph: its current
+    /// objective where the map places it (a payload's checkpoint, not the
+    /// payload).
     pub fn objective(&self) -> Option<[f64; 3]> {
+        if let Some(graph) = &self.graph {
+            let order = self.graph_objective(graph.objective);
+            return self
+                .map
+                .objectives
+                .iter()
+                .filter(|objective| {
+                    matches!(
+                        objective.kind,
+                        ObjectiveKind::Point | ObjectiveKind::Checkpoint
+                    )
+                })
+                .find(|objective| objective.order == order)
+                .map(|objective| objective.position);
+        }
         if let Some(round) = &self.sided {
             return round.course.position();
         }
@@ -694,9 +751,19 @@ impl MatchFlow {
     }
 
     /// The players are in: hero select opens (match.py `_spawn_steps`
-    /// starts "assemble your team" at the first spawn).
+    /// starts "assemble your team" at the first spawn). A mode its graph
+    /// drives starts with the graph (`ModeRunner::start_match`), not here.
+    /// Skirmish has no assembly: its graph `0D76` never sets a phase and
+    /// counts its clock from its start, and Lúcioball's `0F9D`, the brawl
+    /// the flow plays as Skirmish, goes from waiting to its setup (#59 = 2)
+    /// without one; so its round begins at once.
     pub fn start(&mut self) {
-        if self.phase == Phase::Waiting {
+        if self.phase != Phase::Waiting || self.mode.graph_driven() {
+            return;
+        }
+        if self.mode == Mode::Skirmish {
+            self.begin_round();
+        } else {
             let seconds = self.rules.assemble;
             self.enter(Phase::Assemble, seconds);
         }
@@ -788,26 +855,36 @@ impl MatchFlow {
     }
 
     /// Follow the mode's own graph, which drives the match where it runs
-    /// (`ModeRunner::match_state`): its phase and clock now, `seconds`
-    /// after the last step. The flow keeps no timer and plays no objective
-    /// of its own then; the graph holds its phase messages itself, so none
-    /// go from here. A phase change is a [`FlowEvent::Phase`] (a round's
-    /// start counts the round); the match's end is decided by the graph's
-    /// winner (`0F4A` #7525, a team, else a draw) and goes home
-    /// [`MATCH_END`] later, as in [`Self::advance`].
-    pub fn follow(
-        &mut self,
-        seconds: f64,
-        phase: Phase,
-        clock: f64,
-        winner: Option<u8>,
-    ) -> Vec<FlowEvent> {
+    /// (`ModeRunner::match_state`): its match now, `seconds` after the last
+    /// step. The flow keeps no timer and plays no objective of its own
+    /// then; the graph holds its phase messages itself, so none go from
+    /// here. A phase change is a [`FlowEvent::Phase`] (a round's start
+    /// counts the round), a change of the graph's overtime a
+    /// [`FlowEvent::Overtime`] and of its objective a
+    /// [`FlowEvent::Objective`] (the one that fell); the match's end is
+    /// decided by the graph's winner (`0F4A` #7525, a team, else a draw)
+    /// and goes home [`MATCH_END`] later, as in [`Self::advance`].
+    pub fn follow(&mut self, seconds: f64, state: MatchState) -> Vec<FlowEvent> {
+        let MatchState {
+            phase,
+            clock,
+            winner,
+            ..
+        } = state;
+        let before = self.graph.replace(state);
+        if before.is_some_and(|before| before.overtime) != state.overtime {
+            self.events.push(FlowEvent::Overtime(state.overtime));
+        }
+        if let Some(before) = before
+            && state.objective > before.objective
+        {
+            self.events.push(FlowEvent::Objective(before.objective));
+        }
         if phase != self.phase {
             self.phase = phase;
             match phase {
                 Phase::Round => {
                     self.round += 1;
-                    self.overtime = None;
                 }
                 Phase::MatchEnd => {
                     self.standings = standings(winner);
@@ -880,9 +957,9 @@ impl MatchFlow {
         self.overtime = None;
         self.seen_alive = [false; 2];
         let seconds = match self.mode {
-            Mode::Assault | Mode::Escort | Mode::Hybrid => {
-                self.sided.as_ref().map_or(0.0, |round| round.time)
-            }
+            Mode::Escort | Mode::Hybrid => self.sided.as_ref().map_or(0.0, |round| round.time),
+            // Never started here (`Self::start`): its graph plays it.
+            Mode::Assault => unreachable!("the mode graph plays Assault"),
             Mode::Deathmatch | Mode::TeamDeathmatch | Mode::Elimination => self.rules.round_time,
             // No round clock (rule 58), no score (rule 112).
             Mode::Control | Mode::Skirmish => 0.0,
@@ -931,7 +1008,7 @@ impl MatchFlow {
             return;
         }
         match self.mode {
-            Mode::Assault | Mode::Escort | Mode::Hybrid => {
+            Mode::Escort | Mode::Hybrid => {
                 // Rule 2: the sides swap (or an extra round starts) after
                 // a hero select of 25 s.
                 let (attackers, bank) = self.upcoming.pop_front().expect("a side to play");
@@ -942,6 +1019,7 @@ impl MatchFlow {
                 self.enter(Phase::Assemble, self.rules.assemble_later);
             }
             Mode::Elimination => self.enter(Phase::Assemble, self.rules.hero_select),
+            Mode::Assault => unreachable!("the mode graph plays Assault"),
             // Rule 8: no source gives the time between Control rounds; the
             // point's 30 s lock is the only pause.
             _ => self.begin_round(),
@@ -950,7 +1028,8 @@ impl MatchFlow {
 
     fn play(&mut self, seconds: f64, participants: &[Participant]) {
         match self.mode {
-            Mode::Assault | Mode::Escort | Mode::Hybrid => self.play_sided(seconds, participants),
+            Mode::Escort | Mode::Hybrid => self.play_sided(seconds, participants),
+            Mode::Assault => unreachable!("the mode graph plays Assault"),
             Mode::Control => self.play_control(seconds, participants),
             Mode::Deathmatch => {
                 let best = self.scores.iter().copied().max().unwrap_or(0);
@@ -983,18 +1062,6 @@ impl MatchFlow {
         let current = round.course.objective();
         let mut taken = Vec::new();
         match &mut round.course {
-            Course::Points(points) => {
-                if let Some((index, point)) = points
-                    .iter_mut()
-                    .enumerate()
-                    .find(|(_, point)| !point.captured())
-                {
-                    let presence = point.area.presence(participants, attackers);
-                    if point.step(seconds, scale, presence) {
-                        taken.push(index as u32);
-                    }
-                }
-            }
             Course::Hybrid {
                 point,
                 payload,
@@ -1155,8 +1222,8 @@ impl MatchFlow {
 
     /// Rules 67-69: the extra rounds when both teams completed the map,
     /// from the time each had left (`banks` per team, unscaled).
-    /// - Assault and Hybrid: a team with no time against one with at least
-    ///   1:00: only the other attacks (rule 69).
+    /// - Hybrid: a team with no time against one with at least 1:00: only
+    ///   the other attacks (rule 69).
     /// - Both at 2:00 or more: both are cut by the same amount until the
     ///   lower is 2:00 (rules 67 and 68).
     /// - Either under 1:00: the lower is raised to 1:00 and the other by
@@ -1172,8 +1239,7 @@ impl MatchFlow {
         let low = banks[0].min(banks[1]);
         let high = banks[0].max(banks[1]);
         let (cap, floor) = (self.rules.bank_cap, self.rules.bank_floor);
-        self.single =
-            matches!(self.mode, Mode::Assault | Mode::Hybrid) && low <= 0.0 && high >= floor;
+        self.single = self.mode == Mode::Hybrid && low <= 0.0 && high >= floor;
         if self.single {
             let team = if banks[0] >= floor { 0 } else { 1 };
             self.upcoming.push_back((team, banks[usize::from(team)]));

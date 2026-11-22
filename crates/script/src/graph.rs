@@ -235,6 +235,11 @@ pub struct Graph {
     /// they name, each list in node order.
     #[serde(skip)]
     by_message: BTreeMap<u64, Vec<usize>>,
+    /// The receiving states the server runs whose `m_gameMessage` is an
+    /// expression, not a message (`0F4A` st53: `07A1` or `07A2` by the
+    /// attacking team), in node order.
+    #[serde(skip)]
+    computed_message: Vec<usize>,
     /// Each weapon volley state's raw index and its ammunition variable
     /// (`m_24E351A4`), in node order.
     #[serde(skip)]
@@ -266,8 +271,17 @@ impl Graph {
             self.nodes[node].info.remote_synced = true;
         }
         for (index, node) in self.nodes.iter().enumerate() {
-            if let Some(message) = node.message().filter(|_| !node.client_only) {
+            if node.client_only {
+                continue;
+            }
+            if let Some(message) = node.message() {
                 self.by_message.entry(message).or_default().push(index);
+            } else if node.class == "STUStatescriptStateGameMessageEntry"
+                && node
+                    .field("m_gameMessage")
+                    .is_some_and(|value| !value.is_null())
+            {
+                self.computed_message.push(index);
             }
         }
         self.presence = self
@@ -361,6 +375,20 @@ impl Graph {
             .into_iter()
             .flatten()
             .map(|&index| &self.nodes[index])
+    }
+
+    /// The receiving states the server runs whose message is an
+    /// expression, evaluated as a message comes (`m_gameMessage`), in node
+    /// order.
+    pub fn computed_message_nodes(&self) -> impl Iterator<Item = &Node> {
+        self.computed_message
+            .iter()
+            .map(|&index| &self.nodes[index])
+    }
+
+    /// Every node, in node order.
+    pub fn nodes(&self) -> impl Iterator<Item = &Node> {
+        self.nodes.iter()
     }
 
     pub fn node(&self, pos: u16) -> Option<&Node> {

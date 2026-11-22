@@ -59,8 +59,25 @@ pub trait Recipients {
     /// A persistent sender let its message to `end.target`, one of these,
     /// go.
     fn end(&mut self, end: &MessageEnd);
+    /// A persistent sender that `update.target`, one of these, holds
+    /// changed its parameters; these route none by default.
+    fn update(&mut self, _update: &GameMessage) {}
     /// The entities whose graphs these run now.
     fn entities(&self) -> Vec<u32>;
+}
+
+/// Persistent senders' new parameters to the entities that hold their
+/// messages (`orpheus_script` `World::update_message`), after the tick's
+/// messages ([`deliver`]).
+pub fn deliver_updates(updates: &[GameMessage], recipients: &mut [&mut dyn Recipients]) {
+    for update in updates {
+        if let Some(group) = recipients
+            .iter_mut()
+            .find(|group| group.runs(update.target))
+        {
+            group.update(update);
+        }
+    }
 }
 
 /// The entities each held broadcast reached ([`deliver_held`]).
@@ -148,7 +165,24 @@ pub fn deliver(
     queue.retain(|message| {
         message.target == EVERY_ENTITY || recipients.iter().any(|group| group.runs(message.target))
     });
-    backlog.ends.extend(ends);
+    // A persistent send that ended this tick while another of the same
+    // sender, target and message waits to be delivered (`0F4A` holds `079E`
+    // to its objective in setup, and again from the round's state as the
+    // setup's ends) ends first, so the receiver takes the new one, even when
+    // the new one waits past the cap. [Assumption: a send that began and
+    // ended within one tick while another like it began is not met.]
+    let (first, later): (Vec<MessageEnd>, Vec<MessageEnd>) = ends.into_iter().partition(|end| {
+        queue.iter().any(|message| {
+            (message.sender, message.target, message.message)
+                == (end.sender, end.target, end.message)
+        })
+    });
+    for end in first {
+        if let Some(group) = recipients.iter_mut().find(|group| group.runs(end.target)) {
+            group.end(&end);
+        }
+    }
+    backlog.ends.extend(later);
     if queue.len() > MAX_MESSAGES {
         backlog.messages = queue.split_off(MAX_MESSAGES);
         eprintln!(
@@ -206,6 +240,24 @@ impl<'a, 'w> Players<'a, 'w> {
         self.worlds
             .iter_mut()
             .flat_map(|world| world.take_messages())
+            .collect()
+    }
+
+    /// The ends of the players' bodies' persistent sends since the last
+    /// call ([`WorldDelivery::take_message_ends`]).
+    pub fn take_message_ends(&mut self) -> Vec<MessageEnd> {
+        self.worlds
+            .iter_mut()
+            .flat_map(|world| world.take_message_ends())
+            .collect()
+    }
+
+    /// The players' bodies' persistent sends' new parameters since the
+    /// last call ([`deliver_updates`]).
+    pub fn take_message_updates(&mut self) -> Vec<GameMessage> {
+        self.worlds
+            .iter_mut()
+            .flat_map(|world| world.take_message_updates())
             .collect()
     }
 }
@@ -272,6 +324,10 @@ impl Recipients for PlacedScripts {
 
     fn end(&mut self, end: &MessageEnd) {
         self.end_message(end);
+    }
+
+    fn update(&mut self, update: &GameMessage) {
+        self.update_message(update);
     }
 
     fn entities(&self) -> Vec<u32> {

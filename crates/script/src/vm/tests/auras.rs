@@ -121,14 +121,9 @@ fn an_apply_aura_puts_its_aura_on_each_listed_body_while_listed() {
         component.advance_frame(frame, &mut world).unwrap();
     }
     assert_eq!(world.changes, [remove(ENEMY), remove(SECOND_ENEMY)]);
-    assert!(
-        component
-            .snapshot()
-            .unwrap()
-            .assumptions
-            .iter()
-            .any(|assumption| { assumption.class == "STU_431F3FCC lifetime" })
-    );
+    // ApplyAura is server-only: its rule is the server's own, not an
+    // assumption (`vm/auras.rs`).
+    assert!(component.snapshot().unwrap().assumptions.is_empty());
 }
 
 #[test]

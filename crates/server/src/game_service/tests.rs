@@ -5378,17 +5378,20 @@ fn moiras_healing_orb_heals_a_wounded_teammate_at_its_rate() {
     server.stop().unwrap();
 }
 
-/// A PvP match on a map other than the Practice Range (ow174/game/match.py,
-/// server.py): its collision is built from the install while two players
-/// load, and both spawn on it. The first spawn starts "assemble your team":
-/// the game mode entity counts v1303 down every second, hero select stays
-/// open after a pick with the skin selector on, and closes when the 30 s are
-/// up. A third player then joins the running match and sees the others.
+/// A Skirmish match on a map other than the Practice Range (ow174/game/
+/// match.py, server.py): its collision is built from the install while two
+/// players load, and both spawn on it. Skirmish's own graph `0D76` drives
+/// the mode entity (its root in every whole mode frame) and has no
+/// assembly: it never sets a phase, and its clock (#1303e) counts down
+/// from 1800 s (rid91) from its start. So hero select opens for a player
+/// with no hero (the graph's held `0727`, `0C90` st28) and closes once his
+/// pick's body is there, not after 30 s. A third player then joins the
+/// running match and sees the others.
 #[test]
 #[ignore = "builds Workshop Chamber's collision; requires an Overwatch 1.74 install (ORPHEUS_GAME_DIR)"]
-fn a_pvp_match_on_another_map_assembles_its_team_and_takes_a_third_player() {
+fn a_skirmish_match_on_another_map_plays_at_once_and_takes_a_third_player() {
     use orpheus_content::{heroes::SOLDIER, maps::MapCatalog, parameters::PICK_HERO};
-    use orpheus_script::wire::{Value as ScriptValue, Variables};
+    use orpheus_script::wire::read_full_head;
     use orpheus_sim::scene_assets::SceneAssets;
 
     const WORKSHOP_CHAMBER: u64 = 0x0800_0000_0000_0c48;
@@ -5525,13 +5528,13 @@ fn a_pvp_match_on_another_map_assembles_its_team_and_takes_a_third_player() {
         assert!(watcher.created(0x8000_0000 | map.placeables[0]).is_some());
         assert!(watcher.created(watcher.owner).is_some());
         assert!(watcher.created(GAME_MODE_ENTITY).is_some());
-        // Assembling already: hero select opens with the skin selector.
+        // Hero select opens for a player with no hero.
         let (_, first_frame) = &controllers(watcher)[0];
         assert!(shows(first_frame, true, None));
     }
 
-    // A pick creates the body and keeps the screen open while the heroes
-    // assemble.
+    // A pick creates the body, and hero select closes with it: no
+    // assembly keeps it open.
     for watcher in [&mut *first, &mut *second] {
         let owner = watcher.owner;
         send_player_message(
@@ -5543,71 +5546,59 @@ fn a_pvp_match_on_another_map_assembles_its_team_and_takes_a_third_player() {
             SOLDIER.to_le_bytes().to_vec(),
         );
     }
-    pump_until(&mut [first, second], &schemas, "the bodies", |watchers| {
-        watchers.iter().all(|watcher| {
-            watcher.created(watcher.owner | 1).is_some_and(|created| {
-                controllers(watcher)
-                    .iter()
-                    .any(|(index, chunk)| *index >= created && shows(chunk, true, Some(SOLDIER)))
-            })
-        })
-    });
-
-    // The countdown ends: hero select closes for the players with a hero.
     pump_within(
         &mut [first, second],
         &schemas,
-        "the end of the assembly",
-        Duration::from_secs(40),
+        "the bodies, with hero select closed",
+        Duration::from_secs(5),
         |watchers| {
             watchers.iter().all(|watcher| {
-                controllers(watcher)
-                    .iter()
-                    .any(|(_, chunk)| shows(chunk, false, Some(SOLDIER)))
+                watcher.created(watcher.owner | 1).is_some_and(|created| {
+                    controllers(watcher).iter().any(|(index, chunk)| {
+                        *index >= created && shows(chunk, false, Some(SOLDIER))
+                    })
+                })
             })
         },
     );
-    // The game mode entity's frames as the scene makes them
-    // (`PreparedScene::mode_ui`, `PreparedScene::mode_frame`).
-    let mode_frame = |variables: &Variables| {
-        orpheus_sim::scene::mode_ui(assets.graphs(), map.mode_guid, variables).unwrap()
-    };
-    let clock = |seconds: f64| {
-        mode_frame(&Variables::from([(
-            orpheus_sim::match_flow::CLOCK,
-            ScriptValue::Float(seconds),
-        )]))
-    };
-    let (counting, over) = (clock(12.5), clock(0.0));
-    let mode_ui = mode_frame(&Variables::new()).bit_len();
+    // The mode entity's whole frames are `0D76`'s, its clock counting
+    // down from 1800 s.
+    let graphs = assets.graphs();
     for watcher in [&*first, &*second] {
-        let (closed, _) = controllers(watcher)
-            .into_iter()
-            .find(|(_, chunk)| shows(chunk, false, Some(SOLDIER)))
-            .unwrap();
-        let frames: Vec<_> = mode_frames(watcher)
-            .into_iter()
-            .filter(|(index, _)| *index <= closed)
+        let heads: Vec<_> = joined_chunks(mode_frames(watcher).iter().map(|(_, chunk)| chunk))
+            .iter()
+            .filter(|chunk| chunk.first == 0)
+            .map(|chunk| {
+                read_full_head(&chunk.data, |graph| {
+                    graphs
+                        .graph(u32::from(graph))
+                        .map(|graph| graph.header.states_bits)
+                })
+                .expect("a full frame's head")
+            })
             .collect();
-        let (_, last) = frames.last().unwrap();
-        // One frame a second for 30 s, the mode entity's first ones; then
-        // the round's, whose clock Skirmish doesn't run. The flow starts at
-        // the first spawn (the World step), before the clients take mode
-        // frames (the Controller step, 0.1 s later): the frame at 0 s goes
-        // to nobody, so each gets those at 1 to 29 s and the one at 30 s
-        // that ends the assembly.
-        assert_eq!(frames.len(), 30, "countdown frames");
-        for (_, chunk) in &frames[..frames.len() - 1] {
-            assert_eq!(chunk.width, counting.bit_len());
+        assert!(!heads.is_empty(), "no full mode frame");
+        for head in &heads {
+            let root = head
+                .instances
+                .iter()
+                .find(|&&(instance, ..)| instance == 1)
+                .expect("the root instance")
+                .1;
+            assert_eq!(root, 0x0d76);
+            let clock = head
+                .variables
+                .get(&orpheus_sim::match_flow::CLOCK)
+                .map(orpheus_script::expr::to_float);
+            assert!(
+                clock.is_some_and(|clock| clock > 1700.0 && clock <= 1800.0),
+                "{clock:?}"
+            );
         }
-        assert_eq!(
-            (last.width, last.data.as_slice()),
-            (over.bit_len(), over.as_bytes())
-        );
     }
 
-    // A third player joins the running match: no countdown, hero select
-    // open without the skin selector, and the others in his world.
+    // A third player joins the running match: hero select open, the
+    // others in his world, and the graph's frames from his first one.
     let joined = server
         .join_match(MATCH, vec![player("third#3333", 0, 9)])
         .unwrap()
@@ -5628,6 +5619,7 @@ fn a_pvp_match_on_another_map_assembles_its_team_and_takes_a_third_player() {
         "the third player in the world",
         |watchers| {
             !controllers(watchers[2]).is_empty()
+                && !mode_frames(watchers[2]).is_empty()
                 && watchers[2].created(first_owner).is_some()
                 && watchers[2].created(second_owner).is_some()
                 && watchers[0].created(third_owner).is_some()
@@ -5635,19 +5627,8 @@ fn a_pvp_match_on_another_map_assembles_its_team_and_takes_a_third_player() {
         },
     );
     assert!(shows(&controllers(&third)[0].1, true, None));
-    // His first frame may be the mode UI without variables (he was
-    // presented after the heroes assembled); then the round's, with no
-    // countdown (Skirmish has no round clock).
-    let frames: Vec<_> = mode_frames(&third)
-        .into_iter()
-        .filter(|(_, chunk)| chunk.width != mode_ui)
-        .collect();
-    assert!(
-        frames
-            .iter()
-            .all(|(_, chunk)| chunk.data.as_slice() == over.as_bytes()),
-        "the round's frames, no countdown"
-    );
+    let (_, first_mode) = mode_frames(&third).into_iter().next().unwrap();
+    assert_eq!(first_mode.first, 0, "his first mode frame is whole");
 
     let snapshot = server.snapshot().unwrap();
     assert_eq!(snapshot.len(), 1);
@@ -5672,28 +5653,28 @@ fn a_pvp_match_on_another_map_assembles_its_team_and_takes_a_third_player() {
     server.stop().unwrap();
 }
 
-/// A Quick Play Assault match on Temple of Anubis runs its whole flow on a
-/// time scale of 1/10 (orpheus_sim::match_flow): assemble, setup, the
-/// round, the capture of A and then B by the attacker, the round's end,
-/// the match's end; the result goes to the lobby (a win for the attackers'
-/// team, a loss for the defenders') and both players go home (20304).
+/// A Quick Play Assault match on Temple of Anubis, driven by its mode
+/// graph `0F4A` in the graph's own time: assemble, setup, the round, the
+/// capture of A and then B by the attacker (the capture area aura's `0F00`
+/// on his body reports him on the point, `08AF` for team 1; the point's
+/// `0E8E` counts him), the round's end, the match's end; the result goes to the
+/// lobby (a win for the attackers' team, a loss for the defenders') and
+/// both players go home (20304) after the server's wait, here 1/10 of
+/// it (orpheus_sim::match_flow `Timers`).
 ///
 /// The test moves both points into the attackers' spawn room, so the
 /// attacker captures them standing where he spawns: walking 125 m to A
 /// needs the movement the test client doesn't play.
 #[test]
-#[ignore = "plays a whole Assault match at 1/10 scale on Anubis' collision (built once); requires an Overwatch 1.74 install (ORPHEUS_GAME_DIR)"]
-fn an_assault_match_on_anubis_captures_a_and_b_and_sends_the_players_home() {
+#[ignore = "slow: plays a whole Assault match in the mode graph's time on Anubis' collision (built once), about 90 s optimised; requires an Overwatch 1.74 install (ORPHEUS_GAME_DIR)"]
+fn slow_an_assault_match_on_anubis_captures_a_and_b_and_sends_the_players_home() {
     use orpheus_content::{
         heroes::SOLDIER,
         maps::{MapCatalog, ObjectiveKind},
         parameters::PICK_HERO,
     };
-    use orpheus_script::wire::{Value as ScriptValue, Variables};
-    use orpheus_sim::{
-        match_flow::{ASSAULT, ATTACKERS, BANNER, CLOCK, DEFENDERS, OBJECTIVE_NAME},
-        scene_assets::SceneAssets,
-    };
+    use orpheus_script::wire::read_full_head;
+    use orpheus_sim::{match_flow::ASSAULT, scene_assets::SceneAssets};
 
     const ANUBIS: u64 = 0x0800_0000_0000_005b;
     const SCALE: f64 = 0.1;
@@ -5833,19 +5814,22 @@ fn an_assault_match_on_anubis_captures_a_and_b_and_sends_the_players_home() {
                 .all(|watcher| watcher.created(watcher.owner | 1).is_some())
         },
     );
-    // 3 s assemble, 4.5 s setup, A in 3 s, B in 1.8 s, 1.16 s of round end
-    // and 2 s of match end.
-    pump_within(
-        &mut [defender, attacker],
-        &schemas,
-        "the end of the match",
-        Duration::from_secs(60),
-        |watchers| {
-            watchers
-                .iter()
-                .all(|watcher| received(watcher, 20304).is_some())
-        },
-    );
+    // `0F4A`'s times: 30 s to assemble, 45 s of setup, A in 30 s and B in
+    // 18 s with one attacker on them, the round's end, then the match's
+    // end and the server's 2 s. The clients send their (idle) commands,
+    // which run their bodies' scripts, the aura's `0F00` among them.
+    let (mut defending, mut attacking) = (defender.tick + 1, attacker.tick + 1);
+    let deadline = server.now() + Duration::from_secs(150);
+    while [&*defender, &*attacker]
+        .iter()
+        .any(|watcher| received(watcher, 20304).is_none())
+    {
+        assert!(server.now() < deadline, "the match didn't end");
+        send_input(defender, &mut defending, 0, 0, 0, false);
+        send_input(attacker, &mut attacking, 0, 0, 0, false);
+        defender.pump(&schemas);
+        attacker.pump(&schemas);
+    }
     let results = server.take_results().unwrap();
     assert_eq!(results.len(), 1);
     let result = &results[0];
@@ -5874,67 +5858,53 @@ fn an_assault_match_on_anubis_captures_a_and_b_and_sends_the_players_home() {
     );
     assert!(server.take_results().unwrap().is_empty());
 
-    // The mode entity's frames, one a second and at each phase: the clock
-    // with the phase banner and the objective's name while the round is
-    // on, then the clock alone (no banner, no objective left) at the round's
-    // and the match's end.
-    // The frames as the scene makes them (`PreparedScene::mode_ui`,
-    // `PreparedScene::mode_frame`).
-    let mode_frame = |variables: &Variables| {
-        orpheus_sim::scene::mode_ui(assets.graphs(), map.mode_guid, variables).unwrap()
-    };
-    let mode_ui = mode_frame(&Variables::new()).bit_len();
-    let width = |extra: &[(u32, ScriptValue)]| {
-        let mut variables = Variables::from([(CLOCK, ScriptValue::Float(1.0))]);
-        variables.extend(extra.iter().cloned());
-        variables.extend([
-            (ATTACKERS, ScriptValue::Integer(1)),
-            (DEFENDERS, ScriptValue::Integer(0)),
-        ]);
-        mode_frame(&variables).bit_len()
-    };
-    let playing = width(&[
-        (BANNER, ScriptValue::Asset(0x0de0_0000_0000_6116)),
-        (OBJECTIVE_NAME, ScriptValue::String("Point A".into())),
-    ]);
-    let over = width(&[]);
-    assert_ne!(playing, over);
+    // The mode entity's frames are `0F4A`'s, not the hand-built `0CB6`
+    // one: its root instance (1) in each whole frame.
+    let graphs = assets.graphs();
     for watcher in [&*defender, &*attacker] {
-        let widths: Vec<usize> = watcher
-            .datagrams
-            .iter()
-            .flat_map(|(_, records)| records)
-            .filter(|record| record.entity == GAME_MODE_ENTITY)
-            .filter_map(|record| record.script.as_ref().map(|chunk| chunk.width))
-            // A client presented after the heroes assembled first gets the
-            // mode UI without variables.
-            .filter(|&width| width != mode_ui)
-            .collect();
-        // The playing frames carry the banner and the objective's name; at
-        // the round's and the match's end they're gone (the clock's compact
-        // form changes the widths, so compare with the widest).
-        assert!(widths.len() >= 5, "{widths:?}");
-        let widest = widths.iter().copied().max().unwrap();
-        assert!(widest > over, "{widths:?}");
-        assert!(
-            widths[widths.len() - 2..]
+        let roots: Vec<u16> = joined_chunks(
+            watcher
+                .datagrams
                 .iter()
-                .all(|&width| width < widest)
-        );
+                .flat_map(|(_, records)| records)
+                .filter(|record| record.entity == GAME_MODE_ENTITY)
+                .filter_map(|record| record.script.as_ref()),
+        )
+        .iter()
+        .filter(|chunk| chunk.first == 0)
+        .map(|chunk| {
+            let head = read_full_head(&chunk.data, |graph| {
+                graphs
+                    .graph(u32::from(graph))
+                    .map(|graph| graph.header.states_bits)
+            })
+            .expect("a full frame's head");
+            head.instances
+                .iter()
+                .find(|&&(instance, ..)| instance == 1)
+                .expect("the root instance")
+                .1
+        })
+        .collect();
+        assert!(!roots.is_empty(), "no full mode frame");
+        assert!(roots.iter().all(|&graph| graph == 0x0f4a), "{roots:04X?}");
     }
     server.stop().unwrap();
 }
 
-/// Practice vs AI, Easy, on Temple of Anubis (orpheus_sim::ai) at a time
-/// scale of 1/4: one player on the blue team (the defenders) and eleven AI
-/// heroes, five with him and six attacking. His game gets them as other
-/// players (their cards with their heroes' names, their bodies); the AI
-/// heroes pick roster heroes, the attackers walk from their spawn toward
-/// point A, the AI heroes of both teams fight (bodies lose health or die),
-/// and the match flow ends the match: the result has the player only, and
-/// his game goes home.
+/// Practice vs AI, Easy, on Temple of Anubis (orpheus_sim::ai), the mode
+/// graph `0F4A` running the match on its own clocks: one player on the
+/// blue team (the defenders) and eleven AI heroes, five with him and six
+/// attacking. His game gets them as other players (their cards with their
+/// heroes' names, their bodies); the AI heroes pick roster heroes, the
+/// attackers walk from their spawn toward point A, the AI heroes of both
+/// teams fight (bodies lose health or die; the defenders leave their
+/// spawn room only once the spawn walls' `0FA8` reads the attacking team
+/// from the mode graph, and the point counts who stands on it only once
+/// the bodies' `08AE`/`08AF` end as they leave), and the mode graph ends
+/// the match: the result has the player only, and his game goes home.
 #[test]
-#[ignore = "slow: simulates a whole match at 1/4 scale with twelve bodies, about 40 s optimised; requires an Overwatch 1.74 install (ORPHEUS_GAME_DIR)"]
+#[ignore = "slow: simulates a whole match on the mode graph's clocks with twelve bodies, about 8 min optimised; requires an Overwatch 1.74 install (ORPHEUS_GAME_DIR)"]
 fn slow_a_practice_vs_ai_match_plays_its_ai_heroes_to_the_end() {
     use orpheus_content::{
         heroes::SOLDIER,
@@ -6173,20 +6143,21 @@ fn slow_a_practice_vs_ai_match_plays_its_ai_heroes_to_the_end() {
     server.stop().unwrap();
 }
 
-/// A Competitive Assault match on Temple of Anubis plays both sides on a
-/// time scale of 1/50 (orpheus_sim::match_flow): team 1 attacks first and
-/// takes A, then time runs out on B; before the second side hero select
-/// reopens and both players get a new body in their new side's spawn room
-/// (team 0 now in the attackers' room, team 1 in the defenders'), where
-/// team 0 takes A too. Equal progress: a draw for both (rules 63-64).
+/// A Competitive Assault match on Temple of Anubis, driven by `0F4A` in
+/// its own time, plays both sides: team 1 attacks first and takes A, then
+/// time runs out on B; before the second side both players get a new body
+/// in their new side's spawn room (team 0 now in the attackers' room, team
+/// 1 in the defenders'), where team 0 takes A too. Equal progress with no
+/// time left: a draw for both. The server's wait after the match's end is
+/// 1/50 of it (orpheus_sim::match_flow `Timers`).
 ///
 /// A stands in the attackers' first room and B in the defenders' room, so
 /// each attacker captures A where he spawns and no one can reach B: the
 /// test client plays no movement. Team 0 can only take A if the side swap
 /// moved him.
 #[test]
-#[ignore = "plays both sides of a whole Competitive Assault match at 1/50 scale on Anubis' collision (built once); requires an Overwatch 1.74 install (ORPHEUS_GAME_DIR)"]
-fn a_competitive_assault_on_anubis_swaps_sides_and_spawn_rooms() {
+#[ignore = "slow: plays both sides of a whole Competitive Assault match in the mode graph's time on Anubis' collision (built once); requires an Overwatch 1.74 install (ORPHEUS_GAME_DIR)"]
+fn slow_a_competitive_assault_on_anubis_swaps_sides_and_spawn_rooms() {
     use orpheus_content::{
         heroes::SOLDIER,
         maps::{MapCatalog, ObjectiveKind, SpawnChoice},
@@ -6196,6 +6167,9 @@ fn a_competitive_assault_on_anubis_swaps_sides_and_spawn_rooms() {
 
     const ANUBIS: u64 = 0x0800_0000_0000_005b;
     const SCALE: f64 = 0.02;
+    /// "Assault - Competitive", the Competitive cards' ruleset
+    /// (`game_queues_174.json`), as the matchmaker gives the map.
+    const COMPETITIVE: u64 = 0x0fd0_0000_0000_002b;
 
     let runtime = orpheus_testkit::runtime_dir();
     let assets = Arc::new(
@@ -6207,6 +6181,7 @@ fn a_competitive_assault_on_anubis_swaps_sides_and_spawn_rooms() {
     let mut map = catalog
         .game_map(ANUBIS, ASSAULT, "Assault", false, &[6, 6])
         .expect("Temple of Anubis in Assault");
+    map.ruleset = COMPETITIVE;
     let room = |attack| SpawnChoice::Objective {
         objective: 0,
         attack,
@@ -6332,19 +6307,20 @@ fn a_competitive_assault_on_anubis_swaps_sides_and_spawn_rooms() {
             .iter()
             .all(|watcher| watcher.created(watcher.owner | 1).is_some())
     });
-    // Per side: 0.5-0.6 s of hero select, 0.9 s of setup, 7.8 s of round
-    // (A in 0.6 s adds 3.6 s), 0.23 s of round end; then 0.4 s of match end.
-    pump_within(
-        &mut [blue, red],
-        &schemas,
-        "the end of the match",
-        Duration::from_secs(120),
-        |watchers| {
-            watchers
-                .iter()
-                .all(|watcher| received(watcher, 20304).is_some())
-        },
-    );
+    // `0F4A`'s times; the clients send their (idle) commands, which run
+    // their bodies' scripts, the capture area aura's `0F00` among them.
+    let (mut blue_input, mut red_input) = (blue.tick + 1, red.tick + 1);
+    let deadline = server.now() + Duration::from_secs(1200);
+    while [&*blue, &*red]
+        .iter()
+        .any(|watcher| received(watcher, 20304).is_none())
+    {
+        assert!(server.now() < deadline, "the match didn't end");
+        send_input(blue, &mut blue_input, 0, 0, 0, false);
+        send_input(red, &mut red_input, 0, 0, 0, false);
+        blue.pump(&schemas);
+        red.pump(&schemas);
+    }
     // The second side's bodies, in the swapped rooms.
     for watcher in [&*blue, &*red] {
         assert!(
@@ -7081,6 +7057,7 @@ fn a_firing_practice_bot_shoots_the_player() {
     server.stop().unwrap();
 }
 
+mod assault;
 mod collision_ready;
 mod victims;
 mod workshop;

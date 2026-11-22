@@ -43,13 +43,14 @@ use orpheus_script::{
     snapshot::{ProjectedSnapshot, SnapshotEncoder, View},
     stream::{ScriptChunk, Stream, StreamError},
     vm::{
-        GameMessage, HealthChange, MapRays, MessageEnd, ParentWrite, Pickup, ScopeChange,
-        ScopeSource, TargetCandidate, Unknowns,
+        AuraChange, GameMessage, HealthChange, MapRays, MessageEnd, ParentWrite, Pickup,
+        ScopeChange, ScopeSource, TargetCandidate, Unknowns,
     },
+    wire::Variables,
 };
 use orpheus_wire::entity::GAME_MODE_ENTITY;
 
-use crate::map_areas::{PlacedScript, ROOM_MESSAGE, RoomVolumes, SpawnRoom, room_message};
+use crate::map_areas::{PlacedScript, ROOM_MESSAGE, room_message};
 
 /// A placeable's latest frame: its full frame, and a serial that counts
 /// its changes.
@@ -89,7 +90,8 @@ pub struct PlacedScripts {
     map_tags: Arc<MapTags>,
     /// The map's collision, for the scripts' ray casts.
     map_rays: Arc<dyn MapRays>,
-    rooms: Arc<[SpawnRoom]>,
+    /// The areas of the map's rooms and capture points.
+    volumes: Arc<dyn EntityVolumes>,
     world: Option<MapEntityWorld>,
     /// The rooms that hold the mode's `0724`, with the team it gave each.
     held: BTreeMap<u32, Option<u8>>,
@@ -119,7 +121,7 @@ impl PlacedScripts {
         placed: Vec<Arc<PlacedScript>>,
         map_tags: Arc<MapTags>,
         map_rays: Arc<dyn MapRays>,
-        rooms: Arc<[SpawnRoom]>,
+        volumes: Arc<dyn EntityVolumes>,
     ) -> Self {
         Self {
             graphs,
@@ -130,7 +132,7 @@ impl PlacedScripts {
             placed,
             map_tags,
             map_rays,
-            rooms,
+            volumes,
             world: None,
             held: BTreeMap::new(),
             messages: Vec::new(),
@@ -176,7 +178,7 @@ impl PlacedScripts {
                     [],
                     Some(Arc::clone(&self.map_tags)),
                     Some(Arc::clone(&self.map_rays)),
-                    Some(Arc::new(RoomVolumes(Arc::clone(&self.rooms))) as Arc<dyn EntityVolumes>),
+                    Some(Arc::clone(&self.volumes)),
                     tick,
                 ));
                 // The clients get what the graphs make (`update_placed`).
@@ -339,6 +341,31 @@ impl PlacedScripts {
             .unwrap_or_default()
     }
 
+    /// The auras the placeables put on bodies or took off since the last
+    /// call (a capture point's area aura `02A2`), for the bodies' scripts.
+    pub fn take_auras(&mut self) -> Vec<AuraChange> {
+        self.world
+            .as_mut()
+            .map(MapEntityWorld::take_auras)
+            .unwrap_or_default()
+    }
+
+    /// The running placeables' entity variables now, as other entities'
+    /// graphs read them (`ModeRunner::set_map_variables`).
+    pub fn entity_variables(&self) -> Vec<(u32, Variables)> {
+        self.world
+            .iter()
+            .flat_map(MapEntityWorld::entities)
+            .filter(|placed| placed.running())
+            .map(|placed| (placed.entity, placed.entity_variables()))
+            .collect()
+    }
+
+    /// The running scripts' game messages the match hasn't taken yet.
+    pub fn messages(&self) -> &[GameMessage] {
+        &self.messages
+    }
+
     /// The running scripts' game messages and message ends since the last
     /// call, for the match to route ([`crate::messages`]).
     pub fn take_messages(&mut self) -> (Vec<GameMessage>, Vec<MessageEnd>) {
@@ -449,6 +476,27 @@ impl PlacedScripts {
     pub fn end_message(&mut self, end: &MessageEnd) {
         if let Some(world) = &mut self.world {
             world.end_message(end.target, end.sender, end.message);
+        }
+    }
+
+    /// A persistent sender that the placed entity `update.target` holds
+    /// changed its parameters (`update.parameters`).
+    pub fn update_message(&mut self, update: &GameMessage) {
+        if let Some(world) = &mut self.world {
+            world.update_message(
+                update.target,
+                update.sender,
+                update.message,
+                &update.parameters,
+            );
+        }
+    }
+
+    /// The mode entity's variables as the mode's graph keeps them, for the
+    /// scripts that read them ([`MapEntityWorld::set_mode_variables`]).
+    pub fn set_mode_variables(&mut self, variables: &Variables) {
+        if let Some(world) = &mut self.world {
+            world.set_mode_variables(variables);
         }
     }
 
