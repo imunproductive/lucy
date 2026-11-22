@@ -344,6 +344,14 @@ impl<S> BodyStream<S> {
         self.create_delivered && !self.retired && self.pending.contains_key(&last)
     }
 
+    /// Chunk `last` waits to go, whether or not the create arrived: a chunk
+    /// that travels in the create's own datagram, after it, needs no
+    /// arrival first (its ACK counts once the create's did,
+    /// [`Self::arrived`]).
+    pub fn queued(&self, last: u32) -> bool {
+        !self.retired && self.pending.contains_key(&last)
+    }
+
     pub fn last(&self) -> u32 {
         self.last
     }

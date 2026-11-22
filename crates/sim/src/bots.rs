@@ -443,9 +443,10 @@ impl Bot {
         self.yaw.round_ties_even() * consts::TAU / YAW_UNITS
     }
 
-    /// Animate the body by `body`'s rig ([`crate::bot_animation`]).
-    pub(crate) fn attach_animation(&mut self, body: Arc<BodyRig>) {
-        self.animation = Some(BotAnimation::new(body));
+    /// Animate the body by `body`'s rig ([`crate::bot_animation`]); `fixed`
+    /// are its model's physics body's shapes (`crate::hitboxes`).
+    pub(crate) fn attach_animation(&mut self, body: Arc<BodyRig>, fixed: Arc<[HitShape]>) {
+        self.animation = Some(BotAnimation::new(body, fixed));
     }
 
     /// Pose the body for `tick` (after it walked), with what its script

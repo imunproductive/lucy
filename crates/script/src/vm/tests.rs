@@ -4965,6 +4965,39 @@ fn body(entity: u32, team: u8, feet: [f64; 3]) -> TargetCandidate {
     }
 }
 
+/// A cone takes a body when its capsule's surface comes within the
+/// half-angle, not only its axis: the client's own test of the Tactical
+/// Visor's cone (`0x7FF789B9E660`, hooked in a game run on 2026-11-22,
+/// refs report `CombatFeel.md`) with these inputs took the Training Bot
+/// 22.5° from its axis at 24° up (the axis point was at 24.3°, outside),
+/// and left it at 27° up.
+#[test]
+fn a_cone_takes_a_body_whose_surface_is_inside_it() {
+    let bot = TargetCandidate {
+        height: 2.0,
+        radius: 0.5,
+        ..body(ENEMY, 1, [46.480_468_75, 2.0, 10.191_406_25])
+    };
+    let centre = [44.868_164_062_5, 3.550_030_469_894_409, 20.906_25];
+    let cone = |direction| targets::Cone {
+        direction,
+        cos: [0.923_879_504_203_796_4; 2],
+        cylinder: None,
+    };
+    let taken = cone([
+        0.135_743_021_965_026_86,
+        0.407_256_245_613_098_14,
+        -0.903_170_049_190_521_2,
+    ]);
+    assert!(targets::in_cone(&bot, centre, &taken, 45.0));
+    let left = cone([
+        0.132_273_226_976_394_65,
+        0.456_022_411_584_854_1,
+        -0.880_083_680_152_893_1,
+    ]);
+    assert!(!targets::in_cone(&bot, centre, &left, 45.0));
+}
+
 /// The listed bodies tell another body's current possessor
 /// (`STU_F7262B36`): its controller, as Biotic Grenade's enemy aura `0C72`
 /// rid21 asks of the thrower's body on the body it hit. A controller or an

@@ -544,7 +544,11 @@ impl SceneAssets {
         }
         for bot in &mut bots {
             if let Some(body) = self.bot_rigs.for_body(bot.spawn.body) {
-                bot.attach_animation(body);
+                let fixed = self
+                    .hitboxes
+                    .for_body(bot.spawn.body)
+                    .unwrap_or_else(|| Arc::from([]));
+                bot.attach_animation(body, fixed);
             }
         }
         let map_rays = SceneRays::shared(&rays, &self.ray_profiles);
@@ -1246,8 +1250,9 @@ impl PreparedScene {
 
     /// A bot's body as a target: the capsule of its mover's standing height
     /// and radius (combat.py `_targets`), facing its yaw as the clients see
-    /// it, hit by its body's shapes when the data has them: posed this tick
-    /// when it has a rig ([`crate::bot_animation`]), else the static ones.
+    /// it, hit by its body's shapes when the data has them: its physics
+    /// body's fixed ones ([`crate::hitboxes`]), and with a rig its hit
+    /// list's posed this tick ahead of them ([`crate::bot_animation`]).
     pub(crate) fn bot_target(&self, bot: &Bot) -> crate::hitscan::TargetPose {
         let settings = self.movers.for_body(Some(bot.spawn.body));
         crate::hitscan::TargetPose {

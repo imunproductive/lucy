@@ -42,8 +42,14 @@
 //! trees' blend times are left out).
 //!
 //! **Shapes.** Each bone is placed in the body's frame by its parent's
-//! place composed with its own transform; a shape's points, given in its
-//! bone's frame, are placed by its bone. A bot with a rig is posed once a
+//! place composed with its own transform: the parent's scale scales the
+//! child's translation, but the child keeps its own scale (the client's
+//! hit-test skeleton, `*(*(model + 0x6F0) + 0x28)`, read in the game
+//! during the assembly: bone 34 at scale 0.034, its own track's, not that
+//! times its parent bone 31's track's 0.016; refs report `CombatFeel.md`).
+//! A shape's points, given in its bone's frame, are placed by its bone, and
+//! its radius scaled by the bone's scale (the client tests it in the bone's
+//! frame). A bot with a rig is posed once a
 //! tick, in [`crate::scene_assets::PreparedScene::step_bots`] after it
 //! walks; its target ([`crate::scene_assets::PreparedScene::bot_target`])
 //! carries those shapes, so the combat history keeps each tick's pose. A
@@ -112,11 +118,14 @@ impl Transform {
         std::array::from_fn(|k| turned[k] + self.translation[k])
     }
 
-    /// A child's transform relative to this one, placed by this one.
+    /// A child's transform relative to this one, placed by this one: the
+    /// parent's scale moves the child but doesn't scale it (the child keeps
+    /// its own scale, as the client's hit-test skeleton has it, module
+    /// notes).
     fn then(&self, child: &Self) -> Self {
         Self {
             rotation: multiply(self.rotation, child.rotation),
-            scale: std::array::from_fn(|k| self.scale[k] * child.scale[k]),
+            scale: child.scale,
             translation: self.place(child.translation),
         }
     }
@@ -393,16 +402,27 @@ pub struct BodyRig {
 }
 
 impl BodyRig {
-    /// The body's shapes in its frame, posed for `input`.
-    pub fn shapes(&self, input: &PoseInput) -> Arc<[HitShape]> {
+    /// The body's shapes in its frame, posed for `input`: placed by their
+    /// bone and scaled by its scale, the radius too (the client tests a
+    /// shape in its bone's frame, the ray divided by the bone's scale,
+    /// `0x7FF78AA3E2E0`). Under a scale that differs by axis (the first
+    /// tenth of a second of the assembly) the client's shape is an
+    /// ellipsoid; the radius takes the largest axis's. Then `fixed`, the
+    /// model's physics body (`crate::hitboxes`), whose shapes don't move.
+    pub fn shapes(&self, input: &PoseInput, fixed: &[HitShape]) -> Arc<[HitShape]> {
         let places = self.rig.places(input);
         self.shapes
             .iter()
-            .map(|BoneShape { bone, shape }| HitShape {
-                a: places[*bone].place(shape.a),
-                b: places[*bone].place(shape.b),
-                ..*shape
+            .map(|BoneShape { bone, shape }| {
+                let place = &places[*bone];
+                HitShape {
+                    a: place.place(shape.a),
+                    b: place.place(shape.b),
+                    radius: shape.radius * place.scale.iter().copied().fold(0.0, f64::max),
+                    ..*shape
+                }
             })
+            .chain(fixed.iter().copied())
             .collect()
     }
 }
@@ -645,6 +665,7 @@ impl BotRigCatalog {
                                 b: centre,
                                 radius,
                                 critical,
+                                fixed: false,
                             },
                         ),
                         RawShape::Capsule {
@@ -660,6 +681,7 @@ impl BotRigCatalog {
                                 b,
                                 radius,
                                 critical,
+                                fixed: false,
                             },
                         ),
                     };
@@ -786,10 +808,14 @@ impl ScriptAnims {
     }
 }
 
-/// A bot's animation: its rig, clocks and this tick's shapes.
+/// A bot's animation: its rig, clocks and this tick's shapes, its physics
+/// body's fixed ones after the posed ones.
 #[derive(Clone, Debug)]
 pub struct BotAnimation {
     body: Arc<BodyRig>,
+    /// The model's physics body (`crate::hitboxes`): empty for a body the
+    /// hitboxes don't list.
+    fixed: Arc<[HitShape]>,
     /// The first tick the bot was animated: its clock's start.
     born: Option<u32>,
     /// The tick it set off, while it walks.
@@ -799,10 +825,11 @@ pub struct BotAnimation {
 
 impl BotAnimation {
     /// A new body, posed standing at the start of its clock.
-    pub fn new(body: Arc<BodyRig>) -> Self {
-        let shapes = body.shapes(&PoseInput::default());
+    pub fn new(body: Arc<BodyRig>, fixed: Arc<[HitShape]>) -> Self {
+        let shapes = body.shapes(&PoseInput::default(), &fixed);
         Self {
             body,
+            fixed,
             born: None,
             set_off: None,
             shapes,
@@ -811,7 +838,7 @@ impl BotAnimation {
 
     /// The same body made again (a respawn): its clocks start over.
     pub fn fresh(&self) -> Self {
-        Self::new(Arc::clone(&self.body))
+        Self::new(Arc::clone(&self.body), Arc::clone(&self.fixed))
     }
 
     /// Pose the body at `tick`: `walking` its route, with the script's
@@ -830,15 +857,18 @@ impl BotAnimation {
             None
         };
         let seconds = |from: u32| f64::from(tick.wrapping_sub(from)) * TICK_PERIOD.as_secs_f64();
-        self.shapes = self.body.shapes(&PoseInput {
-            age: seconds(born),
-            moving: self.set_off.map(seconds),
-            arms_forward,
-            anim,
-        });
+        self.shapes = self.body.shapes(
+            &PoseInput {
+                age: seconds(born),
+                moving: self.set_off.map(seconds),
+                arms_forward,
+                anim,
+            },
+            &self.fixed,
+        );
     }
 
-    /// The body's shapes as posed last.
+    /// The body's shapes as posed last, then its fixed ones.
     pub fn shapes(&self) -> Arc<[HitShape]> {
         Arc::clone(&self.shapes)
     }

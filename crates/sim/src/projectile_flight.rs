@@ -1110,6 +1110,7 @@ mod tests {
             b: [0.0, 1.0, 0.0],
             radius: 0.3,
             critical: true,
+            fixed: true,
         };
         let shaped = TargetPose {
             shapes: Some(vec![head].into()),

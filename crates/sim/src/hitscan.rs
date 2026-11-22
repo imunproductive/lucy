@@ -6,12 +6,13 @@
 //!
 //! Beyond the reference (which hit every body as one capsule): a body with
 //! hit shapes ([`crate::hitboxes`]) is hit by them, turned by its facing,
-//! and a hit is critical when the shape it enters first is. Only bots have
-//! shapes for now, posed each tick by their animation
-//! ([`crate::bot_animation`]), and a rewound shot meets the shapes of the
-//! retained tick nearest its view; a player's body keeps the capsule (the
-//! heroes' shapes are a rest pose, which cannot follow a crouch or an
-//! animation).
+//! and a hit is critical when the shape it enters is: the nearest of its
+//! model's physics body (fixed in its frame) that the ray enters, else the
+//! nearest of its hit list (a bot's posed each tick by its animation,
+//! [`crate::bot_animation`]), as the client's `0x7FF789B00C50` lets the
+//! physics body's hit replace the hit list's. A rewound shot meets the
+//! shapes of the retained tick nearest its view. A standing player's body
+//! has its hero's rest-pose shapes, a crouched one the capsule.
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -213,8 +214,9 @@ impl TargetPose {
         [fx + x * cos + z * sin, fy + y, fz - x * sin + z * cos]
     }
 
-    /// The body's shapes in the world: segment ends, radius, critical.
-    fn placed(&self) -> impl Iterator<Item = (Vec3, Vec3, f64, bool)> + '_ {
+    /// The body's shapes in the world: segment ends, radius, critical,
+    /// fixed.
+    fn placed(&self) -> impl Iterator<Item = (Vec3, Vec3, f64, bool, bool)> + '_ {
         self.shapes
             .iter()
             .flat_map(|shapes| shapes.iter())
@@ -224,16 +226,28 @@ impl TargetPose {
                     self.place(shape.b),
                     shape.radius,
                     shape.critical,
+                    shape.fixed,
                 )
             })
     }
 
+    /// The body's critical shapes in the world, each as the middle of its
+    /// segment and its radius (the `orpheus::hits` trace).
+    pub(crate) fn critical_shapes(&self) -> impl Iterator<Item = (Vec3, f64)> + '_ {
+        self.placed()
+            .filter(|shape| shape.3)
+            .map(|(a, b, radius, ..)| (std::array::from_fn(|k| (a[k] + b[k]) * 0.5), radius))
+    }
+
     /// Where a ray, or a sphere of radius `size` swept along it, first
     /// enters the body within `length`: the distance, and for a body with
-    /// shapes whether the shape it enters is critical (the nearest shape;
-    /// the earlier one of the list on a tie). `None` for the capsule, whose
-    /// head zone the caller applies. A sphere meets a shape where its centre
-    /// comes within the shape's radius plus `size`.
+    /// shapes whether the shape it enters is critical: the nearest of the
+    /// fixed shapes it enters (the model's physics body, whose hit replaces
+    /// the hit list's in the client's `0x7FF789B00C50`,
+    /// [`crate::hitboxes`]), else the nearest of the others (the earlier
+    /// one of the list on a tie). `None` for the capsule, whose head zone
+    /// the caller applies. A sphere meets a shape where its centre comes
+    /// within the shape's radius plus `size`.
     pub(crate) fn entry(
         &self,
         origin: Vec3,
@@ -247,11 +261,12 @@ impl TargetPose {
                 .map(|distance| (distance, None));
         }
         self.placed()
-            .filter_map(|(a, b, radius, critical)| {
+            .filter_map(|(a, b, radius, critical, fixed)| {
                 capsule_entry_distance(origin, direction, length, a, b, radius + size)
-                    .map(|distance| (distance, Some(critical)))
+                    .map(|distance| (distance, critical, fixed))
             })
-            .min_by(|left, right| left.0.total_cmp(&right.0))
+            .min_by(|left, right| right.2.cmp(&left.2).then(left.0.total_cmp(&right.0)))
+            .map(|(distance, critical, _)| (distance, Some(critical)))
     }
 
     /// Whether a hit at height `impact_y` that entered the body as
@@ -269,7 +284,7 @@ impl TargetPose {
             return (segment_distance(point, a, b) - self.radius).max(0.0);
         }
         self.placed()
-            .map(|(a, b, radius, _)| (segment_distance(point, a, b) - radius).max(0.0))
+            .map(|(a, b, radius, ..)| (segment_distance(point, a, b) - radius).max(0.0))
             .fold(f64::INFINITY, f64::min)
     }
 }
@@ -676,6 +691,7 @@ mod tests {
             b: centre,
             radius,
             critical,
+            fixed: true,
         }
     }
 
@@ -706,6 +722,7 @@ mod tests {
             b: [0.9, 1.2, 0.0],
             radius: 0.1,
             critical: false,
+            fixed: true,
         }];
         let shot = level([0.8, 1.2, -5.0], [0.0, 0.0, 1.0]);
         let facing_ahead = shaped([0.0; 3], 0.0, &arm);
@@ -738,6 +755,36 @@ mod tests {
         assert!(!chest.critical);
         assert_eq!(chest.damage, 20.0);
         assert!(at(2.1).is_none());
+    }
+
+    /// The physics body's fixed shapes decide a ray that enters one, even
+    /// behind a posed hit-list shape it entered first (the client's
+    /// `0x7FF789B00C50`): a Training Bot's assembly holds its posed chest
+    /// where its fixed head is, and the client's shots there hit the head
+    /// (game runs 2026-11-22, refs report `CombatFeel.md`). A ray that
+    /// misses every fixed shape meets the posed ones.
+    #[test]
+    fn the_fixed_shapes_decide_before_the_posed_ones() {
+        let posed = |centre, radius, critical| HitShape {
+            fixed: false,
+            ..sphere(centre, radius, critical)
+        };
+        let body = [
+            posed([0.0, 1.66, 0.0], 0.48, false),
+            posed([0.0, 3.0, 0.0], 0.3, true),
+            sphere([0.0, 1.98, 0.0], 0.44, true),
+            sphere([0.0, 1.37, 0.0], 0.48, false),
+        ];
+        let target = [(1, shaped([0.0, 0.0, 10.0], 0.0, &body))];
+        let at = |height| first(&level([0.0, height, 0.0], [0.0, 0.0, 1.0]), &target);
+        // The posed chest is entered 9.555 m out, the fixed head 9.583 m.
+        let head = at(1.84).unwrap();
+        assert!(head.critical);
+        assert!((head.distance - (10.0 - (0.44f64.powi(2) - 0.14f64.powi(2)).sqrt())).abs() < 1e-9);
+        // Above the fixed shapes, a posed head is struck.
+        let high = at(3.0).unwrap();
+        assert!(high.critical);
+        assert!((high.distance - 9.7).abs() < 1e-9);
     }
 
     #[test]
@@ -877,13 +924,14 @@ mod tests {
         assert!((far.damage - 26.696_491_205_974_56).abs() < 1e-9);
     }
 
-    /// A Practice Range Training Bot as its hit shapes place it, posed at
-    /// the start of its clock (its idle pose, hovering 0.5 m up with its
-    /// arms down, and the first frame of its bob), facing its yaw: a shot from
-    /// its side passing under it 0.15 m above its feet misses, where its
-    /// capsule (from the feet) took it; a shot at its 2 m eye hits the head
-    /// and is critical; one at 1.5 m, where the rest pose had the head,
-    /// hits the chest and is not.
+    /// A Practice Range Training Bot as its hit shapes place it: its seven
+    /// hit-list shapes posed at the start of its clock, then its physics
+    /// body's seven fixed ones (its idle pose's first frame, hovering 0.5 m
+    /// up with its arms down), facing its yaw: a shot from its side passing
+    /// under it 0.15 m above its feet misses, where its capsule (from the
+    /// feet) took it; a shot at its 2 m eye hits the head and is critical;
+    /// one at 1.5 m, where the rest pose had the head, hits the chest and
+    /// is not.
     #[test]
     #[ignore = "requires a derived 104319 Practice Range scene"]
     fn a_practice_bot_is_hit_by_its_shapes() {
@@ -896,7 +944,9 @@ mod tests {
             .unwrap();
         let bot = scene.bots().iter().find(|bot| bot.spawn.team == 1).unwrap();
         let target = scene.bot_target(bot);
-        assert_eq!(target.shapes.as_ref().map(|shapes| shapes.len()), Some(7));
+        let shapes = target.shapes.clone().unwrap();
+        assert_eq!(shapes.len(), 14);
+        assert_eq!(shapes.iter().filter(|shape| shape.fixed).count(), 7);
         let (sin, cos) = target.yaw.sin_cos();
         let forward = [sin, 0.0, cos];
         // The body's +X, to one side.
@@ -925,10 +975,11 @@ mod tests {
         let head = shoot(&target, point(8.0, 0.0, 2.0), back).unwrap();
         assert!(head.critical, "{head:?}");
         assert_eq!(head.damage, 40.0);
-        // The head sphere: 0.44 m round, its centre 1.98 m up; the bot is
-        // posed at the start of its clock, where the hover bob (`391F`)
-        // leans the head 1.5 cm back from the idle pose (7.57 m).
-        assert!((head.distance - 7.58).abs() < 0.01, "{head:?}");
+        // The fixed head sphere: 0.44 m round, its centre 1.9794 m up and
+        // 0.0076 m back.
+        let reach =
+            8.0 + 0.007_644_56 - (0.44_f64.powi(2) - (2.0 - 1.979_360_3_f64).powi(2)).sqrt();
+        assert!((head.distance - reach).abs() < 1e-6, "{head:?}");
         let chest = shoot(&target, point(8.0, 0.0, 1.5), back).unwrap();
         assert!(!chest.critical, "{chest:?}");
         assert_eq!(chest.damage, 20.0);
