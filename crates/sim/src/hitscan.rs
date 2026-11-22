@@ -224,7 +224,8 @@ impl PlaceableRays {
             let back = [-turn[0], -turn[1], -turn[2], turn[3]];
             let offset = std::array::from_fn(|k| origin[k] - f64::from(frame.translation[k]));
             let reach = hit.map_or(length, |hit| hit.distance);
-            let local = part.cast_ray(rotate(back, offset), rotate(back, direction), reach, mask)?;
+            let local =
+                part.cast_ray(rotate(back, offset), rotate(back, direction), reach, mask)?;
             if let Some(found) = local.filter(|found| found.distance < reach) {
                 let point = rotate(turn, found.point);
                 hit = Some(RayHit {
@@ -1166,8 +1167,16 @@ mod tests {
             vec![(2, 0x8000_0003, 0, wall(0.0))],
         );
         let cast = |caster: Option<u32>, mask, animated| {
-            rays.cast_ray(&map, caster, [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], 50.0, mask, animated)
-                .unwrap()
+            rays.cast_ray(
+                &map,
+                caster,
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+                50.0,
+                mask,
+                animated,
+            )
+            .unwrap()
         };
         let distance = |caster: Option<u32>| cast(caster, 0x1FDF, false).unwrap().distance;
         assert_eq!(distance(None), 10.0);

@@ -556,7 +556,12 @@ impl SceneAssets {
         let ray_parts = ray_parts
             .into_iter()
             .map(|(group, entity, index, part)| {
-                (group, entity, contacts.group_shapes(group).start + index, part)
+                (
+                    group,
+                    entity,
+                    contacts.group_shapes(group).start + index,
+                    part,
+                )
             })
             .collect();
         let placeable_rays = Arc::new(PlaceableRays::new(
