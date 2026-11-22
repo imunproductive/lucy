@@ -487,24 +487,6 @@ variables
 		11: PunchTaken
 }
 
-rule("Match time")
-{
-	event
-	{
-		Ongoing - Global;
-	}
-
-	actions
-	{
-		Wait(0.250, Ignore Condition);
-		Set Match Time(1);
-		Wait(1.100, Ignore Condition);
-		Set Match Time(1);
-		Wait(1.100, Ignore Condition);
-		Set Match Time(3600);
-	}
-}
-
 rule("Team 1 stands on point A")
 {
 	event
@@ -873,8 +855,9 @@ fn a_workshop_rule_runs_on_each_player_event() {
         write_channel(&mut payload, &[(0, loaded)], &[]).unwrap();
         watcher.client.send(ACK, payload.into_bytes());
     }
-    // "Match time" ends Assemble and Setup by 2.35 s; the players pick
-    // Doomfist in the Round.
+    // Skirmish (`0D76`) has no assembly or setup: the players pick
+    // Doomfist once their worlds settle. (A Set Match Time(1) here would
+    // end the game a second later: `0D76` ends it when its clock runs out.)
     let world = puncher.client.now();
     pump_within(
         &mut [puncher, punched],

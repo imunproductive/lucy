@@ -608,15 +608,15 @@ fn assert_range_mode_frame(graphs: &orpheus_script::graph::GraphStore, chunk: &R
     assert!(!bits.bit().unwrap());
     // Its ten remote states, in `m_remoteSyncNodes` order. A running state
     // is a present bit and its active bit, then its payload: a
-    // SendGameMessage (`STU_38EE1100`) its reply flag, off; a Stack nothing
-    // in an observer frame. A state left out is a bit 0: st0, the UX
-    // presenter `STU_62755D14` (an observer frame leaves presenters to the
-    // client); st8, `0702` on `0071`, which nobody sent; st12, #3179's
-    // Stack on st17's true subgraph.
+    // SendGameMessage (`STU_38EE1100`) its reply flag, off; a Stack or the
+    // UX presenter `STU_62755D14` (st0; the mode entity's presenters go in
+    // its frames, `SnapshotEncoder::with_presenters`) nothing in an
+    // observer frame. A state left out is a bit 0: st8, `0702` on `0071`,
+    // which nobody sent; st12, #3179's Stack on st17's true subgraph.
     let send = Some(1);
     let stack = Some(0);
     for (state, payload) in [
-        (0, None),
+        (0, stack),
         (1, send),  // `0727`: the controllers open hero select
         (3, send),  // `0694`
         (4, stack), // #27536
