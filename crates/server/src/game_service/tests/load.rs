@@ -223,7 +223,9 @@ impl Wire {
     /// within 100 ms over UDP.
     fn take(&self) -> Option<Vec<u8>> {
         match self {
-            Self::Virtual { network, address } => network.take(*address),
+            Self::Virtual { network, address } => {
+                network.take(*address).map(|(_, datagram)| datagram)
+            }
             Self::Udp(socket) => {
                 let mut buffer = [0; MAX_DATAGRAM];
                 let count = socket.recv(&mut buffer).ok()?;

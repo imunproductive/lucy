@@ -49,16 +49,16 @@ use lucy_wire::{
 };
 
 use super::{
-    DebugKill, DebugSeat, FIRST_AI_CONNECTION, LATENCY_STEP, MatchSnapshot, OpenReply, Opening,
-    Peer, Player, PlayerSnapshot, PlayerState, RECEIVE_BATCH, Room, RoomPlate, RoomRequest,
-    RoomSettings, RoomSnapshot, RoomState, RoomWorkshop, Transport, WorldPlayer, WorldStart, ai,
-    check_scene, invalid, leave_message, pick_message, player_entity, router::Inbound, send,
-    spawn_number, take_placeable_removals, timing::TickTiming, wall_nanoseconds,
+    DebugKill, DebugSeat, FIRST_AI_CONNECTION, LATENCY_STEP, MAX_PONGS, MatchSnapshot, OpenReply,
+    Opening, Peer, Player, PlayerSnapshot, PlayerState, RECEIVE_BATCH, Room, RoomPlate,
+    RoomRequest, RoomSettings, RoomSnapshot, RoomState, RoomWorkshop, Transport, WorldPlayer,
+    WorldStart, ai, check_scene, invalid, leave_message, pick_message, player_entity,
+    router::Inbound, send, spawn_number, take_placeable_removals, timing::TickTiming,
 };
 use crate::{
     clock::{GameClock, Step, next_tick_after},
     connection::{GameConnections, Received, SILENCE_TIME, Timeout},
-    ingress::{IngressError, MessageKind, pong},
+    ingress::{IngressError, MessageKind, Pong},
 };
 
 /// A pass takes at most this many datagrams and requests; more make it
@@ -196,7 +196,16 @@ impl RoomLoop {
         };
         let mut input_ready = self.state.advance_input(now);
         if let Some((missed, late)) = due {
-            self.state.tick(socket, now, missed);
+            self.state.tick(socket, now, missed, clock);
+            // Each tick's frame and its start against its time on the grid:
+            // the wake-up and the datagrams taken first (`timer.rs`).
+            tracing::debug!(
+                target: "lucy::tick",
+                frame = self.state.clock.frame(),
+                late_us = late.as_micros(),
+                missed,
+                "tick"
+            );
             // An AI player's command runs right after the tick that gave
             // it, before whatever comes in next: not when the next
             // datagram, request or tick wakes the loop.
@@ -314,7 +323,13 @@ impl RoomState {
         match inbound {
             Inbound::Datagram(datagram) => {
                 let _receive = phase::enter(Phase::Receive);
-                self.receive(socket, &datagram.bytes, datagram.from, now);
+                self.receive(
+                    socket,
+                    &datagram.bytes,
+                    datagram.from,
+                    datagram.arrived,
+                    now,
+                );
             }
             Inbound::Request(request) => self.handle_request(request, now),
             Inbound::Snapshot(reply) => {
@@ -836,11 +851,14 @@ impl RoomState {
         self.room.world = None;
     }
 
+    /// A datagram of one of the room's games, which the router read at
+    /// `arrived` and the room takes at `now`.
     fn receive(
         &mut self,
         socket: &impl Transport,
         bytes: &[u8],
         address: SocketAddr,
+        arrived: Duration,
         now: Duration,
     ) {
         let Ok(received) = self.links.receive(bytes, address, now) else {
@@ -870,6 +888,17 @@ impl RoomState {
         if let Some(Ok(control)) = received.control {
             let _ = send(socket, control);
         }
+        // A datagram with content is acknowledged at once, on its own: the
+        // client's link round trip (LATENCY) ends when its frame loop reads
+        // the first datagram that acknowledges the one it timed, so an
+        // acknowledgement that waited for the next tick's frame added up
+        // to a tick and its work (refs/reports/Latency.md §2, §5: 17 ms
+        // → 10 ms at 60 FPS). The frames go as before.
+        if received.payload.is_some()
+            && let Ok(ack) = self.links.acknowledge(connection)
+        {
+            let _ = send(socket, ack);
+        }
         if received.closed {
             self.report_leave(connection, "his game closed its link");
             self.retire(connection);
@@ -891,21 +920,21 @@ impl RoomState {
         };
         let Peer {
             ingress,
-            egress,
             loading,
             world,
             reported_latency,
             hero_settings: sent_settings,
+            pongs,
             ..
         } = peer;
         let incoming = ingress.receive(&self.schemas, &payload, |message| {
             match MessageKind::from(message.id) {
                 MessageKind::Ping => {
-                    let received = wall_nanoseconds();
-                    if let Ok(pong) = pong(&message.fields, received, wall_nanoseconds())
-                        && let Ok(bytes) = encode(&self.schemas, pong.id, &pong.fields)
-                    {
-                        let _ = egress.queue_reliable(bytes);
+                    if let Ok(pong) = Pong::new(&message.fields, arrived, now) {
+                        if pongs.len() == MAX_PONGS {
+                            pongs.remove(0);
+                        }
+                        pongs.push(pong);
                     }
                 }
                 MessageKind::MapLoaded => {
@@ -1045,7 +1074,14 @@ impl RoomState {
         self.clock.drain();
     }
 
-    fn tick(&mut self, socket: &impl Transport, now: Duration, missed: u64) {
+    /// The tick at `now`; `clock` reads the time each game's frame leaves.
+    fn tick(
+        &mut self,
+        socket: &impl Transport,
+        now: Duration,
+        missed: u64,
+        clock: &impl Fn() -> Duration,
+    ) {
         let step = self.clock.step(missed, self.connections_pending());
         let (tick, drain, force) = match step {
             Step::Simulate { frame } => (frame, false, false),
@@ -1250,14 +1286,32 @@ impl RoomState {
                     Some(world) if simulate => peer.world.movement(&world.scene, tick),
                     _ => Vec::new(),
                 };
-                peer.send_frame(&mut self.links, socket, connection, tick, movements, drain);
+                peer.send_frame(
+                    &self.schemas,
+                    &mut self.links,
+                    socket,
+                    connection,
+                    tick,
+                    movements,
+                    drain,
+                    clock(),
+                );
             }
         }
         // Games taken out before they connected get nothing but their 20304
         // (server.py `_tick`, `Client.send_frame`).
         for (&connection, peer) in &mut self.homeward {
             if !force && peer.open {
-                peer.send_frame(&mut self.links, socket, connection, tick, Vec::new(), true);
+                peer.send_frame(
+                    &self.schemas,
+                    &mut self.links,
+                    socket,
+                    connection,
+                    tick,
+                    Vec::new(),
+                    true,
+                    clock(),
+                );
             }
         }
     }

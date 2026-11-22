@@ -129,33 +129,82 @@ impl fmt::Display for InvalidPingField {
 
 impl Error for InvalidPingField {}
 
-/// The two wall-clock readings belong to message dispatch, including when a
-/// reliable ping has waited behind a missing ordinal.
-pub fn pong(ping: &Fields, received_ns: u64, sent_ns: u64) -> Result<Message, InvalidPingField> {
-    let index = match ping.get(&PING_INDEX) {
-        None => 0,
-        Some(Value::Unsigned(index)) if u32::try_from(*index).is_ok() => *index,
-        _ => return Err(InvalidPingField(PING_INDEX)),
-    };
-    let mut stamps = match ping.get(&PING_STAMPS) {
-        None => Vec::new(),
-        Some(Value::Array(stamps))
-            if stamps
-                .iter()
-                .all(|stamp| matches!(stamp, Value::Unsigned(_))) =>
-        {
-            stamps.clone()
+/// A pong (20306) for a client's ping (21610), waiting for the frame that
+/// carries it: the ping's index, its two stamps and the server's first
+/// two. The third goes in as the frame leaves ([`Pong::sent`]).
+///
+/// The stamps (client research, 1.74; refs/reports/Latency.md "Pong"):
+/// the client makes 21610 with `[made, 0]` (`0x7FF7896EC520`, every
+/// 0.25 s) and its channel writes the second as the datagram leaves (the
+/// message writer `0x7FF789B7ADE0` sets 21610's stamp 1, and 20306's stamp
+/// 4, to the send time). The same shared code on the server appended the
+/// receive time to 21610 (the reader `0x7FF789B7A480`), the server's
+/// handler its own time, and the writer the send time: `[c made, c sent,
+/// s received, s made, s sent]`. The client's handler (`0x7FF7896E89E0`)
+/// appends its receive time (s5) and takes `(s5 − s1) − (s4 − s2)` (the
+/// subtraction only when it is the smaller) as PING, the round trip less
+/// the server's hold: so "sent" is when the datagram leaves, not when the
+/// ping was read. It puts `s3 × 10⁻⁹` into a ring (component 105 +0x36D8)
+/// that no code reads, so the made stamp has no effect; it is the
+/// handler's time by the symmetry of the client's own stamps. With two
+/// server stamps (the Python reference's) the client took its own receive
+/// time for s4, so `s4 − s2` mixed its clock with ours (wall time since
+/// 1970 then): a PING of 1.8·10⁹ s (Latency.md §6).
+///
+/// The server's stamps are the service's monotonic clock in nanoseconds;
+/// the client only subtracts them from each other.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Pong {
+    index: u64,
+    stamps: Vec<Value>,
+}
+
+impl Pong {
+    /// The pong for `ping`, read at `received` (its datagram's arrival) and
+    /// answered at `made`.
+    pub fn new(
+        ping: &Fields,
+        received: Duration,
+        made: Duration,
+    ) -> Result<Self, InvalidPingField> {
+        let index = match ping.get(&PING_INDEX) {
+            None => 0,
+            Some(Value::Unsigned(index)) if u32::try_from(*index).is_ok() => *index,
+            _ => return Err(InvalidPingField(PING_INDEX)),
+        };
+        let mut stamps = match ping.get(&PING_STAMPS) {
+            None => Vec::new(),
+            Some(Value::Array(stamps))
+                if stamps
+                    .iter()
+                    .all(|stamp| matches!(stamp, Value::Unsigned(_))) =>
+            {
+                stamps.clone()
+            }
+            _ => return Err(InvalidPingField(PING_STAMPS)),
+        };
+        stamps.extend([
+            Value::Unsigned(nanoseconds(received)),
+            Value::Unsigned(nanoseconds(made)),
+        ]);
+        Ok(Self { index, stamps })
+    }
+
+    /// The message for the frame that leaves at `sent`.
+    pub fn sent(mut self, sent: Duration) -> Message {
+        self.stamps.push(Value::Unsigned(nanoseconds(sent)));
+        Message {
+            id: PONG,
+            fields: Fields::from([
+                (PING_INDEX, Value::Unsigned(self.index)),
+                (PING_STAMPS, Value::Array(self.stamps)),
+            ]),
         }
-        _ => return Err(InvalidPingField(PING_STAMPS)),
-    };
-    stamps.extend([Value::Unsigned(received_ns), Value::Unsigned(sent_ns)]);
-    Ok(Message {
-        id: PONG,
-        fields: Fields::from([
-            (PING_INDEX, Value::Unsigned(index)),
-            (PING_STAMPS, Value::Array(stamps)),
-        ]),
-    })
+    }
+}
+
+fn nanoseconds(time: Duration) -> u64 {
+    u64::try_from(time.as_nanos()).unwrap_or(u64::MAX)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -407,7 +456,7 @@ mod tests {
     }
 
     #[test]
-    fn builds_the_pong_with_exact_stamp_order() {
+    fn builds_the_pong_with_the_three_server_stamps() {
         let ping = Fields::from([
             (0x78, Value::Unsigned(3)),
             (
@@ -415,22 +464,35 @@ mod tests {
                 Value::Array(vec![Value::Unsigned(111), Value::Unsigned(222)]),
             ),
         ]);
-        let reply = pong(&ping, 333, 444).unwrap();
+        let nanos = Duration::from_nanos;
+        let pending = Pong::new(&ping, nanos(333), nanos(444)).unwrap();
+        let reply = pending.sent(nanos(555));
         assert_eq!(reply.id, 20306);
+        // The index, then the count and the stamps: the client's made and
+        // sent, the server's received, made and sent (`Pong`).
         let bytes = encode(&schemas(), reply.id, &reply.fields).unwrap();
-        let mut expected = vec![0, 6, 3, 0, 0, 0, 4, 0, 0, 0];
-        for stamp in [111_u64, 222, 333, 444] {
+        let mut expected = vec![0, 6, 3, 0, 0, 0, 5, 0, 0, 0];
+        for stamp in [111_u64, 222, 333, 444, 555] {
             expected.extend(stamp.to_le_bytes());
         }
         assert_eq!(bytes, expected);
-        let defaults = pong(&Fields::new(), 1, 2).unwrap();
+        let defaults = Pong::new(&Fields::new(), nanos(1), nanos(2))
+            .unwrap()
+            .sent(nanos(3));
         assert_eq!(defaults.fields[&0x78], Value::Unsigned(0));
         assert_eq!(
             defaults.fields[&0x80],
-            Value::Array(vec![Value::Unsigned(1), Value::Unsigned(2)])
+            Value::Array(vec![
+                Value::Unsigned(1),
+                Value::Unsigned(2),
+                Value::Unsigned(3)
+            ])
         );
         let malformed = Fields::from([(0x80, Value::Array(vec![Value::Signed(-1)]))]);
-        assert_eq!(pong(&malformed, 1, 2), Err(InvalidPingField(0x80)));
+        assert_eq!(
+            Pong::new(&malformed, nanos(1), nanos(2)),
+            Err(InvalidPingField(0x80))
+        );
         assert_eq!(MessageKind::from(21610), MessageKind::Ping);
         assert_eq!(MessageKind::from(21601), MessageKind::MapLoaded);
         assert_eq!(MessageKind::from(21603), MessageKind::Other);
@@ -439,7 +501,7 @@ mod tests {
     }
 
     #[test]
-    fn matches_a_python_mixed_frame_and_pong_with_the_runtime_schema() {
+    fn matches_a_python_mixed_frame_with_the_runtime_schema() {
         let schemas = Schemas::game();
         // Python write_channel + tests/test_game_commands.py::record(5000).
         let frame = [
@@ -448,7 +510,7 @@ mod tests {
             6, 0x7f, 0, 0, 0, 0x80, 0x11, 0, 0x29, 0x4b, 0,
         ];
         let mut map = MapReadiness::default();
-        let mut reply = None;
+        let mut ping = None;
         let commands = GameIngress::new()
             .receive(&schemas, &frame, |message| {
                 match MessageKind::from(message.id) {
@@ -458,7 +520,7 @@ mod tests {
                             map.take_due(Duration::from_millis(300), WorldReadiness::default()),
                             Some(MapReadyStep::Ownership)
                         );
-                        reply = Some(pong(&message.fields, 333, 444).unwrap());
+                        ping = Some(message.fields);
                     }
                     kind => panic!("unexpected message kind {kind:?}"),
                 }
@@ -467,13 +529,16 @@ mod tests {
             .commands;
         assert_eq!(commands[0].frame, 5000);
         assert_eq!(commands[1].frame, 5001);
-        let reply = reply.unwrap();
-        // Python messages.encode(20306, match.pong(...)) with the same clocks.
-        let expected = [
-            0, 6, 3, 0, 0, 0, 4, 0, 0, 0, 111, 0, 0, 0, 0, 0, 0, 0, 222, 0, 0, 0, 0, 0, 0, 0, 0x4d,
-            1, 0, 0, 0, 0, 0, 0, 0xbc, 1, 0, 0, 0, 0, 0, 0,
-        ];
-        assert_eq!(encode(&schemas, reply.id, &reply.fields).unwrap(), expected);
+        assert_eq!(
+            ping,
+            Some(Fields::from([
+                (0x78, Value::Unsigned(3)),
+                (
+                    0x80,
+                    Value::Array(vec![Value::Unsigned(111), Value::Unsigned(222)])
+                ),
+            ]))
+        );
     }
 
     #[test]

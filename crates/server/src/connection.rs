@@ -290,6 +290,22 @@ impl GameConnections {
         peer.seal(cipher, packet)
     }
 
+    /// A bare acknowledgement of what the connection has received: a
+    /// control packet with flags ACK and no payload, the form of the
+    /// client's own empty acknowledgements. Its header carries the receive
+    /// window like any packet's, and it takes the next sequence (the egress
+    /// keeps no record of it, so its acknowledgement changes nothing). The
+    /// client's ack processing (`0x7FF789309210`) ends its round-trip
+    /// sample with it like with a frame.
+    pub fn acknowledge(&mut self, connection: u32) -> Result<Outgoing, TransmitError> {
+        self.transmit(Packet {
+            conn: connection,
+            kind: KIND_CONTROL,
+            flags: ACK,
+            ..Packet::default()
+        })
+    }
+
     /// Begin the leave grace period once, preserving its original deadline.
     pub fn begin_leaving(&mut self, connection: u32, now: Duration) -> bool {
         let Some(Connection {

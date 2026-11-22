@@ -44,6 +44,7 @@ impl Peer {
             reported_latency: None,
             hero_settings: hero_settings::SentList::default(),
             send_failure: None,
+            pongs: Vec::new(),
         }
     }
 
@@ -166,20 +167,30 @@ impl Peer {
         Ok(ordinal)
     }
 
-    /// This tick's frame over the peer's link: the queued reliable messages
-    /// and world records, with these movements. A frame that can't be made
-    /// (a record that doesn't encode or fit) is logged when its reason
+    /// This tick's frame over the peer's link, which leaves at `sent`: the
+    /// waiting pongs with that send time, the queued reliable messages and
+    /// world records, with these movements. A frame that can't be made (a
+    /// record that doesn't encode or fit) is logged when its reason
     /// changes.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn send_frame(
         &mut self,
+        schemas: &Schemas,
         links: &mut GameConnections,
         socket: &impl Transport,
         connection: u32,
         tick: u32,
         movements: Vec<EntityUpdate>,
         reliable_only: bool,
+        sent: Duration,
     ) {
-        let sent = self.world.send_frame(
+        for pong in self.pongs.drain(..) {
+            let message = pong.sent(sent);
+            if let Ok(bytes) = encode(schemas, message.id, &message.fields) {
+                let _ = self.egress.queue_reliable(bytes);
+            }
+        }
+        let outcome = self.world.send_frame(
             tick,
             movements,
             reliable_only,
@@ -198,7 +209,7 @@ impl Peer {
                 send(socket, outgoing)
             },
         );
-        let failure = match sent {
+        let failure = match outcome {
             Err(SendError::Select(error)) => Some(error.to_string()),
             _ => None,
         };

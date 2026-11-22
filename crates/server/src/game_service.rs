@@ -45,7 +45,7 @@ use std::{
         mpsc,
     },
     thread::{self, JoinHandle},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
 use indexmap::IndexMap;
@@ -1082,7 +1082,15 @@ struct Peer {
     /// Why the last frame couldn't be sent, as logged: a record that never
     /// fits or encodes stops every frame after it.
     send_failure: Option<String>,
+    /// Pongs for the game's pings, until the next frame carries them with
+    /// its send time ([`crate::ingress::Pong`]); at most [`MAX_PONGS`].
+    pongs: Vec<crate::ingress::Pong>,
 }
+
+/// A game pings every 0.25 s and a frame goes every tick, so pongs only
+/// pile up while its frames don't go (before its link opens); the oldest
+/// go first.
+const MAX_PONGS: usize = 4;
 
 /// A game's reported round trip is logged when it moves this far (ms) from
 /// the last one logged: the client predicts no impact effects on other
@@ -1251,13 +1259,6 @@ fn stopped() -> io::Error {
     io::Error::new(io::ErrorKind::BrokenPipe, "game worker has stopped")
 }
 
-fn wall_nanoseconds() -> u64 {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    u64::try_from(now.as_nanos()).unwrap_or(u64::MAX)
-}
-
 /// Where a room's datagrams go: the UDP socket, or in tests an in-memory
 /// network on a virtual clock (`lockstep.rs`). The router reads what comes
 /// (`router.rs`).
@@ -1291,6 +1292,7 @@ mod messages;
 mod peer;
 mod room;
 mod router;
+mod timer;
 mod timing;
 
 #[cfg(test)]

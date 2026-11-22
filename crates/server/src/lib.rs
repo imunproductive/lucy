@@ -1,6 +1,8 @@
 //! Process wiring for retail build 104319: the Battle.net, lobby and game services.
 
-#![forbid(unsafe_code)]
+// `unsafe` only where the OS must be called: the room threads' timer
+// resolution on Windows (`game_service/timer.rs`), allowed there alone.
+#![deny(unsafe_code)]
 
 pub mod clock;
 pub mod connection;

@@ -2,7 +2,7 @@ use super::*;
 use lockstep::{Client, Lockstep};
 use lucy_content::maps::PRACTICE_RANGE_MAP;
 use lucy_core::bits::{BitReader, BitWriter};
-use lucy_core::tick::FIRST_TICK;
+use lucy_core::tick::{FIRST_TICK, TICK_PERIOD};
 use lucy_wire::{
     entity::GAME_MODE_ENTITY,
     link::{ACK, FIN, KIND_CONTROL, KIND_FRAME, Packet, SYN},
@@ -109,10 +109,20 @@ fn exercise_loading(schemas: Schemas) {
     // The map is loaded at the last tick's time, when the datagram arrives.
     let loaded_at = client.now();
     client.send(ACK, payload.into_bytes());
+    // The room acknowledges the datagram on its own as it takes it, at the
+    // last tick's time, a tick before the next frame
+    // (`GameConnections::acknowledge`). It was the client's fourth (SYN,
+    // ACK, the heartbeat's ACK, this one: sequence 3), so the next
+    // expected is 4, with the three before it arrived.
+    let (acked_at, ack) = client.receive_any();
+    assert!(lockstep::is_bare_ack(&ack), "{ack:?}");
+    assert_eq!((acked_at, ack.ack, ack.ack_bits), (loaded_at, 4, 0b1111));
     let mut received = Vec::new();
+    let mut first_frame = None;
     while received.len() < 3 && client.now() < loaded_at + Duration::from_secs(2) {
         let packet = client.receive();
         assert!(client.window.accept(packet.seq));
+        first_frame.get_or_insert(packet.seq);
         let tick = tick_of(&packet);
         received.extend(
             messages(&schemas, &packet)
@@ -138,12 +148,23 @@ fn exercise_loading(schemas: Schemas) {
         [loaded + 1, loaded + 19, loaded + 25]
     );
     let received: Vec<_> = received.into_iter().map(|(_, message)| message).collect();
+    // The frame after the ACK, which took the sequence before it.
+    assert_eq!(first_frame, Some(ack.seq + 1));
+    // The pong: the ping's index and stamp, then the server's received
+    // (the datagram's arrival), made (the room took it) and sent (its
+    // frame left at the next tick, 16 ms later), in nanoseconds of the
+    // service's clock (`ingress::Pong`).
     assert_eq!(received[0].message.fields[&0x78], Value::Unsigned(17));
-    let Value::Array(stamps) = &received[0].message.fields[&0x80] else {
-        panic!("expected ping timestamps");
-    };
-    assert_eq!(stamps.len(), 3);
-    assert_eq!(stamps[0], Value::Unsigned(25));
+    let nanos = |time: Duration| Value::Unsigned(u64::try_from(time.as_nanos()).unwrap());
+    assert_eq!(
+        received[0].message.fields[&0x80],
+        Value::Array(vec![
+            Value::Unsigned(25),
+            nanos(loaded_at),
+            nanos(loaded_at),
+            nanos(loaded_at + TICK_PERIOD),
+        ])
+    );
 
     client.send(FIN | ACK, Vec::new());
     let until = client.now() + Duration::from_secs(2);
