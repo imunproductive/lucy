@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use orpheus_casc::BuildInfo;
+use lucy_casc::BuildInfo;
 
 use crate::{Install, Result, asset_error, build};
 

@@ -1,5 +1,5 @@
 [package]
-name = "orpheus-assets"
+name = "lucy-assets"
 description = "Derives the server's game data from the local 1.74 install"
 version.workspace = true
 edition.workspace = true
@@ -8,14 +8,14 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
-orpheus-casc.workspace = true
-orpheus-fixed.workspace = true
-orpheus-stu.workspace = true
+lucy-casc.workspace = true
+lucy-fixed.workspace = true
+lucy-stu.workspace = true
 flate2.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
 
 [dev-dependencies]
-orpheus-physics = { workspace = true, features = ["fixtures"] }
-orpheus-stu.workspace = true
-orpheus-testkit.workspace = true
-orpheus-wire.workspace = true
+lucy-physics = { workspace = true, features = ["fixtures"] }
+lucy-stu.workspace = true
+lucy-testkit.workspace = true
+lucy-wire.workspace = true

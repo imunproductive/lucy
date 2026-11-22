@@ -15,11 +15,11 @@
 //! state). Sprays are refused here: their placement state (`STU_861D9015`,
 //! an eye ray against collision) is not run by the server.
 
-use orpheus_script::{
+use lucy_script::{
     wheel,
     wire::{Value, Variables},
 };
-use orpheus_wire::{jam::codec::Value as Field, messages::Message};
+use lucy_wire::{jam::codec::Value as Field, messages::Message};
 
 /// ClientOutInstance 21608.
 pub const COMMUNICATION_ACTION: u32 = 21608;
@@ -63,7 +63,7 @@ pub fn selection(message: &Message) -> Option<(u64, Variables)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orpheus_wire::jam::codec::Fields;
+    use lucy_wire::jam::codec::Fields;
 
     fn choice(action: u64, flag: bool, marker: u64) -> Message {
         let mut entity = Fields::new();

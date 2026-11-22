@@ -1,5 +1,5 @@
 use super::*;
-use orpheus_content::maps::PRACTICE_RANGE_MAP;
+use lucy_content::maps::PRACTICE_RANGE_MAP;
 use sha2::{Digest, Sha256};
 use std::time::Duration;
 
@@ -211,7 +211,7 @@ fn terrain_probe_uses_ramp_speed_and_falls_back_to_hint_height() {
 
 #[test]
 fn patrol_uses_the_shared_capsule_and_team_mask() {
-    use orpheus_physics::{
+    use lucy_physics::{
         collision::cache::{Mesh, Triangle},
         contact::mesh::ContactMesh,
         contact::world::{StaticGeometry, StaticShape},
@@ -268,7 +268,7 @@ fn death_stops_the_bot_and_respawn_restarts_the_route_after_create() {
     // A living bot blocks other bodies with its standing capsule; a dead one
     // blocks nobody.
     let settings = MoverSettings::default();
-    let standing = orpheus_physics::mover::ground::standing_capsule(&settings, bot.position);
+    let standing = lucy_physics::mover::ground::standing_capsule(&settings, bot.position);
     assert_eq!(bot.capsule(&settings), Some(standing));
     bot.died();
     assert_eq!(bot.capsule(&settings), None);
@@ -317,7 +317,7 @@ fn death_stops_the_bot_and_respawn_restarts_the_route_after_create() {
 /// An endless floor at y = 0 for bodies of categories 0x08 and 0x10, as the
 /// probe's triangles and the engine's mesh.
 fn flat_floor() -> (TriangleIndex, Arc<ContactWorld>) {
-    use orpheus_physics::{
+    use lucy_physics::{
         collision::{
             cache::{Mesh, Triangle},
             index::SceneTriangle,
@@ -455,7 +455,7 @@ fn a_knocked_bot_flies_on_its_mover_and_walks_on_once_it_lands() {
 /// walk, comes down and walks on once it stands still.
 #[test]
 fn a_velocity_action_lifts_a_walking_bot_onto_its_mover() {
-    use orpheus_physics::mover::modifiers::{VectorOperation, VelocityElement};
+    use lucy_physics::mover::modifiers::{VectorOperation, VelocityElement};
 
     let (rays, world) = flat_floor();
     let settings = MoverSettings {
@@ -512,11 +512,11 @@ fn a_velocity_action_lifts_a_walking_bot_onto_its_mover() {
 #[test]
 #[ignore = "requires the derived 104319 AI spawner and mover tables"]
 fn fifteen_practice_bots_match_python_roster() {
-    let root = orpheus_testkit::runtime_dir();
+    let root = lucy_testkit::runtime_dir();
     let data = root.join("data");
     let catalog = BotCatalog::load(data.join("ai_spawners_174.json")).unwrap();
     // mover.py `SOLDIER_BODY`, the fallback body.
-    let movers = orpheus_physics::mover::settings::MoverCatalog::load(
+    let movers = lucy_physics::mover::settings::MoverCatalog::load(
         data.join("game_movers_174.json"),
         0x0400_0000_0000_03cf,
     )
@@ -592,11 +592,11 @@ fn fifteen_practice_bots_match_python_roster() {
 #[ignore = "requires the derived 104319 data with its bot graph bundle and navigation"]
 fn practice_range_patrols_walk_around_what_blocks_the_straight_way() {
     use crate::scene_assets::SceneAssets;
-    use orpheus_content::maps::GameMap;
-    use orpheus_core::tick::FIRST_TICK;
-    use orpheus_script::vm::Unknowns;
+    use lucy_content::maps::GameMap;
+    use lucy_core::tick::FIRST_TICK;
+    use lucy_script::vm::Unknowns;
 
-    let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let mut assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
     // The stock bot graphs hold content the VM doesn't know yet.
     assets.set_bot_unknowns(Unknowns::Tolerate);
     let mut scene = assets.prepare(GameMap::practice_range()).unwrap();

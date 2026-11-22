@@ -1,7 +1,7 @@
 use std::fs;
 
-use orpheus_casc::{Game, guid_type};
-use orpheus_testkit::casc::{DEFINITION, GRAPH, MiniInstall, guid};
+use lucy_casc::{Game, guid_type};
+use lucy_testkit::casc::{DEFINITION, GRAPH, MiniInstall, guid};
 
 #[test]
 fn reads_stored_and_bundled_assets_by_guid() {

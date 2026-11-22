@@ -7,7 +7,7 @@
 
 use std::{io, sync::Arc};
 
-use orpheus_lobby::social::{
+use lucy_lobby::social::{
     ANY_SLOT, DAMAGE_SLOT, array, id_of, matches_filters,
     messages::{
         self, CLOSE_GROUP, FIND_GROUPS, GROUP_FINDER, GROUP_ROLES, LIST_GROUP, UNWATCH_GROUPS,
@@ -15,7 +15,7 @@ use orpheus_lobby::social::{
     },
     structure, unsigned,
 };
-use orpheus_wire::jam::codec::Fields;
+use lucy_wire::jam::codec::Fields;
 
 use crate::lobby::{
     peer::Peer,

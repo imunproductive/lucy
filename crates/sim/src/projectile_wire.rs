@@ -29,9 +29,9 @@
 
 use std::io;
 
-use orpheus_core::bits::{BitError, BitWriter};
-use orpheus_physics::static_ray::Vec3;
-use orpheus_wire::entity::{Create, EntityUpdate, Movement, Operation, SkinTheme};
+use lucy_core::bits::{BitError, BitWriter};
+use lucy_physics::static_ray::Vec3;
+use lucy_wire::entity::{Create, EntityUpdate, Movement, Operation, SkinTheme};
 
 use crate::{projectiles::FIELD_ENTITY, scene::filter_component};
 
@@ -274,7 +274,7 @@ mod tests {
             panic!("projectile create")
         };
         check(
-            &orpheus_wire::entity::create(0, &definition, 0).unwrap(),
+            &lucy_wire::entity::create(0, &definition, 0).unwrap(),
             350,
             "b21c030000000000801e31000000000000000000000000000000000000e00f0000e00f0000e00f0000e00f00",
         );
@@ -397,7 +397,7 @@ mod tests {
                 panic!("field create")
             };
             check(
-                &orpheus_wire::entity::create(0, &definition, 0).unwrap(),
+                &lucy_wire::entity::create(0, &definition, 0).unwrap(),
                 bits,
                 expected,
             );

@@ -2,7 +2,7 @@
 import json
 from pathlib import Path
 
-# ORPHEUS's statescript names (aliases such as "HeroSelect" for STU_0E913A0B), accepted as class keys.
+# Lucy's statescript names (aliases such as "HeroSelect" for STU_0E913A0B), accepted as class keys.
 NAMES_JSON = Path(__file__).resolve().parents[2] / "crates" / "fixed" / "data" / "statescript_names.json"
 
 FUNC_ROLES = ("evaluate", "execute", "reader", "block", "writer", "run", "construct", "factory", "destroy", "type_tag")
@@ -14,7 +14,7 @@ DATA_ROLES = ("descriptor", "typeinfo", "node_vtable", "record", "runtime_vtable
 # runtime state object and the bit stream, not on the STU instance.
 STU_ARG = {("config", "evaluate"): 3, ("condition", "evaluate"): 3, ("action", "execute"): 3, ("action", "run"): 3}
 ARG_REGS = ("rcx", "rdx", "r8", "r9")
-# Field flags as the statescript property codec uses them (ORPHEUS research/ida/extract_statescript_codecs.py:
+# Field flags as the statescript property codec uses them (Lucy research/ida/extract_statescript_codecs.py:
 # skipped when flags & 8, flags & 0x10 without an owner frame, flags & 0x20 without a full frame).
 NET_FLAGS = ((8, "never sent"), (0x10, "owner frames only"), (0x20, "full frames only"))
 PRIM_SIZE = {
@@ -47,7 +47,7 @@ class Classes:
         self._fields = {}
         self._names_json = None
 
-    # ---------------------------------------------------------------- ORPHEUS names
+    # ---------------------------------------------------------------- Lucy names
     def _names(self):
         if self._names_json is None:
             try:
@@ -57,12 +57,12 @@ class Classes:
         return self._names_json
 
     def alias(self, h):
-        """ORPHEUS alias of class h (statescript_names.json "STU_<H>": {"alias": ...}) or None."""
+        """Lucy alias of class h (statescript_names.json "STU_<H>": {"alias": ...}) or None."""
         v = self._names().get("STU_" + hx(h))
         return v.get("alias") if isinstance(v, dict) else None
 
     def alias_hash(self, name):
-        """Class hash of an ORPHEUS name (an alias, or a name keyed with {"hash": H}), case-insensitive."""
+        """Class hash of a Lucy name (an alias, or a name keyed with {"hash": H}), case-insensitive."""
         low = name.lower()
         for k, v in self._names().items():
             if not isinstance(v, dict):
@@ -95,7 +95,7 @@ class Classes:
                 ah = self.alias_hash(s)
                 if ah is not None and self.idx.stu(hx(ah)):
                     return ah, {"via": "alias"}
-                return None, "%s: no class, ORPHEUS alias, address or index name" % key
+                return None, "%s: no class, Lucy alias, address or index name" % key
         else:
             try:
                 rva = self.idx.to_rva(s)

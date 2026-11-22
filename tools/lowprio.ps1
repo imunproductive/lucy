@@ -5,7 +5,7 @@
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tools/lowprio.ps1
 #
 # Every 2 s it lowers cargo, rustc, the linkers, nextest and every test or server
-# binary that runs from a build folder (a path with \target or \orpheus-wt\target-).
+# binary that runs from a build folder (a path with \target or \lucy-wt\target-).
 # A program started from elsewhere (the user's release server in D:\Temp) keeps its priority.
 param([int]$Seconds = 2)
 $tools = 'cargo', 'rustc', 'rust-lld', 'lld-link', 'link', 'cargo-nextest', 'cargo-clippy', 'clippy-driver', 'rustfmt', 'build-script-build'

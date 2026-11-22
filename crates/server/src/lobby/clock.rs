@@ -1,11 +1,11 @@
-//! Tests: the lobby on a virtual clock ([`orpheus_lobby::clock::Clock`]).
+//! Tests: the lobby on a virtual clock ([`lucy_lobby::clock::Clock`]).
 
 use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
 
-use orpheus_lobby::clock::Clock;
+use lucy_lobby::clock::Clock;
 
 /// A virtual clock at zero that only the test moves.
 #[derive(Clone, Default)]

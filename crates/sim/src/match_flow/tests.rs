@@ -7,7 +7,7 @@ use crate::{
         tests::{CONTROL_RATES, ELIMINATION_RATES, SIDED_RATES},
     },
 };
-use orpheus_content::maps::MapObjective;
+use lucy_content::maps::MapObjective;
 
 const STEP: f64 = 1.0 / 62.5;
 const A: [f64; 3] = [100.0, 0.0, 0.0];

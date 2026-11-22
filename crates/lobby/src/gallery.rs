@@ -9,7 +9,7 @@ use crate::{
     templates::IN_CONNECT,
     transport::LobbyMessage,
 };
-use orpheus_wire::{
+use lucy_wire::{
     entity::SkinTheme,
     jam::codec::{Fields, Value},
 };

@@ -7,7 +7,7 @@
 
 use std::{io, sync::Arc};
 
-use orpheus_lobby::accounts::Account;
+use lucy_lobby::accounts::Account;
 
 use crate::lobby::{
     Lobby,

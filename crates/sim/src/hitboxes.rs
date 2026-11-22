@@ -1,5 +1,5 @@
 //! The shapes a shot hits on each body (`game_hitboxes_174.json`, derived
-//! by `orpheus-assets`, whose `hitboxes` module says where they come from):
+//! by `lucy-assets`, whose `hitboxes` module says where they come from):
 //! spheres and capsules in the body's frame (the bots' in their idle pose,
 //! the heroes' at rest), its origin at the feet, Y up and +Z forward, each
 //! critical or not. They are the shapes of the model's physics body, fixed
@@ -18,9 +18,9 @@
 
 use std::{collections::HashMap, fs, io, path::Path, sync::Arc};
 
-use orpheus_core::guid::parse_guid;
-use orpheus_physics::static_ray::Vec3;
-use orpheus_script::vm::Hardpoints;
+use lucy_core::guid::parse_guid;
+use lucy_physics::static_ray::Vec3;
+use lucy_script::vm::Hardpoints;
 use serde::Deserialize;
 
 /// A hit shape in the body's frame: a capsule from `a` to `b`, a sphere

@@ -10,7 +10,7 @@
 use serde_json::{Map, Value as Json};
 
 use crate::accounts::Profile;
-use orpheus_wire::jam::codec::Value;
+use lucy_wire::jam::codec::Value;
 
 pub const SOCIAL_OUT: u32 = 0x75d3_2ae2;
 pub const RANKED_OUT: u32 = 0x17cc_bfb2;

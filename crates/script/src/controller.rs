@@ -43,7 +43,7 @@ use crate::{
     },
     wire::{Value, Variables},
 };
-use orpheus_wire::entity::GAME_MODE_ENTITY;
+use lucy_wire::entity::GAME_MODE_ENTITY;
 
 /// The PvP controller graph (and the Practice Range `005A`'s).
 pub const PVP_CONTROLLER: u32 = 0x0c90;
@@ -80,7 +80,7 @@ const ASSUMED: &[(&str, &str)] = &[
     // controller, retail runs `0215` for him); `0215` rid15/rid26 of the
     // victim #393. rid15 wants a hostile victim, not the killer, with
     // neither tag `06AD` nor `031D` (its none-of list): the match applies
-    // that before it sends `0093` (`orpheus_sim::announcer::counted_victim`).
+    // that before it sends `0093` (`lucy_sim::announcer::counted_victim`).
     ("STU_AC829876", "passes: a human owner, a counted victim"),
     // `288B` rid255/rid256 on a pick: #34707e and #32791 (`288B`'s
     // presence variable) for ForCodeSynced st120. Meaning unknown; left
@@ -156,7 +156,7 @@ pub struct ControllerWorld {
     /// `STU_93DCDDFD` of the controller reads it, never the body's.
     pub hero: Option<u64>,
     /// Whether the possessed body is dead: its dead flag #478e, which
-    /// `288B` st95 reads (no graph writes it; `orpheus_script::bot::DEAD_FLAG`).
+    /// `288B` st95 reads (no graph writes it; `lucy_script::bot::DEAD_FLAG`).
     pub body_dead: bool,
     /// The possessed body's entity variables the graphs read, as the body's
     /// script holds them, stacked values included
@@ -953,7 +953,7 @@ mod tests {
     /// unset mode variable reads its schema default (#9548 → `254E`).
     /// Loaded once a test: several start the controller more than once.
     static GRAPHS: std::sync::LazyLock<Arc<GraphStore>> = std::sync::LazyLock::new(|| {
-        let root = orpheus_testkit::runtime_dir();
+        let root = lucy_testkit::runtime_dir();
         Arc::new(GraphStore::load_runtime(root.join("data"), "game_graphs_174.json.gz").unwrap())
     });
 
@@ -967,9 +967,9 @@ mod tests {
 
     /// `hero` as the catalog lists him.
     fn playable(hero: u64) -> PlayableHero {
-        let root = orpheus_testkit::runtime_dir();
+        let root = lucy_testkit::runtime_dir();
         let catalog =
-            orpheus_content::heroes::HeroCatalog::load(root.join("data/game_heroes_174.json"))
+            lucy_content::heroes::HeroCatalog::load(root.join("data/game_heroes_174.json"))
                 .unwrap();
         let listed = catalog.get(hero).unwrap();
         PlayableHero {
@@ -1004,7 +1004,7 @@ mod tests {
         };
         assert_eq!(limit(RANGE, 0), Some(Value::Integer(1)));
         assert_eq!(
-            limit(RANGE, orpheus_content::maps::PRACTICE_RANGE_RULESET),
+            limit(RANGE, lucy_content::maps::PRACTICE_RANGE_RULESET),
             None
         );
         // Escort under `0C0:CE` (9548 = `254E`, the hero limit kept) runs
@@ -1033,7 +1033,7 @@ mod tests {
     fn client_requests_drive_hero_select_in_the_vm() {
         use crate::codecs::CodecTable;
         use crate::snapshot::{SnapshotEncoder, View};
-        use orpheus_content::heroes::{ANA, DAMAGE_ROLE};
+        use lucy_content::heroes::{ANA, DAMAGE_ROLE};
         let state = |open, pick| Some(HeroSelectState { open, pick });
         let codecs = CodecTable::client();
         let projects = |script: &ControllerScript| {
@@ -1328,7 +1328,7 @@ mod tests {
     #[test]
     #[ignore = "requires the derived 104319 graph bundle"]
     fn a_hero_switch_lands_in_the_controller_s_variables() {
-        use orpheus_content::heroes::ANA;
+        use lucy_content::heroes::ANA;
         for mode in [RANGE, ESCORT] {
             let mut script = start(mode);
             assert_eq!(script.hero_switch(), None);

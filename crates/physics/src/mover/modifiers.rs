@@ -21,7 +21,7 @@
 //! 0.5 to the speed scalar and sets the crouch intent to 0.
 //!
 //! Mod ids and what they change (the mover profile sits at mover +0x418 +
-//! the STU offset, `orpheus_assets::heroes::movers`):
+//! the STU offset, `lucy_assets::heroes::movers`):
 //!
 //! - 0 every move speed (a scale), 1 accel_ground, 2 accel_air, 3
 //!   accel_air_touching, 7 decel_air_per_speed, 9 decel_air_base_speed (with
@@ -49,7 +49,7 @@
 use std::{cmp::Ordering, collections::BTreeMap};
 
 use crate::mover::settings::MoverSettings;
-use orpheus_wire::commands::{FRAME_HALF, frame_distance};
+use lucy_wire::commands::{FRAME_HALF, frame_distance};
 
 pub const JUMP_INTENT: u8 = 20;
 pub const CROUCH_INTENT: u8 = 21;

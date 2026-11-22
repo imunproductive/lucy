@@ -1,7 +1,7 @@
 //! Battle.net RPC framing for a WebSocket binary message.
 //!
 //! Each frame has a big-endian u16 header length, a protobuf Header, and
-//! the protobuf body. The descriptor set is the client's, embedded by `orpheus-fixed`.
+//! the protobuf body. The descriptor set is the client's, embedded by `lucy-fixed`.
 
 use std::{error::Error, fmt};
 
@@ -69,7 +69,7 @@ pub struct Protocol {
 impl Protocol {
     /// The client's Battle.net services.
     pub fn client() -> Self {
-        Self::from_bytes(orpheus_fixed::BNET_DESCRIPTORS).expect("the embedded descriptors load")
+        Self::from_bytes(lucy_fixed::BNET_DESCRIPTORS).expect("the embedded descriptors load")
     }
 
     pub fn from_bytes(data: &[u8]) -> Result<Self, ProtocolError> {

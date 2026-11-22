@@ -32,8 +32,8 @@ use std::{
 };
 
 use indexmap::IndexMap;
-use orpheus_content::catalog::ItemDb;
-use orpheus_wire::jam::codec::{Fields, Value, id16};
+use lucy_content::catalog::ItemDb;
+use lucy_wire::jam::codec::{Fields, Value, id16};
 
 use crate::{
     accounts::{Account, Accounts, Profile},

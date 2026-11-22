@@ -12,10 +12,10 @@ Messages
   where both strings are the image's empty string (the most common .data pointer into .rdata, it
   points at a 0 byte). `items` are 0x30-byte records `{name*, u32 type, u32 offset, u32 size,
   i32 count, inner*, resize*, ...}`, type 17 ends a list, type 14 nests `inner`, `resize != 0`
-  marks an array. This decodes to exactly ORPHEUS's game_schemas.json / lobby_schemas.json.
+  marks an array. This decodes to exactly Lucy's game_schemas.json / lobby_schemas.json.
 - Protocol classes: vtables whose slot 3 is `mov eax, crc; ret`, slots 5/6 `mov eax, first/end id`.
   The game link's protocol table is built by the function that constructs the most protocol
-  objects (wire index = construction order; checked against ORPHEUS's PROTOCOLS).
+  objects (wire index = construction order; checked against Lucy's PROTOCOLS).
 - Message classes: vtable whose slot 2 is the `lea rax, [info]; ret` stub of the message's info.
 - Dispatch: the message id getter is `call [vtbl+0x10]; movzx eax, word [rax+0x1C]` (info id).
   Each call site of it is run through a small switch interpreter (add/sub/cmp/test/jcc,
@@ -54,7 +54,7 @@ import pefile
 
 from . import comp
 
-# Labels from the ORPHEUS server (this repo, read only) and kjs notes. Names, never
+# Labels from the Lucy server (this repo, read only) and kjs notes. Names, never
 # addresses: everything else comes from the image.
 GAME_LINK_PROTOCOL_NAMES = {  # crates/wire/src/messages.rs PROTOCOLS
     0xC77F6403: "ClientInInstance",
@@ -68,7 +68,7 @@ GAME_LINK_PROTOCOL_NAMES = {  # crates/wire/src/messages.rs PROTOCOLS
     0xCF043764: "ClientOutSpectate",
 }
 
-MESSAGE_LABELS = {  # ORPHEUS constants (crate/file in the value)
+MESSAGE_LABELS = {  # Lucy constants (crate/file in the value)
     20300: "pending game (kjs: 20300..20322 dispatcher)",
     20304: "leave game (server/lobby/matchmaker)",
     20306: "pong (server/ingress.rs)",
@@ -122,25 +122,25 @@ MESSAGE_LABELS = {  # ORPHEUS constants (crate/file in the value)
 
 COMPONENT_LABELS = {  # (name or None, label, source)
     22: (None, "projectile spawn", "kjs notes"),
-    26: (None, "team filter (one id field)", "kjs notes, ORPHEUS wire/entity.rs"),
+    26: (None, "team filter (one id field)", "kjs notes, Lucy wire/entity.rs"),
     29: ("MPlayerComponentData", "player: lobby id, battleTag, level, locale, group, party, platform, ranks, moderator",
-         "ORPHEUS wire/entity.rs"),
+         "Lucy wire/entity.rs"),
     35: (None, "pending shot records (+0xB0 list, +0xB8 count)", "kjs notes"),
-    44: ("MECPossessorData", "possessor: current, view target, primary possessable", "ORPHEUS wire/entity.rs"),
+    44: ("MECPossessorData", "possessor: current, view target, primary possessable", "Lucy wire/entity.rs"),
     50: (None, "ProjectileVisual init", "kjs notes"),
     51: (None, "health: 16 health, 16 armour, 16 shield pools (20 bytes) + u32, u32, entity, u8, u8; "
-             "+0x4C0 combat event queue (25000)", "ORPHEUS wire/entity.rs, IDA-questions"),
-    59: (None, "local command/aim: view angles, 25001 hit list +0x12D0", "ORPHEUS wire/combat_messages.rs, IDA-questions"),
-    64: (None, "Tab board stats", "kjs notes, ORPHEUS wire/entity.rs"),
+             "+0x4C0 combat event queue (25000)", "Lucy wire/entity.rs, IDA-questions"),
+    59: (None, "local command/aim: view angles, 25001 hit list +0x12D0", "Lucy wire/combat_messages.rs, IDA-questions"),
+    64: (None, "Tab board stats", "kjs notes, Lucy wire/entity.rs"),
     74: ("MECGameModeParticipant", "game mode participant: portrait frame, slot, roles, can select a hero",
-         "ORPHEUS wire/entity.rs"),
-    75: (None, "hero (6 ids: hero, skin, ...)", "ORPHEUS wire/entity.rs, kjs notes"),
+         "Lucy wire/entity.rs"),
+    75: (None, "hero (6 ids: hero, skin, ...)", "Lucy wire/entity.rs, kjs notes"),
     84: (None, "observer target (copied from 85 +0x90 to +0x68)", "kjs notes"),
     85: (None, "observer source", "kjs notes"),
-    90: (None, "projectile id reservations (leases)", "ORPHEUS wire/entity.rs, kjs notes"),
+    90: (None, "projectile id reservations (leases)", "Lucy wire/entity.rs, kjs notes"),
     91: (None, "predicted projectile marker", "kjs notes"),
     92: (None, "name override (STU_76AF64F0)", "IDA-questions"),
-    114: (None, "game mode (the first component-114 entity is the mode entity)", "ORPHEUS wire/entity.rs, combat_messages.rs"),
+    114: (None, "game mode (the first component-114 entity is the mode entity)", "Lucy wire/entity.rs, combat_messages.rs"),
     123: ("MECCharacterBody", "character body", "kjs notes"),
 }
 
@@ -1011,7 +1011,7 @@ def build(image: bytes, base: int) -> dict:
     components, cstats = _components(img, empty)
     method = (
         "messages: JamMessageInfo records in .data {empty-string name*, empty-string protocol*, items*, u32 crc, "
-        "u32 id}, items decoded to `fields` (matches ORPHEUS game/lobby schemas); protocol classes = vtables "
+        "u32 id}, items decoded to `fields` (matches Lucy game/lobby schemas); protocol classes = vtables "
         "with slot3 `mov eax, crc; ret` and slots 5/6 first/end id; game-link `channel` = construction order in "
         "the function building the most protocol objects; dispatch = every call of the id getter "
         "(call [vtbl+0x10]; movzx eax, word [rax+0x1C]) outside protocol vtables, run through a switch "

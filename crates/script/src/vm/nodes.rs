@@ -73,7 +73,7 @@ const SERVER_NO_OPS: &[&str] = &[
     // The Workshop Inspector's server-only nodes (no client registration):
     // Enable/Disable Inspector Recording `2425`/`2426` (`STU_B80EB51C`, its
     // bool `m_9A9E72EC`) and Log To Inspector `2E80` (`STU_61975068`). The
-    // retail server recorded for the Inspector; ORPHEUS keeps no Inspector
+    // retail server recorded for the Inspector; Lucy keeps no Inspector
     // (`docs/dev/loose-ends.md`), so they only go on.
     "STU_B80EB51C",
     "STU_61975068",
@@ -86,7 +86,7 @@ const SERVER_NO_OPS: &[&str] = &[
     // end begins (`0F4A` rid57, `0D0B`, `0D76`, `0EC2`, `0F60`; no
     // registration of its own, `python tools/stu.py STU_88DE7AD3`). The
     // server keeps the match's result itself from #7525
-    // (`orpheus_sim::match_flow` `MatchFlow::follow`) for the lobby.
+    // (`lucy_sim::match_flow` `MatchFlow::follow`) for the lobby.
     "STU_86A2C83C",
     "STU_88DE7AD3",
     // A SendGameMessage of its own (`Action_STU_1470EF32` 0x7FF7898164B0,
@@ -212,7 +212,7 @@ const ASSUMED_INERT_STATES: &[&str] = &[
 /// `m_B3867877` the chased variable's index; the base state on the
 /// client, a codec of none), whose subgraph st3 (`STU_1B2CD7F2`, the
 /// event context) the clients get: a mark for the retail rule engine that
-/// the variable moves [inference]; ORPHEUS's engine reads the variables
+/// the variable moves [inference]; Lucy's engine reads the variables
 /// each tick anyway.
 const ASSUMED_PLAIN_STATES: &[&str] = &[
     "STU_0C3A5D53",
@@ -968,7 +968,7 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
             // registration of its own (the base state, `python tools/stu.py
             // STU_109F9DE0`), so the client runs it plain; a server rule,
             // if any, is the match's end itself, which the server keeps
-            // (`orpheus_sim::match_flow::MatchFlow::follow`).
+            // (`lucy_sim::match_flow::MatchFlow::follow`).
             "STU_109F9DE0" => StateKind::Plain,
             // The capture points' `0E8E` stat over time on `m_targets`
             // (`m_B44A42A0`, an `E7FEC166` enum: 41/42 on the two teams
@@ -1026,7 +1026,7 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
             {
                 StateKind::Plain
             }
-            // The map entity states (`orpheus_script::placed`). Animation
+            // The map entity states (`lucy_script::placed`). Animation
             // alias request (`0D32`'s doors): while it is active the client
             // pushes the alias `m_11E0A658` on the entity's animation
             // component (leafall903/ORPHEUS `ANIMATION_ALIAS_STATE.txt`); the

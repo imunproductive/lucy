@@ -6,13 +6,13 @@
 //! release builds do.
 
 use super::*;
-use orpheus_script::{
+use lucy_script::{
     snapshot::{ProjectedSnapshot, View},
     stream::{BodyStream, ChangeKey, DeltaKind, OWNER_SETTLE_FRAMES},
     vm::{State, StateKind, Unknowns},
     wire::Value as ScriptValue,
 };
-use orpheus_wire::{
+use lucy_wire::{
     commands::{Command, JUMP},
     entity::{MOVE_TO, TURNING},
 };
@@ -54,7 +54,7 @@ impl Player {
     }
 
     fn spawn_in(hero: u64, world: WorldDelivery) -> Self {
-        let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+        let mut assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
         assets.set_player_unknowns(Unknowns::Tolerate);
         let scene = assets.prepare(GameMap::practice_range()).unwrap();
         Self::spawn_on(hero, scene, world)
@@ -65,12 +65,12 @@ impl Player {
     /// second.
     fn on_hanamura(hero: u64, feet: [f64; 3], yaw: i32) -> Self {
         const HANAMURA: u64 = 0x0800_0000_0000_0165;
-        let runtime = orpheus_testkit::runtime_dir();
+        let runtime = lucy_testkit::runtime_dir();
         let mut assets = SceneAssets::load(&runtime).unwrap().with_collision_build(
-            crate::scene_assets::install_collision_build(orpheus_testkit::game_dir()),
+            crate::scene_assets::install_collision_build(lucy_testkit::game_dir()),
         );
         assets.set_player_unknowns(Unknowns::Tolerate);
-        let map = orpheus_content::maps::MapCatalog::load(runtime.join("data"))
+        let map = lucy_content::maps::MapCatalog::load(runtime.join("data"))
             .unwrap()
             .game_map(
                 HANAMURA,
@@ -102,7 +102,7 @@ impl Player {
             slot: 0,
             team: 0,
             spawn: 0,
-            room: orpheus_content::maps::SpawnChoice::First,
+            room: lucy_content::maps::SpawnChoice::First,
             card: &player.card,
         };
         player
@@ -133,7 +133,7 @@ impl Player {
             slot: 0,
             team: 0,
             spawn: 0,
-            room: orpheus_content::maps::SpawnChoice::First,
+            room: lucy_content::maps::SpawnChoice::First,
             card: &self.card,
         };
         self.world.queue_commands(self.frame, &[command]);
@@ -216,7 +216,7 @@ fn horizontal(a: [f64; 3], b: [f64; 3]) -> f64 {
 fn mover_dash(scene: &PreparedScene, yaw: i32) -> f64 {
     let hero = scene.heroes().get(TRACER).unwrap();
     let mut mover = scene
-        .player_spawn_mover(hero.body, 0, 0, orpheus_content::maps::SpawnChoice::First)
+        .player_spawn_mover(hero.body, 0, 0, lucy_content::maps::SpawnChoice::First)
         .unwrap();
     let rays = scene.movement_index();
     let command = |frame| Command {
@@ -389,9 +389,9 @@ fn tracer_blink_stops_at_a_wall() {
 #[test]
 #[ignore = "requires the derived 104319 data and the Practice Range collision"]
 fn widowmakers_pull_targets_the_free_spot_her_client_finds() {
-    use orpheus_physics::mover::{Behaviour, MoveKey, MoveTo, Speed};
+    use lucy_physics::mover::{Behaviour, MoveKey, MoveTo, Speed};
     const WIDOWMAKER: u64 = 0x02e0_0000_0000_000a;
-    let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
     let scene = assets.prepare(GameMap::practice_range()).unwrap();
     let body = scene.heroes().get(WIDOWMAKER).unwrap().body;
     // Feet, destination, surface, the client's target (f32 as recorded).
@@ -480,9 +480,9 @@ fn widowmakers_pull_targets_the_free_spot_her_client_finds() {
 /// the pull drove, how it ended, how many the walk took, and the movement
 /// state (as a correction carries it) on every frame.
 struct Pulled {
-    mover: orpheus_physics::mover::Mover,
+    mover: lucy_physics::mover::Mover,
     driven: u32,
-    end: orpheus_physics::mover::MoveEnd,
+    end: lucy_physics::mover::MoveEnd,
     velocity: [f64; 3],
     walked: u32,
     path: Vec<[f64; 3]>,
@@ -495,9 +495,9 @@ fn pull_from_the_spawn(
     walk: Option<[f64; 3]>,
     after: u32,
 ) -> Pulled {
-    use orpheus_physics::mover::{Behaviour, MoveKey, MoveTo, PathWalk, Speed};
+    use lucy_physics::mover::{Behaviour, MoveKey, MoveTo, PathWalk, Speed};
     const WIDOWMAKER: u64 = 0x02e0_0000_0000_000a;
-    let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
     let scene = assets.prepare(GameMap::practice_range()).unwrap();
     let body = scene.heroes().get(WIDOWMAKER).unwrap().body;
     let rays = scene.movement_index();
@@ -531,7 +531,7 @@ fn pull_from_the_spawn(
     };
     let mut poses = Vec::new();
     let mut frame = 0;
-    let mut run = |mover: &mut orpheus_physics::mover::Mover,
+    let mut run = |mover: &mut lucy_physics::mover::Mover,
                    behaviour: Option<(MoveKey, &Behaviour)>| loop {
         frame += 1;
         let outcome = mover
@@ -594,7 +594,7 @@ fn assert_on_path(path: &[[f64; 3]], samples: &[[f64; 3]]) {
 #[test]
 #[ignore = "requires the derived 104319 data and the Practice Range collision"]
 fn widowmakers_pull_at_a_wall_keeps_its_velocity_and_rests_where_her_client_did() {
-    use orpheus_physics::mover::MoveEnd;
+    use lucy_physics::mover::MoveEnd;
     let pulled = pull_from_the_spawn(
         [60.397_644, 4.622_823, 42.147_46],
         [-0.985_831, 0.0, 0.167_742],
@@ -657,7 +657,7 @@ fn widowmakers_pull_at_a_wall_keeps_its_velocity_and_rests_where_her_client_did(
 #[test]
 #[ignore = "requires the derived 104319 data and the Practice Range collision"]
 fn widowmakers_pull_at_a_wall_top_holds_against_the_lip_and_rests_where_her_client_did() {
-    use orpheus_physics::mover::MoveEnd;
+    use lucy_physics::mover::MoveEnd;
     let pulled = pull_from_the_spawn(
         [54.565_43, 6.425_825, 27.435_92],
         [0.167_743, -3.113_021e-7, 0.985_831],
@@ -694,8 +694,8 @@ fn widowmakers_pull_at_a_wall_top_holds_against_the_lip_and_rests_where_her_clie
 #[test]
 #[ignore = "requires the derived 104319 data and the Practice Range collision"]
 fn widowmakers_ledge_pull_walks_her_onto_the_ledge_where_her_client_did() {
-    use orpheus_physics::mover::MoveEnd;
-    use orpheus_wire::entity::NAV_PATH;
+    use lucy_physics::mover::MoveEnd;
+    use lucy_wire::entity::NAV_PATH;
     // The hook point (her client's walk block `+0x30`) and its normal.
     let hook = [52.531_166, 3.514_61, 45.671_169];
     let pulled = pull_from_the_spawn(hook, [0.986_533, 0.0, -0.163_562], Some(hook), 60);
@@ -994,7 +994,7 @@ fn doomfists_tapped_airborne_slam_flies_from_the_press_frame() {
     };
     let mut doomfist = Player::on_hanamura(DOOMFIST, FEET, view.yaw);
     assert_eq!(doomfist.position(), FEET);
-    // s3's server poses (`orpheus::pose`, frames 7512 on); his client's
+    // s3's server poses (`lucy::pose`, frames 7512 on); his client's
     // own prediction matched them to the millimetre until the press.
     for frame in 7512..=7531 {
         doomfist.step(Command {
@@ -1228,7 +1228,7 @@ fn doomfists_rocket_punch_dashes_along_its_release_facing_with_each_pose_to_its_
     };
     // Half a second of charge (more than its least 0.2 s, #9273).
     for _ in 0..32 {
-        hold(&mut doomfist, orpheus_wire::commands::SECONDARY, open);
+        hold(&mut doomfist, lucy_wire::commands::SECONDARY, open);
         assert!(doomfist.punch_state(11), "charging");
         assert!(doomfist.pose_waits());
     }
@@ -1306,7 +1306,7 @@ fn doomfists_rocket_punch_ends_at_a_wall_with_the_impact() {
     };
     // A full charge (1.4 s): the dash would go well past the wall.
     for _ in 0..90 {
-        hold(&mut doomfist, orpheus_wire::commands::SECONDARY);
+        hold(&mut doomfist, lucy_wire::commands::SECONDARY);
     }
     let start = doomfist.position();
     hold(&mut doomfist, 0);
@@ -1593,7 +1593,7 @@ fn doomfists_slam_onto_the_range_crates_rests_where_his_client_did() {
 #[ignore = "requires the derived 104319 data and the Practice Range collision"]
 fn doomfists_slam_shockwave_strikes_the_enemies_ahead_of_its_landing() {
     use crate::combat::PosedShot;
-    use orpheus_script::vm::TargetCandidate;
+    use lucy_script::vm::TargetCandidate;
 
     const ENEMY: u32 = 0xa000_0201;
     let mut doomfist = Player::spawn(DOOMFIST);
@@ -1684,13 +1684,13 @@ fn doomfists_punch_jump_launches_him_out_of_the_dash() {
     // 0.6 s charge (37 frames), the release at frame 11967 (here the first
     // frame without the button), the jump 9 frames later at 11976.
     for _ in 0..37 {
-        hold(&mut doomfist, orpheus_wire::commands::SECONDARY);
+        hold(&mut doomfist, lucy_wire::commands::SECONDARY);
     }
     for _ in 0..9 {
         hold(&mut doomfist, 0);
         assert!(doomfist.punch_state(42), "dashing");
     }
-    hold(&mut doomfist, orpheus_wire::commands::JUMP);
+    hold(&mut doomfist, lucy_wire::commands::JUMP);
     assert!(!doomfist.punch_state(42), "the jump ends the dash");
     // 11976: the jump's own frame still dashes at 45 m/s, 3.2 m/s up.
     let [vx, vy, vz] = doomfist.velocity();
@@ -1792,8 +1792,8 @@ fn doomfists_airborne_slam_flies_at_the_ground_ahead_and_stops_at_a_step_edge() 
 #[test]
 #[ignore = "requires the derived 104319 data and the Practice Range collision"]
 fn doomfists_airborne_slam_flight_stops_at_the_step_edge_where_his_client_did() {
-    use orpheus_physics::mover::{Behaviour, MoveEnd, MoveKey, MoveTo, Speed};
-    let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    use lucy_physics::mover::{Behaviour, MoveEnd, MoveKey, MoveTo, Speed};
+    let assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
     let scene = assets.prepare(GameMap::practice_range()).unwrap();
     let body = scene.heroes().get(DOOMFIST).unwrap().body;
     let rays = scene.movement_index();
@@ -1945,7 +1945,7 @@ fn doomfists_slam_cooldown_links_for_its_fall_and_he_slams_again() {
 #[test]
 #[ignore = "requires the derived 104319 data and the Practice Range collision"]
 fn doomfists_ability_pressed_while_another_runs_starts_when_it_stops() {
-    use orpheus_wire::commands::SECONDARY;
+    use lucy_wire::commands::SECONDARY;
     // Rising Uppercut's subgraph state (`0DD8` st6) and Rocket Punch's
     // (`0D06` st3) each frame, and the frames where they change.
     let run = |buttons: fn(u32) -> u32, frames: u32| {
@@ -2006,7 +2006,7 @@ fn doomfists_ability_pressed_while_another_runs_starts_when_it_stops() {
 /// client did. Game session c2 (2026-11-22, `refs/reports/MapEntities.md`
 /// "MapCollision", "Console slide divergence (MapAnim)"): standing by the
 /// console at (37.060546875, 2.0, 20.140625) facing -25406, he held the
-/// walk while his client stalled. The server's poses (`orpheus::pose`)
+/// walk while his client stalled. The server's poses (`lucy::pose`)
 /// give the input it ran: the walk at 5664-5680, 5699-5702, 5725-5727 and
 /// 5731-5759, none at 5681-5698, 5703-5724 and 5728-5730 (each of those
 /// frames slows him as with the keys up: 0.91 m/s at 5729, at rest at 5730
@@ -2135,17 +2135,17 @@ fn doomfist_slides_round_the_range_console_instead_of_walking_through() {
 #[ignore = "requires the derived 104319 data and the Practice Range collision"]
 fn doomfists_meteor_strike_flies_over_the_range_and_lands_where_his_client_did() {
     use crate::combat::PosedShot;
-    use orpheus_script::vm::TargetCandidate;
+    use lucy_script::vm::TargetCandidate;
 
     const YAW: i32 = -30183;
     const ULTIMATE: u32 = 0x20;
     const FIRE: u32 = 0x01;
     /// His client's frame for the press.
     const PRESS: u32 = 4689;
-    let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let mut assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
     assets.set_player_unknowns(Unknowns::Tolerate);
     // The ruleset key `32E0` (#13024e): a full meter at spawn.
-    assets.set_ult_generation(orpheus_script::wire::Variables::from([(
+    assets.set_ult_generation(lucy_script::wire::Variables::from([(
         13024,
         ScriptValue::Bool(true),
     )]));

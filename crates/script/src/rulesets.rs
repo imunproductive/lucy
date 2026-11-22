@@ -1,6 +1,6 @@
 //! `GetGameRulesetValue` defaults: the game ruleset schemas (`0C6`) and which
 //! schemas each hero (`075`) and game mode (`0C5`) lists, read from
-//! `data/game_rulesets_174.json` (the `orpheus-assets` derivation
+//! `data/game_rulesets_174.json` (the `lucy-assets` derivation
 //! `game_modes`). The Python reference froze the same table from a DataTool
 //! dump (`ow174/game/script/rulesets.py`). Keys are the identifiers (`01C`
 //! indexes) the graphs read.
@@ -222,7 +222,7 @@ mod tests {
     #[test]
     #[ignore = "requires the 1.74 game data"]
     fn the_install_s_rulesets_answer_as_python_s() {
-        let data = orpheus_testkit::runtime_dir().join("data");
+        let data = lucy_testkit::runtime_dir().join("data");
         let rulesets = Rulesets::load(data.join(FILE)).unwrap();
         assert_eq!(
             (

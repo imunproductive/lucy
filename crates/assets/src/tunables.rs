@@ -8,7 +8,7 @@
 
 use std::path::Path;
 
-use orpheus_stu::Value;
+use lucy_stu::Value;
 use serde_json::{Map, json};
 
 use crate::{

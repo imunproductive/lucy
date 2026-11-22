@@ -217,12 +217,12 @@ impl Schemas {
 
     /// The client's lobby message layouts.
     pub fn lobby() -> Self {
-        Self::from_json(orpheus_fixed::LOBBY_SCHEMAS).expect("the embedded lobby schemas parse")
+        Self::from_json(lucy_fixed::LOBBY_SCHEMAS).expect("the embedded lobby schemas parse")
     }
 
     /// The client's game link message layouts.
     pub fn game() -> Self {
-        Self::from_json(orpheus_fixed::GAME_SCHEMAS).expect("the embedded game schemas parse")
+        Self::from_json(lucy_fixed::GAME_SCHEMAS).expect("the embedded game schemas parse")
     }
 
     pub fn from_json(json: &str) -> Result<Self, CodecError> {

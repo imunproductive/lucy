@@ -74,7 +74,7 @@ fn expression(opcodes: Json, dynamics: &[Json], floats: &[f64], configs: &[Json]
 #[test]
 fn authored_pairs_look_up_the_first_matching_key_and_encode_as_typed_pairs() {
     use crate::wire::{ValueEncoding, WireError, write_value};
-    use orpheus_core::bits::BitWriter;
+    use lucy_core::bits::BitWriter;
 
     let row = |key: &str, message: &str| {
         json!({
@@ -836,7 +836,7 @@ fn authored_random_expression_preserves_operand_types_and_inclusive_bounds() {
 #[test]
 #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn authored_controller_hud_and_soldier_config_values_match_python() {
-    let data = orpheus_testkit::runtime_dir().join("data");
+    let data = lucy_testkit::runtime_dir().join("data");
     let graphs = GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap();
     let mut context = Vars {
         instance: BTreeMap::from([

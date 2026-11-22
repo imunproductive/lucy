@@ -11,10 +11,10 @@ use std::{
 };
 
 use crate::wire::{WireError, chunk, owner_ack};
-use orpheus_core::bits::BitWriter;
-use orpheus_core::tick::MAX_LEASE_FRAME;
-use orpheus_wire::commands::{FRAME_HALF, frame_distance};
-use orpheus_wire::entity::EntityUpdate;
+use lucy_core::bits::BitWriter;
+use lucy_core::tick::MAX_LEASE_FRAME;
+use lucy_wire::commands::{FRAME_HALF, frame_distance};
+use lucy_wire::entity::EntityUpdate;
 
 pub const OWNER_SETTLE_FRAMES: u32 = 16;
 const OWNER_ACK_EVERY: Duration = Duration::from_millis(100);

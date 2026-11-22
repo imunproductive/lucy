@@ -18,7 +18,7 @@ use crate::mover::{
     modifiers::{ActiveModifiers, CAP_TINY},
     settings::MoverSettings,
 };
-use orpheus_wire::commands::{Command, SUBFRAME, frame_distance};
+use lucy_wire::commands::{Command, SUBFRAME, frame_distance};
 
 const EPSILON: f64 = 1.1754943508222875e-36;
 const TINY: f64 = 1.1920929e-7;
@@ -397,7 +397,7 @@ mod tests {
         },
         mover::settings::MoverCatalog,
     };
-    use orpheus_wire::commands::{Click, FIRE};
+    use lucy_wire::commands::{Click, FIRE};
 
     #[test]
     fn small_input_gaps_repeat_held_inputs_then_neutral_and_keep_newest() {
@@ -551,7 +551,7 @@ mod tests {
     #[test]
     #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn movement_velocity_matches_python_across_authored_mover_settings() {
-        let path = orpheus_testkit::runtime_dir().join("data/game_movers_174.json");
+        let path = lucy_testkit::runtime_dir().join("data/game_movers_174.json");
         // mover.py `SOLDIER_BODY`, the fallback body.
         let movers = MoverCatalog::load(&path, 0x0400_0000_0000_03cf).unwrap();
         let raw: BTreeMap<String, serde_json::Value> =
@@ -570,7 +570,7 @@ mod tests {
         let dts = [0.0, 0.016, 0.032, 0.001, 0.25, 0.064];
         let mut digest = Sha256::new();
         for (i, guid) in raw.keys().enumerate() {
-            let guid = orpheus_core::guid::parse_guid(guid).unwrap();
+            let guid = lucy_core::guid::parse_guid(guid).unwrap();
             digest.update(guid.to_le_bytes());
             let base = movers.for_body(Some(guid));
             for n in 0..192 {

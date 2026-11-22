@@ -556,7 +556,7 @@ mod tests {
     #[test]
     #[ignore = "requires an Overwatch 1.74 install (just test-game <install>)"]
     fn every_area_of_the_install_reads() {
-        let install = Install::open(&orpheus_testkit::game_dir(), "enUS").unwrap();
+        let install = Install::open(&lucy_testkit::game_dir(), "enUS").unwrap();
         let (mut areas, mut spheres, mut capsules) = (0, 0, 0);
         for chunk in install.guids(MAP_CHUNK) {
             if chunk_kind(chunk) != AREA_CHUNK {

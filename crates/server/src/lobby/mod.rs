@@ -28,7 +28,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use orpheus_lobby::{
+use lucy_lobby::{
     accounts::{Account, Accounts},
     arcade::Arcade,
     celebrations::Celebrations,
@@ -43,8 +43,8 @@ use orpheus_lobby::{
     templates::RetailTemplates,
     xp_table::XpTable,
 };
-use orpheus_sim::scene_assets::{PreparedScene, SceneAssets};
-use orpheus_wire::{
+use lucy_sim::scene_assets::{PreparedScene, SceneAssets};
+use lucy_wire::{
     jam::codec::{Fields, Schemas},
     tcp::{PeerStream, PeerWorkers, accept},
 };
@@ -332,7 +332,7 @@ pub(crate) fn serve(
             if peers.len() < MAX_LOBBY_PEERS {
                 id = id.wrapping_add(1);
                 let lobby = Arc::clone(&lobby);
-                let _ = peers.spawn("orpheus-lobby-peer", socket, move |stream| {
+                let _ = peers.spawn("lucy-lobby-peer", socket, move |stream| {
                     let _ = lobby.serve_peer(stream, id);
                 });
             }

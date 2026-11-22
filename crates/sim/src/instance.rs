@@ -27,12 +27,12 @@
 //! names the bots without it (`refs/reports/KillFeed.md`), and fifteen bot
 //! records pushed the Range's 20300 past a datagram.
 
-use orpheus_content::maps::GameMap;
-use orpheus_wire::jam::codec::{
+use lucy_content::maps::GameMap;
+use lucy_wire::jam::codec::{
     Fields,
     Value::{Array, String, Struct, Unsigned},
 };
-use orpheus_wire::messages::Message;
+use lucy_wire::messages::Message;
 
 pub const RETAIL_QUANTA: u32 = 16_000;
 pub const TOURNAMENT_QUANTA: u32 = 7_000;
@@ -128,13 +128,13 @@ pub fn ownership(viewer: u32) -> Message {
         id: 20302,
         fields: Fields::from([
             (0x78, entity(viewer)),
-            (0x7c, orpheus_wire::jam::codec::Value::Bool(false)),
+            (0x7c, lucy_wire::jam::codec::Value::Bool(false)),
             (0x80, Unsigned(0)),
         ]),
     }
 }
 
-fn entity(id: u32) -> orpheus_wire::jam::codec::Value {
+fn entity(id: u32) -> lucy_wire::jam::codec::Value {
     Struct(Fields::from([(0, Unsigned(u64::from(id)))]))
 }
 
@@ -195,7 +195,7 @@ mod tests {
 
     #[test]
     fn map_load_and_roster_updates_match_python_for_teams_and_free_for_all() {
-        use orpheus_wire::{jam::codec::Schemas, messages::encode};
+        use lucy_wire::{jam::codec::Schemas, messages::encode};
         use sha2::{Digest, Sha256};
 
         let schemas = Schemas::game();
@@ -204,7 +204,7 @@ mod tests {
         // party (`maps.rs` `PYTHON_PRACTICE_RANGE_MODE`), so the comparison
         // takes Python's mode and team size.
         let practice_range = GameMap {
-            mode_guid: orpheus_content::maps::PYTHON_PRACTICE_RANGE_MODE,
+            mode_guid: lucy_content::maps::PYTHON_PRACTICE_RANGE_MODE,
             team_sizes: vec![1, 0],
             ..GameMap::practice_range()
         };

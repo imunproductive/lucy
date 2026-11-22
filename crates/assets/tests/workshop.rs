@@ -5,7 +5,7 @@
 use serde_json::Value;
 
 fn catalog() -> Value {
-    let path = orpheus_testkit::runtime_dir().join("data/workshop_catalog_174.json");
+    let path = lucy_testkit::runtime_dir().join("data/workshop_catalog_174.json");
     serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
 }
 

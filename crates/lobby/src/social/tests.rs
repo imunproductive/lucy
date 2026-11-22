@@ -2,7 +2,7 @@ use super::*;
 
 use std::time::Duration;
 
-use orpheus_wire::jam::codec::{
+use lucy_wire::jam::codec::{
     Schemas,
     Value::{Array, Bool, Struct, Unsigned},
 };

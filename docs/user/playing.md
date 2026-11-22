@@ -5,10 +5,10 @@
 Double-click `START.cmd` in the checkout. It:
 
 1. checks that Rust is installed;
-2. builds `orpheus.exe` and `owwfd_relay.dll` (`cargo build --release --locked --workspace`), which does nothing if the build is current;
-3. runs `target\release\orpheus.exe` with the arguments you gave it.
+2. builds `lucy.exe` and `owwfd_relay.dll` (`cargo build --release --locked --workspace`), which does nothing if the build is current;
+3. runs `target\release\lucy.exe` with the arguments you gave it.
 
-Without arguments, `orpheus` asks for the mode:
+Without arguments, `lucy` asks for the mode:
 
 ```
 Which mode?
@@ -20,16 +20,16 @@ Which mode?
   6  Join a server in tournament mode (used on LANs by pros)
 ```
 
-Press Enter for 1. If no console can answer, `orpheus` starts mode 1.
+Press Enter for 1. If no console can answer, `lucy` starts mode 1.
 
-You can skip the question with a command, for example `START.cmd join --server 1.2.3.4:3724`, or with `--mode`, for example `orpheus --mode tournament`.
+You can skip the question with a command, for example `START.cmd join --server 1.2.3.4:3724`, or with `--mode`, for example `lucy --mode tournament`.
 
-If something fails, `START.cmd` tells you to run `target\release\orpheus.exe doctor`.
+If something fails, `START.cmd` tells you to run `target\release\lucy.exe doctor`.
 
-## orpheus play
+## lucy play
 
 ```powershell
-target\release\orpheus.exe play
+target\release\lucy.exe play
 ```
 
 `play` (also called `retail`, mode 1) is the normal way to play alone on this PC. It:
@@ -42,7 +42,7 @@ target\release\orpheus.exe play
 
 Keep the console window open while you play. When you close the game or the window, the server stops.
 
-`--timeout <seconds>` (default 30) is how long `orpheus` waits for the game to be ready for the relay. A slow PC may need more.
+`--timeout <seconds>` (default 30) is how long `lucy` waits for the game to be ready for the relay. A slow PC may need more.
 
 `--account <name>` chooses the saved account the game logs in as. Without it, the account in `default_account.txt` is used. A name without a profile gets a new profile from the template on its first login.
 
@@ -54,35 +54,35 @@ Keep the console window open while you play. When you close the game or the wind
 - `none`: pass no language; the game uses its own;
 - a code such as `enUS`, `zhCN` or `deDE`.
 
-## orpheus tournament
+## lucy tournament
 
 ```powershell
-target\release\orpheus.exe tournament
+target\release\lucy.exe tournament
 ```
 
 Mode 2 starts the server and the game in tournament mode (`--tank_TournamentMode`). The game has the simpler menu and connects to the lobby itself. There is no relay and no Battle.net. Ctrl+C or closing the window stops the server.
 
-## orpheus serve
+## lucy serve
 
 ```powershell
-target\release\orpheus.exe serve
+target\release\lucy.exe serve
 ```
 
-`serve` runs the Battle.net, lobby, game and dashboard services on this PC, without starting a game. Use it if you start the game yourself. It runs until Ctrl+C. `START_SERVER_LOCAL.cmd` builds and runs `orpheus serve`.
+`serve` runs the Battle.net, lobby, game and dashboard services on this PC, without starting a game. Use it if you start the game yourself. It runs until Ctrl+C. `START_SERVER_LOCAL.cmd` builds and runs `lucy serve`.
 
-### Relay without the DLL: orpheus_relay.py
+### Relay without the DLL: lucy_relay.py
 
-A game you start yourself needs the relay too. `tools\relay\orpheus_relay.py` does what `owwfd_relay.dll` does, without loading a DLL into the game. It is one file that needs only 64-bit Python 3.8 or newer, so you can give it to other players as it is.
+A game you start yourself needs the relay too. `tools\relay\lucy_relay.py` does what `owwfd_relay.dll` does, without loading a DLL into the game. It is one file that needs only 64-bit Python 3.8 or newer, so you can give it to other players as it is.
 
 ```powershell
-target\release\orpheus.exe serve
-python tools\relay\orpheus_relay.py D:\Games\Overwatch\Overwatch.exe
+target\release\lucy.exe serve
+python tools\relay\lucy_relay.py D:\Games\Overwatch\Overwatch.exe
 ```
 
 - If the game runs, the script attaches to it. Else it starts the game frozen with `--BNetServer=127.0.0.1:1119`, prepares the relay and unfreezes it. Without a path it uses `.\Overwatch.exe`.
 - A game you start yourself needs `--BNetServer=127.0.0.1:1119` too. If it showed "unable to log you in" before the script attached, click **LOGIN**: the new attempt goes through the relay.
 - Keep the script open while you play: it relays each new connection the game makes. A connection it relayed keeps working if you close the script.
-- Arguments after `--` go to the game: `python orpheus_relay.py -- --tank_Locale=enUS`. `--port` and `--host` choose the server's RPC port (default `127.0.0.1:21119`), `--pid` a game when several run, `--log` a log file.
+- Arguments after `--` go to the game: `python lucy_relay.py -- --tank_Locale=enUS`. `--port` and `--host` choose the server's RPC port (default `127.0.0.1:21119`), `--pid` a game when several run, `--log` a log file.
 
 The script writes three small functions (send, receive and "connected") and two copies of the client's vtables into the game's memory, and points the client's Battle.net streams at them. The functions' assembly source is in the script. It changes no code of the game.
 
@@ -98,7 +98,7 @@ OVERWATCH 1.74 LOBBY SERVER
  [*] Dashboard:      http://127.0.0.1:3725
  [*] Accounts:       Player (profiles/)
  [*] New accounts:   copy of profile.json
- [*] Log file:       C:\Users\you\AppData\Roaming\orpheus\logs\orpheus.log
+ [*] Log file:       C:\Users\you\AppData\Roaming\lucy\logs\lucy.log
 ```
 
 ## The dashboard

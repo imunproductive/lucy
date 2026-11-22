@@ -15,8 +15,8 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use orpheus_core::guid::parse_guid;
-use orpheus_wire::jam::codec::{Fields, Value as JamValue};
+use lucy_core::guid::parse_guid;
+use lucy_wire::jam::codec::{Fields, Value as JamValue};
 
 pub const DEFAULT_ICON: u64 = 0x0250_0000_0000_02f7;
 pub const BOT_NAME: &str = "Bot";

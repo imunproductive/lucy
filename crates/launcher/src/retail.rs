@@ -38,10 +38,10 @@ pub struct GameSetup {
     pub relay_log: PathBuf,
     /// How long the game may take before the relay is in it.
     pub timeout: Duration,
-    /// More arguments for the game, after the ones above (`orpheus play --
+    /// More arguments for the game, after the ones above (`lucy play --
     /// ...`).
     pub extra_arguments: Vec<String>,
-    /// `owprobe.dll` for the first game (`orpheus play --probe`); a second
+    /// `owprobe.dll` for the first game (`lucy play --probe`); a second
     /// game gets none (the port is the first one's).
     pub probe: Option<ProbeSetup>,
 }

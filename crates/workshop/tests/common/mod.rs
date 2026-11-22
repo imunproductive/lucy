@@ -9,7 +9,7 @@ use std::{
     sync::Arc,
 };
 
-use orpheus_workshop::{
+use lucy_workshop::{
     Catalog,
     catalog::Id,
     host::{ActionCall, ActionHandle, Actions, Activity, Param, RayHit, Variables, World},

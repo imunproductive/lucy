@@ -2,7 +2,7 @@
 //! (`ow174/lobby/handlers/{chat,friends,party}.py`, the group finder part of
 //! `matchmaking.py`, `ow174/lobby/server.py` notify_*).
 
-use orpheus_wire::jam::codec::{
+use lucy_wire::jam::codec::{
     Fields,
     Value::{self, Array, Bool, Struct, Unsigned},
     id16,

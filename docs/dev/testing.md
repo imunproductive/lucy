@@ -18,10 +18,10 @@ While you work on a feature, run only the tests that are directly involved:
 - For a quick loop, the game-install tests of the area you are working on, by name:
 
   ```powershell
-  just test-named C:\Games\Overwatch orpheus-sim body_script
+  just test-named C:\Games\Overwatch lucy-sim body_script
   ```
 
-  The last argument is a name filter, as in `cargo test`. `test-named` uses the debug build, which `just test` has already compiled. For the long match tests of `orpheus-server`, add `gametest` to use the optimised build: `just test-named C:\Games\Overwatch orpheus-server assault gametest`. That build takes about two minutes after a change in `sim`, but the tests then run two to three times faster.
+  The last argument is a name filter, as in `cargo test`. `test-named` uses the debug build, which `just test` has already compiled. For the long match tests of `lucy-server`, add `gametest` to use the optimised build: `just test-named C:\Games\Overwatch lucy-server assault gametest`. That build takes about two minutes after a change in `sim`, but the tests then run two to three times faster.
 
 Before you report, run `just test-affected <install>`: every test, game-install tests included, of the crates your change touches and every crate that depends on them (`tools/affected.py`, changes since `main`), without `slow_` and `serial_`. A name filter misses tests in the crates that depend on yours.
 
@@ -48,15 +48,15 @@ Do not run the full game-install suites (`just test-game`, `just test-slow`) for
 | `just lint` | `cargo clippy --workspace --all-targets --locked -- -D warnings` | Clippy; every warning is an error |
 | `just test` | `cargo nextest run --workspace --locked`, then the doc tests | The public tests |
 | `just dashboard-test` | `node --test web/tests/test_dashboard_client.mjs` | The dashboard JavaScript test |
-| `just build` | `cargo build --workspace --release --locked` | Release build of `orpheus.exe` and `owwfd_relay.dll` |
-| `just test-game <install>` | ignored tests with `ORPHEUS_GAME_DIR`, optimised, without the slow group, side by side; then the `serial_` tests one at a time | Tests that read the install; the integrator runs them after a batch of merges |
+| `just build` | `cargo build --workspace --release --locked` | Release build of `lucy.exe` and `owwfd_relay.dll` |
+| `just test-game <install>` | ignored tests with `LUCY_GAME_DIR`, optimised, without the slow group, side by side; then the `serial_` tests one at a time | Tests that read the install; the integrator runs them after a batch of merges |
 | `just test-slow <install>` | ignored `slow_` tests, optimised | The game-install tests that play a whole match or run over a minute; the integrator runs them with `test-game` |
 | `just test-named <install> <crate> <filter> [gametest]` | ignored tests of one crate whose names contain the filter; debug build unless `gametest` is given | The game-install tests of the area you work on |
 | `just test-affected <install>` | every test, ignored ones included, of the crates `tools/affected.py` names, without `slow_` and `serial_` | An agent's own check before reporting |
-| `just test-assets <install> <pack>` | ignored `matches_the_pack` tests of `orpheus-assets` | Derivations against a prepared pack |
-| `just test-datatool <install> <dump>` | ignored `datatool` tests of `orpheus-stu` | The asset reader against a DataTool export |
-| `just test-dpk <install> <archive>` | ignored `dpk_archive` tests of `orpheus-workshop`, `orpheus-sim` and `orpheus-server`, optimised (`gametest`) | The Workshop parser and engine over the Doomfist parkour scripts; C32S2 in a simulated match and in a hosted one |
-| `just test-windows` | ignored tests of `orpheus-launcher` | Loads the relay DLL into a stand-in process |
+| `just test-assets <install> <pack>` | ignored `matches_the_pack` tests of `lucy-assets` | Derivations against a prepared pack |
+| `just test-datatool <install> <dump>` | ignored `datatool` tests of `lucy-stu` | The asset reader against a DataTool export |
+| `just test-dpk <install> <archive>` | ignored `dpk_archive` tests of `lucy-workshop`, `lucy-sim` and `lucy-server`, optimised (`gametest`) | The Workshop parser and engine over the Doomfist parkour scripts; C32S2 in a simulated match and in a hosted one |
+| `just test-windows` | ignored tests of `lucy-launcher` | Loads the relay DLL into a stand-in process |
 
 ## Test tiers
 
@@ -72,10 +72,10 @@ Tests that need the Overwatch 1.74 install are marked `#[ignore = "..."]`, so th
 just test-game C:\Games\Overwatch
 ```
 
-The recipe builds the relay, sets `ORPHEUS_GAME_DIR` and runs every ignored test except the pack and DataTool comparisons and the slow group. Test code never reads environment variables itself; it asks `testkit`:
+The recipe builds the relay, sets `LUCY_GAME_DIR` and runs every ignored test except the pack and DataTool comparisons and the slow group. Test code never reads environment variables itself; it asks `testkit`:
 
-- `testkit::game_dir()` returns the install from `ORPHEUS_GAME_DIR`.
-- `testkit::runtime_dir()` derives the game data from that install once and keeps it in `<test data>/104319/<key>`. `<key>` is a hash of the code that makes the data (the library code of `assets`, `casc`, `fixed` and `stu`, computed by `crates/testkit/build.rs`), so a change to a derivation derives again, and a derivation's test reads the output of the code under test rather than deriving it itself: `testkit::runtime_json(path)` reads a derived file, and `testkit::derived_outputs(name)` lists the files the derivation `name` returned (`outputs.txt` in the pack, which `orpheus_assets::build` writes). The test data folder is `ORPHEUS_TEST_DATA`, by default the main checkout's `target/orpheus-test-data`: every worktree of the clone, and every branch with the same derivation code, shares one derivation. Test processes that start at once derive it once: they take turns on `<key>.lock`, and the one that derives builds in a folder of its own and renames it into place when it is whole. A process that derives deletes the data of other keys that no test used for 7 days (`<key>.used` holds the last use). The old layout, `target/orpheus-test-data/104319/data` and `collision` in each worktree, is no longer read; delete it.
+- `testkit::game_dir()` returns the install from `LUCY_GAME_DIR`.
+- `testkit::runtime_dir()` derives the game data from that install once and keeps it in `<test data>/104319/<key>`. `<key>` is a hash of the code that makes the data (the library code of `assets`, `casc`, `fixed` and `stu`, computed by `crates/testkit/build.rs`), so a change to a derivation derives again, and a derivation's test reads the output of the code under test rather than deriving it itself: `testkit::runtime_json(path)` reads a derived file, and `testkit::derived_outputs(name)` lists the files the derivation `name` returned (`outputs.txt` in the pack, which `lucy_assets::build` writes). The test data folder is `LUCY_TEST_DATA`, by default the main checkout's `target/lucy-test-data`: every worktree of the clone, and every branch with the same derivation code, shares one derivation. Test processes that start at once derive it once: they take turns on `<key>.lock`, and the one that derives builds in a folder of its own and renames it into place when it is whole. A process that derives deletes the data of other keys that no test used for 7 days (`<key>.used` holds the last use). The old layout, `target/lucy-test-data/104319/data` and `collision` in each worktree, is no longer read; delete it.
 
 `just test-game` and `just test-slow` build with the Cargo profile `gametest` (in `Cargo.toml`). It optimises every crate as the release profile does, but it keeps the debug assertions and overflow checks. So the VM still refuses statescript content it does not implement, as in `cargo test`. Each game-install test, run alone, takes about half the time of a debug build; the `sim` tests take a third. The build goes to `target/gametest`, apart from the debug build. The first `gametest` build compiles everything once (about 7 minutes); after a change in `sim` it takes about two minutes.
 
@@ -97,7 +97,7 @@ A test on the real clock and real UDP only proves the real loop and its sockets:
 
 #### Lobby tests
 
-Every lobby timer reads the lobby's clock (`orpheus_lobby::clock::Clock`, the time since the lobby started): a session's ticks and keepalive, the matchmaker's handoff delays, sweeps and time played, the account features after login, the offline friends' presence, party invites and the dashboard's uptime. The server reads the wall clock. A test's lobby clock is virtual (`lobby/clock.rs`, `VirtualClock`): it stands until the test moves it.
+Every lobby timer reads the lobby's clock (`lucy_lobby::clock::Clock`, the time since the lobby started): a session's ticks and keepalive, the matchmaker's handoff delays, sweeps and time played, the account features after login, the offline friends' presence, party invites and the dashboard's uptime. The server reads the wall clock. A test's lobby clock is virtual (`lobby/clock.rs`, `VirtualClock`): it stands until the test moves it.
 
 To write one:
 
@@ -134,7 +134,7 @@ Each derivation in `crates/assets` is checked against the matching file of a pre
 just test-assets C:\Games\Overwatch D:\packs\runtime
 ```
 
-This sets `ORPHEUS_GAME_DIR` and `ORPHEUS_RUNTIME_DIR` and runs the `matches_the_pack` tests in a release build. Where the derived file differs from the pack for a known reason, the test pins the difference and names the cause. [data-sources.md](data-sources.md) lists them. `orpheus assets diff --pack <dir>` does the same comparison from the command line.
+This sets `LUCY_GAME_DIR` and `LUCY_RUNTIME_DIR` and runs the `matches_the_pack` tests in a release build. Where the derived file differs from the pack for a known reason, the test pins the difference and names the cause. [data-sources.md](data-sources.md) lists them. `lucy assets diff --pack <dir>` does the same comparison from the command line.
 
 ### 4. DataTool comparison
 
@@ -144,7 +144,7 @@ The `stu` reader is compared with a DataTool XML export of the same install:
 just test-datatool C:\Games\Overwatch D:\dumps\datatool
 ```
 
-This sets `ORPHEUS_DATATOOL_DUMP` and runs the `datatool` tests of `orpheus-stu`. The DataTool settings and revisions are in [data-sources.md](data-sources.md).
+This sets `LUCY_DATATOOL_DUMP` and runs the `datatool` tests of `lucy-stu`. The DataTool settings and revisions are in [data-sources.md](data-sources.md).
 
 ### 5. Workshop scripts
 
@@ -154,7 +154,7 @@ The Workshop text parser, the binary form and the rule engine run over the Doomf
 just test-dpk C:\Games\Overwatch D:\Downloads\dfp-archive
 ```
 
-This sets `ORPHEUS_DPK_ARCHIVE` (`testkit::dpk_archive()`) and runs the `dpk_archive` tests of `orpheus-workshop`, `orpheus-sim` (C32S2 over a player's ticks) and `orpheus-server` (C32S2 in a match the game service hosts: a HUD text on the mode entity's frames). `just test-game` leaves them out.
+This sets `LUCY_DPK_ARCHIVE` (`testkit::dpk_archive()`) and runs the `dpk_archive` tests of `lucy-workshop`, `lucy-sim` (C32S2 over a player's ticks) and `lucy-server` (C32S2 in a match the game service hosts: a HUD text on the mode entity's frames). `just test-game` leaves them out.
 
 ### 6. Dashboard
 
@@ -198,8 +198,8 @@ The derivations' own tests derived their file again in each test (`game_objectiv
 
 | Tests | First | Then | Now |
 | --- | --- | --- | --- |
-| `orpheus-assets` game-install tests (24) | 89.6 s wall, 277.7 s summed | 4.9 s wall, 10.6 s summed | 3.5 s wall |
-| `orpheus-sim` and `orpheus-server` game-install tests (166, without the slow and serial groups) | 680 s wall, 2693 s summed, median 16.5 s | 391 s wall, 1556 s summed, median 8.9 s | 326 s wall, 1292 s summed, median 6.7 s |
+| `lucy-assets` game-install tests (24) | 89.6 s wall, 277.7 s summed | 4.9 s wall, 10.6 s summed | 3.5 s wall |
+| `lucy-sim` and `lucy-server` game-install tests (166, without the slow and serial groups) | 680 s wall, 2693 s summed, median 16.5 s | 391 s wall, 1556 s summed, median 8.9 s | 326 s wall, 1292 s summed, median 6.7 s |
 | `spawn_room::a_hero_change_in_the_room_keeps_position_and_yaw`, alone | 13.6 s | 7.1 s | 4.8 s |
 | `scene_assets::tests::stock_soldier_plays_a_scripted_session`, alone | 19.3 s | 11.4 s | 10.5 s |
 | `game_service::tests::a_firing_practice_bot_shoots_the_player`, alone | 19.8 s | 14.2 s | 14.2 s |
@@ -210,7 +210,7 @@ In the suite the game service tests (virtual clock, so bound by the CPU) vary by
 
 The matchmaker's ported tests (`lobby::matchmaker::ported_tests`, 28) took 0.5 s each when every test of a binary shared one process (their `LazyLock` loaded the scene assets once for all of them), 12 s each per process before this work, and 2.65 s alone after the second round, 1.7 s of it the scene assets. Only one of them opens a world, so their lobby now takes `SceneAssets::load_deferred`: the graph bundles load the first time a scene is prepared or a graph asked for, and the map areas load beside the other catalogs (in `SceneAssets::load` too, which the server uses and which still loads everything at once). Alone, such a test takes 1.3 s (the assets 0.35 s); in the suite the 28 took 42 s summed instead of 117 s, and the `sim` and `server` game-install tests 260 s wall, 945 s summed, median 5.2 s (from 326 s, 1292 s and 6.7 s).
 
-The `script query` tests (`apps/orpheus/src/script_query/tests.rs`, 7) each load the graph bundle into the queries' own JSON values and index every node, which took about 4.3 s (bundle) and 12 s (index) on one thread (measured alone while the PC was busy; 7.4 to 7.9 s each in the suite run). `Bundle::load` now parses each graph's JSON on a thread of the PC's, and `Index::build` indexes runs of neighbouring graphs on the PC's threads and merges the runs in graph order (merging one graph at a time cost as much as indexing it): about 1 s for the bundle and 1.5 s for the index. The controller tests (`crates/script/src/controller.rs`) loaded the hero bundle at each start of the controller, four times in `a_rulesets_9548_turns_the_hero_limit_off_or_keeps_it`; they now load it once a test. Alone (`-j 1`, two runs each, other agents building): `script_query::tests::aliases_are_unique` 12.4 and 11.2 s before, 3.5 and 2.5 s after; `a_rulesets_9548_turns_the_hero_limit_off_or_keeps_it` 12.6 and 17.5 s before, 2.8 and 1.4 s after. The 13 side by side (`-j 4`): 48 s wall before, 24 s after.
+The `script query` tests (`apps/lucy/src/script_query/tests.rs`, 7) each load the graph bundle into the queries' own JSON values and index every node, which took about 4.3 s (bundle) and 12 s (index) on one thread (measured alone while the PC was busy; 7.4 to 7.9 s each in the suite run). `Bundle::load` now parses each graph's JSON on a thread of the PC's, and `Index::build` indexes runs of neighbouring graphs on the PC's threads and merges the runs in graph order (merging one graph at a time cost as much as indexing it): about 1 s for the bundle and 1.5 s for the index. The controller tests (`crates/script/src/controller.rs`) loaded the hero bundle at each start of the controller, four times in `a_rulesets_9548_turns_the_hero_limit_off_or_keeps_it`; they now load it once a test. Alone (`-j 1`, two runs each, other agents building): `script_query::tests::aliases_are_unique` 12.4 and 11.2 s before, 3.5 and 2.5 s after; `a_rulesets_9548_turns_the_hero_limit_off_or_keeps_it` 12.6 and 17.5 s before, 2.8 and 1.4 s after. The 13 side by side (`-j 4`): 48 s wall before, 24 s after.
 
 Not changed, measured:
 
@@ -241,9 +241,9 @@ Measured on 2026-11-20 with the debug build (Cranelift), `cargo nextest run --ru
 
 The changes to the code, which also make the server faster:
 
-- **Scene preparation** (`SceneAssets::prepare`). The collision grid (`orpheus_physics::collision::grid`) used to be a hash map with one `Vec` for each column. Now it is built once into flat arrays (`GridBuilder`): a slot for each column of the geometry's box (or a sorted list of the occupied columns when the geometry is spread thin), with no hashing on a query. The columns list their geometry in the same order as before. On Rialto the ray index (768k triangles) took 3.2 s and now takes 1.5 s. The meshes of the collision caches are read in slices, not field by field. The queries' "seen" sets use the physics crate's `FastSet`.
-- **Observer frames** (`orpheus_sim::others`). Every tick, the server made a full observer projection of each observed body's script, but used it only for a client that still needed a full frame. Now the projection is made only then, at most once a tick. In the gametest profile of the Practice vs AI match, these projections took 14% of the game loop.
-- **Snapshot projection** (`orpheus_script::snapshot`). A graph's server-only variables are read from its JSON once, when the graph loads (`Graph::server_only_variables`), not for each instance in each projection. A state that is off and was never activated is skipped before its codec is looked up by class name.
+- **Scene preparation** (`SceneAssets::prepare`). The collision grid (`lucy_physics::collision::grid`) used to be a hash map with one `Vec` for each column. Now it is built once into flat arrays (`GridBuilder`): a slot for each column of the geometry's box (or a sorted list of the occupied columns when the geometry is spread thin), with no hashing on a query. The columns list their geometry in the same order as before. On Rialto the ray index (768k triangles) took 3.2 s and now takes 1.5 s. The meshes of the collision caches are read in slices, not field by field. The queries' "seen" sets use the physics crate's `FastSet`.
+- **Observer frames** (`lucy_sim::others`). Every tick, the server made a full observer projection of each observed body's script, but used it only for a client that still needed a full frame. Now the projection is made only then, at most once a tick. In the gametest profile of the Practice vs AI match, these projections took 14% of the game loop.
+- **Snapshot projection** (`lucy_script::snapshot`). A graph's server-only variables are read from its JSON once, when the graph loads (`Graph::server_only_variables`), not for each instance in each projection. A state that is off and was never activated is skipped before its codec is looked up by class name.
 
 What is left:
 
@@ -265,7 +265,7 @@ Measured with SlowTests' sampler on the `gametest` build (frame pointers on) of 
 | `ObserverActivity::of` (once per viewer and body) | 8.3% | once per body and revision |
 | `CodecTable::codec` (hash of the class name) | 5% | once per node |
 
-The game-install sets of `orpheus-script`, `orpheus-sim` and `orpheus-server` (debug build, `-j 4`, 210 tests, `slow_` and `serial_` left out), before and after, in seconds. The match tests gain the most; the tests that mostly load and prepare a scene stay within noise:
+The game-install sets of `lucy-script`, `lucy-sim` and `lucy-server` (debug build, `-j 4`, 210 tests, `slow_` and `serial_` left out), before and after, in seconds. The match tests gain the most; the tests that mostly load and prepare a scene stay within noise:
 
 | Test | Before | After |
 | --- | ---: | ---: |
@@ -280,7 +280,7 @@ The game-install sets of `orpheus-script`, `orpheus-sim` and `orpheus-server` (d
 | `rialto_and_volskaya_get_their_server_placeables` (loading) | 22.8 | 24.5 |
 | The whole set, run time | 671 | 651 |
 
-The changes (`orpheus_script::graph`, `snapshot`, `vm`; `orpheus_sim::others`, `replication`):
+The changes (`lucy_script::graph`, `snapshot`, `vm`; `lucy_sim::others`, `replication`):
 
 - **Node information compiled once** (`Graph::compile`). Each node keeps what the VM and the projection read on every pass: its state and action flags, whether it is a UX presenter, whether it is remote-synced, and the game message of its `m_gameMessage` (`Node::message`). A graph keeps its server-run nodes by game message (`Graph::message_nodes`; `queue_entries`, auras and `sends_message` read it) and its weapon volleys' ammunition variables (`Graph::volley_ammo`, read by every owner delta). A node remembers its class's entry in the codec table (`CodecTable::node_codec`; every client table shares one id, a fixture table looks its classes up each time).
 - **Short JSON objects** (`graph::member`, behind `field_at`, the VM's `field` and the evaluator's `child`/`class`). An object of up to 12 members is searched in order: `serde_json` keeps the members' order (`preserve_order`, an `IndexMap` with SipHash), and comparing a few keys costs less than hashing one.
@@ -326,7 +326,7 @@ Measured 2026-11-20 on this PC (Ryzen 7 2700, 16 GB, Windows 10), 6 build jobs, 
 
 - The linker is not what is slow: rust-lld alone changed nothing measurable.
 - Nightly compiles faster than stable, probably mostly through the parallel front end, on by default in nightly since 2026-11-14 (2 threads; `-Zunstable-options --jobs-frontend=N` sets more; not measured apart).
-- Cranelift compiles about nine times faster after a change to `orpheus-script` and makes the tests run 1.2-1.8 times slower. So debug builds and tests use Cranelift (`Cargo.toml` `profile.dev`), and `release` and `gametest` keep LLVM.
+- Cranelift compiles about nine times faster after a change to `lucy-script` and makes the tests run 1.2-1.8 times slower. So debug builds and tests use Cranelift (`Cargo.toml` `profile.dev`), and `release` and `gametest` keep LLVM.
 - `rust-toolchain.toml` pins the nightly. Move the pin on purpose: install the new nightly with the `rustc-codegen-cranelift-preview` component, run `just check` and `just test-game`, then change the pin.
 - Cranelift can't unwind on Windows: a debug build aborts on a panic, and each test runs in its own process (`panic-abort-tests` in `.cargo/config.toml`; nextest does the same). So a fixture a test file shares through a `LazyLock` or `OnceLock` is built again by every test: keep expensive fixtures on disk (the derived test data), not in a static.
 - A COFF object holds at most 65,279 sections, and Cranelift writes a section per function plus a `.refptr` one per constant. Past the limit link.exe stops with LNK1136 "invalid or corrupt file" or LNK1106 "cannot seek" on one `*.rcgu.o` (`CARGO_TARGET_DIR/debug/build/<crate>/*/out/`; the section count is the u16 at byte 2). rustc puts a generic method's copies in its self type's module, so the VM (`Vm<W>`, `vm/*.rs`) is compiled once per `World` type into the `vm` codegen unit, and the unit tests' twenty-odd worlds overflowed it. A test build hands every world to the VM as `dyn World` (`erase` in `vm.rs`), so they share one copy; a new `Component` entry point that runs the VM must pass its world through `erase`. Production builds keep one copy per world.

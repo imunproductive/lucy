@@ -21,5 +21,5 @@ def connect(path=None):
     """Read-only connection to the search database."""
     path = path or DB
     if not path.exists():
-        raise FileNotFoundError(f"{path}: build it with `python -m tools.owsearch.build` (ORPHEUS root)")
+        raise FileNotFoundError(f"{path}: build it with `python -m tools.owsearch.build` (Lucy root)")
     return sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, check_same_thread=False)

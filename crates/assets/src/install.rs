@@ -3,8 +3,8 @@
 
 use std::path::Path;
 
-use orpheus_casc::Game;
-pub use orpheus_casc::{guid_name, guid_type};
+use lucy_casc::Game;
+pub use lucy_casc::{guid_name, guid_type};
 
 use crate::{Result, asset_error};
 
@@ -49,13 +49,13 @@ impl Install {
     }
 
     /// A structured data asset, decoded.
-    pub fn stu(&self, guid: u64) -> Result<orpheus_stu::Asset> {
+    pub fn stu(&self, guid: u64) -> Result<lucy_stu::Asset> {
         decode(guid, &self.raw(guid)?)
     }
 
     /// Several structured data assets, sorted by GUID, each decoded or with
     /// the reason it can't be. Bundles are read once.
-    pub fn stu_all(&self, guids: &[u64]) -> Vec<(u64, Result<orpheus_stu::Asset>)> {
+    pub fn stu_all(&self, guids: &[u64]) -> Vec<(u64, Result<lucy_stu::Asset>)> {
         self.game
             .read_all(guids)
             .into_iter()
@@ -81,8 +81,8 @@ impl Install {
     }
 }
 
-fn decode(guid: u64, bytes: &[u8]) -> Result<orpheus_stu::Asset> {
-    orpheus_stu::read(bytes).map_err(|error| asset_error(format!("{}: {error}", guid_name(guid))))
+fn decode(guid: u64, bytes: &[u8]) -> Result<lucy_stu::Asset> {
+    lucy_stu::read(bytes).map_err(|error| asset_error(format!("{}: {error}", guid_name(guid))))
 }
 
 /// A GUID as the pack files write it: `0x` and sixteen upper-case digits.

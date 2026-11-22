@@ -29,7 +29,7 @@
 
 use std::collections::VecDeque;
 
-use orpheus_wire::entity::{EntityUpdate, Movement};
+use lucy_wire::entity::{EntityUpdate, Movement};
 
 const HISTORY: usize = 64;
 // The client retains input from ACK - 1. To replay after F it needs F + 1.
@@ -261,7 +261,7 @@ impl CorrectionHistory {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orpheus_wire::entity::{NO_INPUT, movement_record};
+    use lucy_wire::entity::{NO_INPUT, movement_record};
     use sha2::{Digest, Sha256};
 
     const ENTITY: u32 = 0xa000_0101;

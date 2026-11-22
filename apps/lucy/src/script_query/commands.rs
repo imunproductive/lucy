@@ -332,7 +332,7 @@ impl Query {
     pub fn class(&self, text: &str) -> Vec<String> {
         let Some(cls) = self.find_class(text) else {
             return vec![format!(
-                "no class {} in the data (try: orpheus script query find {text})",
+                "no class {} in the data (try: lucy script query find {text})",
                 str_repr(text)
             )];
         };
@@ -937,7 +937,7 @@ fn codec_value(value: &J) -> String {
 /// The class's entry in `crates/fixed/data/statescript_codecs.json`
 /// (`classes` by hash, else by class name).
 fn codec_entry(names: &super::data::Names, cls: &str) -> Option<J> {
-    let data = json::parse(orpheus_fixed::STATESCRIPT_CODECS.as_bytes()).ok()?;
+    let data = json::parse(lucy_fixed::STATESCRIPT_CODECS.as_bytes()).ok()?;
     let table = data.at("classes").as_obj()?;
     let hashed = class_hash(names, cls);
     let keys = [
@@ -958,15 +958,15 @@ fn codec_entry(names: &super::data::Names, cls: &str) -> Option<J> {
 }
 
 /// How the server's VM runs a node class: the state kinds and node actions
-/// of `orpheus_script::vm` (`run_node` and `begin` in `vm/nodes.rs`). Python
+/// of `lucy_script::vm` (`run_node` and `begin` in `vm/nodes.rs`). Python
 /// printed its registries instead (`runtime.STATE_CLASSES` and
 /// `runtime.HANDLERS`); keep this table in step with the VM.
 fn vm_text(cls: &str, is_state: bool) -> String {
-    let state = |kind: &str| format!("state kind {kind} (orpheus_script::vm)");
-    let action = |what: &str| format!("action: {what} (orpheus_script::vm)");
+    let state = |kind: &str| format!("state kind {kind} (lucy_script::vm)");
+    let action = |what: &str| format!("action: {what} (lucy_script::vm)");
     match cls {
         "STUStatescriptEntry" | "STU_571CC72E" | "STUStatescriptEntryGameMessage" => {
-            "entry: follows m_outPlug (orpheus_script::vm)".into()
+            "entry: follows m_outPlug (lucy_script::vm)".into()
         }
         "STUStatescriptActionSetVar" => action("stores its variables"),
         "STUStatescriptActionSendGameMessage" => action("sends its game message"),

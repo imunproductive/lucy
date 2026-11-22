@@ -35,7 +35,7 @@
 
 use std::io;
 
-use orpheus_wire::jam::codec::{
+use lucy_wire::jam::codec::{
     Fields,
     Value::{Float64, Unsigned},
 };

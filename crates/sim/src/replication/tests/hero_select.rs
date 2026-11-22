@@ -3,7 +3,7 @@
 //! show what the script then has.
 
 use super::*;
-use orpheus_content::{heroes::ANA, maps::SpawnChoice, parameters::OPEN_OR_CLOSE};
+use lucy_content::{heroes::ANA, maps::SpawnChoice, parameters::OPEN_OR_CLOSE};
 
 const PLAYER: u32 = 0xa000_0100;
 
@@ -45,7 +45,7 @@ fn open_or_close(open: bool) -> Message {
 #[test]
 #[ignore = "requires a derived 104319 pack"]
 fn h_opens_a_pick_switches_and_288b_closes() {
-    let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
     let scene = assets.prepare(GameMap::practice_range()).unwrap();
     let card = PlayerCard::default();
     let viewer = PlayerAppearance {
@@ -187,7 +187,7 @@ fn joined(scene: &PreparedScene, viewer: &PlayerAppearance<'_>) -> WorldDelivery
 #[test]
 #[ignore = "requires a derived 104319 pack"]
 fn the_controller_gets_its_command_frame_before_the_first_body() {
-    let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
     let scene = assets.prepare(GameMap::practice_range()).unwrap();
     let card = PlayerCard::default();
     let viewer = PlayerAppearance {

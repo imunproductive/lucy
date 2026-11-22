@@ -10,11 +10,11 @@ use std::{
     sync::Arc,
 };
 
-use orpheus_workshop::{Catalog, Engine, binary::encode, decode, parse, text::Setting};
+use lucy_workshop::{Catalog, Engine, binary::encode, decode, parse, text::Setting};
 use serde_json::Value as Json;
 
 fn install_catalog() -> Arc<Catalog> {
-    Arc::new(Catalog::load(&orpheus_testkit::runtime_dir().join("data")).unwrap())
+    Arc::new(Catalog::load(&lucy_testkit::runtime_dir().join("data")).unwrap())
 }
 
 fn scripts(folder: &Path, found: &mut Vec<PathBuf>) {
@@ -31,7 +31,7 @@ fn scripts(folder: &Path, found: &mut Vec<PathBuf>) {
 #[test]
 #[ignore = "requires an Overwatch 1.74 install (just test-game <install>)"]
 fn catalog_subset_is_the_installs() {
-    let path = orpheus_testkit::runtime_dir().join("data/workshop_catalog_174.json");
+    let path = lucy_testkit::runtime_dir().join("data/workshop_catalog_174.json");
     let install: Json = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
     let subset: Json = serde_json::from_str(common::CATALOG).unwrap();
     for key in ["events", "conditions", "strings"] {
@@ -71,7 +71,7 @@ fn catalog_subset_is_the_installs() {
 fn dpk_archive_scripts_parse_round_trip_and_run() {
     let catalog = install_catalog();
     let mut found = Vec::new();
-    scripts(&orpheus_testkit::dpk_archive(), &mut found);
+    scripts(&lucy_testkit::dpk_archive(), &mut found);
     found.sort();
     assert!(found.len() >= 15, "{} scripts", found.len());
     let mut failures = Vec::new();

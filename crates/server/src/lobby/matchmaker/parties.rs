@@ -5,7 +5,7 @@
 
 use std::{io, sync::Arc};
 
-use orpheus_lobby::{accounts::Account, queue::QueueFields};
+use lucy_lobby::{accounts::Account, queue::QueueFields};
 
 use crate::lobby::{Lobby, social};
 

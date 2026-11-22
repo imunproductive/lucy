@@ -14,12 +14,12 @@
 //! `m_B1003775` (default the entity's forward), flat and unit
 //! (`xmmword_7FF78C151790` = up when too short), its distance
 //! `m_3A5CB679`. Without a mover it writes false. The trial itself is
-//! [`orpheus_physics::mover::trial`]: its displacement form (`m_9A978490`
+//! [`lucy_physics::mover::trial`]: its displacement form (`m_9A978490`
 //! true: the punch and its victim) or its velocity form (Reinhardt `007D`,
 //! `1537`: `m_81759372` steps, 4 when unset).
 
 use super::*;
-use orpheus_physics::mover::trial::TrialForm;
+use lucy_physics::mover::trial::TrialForm;
 
 const WALL_CHECK: &str = "STU_FBFF5DE7";
 

@@ -2,7 +2,7 @@ use crate::commands::{CommandQueue, read_input};
 use crate::jam::codec::{Schemas, Value};
 use crate::link::{LinkCipher, ReceiveWindow};
 use crate::messages::read_channel;
-use orpheus_core::bits::BitReader;
+use lucy_core::bits::BitReader;
 
 #[test]
 fn opens_a_python_game_datagram_and_dispatches_its_command_prefix_once() {

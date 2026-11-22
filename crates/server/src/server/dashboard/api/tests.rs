@@ -1,6 +1,6 @@
 use super::*;
-use orpheus_content::catalog::{ItemDb, UNLOCK_BASE};
-use orpheus_lobby::templates::RetailTemplates;
+use lucy_content::catalog::{ItemDb, UNLOCK_BASE};
+use lucy_lobby::templates::RetailTemplates;
 
 const ICON: u64 = UNLOCK_BASE | 0x10;
 const FRAME: u64 = UNLOCK_BASE | 0x20;

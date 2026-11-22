@@ -34,7 +34,7 @@
 
 use std::{error, fmt};
 
-use orpheus_wire::jam::codec::{Fields, Value as Jam};
+use lucy_wire::jam::codec::{Fields, Value as Jam};
 
 use crate::{
     catalog::{Catalog, Id, Param, ParamKind},

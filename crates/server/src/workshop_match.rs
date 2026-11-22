@@ -25,12 +25,12 @@ use std::{
     sync::Arc,
 };
 
-use orpheus_core::guid::parse_guid;
-use orpheus_script::{
+use lucy_core::guid::parse_guid;
+use lucy_script::{
     graph::{BodyValues, ModeValue},
     rulesets,
 };
-use orpheus_workshop::{Catalog, Logic, text::Setting};
+use lucy_workshop::{Catalog, Logic, text::Setting};
 use serde_json::Value as Json;
 
 /// The packed GUID type bits of a map (`002`) and of an `01C` identifier.
@@ -313,7 +313,7 @@ struct HeroLines<'a> {
 
 impl ScriptMatch {
     pub fn parse(text: &str, catalog: &Catalog, names: &SettingNames) -> io::Result<Self> {
-        let script = orpheus_workshop::parse(text, catalog)
+        let script = lucy_workshop::parse(text, catalog)
             .map_err(|error| invalid(format!("Workshop text: {error}")))?;
         let mut found = Self {
             logic: Arc::new(script.logic),
@@ -647,7 +647,7 @@ mod tests {
     #[test]
     #[ignore = "requires an Overwatch 1.74 install (just test-game <install>)"]
     fn c32s2_settings_map_to_hanamura_assault_and_their_ruleset_keys() {
-        let data = orpheus_testkit::runtime_dir().join("data");
+        let data = lucy_testkit::runtime_dir().join("data");
         let catalog = Catalog::load(&data).unwrap();
         let names = SettingNames::load(&data).unwrap();
         let script = ScriptMatch::parse(C32S2, &catalog, &names).unwrap();
@@ -731,7 +731,7 @@ mod tests {
 	}
 }
 "#;
-        let data = orpheus_testkit::runtime_dir().join("data");
+        let data = lucy_testkit::runtime_dir().join("data");
         let catalog = Catalog::load(&data).unwrap();
         let names = SettingNames::load(&data).unwrap();
         let script = ScriptMatch::parse(TEXT, &catalog, &names).unwrap();
@@ -796,7 +796,7 @@ mod tests {
 	}
 }
 "#;
-        let data = orpheus_testkit::runtime_dir().join("data");
+        let data = lucy_testkit::runtime_dir().join("data");
         let catalog = Catalog::load(&data).unwrap();
         let names = SettingNames::load(&data).unwrap();
         let script = ScriptMatch::parse(TEXT, &catalog, &names).unwrap();

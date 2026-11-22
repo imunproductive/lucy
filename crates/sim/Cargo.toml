@@ -1,5 +1,5 @@
 [package]
-name = "orpheus-sim"
+name = "lucy-sim"
 description = "The match simulation for retail build 104319: bodies, bots, combat, projectiles and replication"
 version.workspace = true
 edition.workspace = true
@@ -9,12 +9,12 @@ license.workspace = true
 
 [dependencies]
 indexmap.workspace = true
-orpheus-content.workspace = true
-orpheus-core.workspace = true
-orpheus-physics.workspace = true
-orpheus-script.workspace = true
-orpheus-wire.workspace = true
-orpheus-workshop.workspace = true
+lucy-content.workspace = true
+lucy-core.workspace = true
+lucy-physics.workspace = true
+lucy-script.workspace = true
+lucy-wire.workspace = true
+lucy-workshop.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
@@ -24,9 +24,9 @@ tracing.workspace = true
 fixtures = []
 
 [dev-dependencies]
-orpheus-assets.workspace = true
-orpheus-physics = { workspace = true, features = ["fixtures"] }
-orpheus-stu.workspace = true
-orpheus-testkit.workspace = true
+lucy-assets.workspace = true
+lucy-physics = { workspace = true, features = ["fixtures"] }
+lucy-stu.workspace = true
+lucy-testkit.workspace = true
 sha2.workspace = true
 tempfile.workspace = true

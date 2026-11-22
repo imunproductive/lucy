@@ -22,8 +22,8 @@ use std::{
     sync::Arc,
 };
 
-use orpheus_core::guid::parse_guid;
-use orpheus_physics::{
+use lucy_core::guid::parse_guid;
+use lucy_physics::{
     collision::{
         index::{IndexError, RayHit},
         scene::CollisionScene,
@@ -31,11 +31,11 @@ use orpheus_physics::{
     contact::world::ContactWorld,
     static_ray::{Vec3, capsule_entry_distance, segment_distance},
 };
-use orpheus_script::{
+use lucy_script::{
     vm::{MapHit, MapRays},
     weapons::{DamageTags, HitDefinition},
 };
-use orpheus_wire::commands::Command;
+use lucy_wire::commands::Command;
 use serde::Deserialize;
 
 use crate::{bot_animation::rotate, hitboxes::HitShape};
@@ -46,7 +46,7 @@ const HEAD_BELOW_EYE: f64 = 0.2;
 const ANGLE_STEP: f64 = std::f64::consts::TAU / 65536.0;
 
 /// The derived ray profiles file, in the runtime `data` folder (the
-/// `orpheus-assets` derivation `game_ray_profiles`).
+/// `lucy-assets` derivation `game_ray_profiles`).
 pub const RAY_PROFILES_FILE: &str = "game_ray_profiles_174.json";
 
 /// The map mask of a shot or projectile whose volley names no ray profile,
@@ -54,7 +54,7 @@ pub const RAY_PROFILES_FILE: &str = "game_ray_profiles_174.json";
 /// pistols, Cassidy's Peacekeeper, Widowmaker's rifle): the client's query
 /// then takes profile `0001` (`0x7FF789AFEEB0`), which stores no
 /// `m_category` and so loads the profile's default, `m_E552CFAA` alone
-/// (`orpheus_assets` `ray_profiles`; measured for `0002`, `0017` and
+/// (`lucy_assets` `ray_profiles`; measured for `0002`, `0017` and
 /// `0018`, which store none either). A player clip (mask `0x1B9F`, like
 /// the one above the Range spawn) lacks that bit: shots pass it (refs
 /// report `Grapple.md` "DayGrapple3").
@@ -66,7 +66,7 @@ pub const DEFAULT_MAP_MASK: u16 = 0x0040;
 pub const DEFAULT_MEETS_BODIES: bool = true;
 
 /// What a ray of each ray profile (`097`, `STU_8EFC337B`) meets
-/// (`orpheus_assets` `ray_profiles`):
+/// (`lucy_assets` `ray_profiles`):
 /// - the map: a map triangle or prop shape stops a shot or projectile of
 ///   the profile when its mask shares a bit with the profile's map mask
 ///   (`m_category` packed);
@@ -240,7 +240,7 @@ impl PlaceableRays {
 }
 
 /// The map's collision as a script's ray casts meet it
-/// (`orpheus_script::vm` ray casts): the ray cache and the standing server
+/// (`lucy_script::vm` ray casts): the ray cache and the standing server
 /// placeables' models, masked by the cast's ray profile's map mask as a
 /// shot of that profile is.
 #[derive(Debug)]
@@ -350,7 +350,7 @@ impl TargetPose {
     }
 
     /// The body's critical shapes in the world, each as the middle of its
-    /// segment and its radius (the `orpheus::hits` trace).
+    /// segment and its radius (the `lucy::hits` trace).
     pub(crate) fn critical_shapes(&self) -> impl Iterator<Item = (Vec3, f64)> + '_ {
         self.placed()
             .filter(|shape| shape.3)
@@ -610,9 +610,9 @@ pub(crate) fn aim_direction(command: &Command) -> Vec3 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orpheus_physics::collision::index::{SceneTriangle, TriangleIndex};
-    use orpheus_script::weapons::{AllyHits, DamageFalloff};
-    use orpheus_wire::commands::Click;
+    use lucy_physics::collision::index::{SceneTriangle, TriangleIndex};
+    use lucy_script::weapons::{AllyHits, DamageFalloff};
+    use lucy_wire::commands::Click;
 
     const MOVER: u16 = 0x18;
     const RIFLE: HitDefinition = HitDefinition {
@@ -999,9 +999,9 @@ mod tests {
     #[ignore = "requires a derived 104319 Practice Range scene"]
     fn practice_capsule_hits_match_reference_geometry() {
         use crate::scene_assets::SceneAssets;
-        use orpheus_content::maps::GameMap;
+        use lucy_content::maps::GameMap;
 
-        let root = orpheus_testkit::runtime_dir();
+        let root = lucy_testkit::runtime_dir();
         let scene = SceneAssets::load(&root)
             .unwrap()
             .prepare(GameMap::practice_range())
@@ -1054,9 +1054,9 @@ mod tests {
     #[ignore = "requires a derived 104319 Practice Range scene"]
     fn a_practice_bot_is_hit_by_its_shapes() {
         use crate::scene_assets::SceneAssets;
-        use orpheus_content::maps::GameMap;
+        use lucy_content::maps::GameMap;
 
-        let scene = SceneAssets::load(orpheus_testkit::runtime_dir())
+        let scene = SceneAssets::load(lucy_testkit::runtime_dir())
             .unwrap()
             .prepare(GameMap::practice_range())
             .unwrap();
@@ -1112,8 +1112,8 @@ mod tests {
     /// movers' world has moved it.
     #[test]
     fn placeable_models_meet_rays_while_their_group_is_on() {
-        use orpheus_physics::collision::cache::{Mesh, Placement, Shape, Triangle};
-        use orpheus_physics::contact::{
+        use lucy_physics::collision::cache::{Mesh, Placement, Shape, Triangle};
+        use lucy_physics::contact::{
             math::ContactFrame,
             round::{RoundShape, Sphere},
             world::{StaticGeometry, StaticShape},

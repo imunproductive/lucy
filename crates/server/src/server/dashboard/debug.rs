@@ -1,4 +1,4 @@
-//! The marker messages, on with `ORPHEUS_DEBUG_SEND=1` (off by default: the
+//! The marker messages, on with `LUCY_DEBUG_SEND=1` (off by default: the
 //! routes do not exist then). Research sends a game link or lobby message
 //! with chosen field values to a connected game, to find which of the
 //! client's code reads a field.
@@ -37,8 +37,8 @@ use crate::{
     game_service::{DebugKill, DebugSeat, GameService},
     lobby::Lobby,
 };
-use orpheus_lobby::{accounts::account_id_for, handoff::Handoff};
-use orpheus_wire::{
+use lucy_lobby::{accounts::account_id_for, handoff::Handoff};
+use lucy_wire::{
     jam::codec::{Field, Fields, Schemas, Value},
     messages,
 };
@@ -57,12 +57,12 @@ const BLOB: u8 = 15;
 
 static GAME_SCHEMAS: LazyLock<Schemas> = LazyLock::new(Schemas::game);
 
-/// Whether `ORPHEUS_DEBUG_SEND=1` turns the routes on; it logs a warning
+/// Whether `LUCY_DEBUG_SEND=1` turns the routes on; it logs a warning
 /// when it does.
 pub(in crate::server) fn enabled() -> bool {
-    let on = std::env::var("ORPHEUS_DEBUG_SEND").is_ok_and(|value| value == "1");
+    let on = std::env::var("LUCY_DEBUG_SEND").is_ok_and(|value| value == "1");
     if on {
-        tracing::warn!("ORPHEUS_DEBUG_SEND: the dashboard's marker message routes are on");
+        tracing::warn!("LUCY_DEBUG_SEND: the dashboard's marker message routes are on");
     }
     on
 }
@@ -393,9 +393,8 @@ fn names_entities(value: &Json) -> bool {
 
 /// Every top-level field's value as encoded, defaults included.
 fn sent_fields(layout: &Layout, fields: &Fields) -> Result<Vec<Json>, ApiError> {
-    let invalid = |error: orpheus_wire::jam::codec::CodecError| {
-        bad(format!("Message {}: {error}", layout.id))
-    };
+    let invalid =
+        |error: lucy_wire::jam::codec::CodecError| bad(format!("Message {}: {error}", layout.id));
     let body = layout
         .schemas
         .encode(layout.crc, layout.id, fields)

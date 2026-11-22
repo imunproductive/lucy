@@ -1,16 +1,16 @@
 //! A hero ability's victim graph, played by the server on the body the
-//! ability struck (`orpheus_script` `vm/play.rs` `Plays::Others`): Rocket
+//! ability struck (`lucy_script` `vm/play.rs` `Plays::Others`): Rocket
 //! Punch's `0D07` on a training bot and on an enemy player, Soundwave's
 //! `0ECA` on an enemy player, each in the struck body's frames, and the
 //! push the struck body takes.
 
 use super::*;
-use orpheus_script::{
+use lucy_script::{
     vm::Unknowns,
     wire::{DeltaInstance, read_delta_instances, read_full_head},
 };
-use orpheus_sim::scene_assets::SceneAssets;
-use orpheus_wire::commands::SECONDARY;
+use lucy_sim::scene_assets::SceneAssets;
+use lucy_wire::commands::SECONDARY;
 
 /// Rocket Punch's victim graph.
 const PUNCHED: u16 = 0x0d07;
@@ -21,7 +21,7 @@ const SOUNDWAVED: u16 = 0x0eca;
 /// `graph` (a whole frame's, or a delta's new ones).
 fn frames_list(
     watcher: &Watcher,
-    graphs: &orpheus_script::graph::GraphStore,
+    graphs: &lucy_script::graph::GraphStore,
     entity: u32,
     graph: u16,
 ) -> bool {
@@ -54,7 +54,7 @@ fn frames_list(
 /// the training bots' `0033` meets `STU_F76C486C`, and a refused bot has
 /// no script to play on).
 fn assets() -> SceneAssets {
-    let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let mut assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
     assets.set_player_unknowns(Unknowns::Tolerate);
     assets.set_bot_unknowns(Unknowns::Tolerate);
     assets

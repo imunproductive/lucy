@@ -36,7 +36,7 @@
 //!   must see it, keeping where its clear ray met the body; then the ground
 //!   walk: with `m_7A61C4A9`, from that point back to the sight line's
 //!   origin over the ground (`0x7FF789BAC810`,
-//!   [`orpheus_physics::mover::ground_walk`], drop `m_FF3B7DF2`, climb
+//!   [`lucy_physics::mover::ground_walk`], drop `m_FF3B7DF2`, climb
 //!   `m_E81B2985`, probe `m_525E5A40`, the sample rays with the ray
 //!   profile of `m_9A8CA980`); without it, a walk over the navigation
 //!   voxels (`0x7FF78A61A9D0`), which the server doesn't have.
@@ -60,7 +60,7 @@ use super::{
     targets::{BodyFilter, Cone, Gap, TAG_LISTS, in_cone, is_set},
     *,
 };
-use orpheus_physics::mover::ground_walk::GroundWalk;
+use lucy_physics::mover::ground_walk::GroundWalk;
 
 const CLASS: &str = "STUStatescriptStateShockwave";
 const FOUND: &str = "m_8A2905A0";

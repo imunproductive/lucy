@@ -1,5 +1,5 @@
-//! The server without a game here: `orpheus serve` (Python's `retail
-//! --no-launch`) and `orpheus server` (Python's `server` mode, the lobby for
+//! The server without a game here: `lucy serve` (Python's `retail
+//! --no-launch`) and `lucy server` (Python's `server` mode, the lobby for
 //! other PCs).
 
 use std::{
@@ -9,8 +9,8 @@ use std::{
     sync::{Arc, mpsc},
 };
 
-use orpheus_launcher::game::install_root;
-use orpheus_server::{
+use lucy_launcher::game::install_root;
+use lucy_server::{
     platform::LocalGames,
     server::{Server, ServerConfig},
 };
@@ -82,7 +82,7 @@ pub fn game_data(settings: &Settings) -> io::Result<PathBuf> {
     let locale = play::locale(settings, &game).unwrap_or_else(|| TEXT_LOCALE.into());
     fs::create_dir_all(settings.cache())?;
     info!(install = %install.display(), "reading game data from the install");
-    orpheus_assets::cache::ensure(&install, &locale, &settings.cache()).map_err(io::Error::other)
+    lucy_assets::cache::ensure(&install, &locale, &settings.cache()).map_err(io::Error::other)
 }
 
 /// The install folder of the configured game.

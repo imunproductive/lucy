@@ -146,7 +146,7 @@ use std::{
     path::Path,
 };
 
-use orpheus_stu::{Asset, Object, Value};
+use lucy_stu::{Asset, Object, Value};
 use serde_json::{Map, json};
 
 use crate::{
@@ -350,7 +350,7 @@ fn model_stu(data: &[u8]) -> Result<Option<Asset>, String> {
     };
     let start = usize::try_from(i64_at(payload, 0)?).map_err(|_| "bad MSTU offset")?;
     let size = usize::try_from(i64_at(payload, 8)?).map_err(|_| "bad MSTU size")?;
-    orpheus_stu::read(slice(payload, start, start + size))
+    lucy_stu::read(slice(payload, start, start + size))
         .map(Some)
         .map_err(|error| error.to_string())
 }
@@ -761,7 +761,7 @@ mod tests {
     #[test]
     #[ignore = "requires an Overwatch 1.74 install (just test-game <install>)"]
     fn the_skeleton_places_the_bones_the_model_table_lists() {
-        let install = Install::open(&orpheus_testkit::game_dir(), "enUS").unwrap();
+        let install = Install::open(&lucy_testkit::game_dir(), "enUS").unwrap();
         let data = install.raw(TRAINING_BOT_MODEL).unwrap();
         let skeleton = Skeleton::read(&data).unwrap().unwrap();
         assert_eq!(skeleton.ids.len(), 43);

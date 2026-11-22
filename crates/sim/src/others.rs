@@ -56,9 +56,9 @@ use crate::{
         player_team_bit,
     },
 };
-use orpheus_content::{heroes::Hero, maps::GameMap};
-use orpheus_core::bits::BitWriter;
-use orpheus_script::{
+use lucy_content::{heroes::Hero, maps::GameMap};
+use lucy_core::bits::BitWriter;
+use lucy_script::{
     codecs::{Codec, CodecTable},
     graph::GraphStore,
     snapshot::{ProjectedSnapshot, ProjectionCache, SnapshotEncoder, View},
@@ -67,7 +67,7 @@ use orpheus_script::{
     vm::{Revision, Snapshot},
     wire::WireError,
 };
-use orpheus_wire::{
+use lucy_wire::{
     entity::{Component, EntityUpdate, Movement, Operation, SkinTheme},
     jam::codec::Fields,
     messages::Message,
@@ -1111,7 +1111,7 @@ impl Others {
                     slot: other.slot,
                     team: other.team,
                     spawn: 0,
-                    room: orpheus_content::maps::SpawnChoice::First,
+                    room: lucy_content::maps::SpawnChoice::First,
                     card: other.card,
                 },
                 None,
@@ -1387,8 +1387,8 @@ fn invalid(error: impl std::fmt::Display) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orpheus_content::heroes::SOLDIER;
-    use orpheus_wire::{entity::NO_INPUT, jam::codec::Value};
+    use lucy_content::heroes::SOLDIER;
+    use lucy_wire::{entity::NO_INPUT, jam::codec::Value};
 
     const VIEWER: u32 = 0xa000_0100;
     const OTHER: u32 = 0xa000_0200;
@@ -1634,7 +1634,7 @@ mod tests {
             switch_notices: true,
         };
         let switch = |serial| Switch {
-            kept: orpheus_script::controller::HeroSwitch {
+            kept: lucy_script::controller::HeroSwitch {
                 old: 1,
                 new: 2,
                 player: OTHER,

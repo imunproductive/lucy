@@ -10,7 +10,7 @@
 
 use std::{collections::HashMap, io};
 
-use orpheus_script::{
+use lucy_script::{
     expr::{Context, Value, Variable, dynamic, evaluate, to_float},
     graph::{Graph, GraphStore, Node, asset_guid},
 };

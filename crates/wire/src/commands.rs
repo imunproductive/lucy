@@ -28,7 +28,7 @@
 
 use std::fmt;
 
-use orpheus_core::bits::{BitError, BitReader};
+use lucy_core::bits::{BitError, BitReader};
 
 pub const MAX_COMMANDS: u8 = 32;
 pub const FRAME_HALF: u32 = 1 << 31;
@@ -362,7 +362,7 @@ mod tests {
     use super::{
         Click, Command, CommandQueue, FRAME_HALF, InputError, InputRecord, SUBFRAME, read_input,
     };
-    use orpheus_core::bits::{BitReader, BitWriter};
+    use lucy_core::bits::{BitReader, BitWriter};
 
     #[test]
     fn matches_the_existing_forward_and_turn_fixture() {

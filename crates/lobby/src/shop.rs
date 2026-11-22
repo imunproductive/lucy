@@ -10,7 +10,7 @@ use indexmap::IndexMap;
 use serde_json::Value as Json;
 
 use crate::{accounts::Profile, collection::Collection};
-use orpheus_content::catalog::Unlock;
+use lucy_content::catalog::Unlock;
 
 pub const PURCHASE: u32 = 24203;
 

@@ -17,54 +17,54 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use orpheus_assets::cache::{self, BUILD};
+use lucy_assets::cache::{self, BUILD};
 
 /// The hash of the derivations' code (`build.rs`): the derived data of one
 /// code is kept apart from another's.
-const DERIVATIONS_KEY: &str = env!("ORPHEUS_DERIVATIONS_KEY");
+const DERIVATIONS_KEY: &str = env!("LUCY_DERIVATIONS_KEY");
 /// How long the derived data of other code is kept after its last use.
 const KEEP_UNUSED: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
-/// The Overwatch 1.74 install named by `ORPHEUS_GAME_DIR`.
+/// The Overwatch 1.74 install named by `LUCY_GAME_DIR`.
 pub fn game_dir() -> PathBuf {
-    env::var_os("ORPHEUS_GAME_DIR")
+    env::var_os("LUCY_GAME_DIR")
         .map(PathBuf::from)
-        .expect("set ORPHEUS_GAME_DIR to an Overwatch 1.74 install (just test-game <install>)")
+        .expect("set LUCY_GAME_DIR to an Overwatch 1.74 install (just test-game <install>)")
 }
 
 /// A DataTool XML export of the same install (`extract-stu-type <dump> <type>
-/// --xml`), named by `ORPHEUS_DATATOOL_DUMP`; the oracle for the asset reader.
+/// --xml`), named by `LUCY_DATATOOL_DUMP`; the oracle for the asset reader.
 pub fn datatool_dump() -> PathBuf {
-    env::var_os("ORPHEUS_DATATOOL_DUMP")
-        .map(PathBuf::from)
-        .expect("set ORPHEUS_DATATOOL_DUMP to a DataTool XML export (just test-datatool <install> <dump>)")
+    env::var_os("LUCY_DATATOOL_DUMP").map(PathBuf::from).expect(
+        "set LUCY_DATATOOL_DUMP to a DataTool XML export (just test-datatool <install> <dump>)",
+    )
 }
 
 /// The Doomfist parkour script archive (`dfp-archive`: workshop.codes and
-/// GitHub `.txt` Workshop scripts), named by `ORPHEUS_DPK_ARCHIVE`; the
+/// GitHub `.txt` Workshop scripts), named by `LUCY_DPK_ARCHIVE`; the
 /// Workshop parser and engine run over it.
 pub fn dpk_archive() -> PathBuf {
-    env::var_os("ORPHEUS_DPK_ARCHIVE")
-        .map(PathBuf::from)
-        .expect("set ORPHEUS_DPK_ARCHIVE to the Doomfist parkour archive (just test-dpk <install> <archive>)")
+    env::var_os("LUCY_DPK_ARCHIVE").map(PathBuf::from).expect(
+        "set LUCY_DPK_ARCHIVE to the Doomfist parkour archive (just test-dpk <install> <archive>)",
+    )
 }
 
 /// The game data the server reads, derived from the install named by
-/// `ORPHEUS_GAME_DIR`, in `<test data>/104319/<key>`; `<key>` is the hash of
+/// `LUCY_GAME_DIR`, in `<test data>/104319/<key>`; `<key>` is the hash of
 /// the derivations' code, so a change to it derives again, and the derived
 /// data are the current code's output. Every checkout of the same code
 /// shares the folder, and the processes that ask at once derive it once
-/// (`orpheus_assets::cache::ensure_pack`).
+/// (`lucy_assets::cache::ensure_pack`).
 ///
-/// The test data folder is `ORPHEUS_TEST_DATA`, by default the main
-/// checkout's `target/orpheus-test-data`, which its worktrees share. A
+/// The test data folder is `LUCY_TEST_DATA`, by default the main
+/// checkout's `target/lucy-test-data`, which its worktrees share. A
 /// process that derives deletes the data of other keys unused for
 /// [`KEEP_UNUSED`].
 pub fn runtime_dir() -> PathBuf {
     static DERIVED: LazyLock<PathBuf> = LazyLock::new(|| {
-        let builds = env::var_os("ORPHEUS_TEST_DATA")
+        let builds = env::var_os("LUCY_TEST_DATA")
             .map_or_else(
-                || PathBuf::from(env!("ORPHEUS_TEST_DATA_DEFAULT")),
+                || PathBuf::from(env!("LUCY_TEST_DATA_DEFAULT")),
                 PathBuf::from,
             )
             .join(BUILD);
@@ -89,9 +89,9 @@ pub fn runtime_json(path: &str) -> serde_json::Value {
 }
 
 /// The paths of the files the derivation `name` returned when it derived
-/// [`runtime_dir`], in its order (`orpheus_assets::OUTPUTS`).
+/// [`runtime_dir`], in its order (`lucy_assets::OUTPUTS`).
 pub fn derived_outputs(name: &str) -> Vec<String> {
-    let path = runtime_dir().join(orpheus_assets::OUTPUTS);
+    let path = runtime_dir().join(lucy_assets::OUTPUTS);
     let list =
         fs::read_to_string(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
     list.lines()
@@ -128,12 +128,12 @@ fn prune(builds: &Path, current: &Path) {
     }
 }
 
-/// The prepared runtime pack named by `ORPHEUS_RUNTIME_DIR`: the files the
+/// The prepared runtime pack named by `LUCY_RUNTIME_DIR`: the files the
 /// Python extractors made, the oracle the derivations are compared with.
 pub fn oracle_pack() -> PathBuf {
-    env::var_os("ORPHEUS_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .expect("set ORPHEUS_RUNTIME_DIR to a prepared runtime pack (just test-assets <install> <pack>)")
+    env::var_os("LUCY_RUNTIME_DIR").map(PathBuf::from).expect(
+        "set LUCY_RUNTIME_DIR to a prepared runtime pack (just test-assets <install> <pack>)",
+    )
 }
 
 /// The pack's bot graph bundle: the hero bundle plus the map AI spawner

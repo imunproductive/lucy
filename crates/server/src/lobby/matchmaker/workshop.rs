@@ -10,7 +10,7 @@ use std::{
     sync::Arc,
 };
 
-use orpheus_lobby::{accounts::Account, session::PreparedLogin};
+use lucy_lobby::{accounts::Account, session::PreparedLogin};
 
 use super::{Ctx, Lobby, Matchmaker, Parties, Party};
 use crate::workshop_match::{ScriptMatch, SettingNames};
@@ -24,11 +24,11 @@ pub(crate) struct WorkshopScript {
 
 impl Matchmaker {
     /// The Workshop catalog of the runtime data.
-    pub(super) fn catalog(&self) -> io::Result<Arc<orpheus_workshop::Catalog>> {
+    pub(super) fn catalog(&self) -> io::Result<Arc<lucy_workshop::Catalog>> {
         if let Some(catalog) = self.catalog.get() {
             return Ok(Arc::clone(catalog));
         }
-        let catalog = Arc::new(orpheus_workshop::Catalog::load(&self.data)?);
+        let catalog = Arc::new(lucy_workshop::Catalog::load(&self.data)?);
         Ok(Arc::clone(self.catalog.get_or_init(|| catalog)))
     }
 

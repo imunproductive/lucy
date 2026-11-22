@@ -16,7 +16,7 @@
 
 use std::{collections::BTreeMap, path::Path};
 
-use orpheus_stu::Value;
+use lucy_stu::Value;
 use serde_json::{Map, json};
 
 use super::{Assets, field, parse_guid};

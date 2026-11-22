@@ -1,13 +1,13 @@
 //! Saved client settings (22200-22204, 22207) and the season intro (36200).
 //! Ports `ow174/lobby/handlers/settings.py`; the rules are in
-//! `orpheus_lobby::saved_settings`.
+//! `lucy_lobby::saved_settings`.
 
 use std::io;
 
-use orpheus_lobby::saved_settings::{
+use lucy_lobby::saved_settings::{
     self, RANKED_OUT, SAVE_UX_STATE, SAVE_VALUES, SEASON_INTRO_SEEN, SOCIAL_OUT,
 };
-use orpheus_wire::jam::codec::{Fields, Value};
+use lucy_wire::jam::codec::{Fields, Value};
 
 use crate::lobby::{
     peer::Peer,

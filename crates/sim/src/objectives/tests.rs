@@ -3,7 +3,7 @@ use crate::{
     match_flow::{CONTROL, ESCORT},
     mode_rules_data::{fixture, fixture_payload},
 };
-use orpheus_content::maps::ObjectiveKind;
+use lucy_content::maps::ObjectiveKind;
 
 /// The rates 1.74's mode graphs send (`mode_graph_values` pins them to the
 /// install): Assault and Hybrid, Control, Elimination.

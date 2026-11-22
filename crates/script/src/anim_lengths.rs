@@ -1,6 +1,6 @@
 //! How long the animation an alias plays runs on each body, and the scalar
 //! it outputs: the derived file `game_anim_lengths_174.json` (the
-//! `orpheus-assets` derivation `game_anim_lengths`, which documents how the
+//! `lucy-assets` derivation `game_anim_lengths`, which documents how the
 //! data is read). A statescript `Anim` state without an authored length
 //! runs for this length.
 //!

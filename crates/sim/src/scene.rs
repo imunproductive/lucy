@@ -97,7 +97,7 @@
 //!   shot's world ray asks only for 0x81, so it never meets them. The shot's
 //!   entity query does: it keeps the weapon profile's body mask (its
 //!   `m_CBCB2AB9`: `0x1081` for `0001`, measured `0x1883` in the query of
-//!   `0002`, both with 0x1000; `orpheus_assets` `ray_profiles`), accepts an
+//!   `0002`, both with 0x1000; `lucy_assets` `ray_profiles`), accepts an
 //!   entity whose moving bodies' categories overlap it
 //!   (`0x7FF789B01DD0`) and tests those bodies (`0x7FF789B00C50`); but it
 //!   walks only group 0x10000. A placeable created from the map has
@@ -186,18 +186,18 @@ use crate::{
     instance::FREE_FOR_ALL_TEAM,
     map_areas::PlacedScript,
 };
-use orpheus_content::{
+use lucy_content::{
     maps::{GameMap, SpawnChoice},
     stats::GMP_STATS,
 };
-use orpheus_core::bits::BitWriter;
-use orpheus_script::{
+use lucy_core::bits::BitWriter;
+use lucy_script::{
     graph::GraphStore,
     target_tags::TargetTagLists,
     vitals::Vitals,
     wire::{self, Instance, Layout, Variables},
 };
-use orpheus_wire::{
+use lucy_wire::{
     entity::{
         Component, ComponentValue, Create, CreateFrame, EntityUpdate, FRAME_ZERO_BACK,
         GAME_MODE_ENTITY, Movement, Operation, PLAYER_PATH, SkinTheme, WITH_PARTICIPANT,
@@ -669,14 +669,14 @@ pub fn bot_filter(bot: &Bot) -> io::Result<Component> {
     )))
 }
 
-/// A debugging switch: `ORPHEUS_DEBUG_BOT_BODY=<hex GUID>` creates every
+/// A debugging switch: `LUCY_DEBUG_BOT_BODY=<hex GUID>` creates every
 /// training bot with that body definition instead of its own (the server
 /// still runs its own body's scripts and shapes). ow1-preservation's bots,
 /// which took the client's bullets, were `04000000000014D2`; ours are
 /// `1403`/`14ED`, which carry first-person and weapon components that
 /// `14D2` has not.
 pub static BOT_BODY: std::sync::LazyLock<Option<u64>> = std::sync::LazyLock::new(|| {
-    let text = std::env::var("ORPHEUS_DEBUG_BOT_BODY").ok()?;
+    let text = std::env::var("LUCY_DEBUG_BOT_BODY").ok()?;
     let body = u64::from_str_radix(text.trim().trim_start_matches("0x"), 16);
     match body {
         Ok(body) => {
@@ -684,7 +684,7 @@ pub static BOT_BODY: std::sync::LazyLock<Option<u64>> = std::sync::LazyLock::new
             Some(body)
         }
         Err(_) => {
-            tracing::warn!("ORPHEUS_DEBUG_BOT_BODY: not a hex GUID: {text:?}");
+            tracing::warn!("LUCY_DEBUG_BOT_BODY: not a hex GUID: {text:?}");
             None
         }
     }
@@ -698,14 +698,14 @@ fn invalid(error: impl std::fmt::Display) -> io::Error {
 mod tests {
     use super::*;
     use crate::bots::{BOT_CONTROLLER_ENTITY, BOT_ENTITY, BotCatalog, BotWalk};
-    use orpheus_content::stats::{PlayerStats, StatsCatalog};
-    use orpheus_physics::mover::settings::MoverCatalog;
-    use orpheus_script::wire::Value;
-    use orpheus_wire::entity::{FrameCandidates, MAX_PAYLOAD, frame, select_frame};
+    use lucy_content::stats::{PlayerStats, StatsCatalog};
+    use lucy_physics::mover::settings::MoverCatalog;
+    use lucy_script::wire::Value;
+    use lucy_wire::entity::{FrameCandidates, MAX_PAYLOAD, frame, select_frame};
     use sha2::{Digest, Sha256};
 
     fn runtime() -> std::path::PathBuf {
-        orpheus_testkit::runtime_dir().join("data")
+        lucy_testkit::runtime_dir().join("data")
     }
 
     #[test]
@@ -721,7 +721,7 @@ mod tests {
         // the mode entity's create and the Tab board name the mode, so the
         // frame is built with Python's mode to compare with its bytes.
         let map = GameMap {
-            mode_guid: orpheus_content::maps::PYTHON_PRACTICE_RANGE_MODE,
+            mode_guid: lucy_content::maps::PYTHON_PRACTICE_RANGE_MODE,
             ..GameMap::practice_range()
         };
         let bots = bots.make(map.map_guid, |body| {

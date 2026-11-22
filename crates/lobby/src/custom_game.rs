@@ -27,7 +27,7 @@ use crate::{
     templates::CUSTOM_GAMES,
     transport::LobbyMessage,
 };
-use orpheus_wire::jam::codec::{
+use lucy_wire::jam::codec::{
     Fields, Value,
     Value::{Array, Bool, Struct, Unsigned},
     id16,
@@ -68,7 +68,7 @@ const MODES: u32 = 0x18;
 const WORKSHOP: u32 = 0x30;
 const ENTRY_MAP: u32 = 0x138;
 /// A 312-byte block: its 168-byte part, the mode (as the game struct has
-/// it, `orpheus_sim::instance`), the teams.
+/// it, `lucy_sim::instance`), the teams.
 const BLOCK: u32 = 0x0;
 const BLOCK_MODE: u32 = 0xb0;
 /// `+0xA8`: the other u64 the Workshop report names the game mode
@@ -480,13 +480,13 @@ impl Lobby {
 }
 
 /// 53001's instance type for a custom game: 1, as a match's 20300 has it
-/// when nobody is ranked (`orpheus_sim::instance`).
+/// when nobody is ranked (`lucy_sim::instance`).
 const CUSTOM_INSTANCE: u64 = 1;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orpheus_wire::jam::codec::Schemas;
+    use lucy_wire::jam::codec::Schemas;
 
     fn block(mode: u64, teams: &[(u64, u64)]) -> Fields {
         Fields::from([

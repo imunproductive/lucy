@@ -5,7 +5,7 @@
     idx.stu("CD7F3617"); idx.field("m_B350E4FD"); idx.addr(0x7FF789BE27C0); idx.name(rva); idx.lookup(name)
     idx.component(74); idx.component_of_stu("8FE674F9"); idx.component_accessors(); idx.component_uses(74)
 
-Addresses: RVAs are ints; addr() accepts VAs at 0x140000000 (IDB), 0x7FF788F10000 (ORPHEUS/questions),
+Addresses: RVAs are ints; addr() accepts VAs at 0x140000000 (IDB), 0x7FF788F10000 (Lucy/questions),
 0x7FF6D1220000 (kjs notes) or a bare RVA. Hashes in returned dicts are 8-digit upper-case hex strings.
 """
 
@@ -16,7 +16,7 @@ from pathlib import Path
 from tools import paths
 
 DEFAULT_DB = paths.INDEX
-BASES = {"ida": 0x140000000, "orpheus": 0x7FF788F10000, "kjs": 0x7FF6D1220000}
+BASES = {"ida": 0x140000000, "lucy": 0x7FF788F10000, "kjs": 0x7FF6D1220000}
 
 _FUNC_WHAT = {
     ("evaluate", "config"): "evaluator of {c}",
@@ -61,7 +61,7 @@ class Index:
     def __init__(self, path=None):
         path = Path(path or DEFAULT_DB)
         if not path.exists():
-            raise FileNotFoundError(f"{path}: build it with `python -m tools.owindex.build` (ORPHEUS root)")
+            raise FileNotFoundError(f"{path}: build it with `python -m tools.owindex.build` (Lucy root)")
         self.path = path
         self.db = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, check_same_thread=False)
         self.meta = {k: json.loads(v) for k, v in self.db.execute("SELECT key, value FROM meta")}

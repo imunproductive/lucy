@@ -51,7 +51,7 @@ use crate::{
     },
     wire::{Value, Variables},
 };
-use orpheus_wire::entity::GAME_MODE_ENTITY;
+use lucy_wire::entity::GAME_MODE_ENTITY;
 
 /// The ids of the entities the map placeables' graphs make
 /// ([`MapEntityWorld::make_entities`]): `MADE_FIRST + n % MADE_SPAN`, past
@@ -628,7 +628,7 @@ impl World for EntityWorld<'_, '_> {
     /// A listed body's word, as the target searches take it
     /// ([`TargetCandidate::filter_word`]); a tagged map placeable's 0: the
     /// server creates its placeables without component 26 but the moving
-    /// ones (`orpheus_sim::scene::placeable_components`), and the map's own
+    /// ones (`lucy_sim::scene::placeable_components`), and the map's own
     /// entities carry none [assumption: no definition of a tagged map entity
     /// gives it one]. `0E8E` st1 asks the tagged entities for kind 1 (the
     /// bodies) so.

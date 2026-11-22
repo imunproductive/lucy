@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""ORPHEUS relay without a DLL: pipes the Overwatch 1.74 client's Battle.net
-connection to a local ORPHEUS server.
+"""Lucy relay without a DLL: pipes the Overwatch 1.74 client's Battle.net
+connection to a local Lucy server.
 
 It does what owwfd_relay.dll does, from outside the game:
 
@@ -14,19 +14,19 @@ It does what owwfd_relay.dll does, from outside the game:
    game's own ws2_32 and pass the bytes through.
 
 The functions are the only machine code written into the game. Their source,
-with every instruction, is in THUNKS_SOURCE below (thunks.asm in the ORPHEUS
+with every instruction, is in THUNKS_SOURCE below (thunks.asm in the Lucy
 repository); THUNKS holds the assembled bytes (nasm -f bin). Nothing in the
 game's own code is changed.
 
 Usage (64-bit Python 3.8 or newer on Windows, nothing to install):
 
-    python orpheus_relay.py                      # attach to the running Overwatch.exe,
+    python lucy_relay.py                         # attach to the running Overwatch.exe,
                                                  # or start ./Overwatch.exe
-    python orpheus_relay.py D:\\Games\\Overwatch\\Overwatch.exe
-    python orpheus_relay.py --pid 1234
-    python orpheus_relay.py --start D:\\Games\\Overwatch\\Overwatch.exe -- --tank_Locale=enUS
+    python lucy_relay.py D:\\Games\\Overwatch\\Overwatch.exe
+    python lucy_relay.py --pid 1234
+    python lucy_relay.py --start D:\\Games\\Overwatch\\Overwatch.exe -- --tank_Locale=enUS
 
-A game the script starts gets --BNetServer=127.0.0.1:1119, as `orpheus play`
+A game the script starts gets --BNetServer=127.0.0.1:1119, as `lucy play`
 gives it. A game you start yourself needs that argument too. Keep the script
 running while you play: it swaps the streams the client makes when it
 reconnects. Only the client build 1.74.0.0.104319 is supported.
@@ -680,7 +680,7 @@ class Relay:
         self.chunk = bytearray(SCAN_CHUNK)
         self.chunk_view = (ctypes.c_char * SCAN_CHUNK).from_buffer(self.chunk)
         self.log(
-            f"==== orpheus_relay (plaintext pipe -> {host}:{port}) base={self.image_start:016X} "
+            f"==== lucy_relay (plaintext pipe -> {host}:{port}) base={self.image_start:016X} "
             f"bsVt={self.byte_stream_vtable:016X} block={self.block:016X} ===="
         )
 
@@ -893,7 +893,7 @@ class Relay:
 
 def parse_arguments(argv):
     parser = argparse.ArgumentParser(
-        description="Pipe the Overwatch 1.74 client's Battle.net connection to a local ORPHEUS server, "
+        description="Pipe the Overwatch 1.74 client's Battle.net connection to a local Lucy server, "
         "without injecting a DLL. Attaches to the running game, or starts it.",
         epilog="Arguments after -- go to the game when the script starts it.",
     )
@@ -955,7 +955,7 @@ def attach_target(arguments):
 
 def main(argv):
     if sys.platform != "win32" or struct.calcsize("P") != 8:
-        print("orpheus_relay needs 64-bit Python on Windows.", file=sys.stderr)
+        print("lucy_relay needs 64-bit Python on Windows.", file=sys.stderr)
         return 2
     arguments = parse_arguments(argv)
     log = open(arguments.log, "a", encoding="utf-8") if arguments.log else None

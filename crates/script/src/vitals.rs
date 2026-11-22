@@ -13,7 +13,7 @@
 //! 0x7FF789BEFCC0 → component 51 slot 14 `0x7FF7894D0530`) sums every pool of
 //! the kind.
 
-use orpheus_wire::entity::{
+use lucy_wire::entity::{
     ARMOUR_POOL, Component, HEALTH_POOL, POOLS, SHIELDS_POOL, pool, pool_component,
 };
 
@@ -355,7 +355,7 @@ pub fn health(now: f32, most: f32, armour: f32, shields: f32) -> Component {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orpheus_wire::entity::ComponentValue;
+    use lucy_wire::entity::ComponentValue;
 
     const HIT: Death = Death {
         time: 12.0,

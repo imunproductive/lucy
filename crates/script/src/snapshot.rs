@@ -28,7 +28,7 @@ use crate::vm::{Revision, Snapshot, StackBinding, State, StateKind, Unknowns};
 use crate::wire::{
     self, Binding, Bindings, Instance, Layout, Value, ValueEncoding, Variables, WireError,
 };
-use orpheus_core::bits::{BitError, BitWriter};
+use lucy_core::bits::{BitError, BitWriter};
 
 const OWNER_HEALTH: u32 = 253;
 /// How long a wheel action stays sendable after it ran (upstream

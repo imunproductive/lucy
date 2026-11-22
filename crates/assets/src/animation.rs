@@ -440,7 +440,7 @@ mod tests {
     #[test]
     #[ignore = "requires an Overwatch 1.74 install (just test-game <install>)"]
     fn every_clip_of_the_install_reads() {
-        let install = crate::Install::open(&orpheus_testkit::game_dir(), "enUS").unwrap();
+        let install = crate::Install::open(&lucy_testkit::game_dir(), "enUS").unwrap();
         let clips = install.guids(0x006);
         assert_eq!(clips.len(), 10_523);
         let (mut parts, mut unit, mut doubled) = (0usize, 0usize, 0usize);

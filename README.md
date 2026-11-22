@@ -1,4 +1,4 @@
-# ORPHEUS
+# Lucy
 
 A private server for the Overwatch 1 client, version **1.74.0.0.104319**, written in Rust. It runs the lobby, the game server, a local Battle.net and a web dashboard on your PC. It reads the game data from your own Overwatch install. It never downloads anything.
 
@@ -15,13 +15,13 @@ You need your own copy of the game, build 1.74.0.0.104319, on Windows.
 2. Check the setup:
 
    ```powershell
-   target\release\orpheus.exe doctor --game C:\path\to\Overwatch
+   target\release\lucy.exe doctor --game C:\path\to\Overwatch
    ```
 
 3. Play:
 
    ```powershell
-   target\release\orpheus.exe play --game C:\path\to\Overwatch
+   target\release\lucy.exe play --game C:\path\to\Overwatch
    ```
 
 The first start derives the game data from the install, which takes about two minutes. `START.cmd` does the build and then asks which mode to start.

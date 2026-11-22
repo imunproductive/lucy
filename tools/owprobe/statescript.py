@@ -29,7 +29,7 @@ NAMES_JSON = Path(__file__).resolve().parents[2] / "crates" / "fixed" / "data" /
 
 
 def graph_id(guid):
-    """A statescript graph GUID as ORPHEUS writes its id: the low 16 bits in hex (0x...0254 -> '0254')."""
+    """A statescript graph GUID as Lucy writes its id: the low 16 bits in hex (0x...0254 -> '0254')."""
     return f"{guid & 0xFFFF:04X}"
 
 
@@ -78,7 +78,7 @@ def states(p: Probe, instance):
         if len(head) < STATE_FLAGS + 4:
             continue
         vtable = int.from_bytes(head[:8], "little")
-        out.append({"index": index, "address": state, "vtable": vtable, "orpheus_vtable": p.orpheus(vtable),
+        out.append({"index": index, "address": state, "vtable": vtable, "lucy_vtable": p.lucy(vtable),
                     "flags": int.from_bytes(head[STATE_FLAGS:STATE_FLAGS + 4], "little")})
     return out
 
@@ -179,15 +179,15 @@ def _names():
     return classes, variables
 
 
-def state_class(vtable_orpheus):
-    """The STU class of a state's runtime vtable (an ORPHEUS VA), through the owindex: its name when known,
+def state_class(vtable_lucy):
+    """The STU class of a state's runtime vtable (a Lucy VA), through the owindex: its name when known,
     else STU_<hash>; None without the index."""
     try:
         index = _index()
     except Exception:  # noqa: BLE001 - the index is optional here
         return None
     row = index.db.execute("SELECT class_hash FROM role WHERE role = 'runtime_vtable' AND rva = ?",
-                           (vtable_orpheus - 0x7FF788F10000,)).fetchone()
+                           (vtable_lucy - 0x7FF788F10000,)).fetchone()
     if not row:
         return None
     classes, _ = _names()
@@ -219,7 +219,7 @@ def name_scripts(p: Probe, scripts):
             by_entity[entity] = [i for h in hosts(p, entity) for i in instances(p, h["host"])]
         for inst in by_entity[entity]:
             if inst["graph"] == graph and inst["id"] == instance:
-                names = {s["index"]: state_class(s["orpheus_vtable"]) for s in states(p, inst["address"])}
+                names = {s["index"]: state_class(s["lucy_vtable"]) for s in states(p, inst["address"])}
                 variables = {v: variable_name(v) for s in scripts if (s["entity"], s["graph"], s["instance"]) ==
                              (entity, graph, instance) for v in [*s.get("vars", {}), *s.get("entity_vars", {})]}
                 out[(entity, graph, instance)] = {"states": names,

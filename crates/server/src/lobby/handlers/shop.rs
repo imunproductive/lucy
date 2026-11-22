@@ -4,13 +4,13 @@
 
 use std::io;
 
-use orpheus_lobby::{
+use lucy_lobby::{
     collection::PROGRESSION,
     lookups::{self, STORE_PAGE, STORE_QUERY},
     lootbox::{self, OPEN_BOX, PROGRESSION_OUT, SystemDice},
     shop::PURCHASE,
 };
-use orpheus_wire::jam::codec::{Fields, Value};
+use lucy_wire::jam::codec::{Fields, Value};
 
 use crate::lobby::{
     peer::Peer,

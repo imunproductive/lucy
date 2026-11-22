@@ -15,9 +15,9 @@ use std::{collections::HashMap, io};
 
 use serde_json::Value;
 
-use orpheus_core::guid::parse_guid;
-use orpheus_script::graph::{GraphStore, asset_guid};
-use orpheus_script::vitals::Vitals;
+use lucy_core::guid::parse_guid;
+use lucy_script::graph::{GraphStore, asset_guid};
+use lucy_script::vitals::Vitals;
 
 pub(crate) const BODY_GRAPH: u32 = 0x0033;
 const HEALTH_VAR: u64 = 199;
@@ -132,8 +132,8 @@ fn invalid(message: &str) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orpheus_content::heroes::{HeroCatalog, SOLDIER};
-    use orpheus_wire::entity::update;
+    use lucy_content::heroes::{HeroCatalog, SOLDIER};
+    use lucy_wire::entity::update;
     use serde_json::json;
 
     fn entry(variable: u64, value: Value) -> Value {
@@ -242,7 +242,7 @@ mod tests {
     fn all_hero_pools_match_python_defaults_overrides_and_component_bytes() {
         use sha2::{Digest, Sha256};
 
-        let root = orpheus_testkit::runtime_dir();
+        let root = lucy_testkit::runtime_dir();
         let catalog = HeroCatalog::load(root.join("data/game_heroes_174.json")).unwrap();
         let graphs = GraphStore::load(root.join("data/game_graphs_174.json.gz")).unwrap();
         let pools = PoolCatalog::from_graphs(&graphs).unwrap();

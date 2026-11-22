@@ -1,6 +1,6 @@
 use super::*;
 use crate::{instance::RETAIL_QUANTA, scene_assets::SceneAssets};
-use orpheus_content::maps::GameMap;
+use lucy_content::maps::GameMap;
 
 const SHOOTER: Shooter = Shooter {
     source: 0xa000_0101,
@@ -11,7 +11,7 @@ const SHOOTER: Shooter = Shooter {
 #[test]
 #[ignore = "requires a derived 104319 Practice Range scene"]
 fn repeated_rifle_hits_retire_and_respawn_only_the_hit_bot() {
-    let runtime = orpheus_testkit::runtime_dir();
+    let runtime = lucy_testkit::runtime_dir();
     let mut scene = SceneAssets::load(runtime)
         .unwrap()
         .prepare(GameMap::practice_range())
@@ -523,7 +523,7 @@ fn shooters_hit_other_teams_and_everyone_in_a_free_for_all() {
         field_ids: FieldIds::default(),
         spawned: SpawnedEntities::new(
             Arc::new(
-                orpheus_script::graph::GraphStore::from_json(
+                lucy_script::graph::GraphStore::from_json(
                     br#"{"version": 1, "graphs": [], "bodies": {}, "missing": []}"#,
                 )
                 .unwrap(),
@@ -575,7 +575,7 @@ fn shooters_hit_other_teams_and_everyone_in_a_free_for_all() {
 #[test]
 #[ignore = "requires a derived 104319 Practice Range scene"]
 fn target_searches_see_the_players_then_the_bots() {
-    let scene = SceneAssets::load(orpheus_testkit::runtime_dir())
+    let scene = SceneAssets::load(lucy_testkit::runtime_dir())
         .unwrap()
         .prepare(GameMap::practice_range())
         .unwrap();
@@ -650,7 +650,7 @@ fn target_searches_see_the_players_then_the_bots() {
 #[ignore = "requires a derived 104319 Practice Range scene"]
 fn a_players_shot_on_another_player_carries_its_tags_and_way() {
     const ENEMY: u32 = 0xa000_0201;
-    let mut scene = SceneAssets::load(orpheus_testkit::runtime_dir())
+    let mut scene = SceneAssets::load(lucy_testkit::runtime_dir())
         .unwrap()
         .prepare(GameMap::practice_range())
         .unwrap();
@@ -748,7 +748,7 @@ fn the_biotic_rifle_heals_hurt_allies_and_damages_enemies() {
         allies: AllyHits::Hurt,
         tags: DamageTags::NONE,
     };
-    let mut scene = SceneAssets::load(orpheus_testkit::runtime_dir())
+    let mut scene = SceneAssets::load(lucy_testkit::runtime_dir())
         .unwrap()
         .prepare(GameMap::practice_range())
         .unwrap();
@@ -900,7 +900,7 @@ fn the_biotic_rifle_heals_hurt_allies_and_damages_enemies() {
 #[ignore = "requires a derived 104319 Practice Range scene"]
 fn a_projectile_deals_with_the_modifiers_of_its_launch() {
     use crate::projectile_flight::ProjectileFlight;
-    use orpheus_script::vm::CombatMod;
+    use lucy_script::vm::CombatMod;
 
     const DART: HitDefinition = HitDefinition {
         amount: 70.0,
@@ -911,7 +911,7 @@ fn a_projectile_deals_with_the_modifiers_of_its_launch() {
         tags: DamageTags::NONE,
     };
     const MERCY: u32 = 0xa000_0201;
-    let mut scene = SceneAssets::load(orpheus_testkit::runtime_dir())
+    let mut scene = SceneAssets::load(lucy_testkit::runtime_dir())
         .unwrap()
         .prepare(GameMap::practice_range())
         .unwrap();
@@ -923,7 +923,7 @@ fn a_projectile_deals_with_the_modifiers_of_its_launch() {
     let enemy_bot = scene.bots()[enemy].entity;
     let [x, y, z] = scene.bots()[enemy].position;
     let boost = |credit, value| CombatMod {
-        kind: orpheus_script::vm::DAMAGE_DEALT,
+        kind: lucy_script::vm::DAMAGE_DEALT,
         value,
         multiplies: false,
         required: Vec::new(),
@@ -1025,7 +1025,7 @@ fn a_projectile_deals_with_the_modifiers_of_its_launch() {
     let [notice] = combat.take_messages().try_into().unwrap();
     assert_eq!(
         (notice.sender, notice.target, notice.message),
-        (SHOOTER.source, MERCY, orpheus_script::vm::MODIFIED)
+        (SHOOTER.source, MERCY, lucy_script::vm::MODIFIED)
     );
     let Some(&Value::Float(added)) = notice.parameters.get(&0x74d) else {
         panic!("{notice:?}");

@@ -1,4 +1,4 @@
-"""A game session for the probe: `orpheus play --probe` on a temporary copy of the state folder (never the user's
+"""A game session for the probe: `lucy play --probe` on a temporary copy of the state folder (never the user's
 own), the decrypted debug build as the game, the login and, on request, the way into the Practice Range by
 clicks (owdbg's RangeEntry positions). One game at a time: it takes the agents' game lock (tools/gamelock.py)
 and owdbg's machine-wide byte lock, and at its end stops the game, then the server, and releases both.
@@ -60,7 +60,7 @@ def _terminate(pids, wait):
     return left
 
 
-ORPHEUS_EXE = Path(os.environ.get("ORPHEUS_BIN", paths.ORPHEUS_EXE))
+LUCY_EXE = Path(os.environ.get("LUCY_BIN", paths.LUCY_EXE))
 GAME_EXE = paths.GAME_EXE  # the decrypted debug build: code hooks need a writable image
 LOBBY_PORT = 3724
 
@@ -72,7 +72,7 @@ LOGIN_PIXEL = (0.44, 0.88)
 
 # Hero select is on screen while #1962 of the local player's `288B` is on: its st66 sets it to
 # `#31435e && !#7265e && !STU_EE3E3594()` and st92 presents the screen 008C.05A under it
-# (`orpheus script query show 288B`). Only the local player's controller runs 288B. #1962 is a StateStack's
+# (`lucy script query show 288B`). Only the local player's controller runs 288B. #1962 is a StateStack's
 # output, so its value is the bound one (statescript.store_variables); checked in the Range 2026-11-20: true
 # while the screen shows, false once the pick closes it (ClientProbe.md "ProbeDll3").
 HERO_SELECT_GRAPH = "288B"
@@ -82,23 +82,23 @@ PICKED, PICKED_HERO = 2114, 940
 
 
 class Session:
-    def __init__(self, orpheus=None, game=None, port=None, enter_range=False, hero=None, account="Researcher",
+    def __init__(self, lucy=None, game=None, port=None, enter_range=False, hero=None, account="Researcher",
                  keep_state=False, log=None, game_args=(), timeout=300.0, seed_state=None, rust_log=None,
                  team_lock=True, owner=None, play_args=()):
         """seed_state: the state folder whose cache (derived game data) and profiles the temp state copies
-        (default the user's %APPDATA%/orpheus, read only); a cache from another code version is derived again
+        (default the user's %APPDATA%/lucy, read only); a cache from another code version is derived again
         on the first start (minutes, before the game starts). rust_log: the server's RUST_LOG, e.g.
-        `info,orpheus::pose=debug` for the per-frame poses `compare` reads from `state/play.log`. team_lock: take
+        `info,lucy::pose=debug` for the per-frame poses `compare` reads from `state/play.log`. team_lock: take
         the agents' game lock (`tools/gamelock.py`, in turn, as `owner`) for the session and release it
         at its end; False when the caller holds it already (as `owner`, else the session refuses). play_args: more
-        `orpheus play` options, e.g.
+        `lucy play` options, e.g.
         ("--workshop", FILE)."""
         self.seed_state = Path(seed_state) if seed_state else USER_STATE
         self.rust_log = rust_log
         self.team_lock = team_lock
-        self.owner = owner or os.environ.get("ORPHEUS_AGENT") or "owprobe"
+        self.owner = owner or os.environ.get("LUCY_AGENT") or "owprobe"
         self._team_locked = False
-        self.orpheus = Path(orpheus or ORPHEUS_EXE)
+        self.lucy = Path(lucy or LUCY_EXE)
         self.game = Path(game or GAME_EXE)
         self.port = port or 21150
         self.enter_range = enter_range
@@ -166,11 +166,11 @@ class Session:
         return time.monotonic() - self.t0
 
     def start(self):
-        if not self.orpheus.is_file():
-            raise RuntimeError(f"{self.orpheus} is missing (set ORPHEUS_BIN; owprobe.dll must be next to it)")
-        if not (self.orpheus.parent / "owprobe.dll").is_file():
-            raise RuntimeError(f"owprobe.dll is not next to {self.orpheus}: cargo build --release -p orpheus-probe")
-        # A game the previous lock holder closed can take a while to exit, and orpheus play refuses to start
+        if not self.lucy.is_file():
+            raise RuntimeError(f"{self.lucy} is missing (set LUCY_BIN; owprobe.dll must be next to it)")
+        if not (self.lucy.parent / "owprobe.dll").is_file():
+            raise RuntimeError(f"owprobe.dll is not next to {self.lucy}: cargo build --release -p lucy-probe")
+        # A game the previous lock holder closed can take a while to exit, and lucy play refuses to start
         # beside it: wait for it (it is not this session's to kill).
         self._earlier = set(_pids_of(self.game.name))
         end = time.monotonic() + 120
@@ -178,32 +178,32 @@ class Session:
             self.log(f"[owprobe] waiting for an earlier game to exit: {sorted(self._earlier)}")
             time.sleep(5)
             self._earlier = set(_pids_of(self.game.name))
-        self.state = Path(tempfile.mkdtemp(prefix="owprobe-orpheus-"))
+        self.state = Path(tempfile.mkdtemp(prefix="owprobe-lucy-"))
         for item in STATE_ITEMS:
             src = self.seed_state / item
             if src.is_dir():
                 shutil.copytree(src, self.state / item)
             elif src.is_file():
                 shutil.copy2(src, self.state / item)
-        cmd = [str(self.orpheus), "--state", str(self.state), "play", "--game", str(self.game), "--account",
+        cmd = [str(self.lucy), "--state", str(self.state), "play", "--game", str(self.game), "--account",
                self.account, "--locale", "enUS", "--probe", str(self.port), "--timeout", "120", *self.play_args,
                "--", "--tank_NoFullScreen=1", *self.game_args]
         self.log(f"[owprobe] {' '.join(cmd)}")
         self.out = open(self.state / "play.log", "wb")
         env = dict(os.environ)
-        env.pop("ORPHEUS_PROBE", None)
+        env.pop("LUCY_PROBE", None)
         if self.rust_log:
             env["RUST_LOG"] = self.rust_log
-        self.proc = subprocess.Popen(cmd, cwd=str(self.orpheus.parent), stdout=self.out, stderr=subprocess.STDOUT,
+        self.proc = subprocess.Popen(cmd, cwd=str(self.lucy.parent), stdout=self.out, stderr=subprocess.STDOUT,
                                      stdin=subprocess.DEVNULL, env=env,
                                      creationflags=w.CREATE_NEW_PROCESS_GROUP | w.CREATE_NO_WINDOW)
-        # The game is started by orpheus: both die with this job (when Python dies too).
+        # The game is started by lucy: both die with this job (when Python dies too).
         self.job = w.kill_on_close_job(int(self.proc._handle))
         # The server derives the game data first when the seed's cache is stale: wait for it.
         end = time.monotonic() + max(self.timeout, 900)
         while True:
             if self.proc.poll() is not None:
-                raise RuntimeError(f"orpheus play exited ({self.proc.returncode}); see {self.state / 'play.log'}")
+                raise RuntimeError(f"lucy play exited ({self.proc.returncode}); see {self.state / 'play.log'}")
             try:
                 self.probe = Probe(self.port, timeout=10)
                 # Right at the start the client can stall for seconds (its protector): ask again.
@@ -223,7 +223,7 @@ class Session:
     def close(self):
         """Stop the game first (TerminateProcess, waiting until it is gone), then the server, then release the
         locks. The game is this session's PID and any other process of the game's image (the session holds the
-        game lock, so they are its own: the client can restart itself outside orpheus's process tree)."""
+        game lock, so they are its own: the client can restart itself outside lucy's process tree)."""
         if self.probe is not None:
             try:
                 self.probe.close()
@@ -304,7 +304,7 @@ class Session:
         clicks, next_click = 0, 0.0
         while time.monotonic() < end:
             if self.proc.poll() is not None:
-                raise RuntimeError(f"orpheus play exited ({self.proc.returncode}); see {self.state / 'play.log'}")
+                raise RuntimeError(f"lucy play exited ({self.proc.returncode}); see {self.state / 'play.log'}")
             relay += self.text("logs/relay.log")
             if "relay CONNECTED" in relay:
                 self.log(f"[owprobe] logged in (t={self.elapsed():.0f}s)")

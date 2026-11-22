@@ -53,7 +53,7 @@ use crate::{
     templates::RetailTemplates,
     transport::LobbyMessage,
 };
-use orpheus_wire::jam::codec::{
+use lucy_wire::jam::codec::{
     Fields,
     Value::{self, Array, Bool, Float64, Signed, Struct, Unsigned},
 };
@@ -64,9 +64,9 @@ pub const ROLE_QUEUE: u64 = CARD_BASE | 0x1b3;
 pub const OPEN_QUEUE: u64 = CARD_BASE | 0x1b4;
 pub const COMPETITIVE_CTF: u64 = CARD_BASE | 0x1c3;
 pub const LUCIO_CUP: u64 = CARD_BASE | 0x1ad;
-pub const TANK: u64 = orpheus_content::heroes::TANK_ROLE;
-pub const DAMAGE: u64 = orpheus_content::heroes::DAMAGE_ROLE;
-pub const SUPPORT: u64 = orpheus_content::heroes::SUPPORT_ROLE;
+pub const TANK: u64 = lucy_content::heroes::TANK_ROLE;
+pub const DAMAGE: u64 = lucy_content::heroes::DAMAGE_ROLE;
+pub const SUPPORT: u64 = lucy_content::heroes::SUPPORT_ROLE;
 pub const PC_PLATFORM: u64 = 15_959_616;
 pub const PC_POOL: u64 = 16_025_156;
 
@@ -694,7 +694,7 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     use crate::{clock::server_time, party::PARTY};
-    use orpheus_wire::jam::codec::Schemas;
+    use lucy_wire::jam::codec::Schemas;
 
     #[test]
     fn queue_selection_depends_on_season_role_and_event_card() {

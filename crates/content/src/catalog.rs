@@ -5,7 +5,7 @@ use std::{collections::HashMap, fs, io, path::Path};
 use indexmap::IndexMap;
 use serde::{Deserialize, de::DeserializeOwned};
 
-use orpheus_wire::jam::codec::{Fields, Value};
+use lucy_wire::jam::codec::{Fields, Value};
 
 pub const UNLOCK_BASE: u64 = 0x0250_0000_0000_0000;
 pub const SKIN_THEME_BASE: u64 = 0x0a50_0000_0000_0000;
@@ -562,7 +562,7 @@ mod tests {
     #[test]
     #[ignore = "requires the derived game data's DataTool catalogs"]
     fn matches_the_local_retail_catalog_counts_and_order() {
-        let items = ItemDb::load(&orpheus_testkit::runtime_dir().join("data")).unwrap();
+        let items = ItemDb::load(&lucy_testkit::runtime_dir().join("data")).unwrap();
         assert_eq!(items.unlocks.len(), 7131);
         assert_eq!(items.hero_names.len(), 55);
         assert_eq!(items.team_skin_pairs.len(), 1528);

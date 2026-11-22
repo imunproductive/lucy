@@ -1,7 +1,7 @@
 //! `list-maps`: every map header (`09F`) with a `STUMapHeader`, by GUID
 //! (`ListMaps`, `DataModels/MapHeader.cs`, `GameModes/GameMode.cs`).
 
-use orpheus_stu::{Object, Value};
+use lucy_stu::{Object, Value};
 use serde_json::{Map, Value as Json, json};
 
 use super::{

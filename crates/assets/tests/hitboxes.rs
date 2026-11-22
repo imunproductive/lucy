@@ -4,7 +4,7 @@
 use serde_json::Value;
 
 fn derived_file(path: &str) -> Value {
-    orpheus_testkit::runtime_json(path)
+    lucy_testkit::runtime_json(path)
 }
 
 fn derived() -> Value {
@@ -150,7 +150,7 @@ fn the_bots_are_posed_and_the_heroes_rest() {
         assert_eq!(geometry(bot), geometry("0x0400000000001403"), "{bot}");
     }
     let heroes: Value = serde_json::from_slice(
-        &std::fs::read(orpheus_testkit::runtime_dir().join("data/game_heroes_174.json")).unwrap(),
+        &std::fs::read(lucy_testkit::runtime_dir().join("data/game_heroes_174.json")).unwrap(),
     )
     .unwrap();
     for hero in heroes.as_object().unwrap().values() {
@@ -167,7 +167,7 @@ fn the_bots_are_posed_and_the_heroes_rest() {
 fn every_body_has_its_critical_shapes() {
     let file = derived();
     let heroes: Value = serde_json::from_slice(
-        &std::fs::read(orpheus_testkit::runtime_dir().join("data/game_heroes_174.json")).unwrap(),
+        &std::fs::read(lucy_testkit::runtime_dir().join("data/game_heroes_174.json")).unwrap(),
     )
     .unwrap();
     for hero in heroes.as_object().unwrap().values() {

@@ -10,7 +10,7 @@
 use std::time::Duration;
 
 use crate::connection::{HANDOFF_TIME, LEAVE_GRACE};
-use orpheus_core::tick::{FIRST_TICK, MAX_LEASE_FRAME, TICK_PERIOD};
+use lucy_core::tick::{FIRST_TICK, MAX_LEASE_FRAME, TICK_PERIOD};
 
 const CLOCK_DRAIN_TICKS: u32 = (HANDOFF_TIME.as_millis() + LEAVE_GRACE.as_millis())
     .div_ceil(TICK_PERIOD.as_millis()) as u32

@@ -7,7 +7,7 @@ use std::{collections::HashMap, fs, io, path::Path};
 use indexmap::IndexMap;
 use serde::Deserialize;
 
-use orpheus_core::guid::parse_guid;
+use lucy_core::guid::parse_guid;
 
 pub const PRACTICE_RANGE_MAP: u64 = 0x0800_0000_0000_0688;
 /// The group Practice Range (`005A`): both teams have the PvP controller
@@ -1075,7 +1075,7 @@ mod tests {
             digest.update(value.as_bytes());
         }
 
-        let data = orpheus_testkit::runtime_dir().join("data");
+        let data = lucy_testkit::runtime_dir().join("data");
         let catalog = MapCatalog::load(&data).unwrap();
         let listing = catalog.map_catalog();
         let mut digest = Sha256::new();
@@ -1163,7 +1163,7 @@ mod tests {
     #[test]
     #[ignore = "requires the derived 104319 game modes"]
     fn the_scripted_loading_modes_are_the_install_s() {
-        let data = orpheus_testkit::runtime_dir().join("data");
+        let data = lucy_testkit::runtime_dir().join("data");
         let modes = GameModes::load(data.join(MODES_FILE)).unwrap();
         let mut scripted: Vec<u64> = modes
             .iter()
@@ -1190,7 +1190,7 @@ mod tests {
     #[test]
     #[ignore = "requires the derived 104319 map catalog"]
     fn the_practice_range_is_the_derived_record() {
-        let data = orpheus_testkit::runtime_dir().join("data");
+        let data = lucy_testkit::runtime_dir().join("data");
         let derived = MapCatalog::load(&data).unwrap().practice_range().unwrap();
         assert_eq!(derived, GameMap::practice_range());
         assert_eq!(derived.team_sizes, [6, 0]);

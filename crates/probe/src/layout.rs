@@ -15,7 +15,7 @@ pub const MOVEMENT_TICKED: u64 = 0x10B0;
 /// Bytes of the movement state the sampler reads.
 pub const MOVEMENT_BYTES: usize = 0xA0;
 /// Movement flags of a body in the air: jumped, fell, no ground under it
-/// (`orpheus_physics::mover::posture::IN_AIR`).
+/// (`lucy_physics::mover::posture::IN_AIR`).
 pub const IN_AIR: u32 = 0x0080_000C;
 
 /// The movement state's fields the sampler records.

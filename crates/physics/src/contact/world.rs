@@ -18,7 +18,7 @@
 //! walls (graph `0FA8`, definitions `1C90`/`1C91`) are the models of
 //! server-owned placeables that stand in every PvP doorway in pairs, one
 //! stopping each team (their meshes' masks 0x88 and 0x90: team proxy 0x08
-//! or 0x10, `orpheus_assets` `map_areas`). The client turns a wall on for
+//! or 0x10, `lucy_assets` `map_areas`). The client turns a wall on for
 //! the team it stops only while its graph's state 3 runs (after game
 //! message `0845`); the match does the same through
 //! [`ContactWorld::switch`]. A switched-off shape is out of every query;

@@ -10,7 +10,7 @@ use std::{
     sync::Arc,
 };
 
-use orpheus_wire::commands::{CROUCH, Command, JUMP};
+use lucy_wire::commands::{CROUCH, Command, JUMP};
 
 use super::{
     Mover, STEP,
@@ -1133,7 +1133,7 @@ struct Map {
 
 impl Map {
     fn practice_range() -> Self {
-        let path = orpheus_testkit::runtime_dir().join("collision/0688.col");
+        let path = lucy_testkit::runtime_dir().join("collision/0688.col");
         let cache = read_movement_cache(File::open(path).unwrap()).unwrap();
         let identifiers = BTreeSet::new();
         let scene = CollisionScene::movement_probe(&cache, &identifiers).unwrap();

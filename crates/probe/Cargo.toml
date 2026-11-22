@@ -1,5 +1,5 @@
 [package]
-name = "orpheus-probe"
+name = "lucy-probe"
 description = "owprobe.dll: an in-process probe for the Overwatch 1.74 client (memory, per-frame sampler, hooks, input) driven from tools/owprobe"
 version.workspace = true
 edition.workspace = true

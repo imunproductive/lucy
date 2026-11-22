@@ -17,7 +17,7 @@ use std::{
     time::Duration,
 };
 
-use orpheus_wire::jam::{
+use lucy_wire::jam::{
     cipher::Jam,
     codec::{Fields, Schemas},
     framing::{self, FrameReader},
@@ -70,8 +70,8 @@ impl<'a> Client<'a> {
         groups: &'a [u32],
         name: &str,
     ) -> Self {
-        use orpheus_lobby::login::{LOGIN_MESSAGE, OUT_CONNECT};
-        use orpheus_wire::jam::codec::Value;
+        use lucy_lobby::login::{LOGIN_MESSAGE, OUT_CONNECT};
+        use lucy_wire::jam::codec::Value;
 
         let mut client = Self::connect(schemas, lobby, groups);
         client.send(

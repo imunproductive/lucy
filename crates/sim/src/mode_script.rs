@@ -16,15 +16,15 @@
 //! ([`crate::messages`]), which routes it those sent to the mode entity or
 //! to every entity and gives every entity the broadcasts it holds
 //! ([`ModeRunner::held`]; in the Range `0724` for the spawn rooms, `06FD`
-//! for the bodies). Otherwise (0EC2 today, see `orpheus_script::mode`) the
+//! for the bodies). Otherwise (0EC2 today, see `lucy_script::mode`) the
 //! gaps are logged once and the mode entity gets graph 0CB6's frame with
 //! the flow's variables, as the countdown did before (match.py
 //! `_send_countdown`).
 
 use std::{collections::BTreeMap, sync::Arc};
 
-use orpheus_content::maps::{PRACTICE_RANGE_MODE, PYTHON_PRACTICE_RANGE_MODE};
-use orpheus_script::{
+use lucy_content::maps::{PRACTICE_RANGE_MODE, PYTHON_PRACTICE_RANGE_MODE};
+use lucy_script::{
     codecs::CodecTable,
     graph::GraphStore,
     mode::{CreatedEntity, EVERY_ENTITY, ModePlayer, ModeScript, ModeWorld},
@@ -32,7 +32,7 @@ use orpheus_script::{
     vm::{GameMessage, InitFault, MessageEnd, Unknowns},
     wire::{Value, Variables},
 };
-use orpheus_wire::entity::GAME_MODE_ENTITY;
+use lucy_wire::entity::GAME_MODE_ENTITY;
 
 use crate::{
     match_flow::{self, MatchState},
@@ -295,7 +295,7 @@ impl ModeRunner {
         };
         let root = script.snapshot()?.instances.get(&1)?;
         let phase = match root.variables.get(&PHASE) {
-            Some(phase) => match orpheus_script::expr::to_int(phase, -1) {
+            Some(phase) => match lucy_script::expr::to_int(phase, -1) {
                 0 => match_flow::Phase::Waiting,
                 1 => match_flow::Phase::Assemble,
                 2 => match_flow::Phase::Setup,
@@ -305,30 +305,30 @@ impl ModeRunner {
                 _ => return None,
             },
             None if root.graph == SKIRMISH_GRAPH => match root.variables.get(&SKIRMISH_DECIDED) {
-                Some(value) if *value != orpheus_script::wire::Value::Null => {
+                Some(value) if *value != lucy_script::wire::Value::Null => {
                     match_flow::Phase::MatchEnd
                 }
                 _ => match_flow::Phase::Round,
             },
             None => return None,
         };
-        let team = |value: &orpheus_script::wire::Value| {
-            u8::try_from(orpheus_script::expr::to_int(value, -1))
+        let team = |value: &lucy_script::wire::Value| {
+            u8::try_from(lucy_script::expr::to_int(value, -1))
                 .ok()
                 .filter(|&team| team < 2)
         };
         let winner = root.variables.get(&WINNER).and_then(team);
         Some(MatchState {
             phase,
-            clock: orpheus_script::expr::to_float(&script.entity_value(match_flow::CLOCK)),
+            clock: lucy_script::expr::to_float(&script.entity_value(match_flow::CLOCK)),
             winner,
             attackers: team(&script.entity_value(ATTACKERS)),
-            objective: u32::try_from(orpheus_script::expr::to_int(
+            objective: u32::try_from(lucy_script::expr::to_int(
                 &script.entity_value(OBJECTIVE),
                 0,
             ))
             .unwrap_or(0),
-            overtime: orpheus_script::expr::truthy(&script.entity_value(OVERTIME)),
+            overtime: lucy_script::expr::truthy(&script.entity_value(OVERTIME)),
             over: script.game_over(),
         })
     }
@@ -693,7 +693,7 @@ fn reported_objectives(messages: &[GameMessage]) -> Variables {
         let index = report
             .parameters
             .get(&REPORT_INDEX)
-            .map_or(0, |index| orpheus_script::expr::to_int(index, 0));
+            .map_or(0, |index| lucy_script::expr::to_int(index, 0));
         let Ok(index) = usize::try_from(index) else {
             continue;
         };
@@ -712,8 +712,8 @@ fn reported_objectives(messages: &[GameMessage]) -> Variables {
 mod tests {
     use super::*;
     use crate::scene_assets::SceneAssets;
-    use orpheus_content::maps::GameMap;
-    use orpheus_script::{mode::EVERY_ENTITY, wire::Value};
+    use lucy_content::maps::GameMap;
+    use lucy_script::{mode::EVERY_ENTITY, wire::Value};
 
     /// The objectives' reports (`0813`) the match hasn't routed yet give
     /// `0F4A` its objectives by index as it starts: the first one's index
@@ -766,7 +766,7 @@ mod tests {
     #[test]
     #[ignore = "requires the derived 104319 data"]
     fn the_range_mode_graph_drives_the_mode_entity_with_its_board_poster() {
-        let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+        let assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
         let scene = assets.prepare(GameMap::practice_range()).unwrap();
         let mut mode = ModeRunner::start(&scene, 100, Vec::new());
         assert!(mode.advance(101, &Variables::new(), Vec::new()).is_empty());
@@ -844,10 +844,10 @@ mod tests {
     #[test]
     #[ignore = "requires the derived 104319 data"]
     fn the_match_end_plays_its_cards_and_then_ends_the_game() {
-        use orpheus_content::maps::MapCatalog;
+        use lucy_content::maps::MapCatalog;
         const ANUBIS: u64 = 0x0800_0000_0000_005b;
         const CARDS: u16 = 7;
-        let runtime = orpheus_testkit::runtime_dir();
+        let runtime = lucy_testkit::runtime_dir();
         let assets = SceneAssets::load(&runtime).unwrap();
         let catalog = MapCatalog::load(runtime.join("data")).unwrap();
         let mut map = catalog
@@ -971,7 +971,7 @@ mod tests {
                     .collect();
                 assert_eq!(
                     frame_now.state_payload(CARDS, 17),
-                    Some(&orpheus_script::codecs::StatePayload::from([
+                    Some(&lucy_script::codecs::StatePayload::from([
                         ("hits".into(), Value::Array(hits)),
                         ("flag".into(), Value::Bool(false)),
                     ]))

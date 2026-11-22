@@ -36,7 +36,7 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use orpheus_stu::{Asset, Object, Value};
+use lucy_stu::{Asset, Object, Value};
 
 use crate::Install;
 
@@ -450,7 +450,7 @@ mod tests {
     #[test]
     #[ignore = "requires an Overwatch 1.74 install (just test-game <install>)"]
     fn the_training_bot_idles_in_its_uncategorised_branches() {
-        let install = Install::open(&orpheus_testkit::game_dir(), "enUS").unwrap();
+        let install = Install::open(&lucy_testkit::game_dir(), "enUS").unwrap();
         let clips = idle_clips(&install, SET).unwrap();
         for reached in [0x3920, 0x391F, 0x3A9D] {
             assert!(clips.contains(&clip(reached)), "{reached:X} {clips:X?}");

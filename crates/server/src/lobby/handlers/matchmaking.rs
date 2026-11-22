@@ -5,14 +5,14 @@
 
 use std::io;
 
-use orpheus_lobby::{
+use lucy_lobby::{
     handoff::{CREATE_GAME, GAME_REQUEST, is_request},
     lineup::{LOBBY_ANSWER, MATCH_LOBBY_OUT},
     queue::{
         ACCEPT, CANCEL_QUEUE, CHANGE_ROLES, DECLINE, ENTER_QUEUE, MATCHMAKE, PASS_ROLE, SET_ROLES,
     },
 };
-use orpheus_wire::jam::codec::{Fields, Value};
+use lucy_wire::jam::codec::{Fields, Value};
 
 use crate::lobby::{
     Lobby,
@@ -72,7 +72,7 @@ fn tick(peer: &mut Peer<'_, '_>) -> io::Result<()> {
     peer.lobby.matchmaker.tick(peer)
 }
 
-fn logout(lobby: &Lobby, account: &std::sync::Arc<orpheus_lobby::accounts::Account>) {
+fn logout(lobby: &Lobby, account: &std::sync::Arc<lucy_lobby::accounts::Account>) {
     lobby.matchmaker.logout(lobby, account);
 }
 
@@ -157,7 +157,7 @@ fn change_roles(peer: &mut Peer<'_, '_>, _: Fields) -> io::Result<()> {
 /// a mode GUID.
 fn create_game(peer: &mut Peer<'_, '_>, fields: Fields) -> io::Result<()> {
     let request = (GAME_REQUEST, CREATE_GAME, fields);
-    if let Some(name) = orpheus_lobby::custom_game::create_request(&request) {
+    if let Some(name) = lucy_lobby::custom_game::create_request(&request) {
         return super::custom_game::create(peer, name);
     }
     if !is_request(&request) {

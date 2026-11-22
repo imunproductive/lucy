@@ -9,7 +9,7 @@ use std::{collections::HashMap, fs, io, path::Path};
 use indexmap::IndexMap;
 use serde::Deserialize;
 
-use orpheus_core::guid::parse_guid;
+use lucy_core::guid::parse_guid;
 
 /// Values of a body's STUCharacterMoverComponent.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
@@ -227,7 +227,7 @@ mod tests {
         use sha2::{Digest, Sha256};
         use std::collections::BTreeMap;
 
-        let root = orpheus_testkit::runtime_dir();
+        let root = lucy_testkit::runtime_dir();
         let catalog =
             MoverCatalog::load(root.join("data/game_movers_174.json"), SOLDIER_BODY).unwrap();
         assert_eq!(catalog.by_body.len(), 38);

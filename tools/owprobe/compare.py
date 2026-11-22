@@ -1,6 +1,6 @@
 """The server's movement against the client's prediction, command frame by command frame.
 
-Server: the `orpheus::pose` debug trace (`RUST_LOG=info,orpheus::pose=debug`; one `owner pose` line per command
+Server: the `lucy::pose` debug trace (`RUST_LOG=info,lucy::pose=debug`; one `owner pose` line per command
 frame a body ran: frame, position (feet), velocity, movement flags, the states that began and ended). Client: an
 owprobe trace (`trace --corrections`): each frame sample's mover state (component 31's copy at +0x10B0 of the state
 after the last command frame's tick: the frame it was simulated to, feet, velocity, flags) and the hits of the
@@ -128,7 +128,7 @@ def best_offset(server, trace, body=None, span=3):
 def report(server, trace, body=None, threshold=0.01, out=None, log=print):
     body, rows, marks = compare(server, trace, body)
     if not rows:
-        log(f"no common frames (server body {body}); check the server log has orpheus::pose lines")
+        log(f"no common frames (server body {body}); check the server log has lucy::pose lines")
         return rows
     scores = best_offset(server, trace, body)
     sampled = {r["frame"] for r in rows}

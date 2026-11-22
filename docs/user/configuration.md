@@ -1,6 +1,6 @@
 # Configuration
 
-`orpheus` reads `config.toml` in the state folder (`%APPDATA%\orpheus\config.toml`). The file is optional. Each setting comes from the first of:
+`lucy` reads `config.toml` in the state folder (`%APPDATA%\lucy\config.toml`). The file is optional. Each setting comes from the first of:
 
 1. the command-line flag;
 2. the environment variable, where one exists;
@@ -25,10 +25,10 @@ dashboard = 3725              # TCP; 0 turns the dashboard off
 
 | Key | Flag | Environment | Default | Meaning |
 | --- | --- | --- | --- | --- |
-| `game` | `--game` | `ORPHEUS_GAME` | the last picked or given game, then `game\` in the current folder, then a file dialog (only the modes that start the game) | The Overwatch 1.74 install. The server also reads its game data from it. |
+| `game` | `--game` | `LUCY_GAME` | the last picked or given game, then `game\` in the current folder, then a file dialog (only the modes that start the game) | The Overwatch 1.74 install. The server also reads its game data from it. |
 | `account` | `--account` | | `default_account.txt` | The saved account the game on this PC logs in as |
 | `locale` | `--locale` | | `auto` | The game language: `auto`, `none` or a code such as `enUS` (see [playing](playing.md#game-language)) |
-| `dev_console` | `--dev-console` | `ORPHEUS_DEV_CONSOLE` | off | Turns on the game's developer features and its own engine console: in the game, Alt+backtick opens it (a `>:` prompt; what works there: [the engine console](#the-engine-console)). The console is the client's: nothing you type there goes to the server. Don't use the `--tank_Console` or `--tank_ShowMode` game options for this: one of them opens a full-screen window that can't be hidden or closed. The flag or `ORPHEUS_DEV_CONSOLE=1` turns it on even when `config.toml` says `false`. |
+| `dev_console` | `--dev-console` | `LUCY_DEV_CONSOLE` | off | Turns on the game's developer features and its own engine console: in the game, Alt+backtick opens it (a `>:` prompt; what works there: [the engine console](#the-engine-console)). The console is the client's: nothing you type there goes to the server. Don't use the `--tank_Console` or `--tank_ShowMode` game options for this: one of them opens a full-screen window that can't be hidden or closed. The flag or `LUCY_DEV_CONSOLE=1` turns it on even when `config.toml` says `false`. |
 | `ports.lobby` | `--lobby-port` | | 3724 | Lobby, TCP |
 | `ports.stall` | `--stall-port` | | 1119 | Battle.net, TCP |
 | `ports.rpc` | `--rpc-port` | | 21119 | Battle.net RPC, TCP |
@@ -37,7 +37,7 @@ dashboard = 3725              # TCP; 0 turns the dashboard off
 
 Use single quotes for Windows paths in TOML, so the backslashes stay as they are.
 
-An unknown key is an error. `orpheus doctor` shows it.
+An unknown key is an error. `lucy doctor` shows it.
 
 ## The engine console
 
@@ -55,7 +55,7 @@ Alt+Shift+F and Alt+Shift+R are developer keys too, but in the Practice Range th
 
 | Flag | Environment | Meaning |
 | --- | --- | --- |
-| `--state <folder>` | `ORPHEUS_STATE_DIR` | The state folder. Default `%APPDATA%\orpheus`. |
+| `--state <folder>` | `LUCY_STATE_DIR` | The state folder. Default `%APPDATA%\lucy`. |
 | `--host <address>` | | Where the lobby and game server listen |
 | `--game-host <address>` | | The public address for players on the internet. Remembered in `public_address.txt` when the menu asks for it. |
 | `--server <host:port>` | | The server to join. Remembered in `server_address.txt`. |

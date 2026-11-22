@@ -30,7 +30,7 @@ use crate::{
     templates::{LOBBY, RetailTemplates},
     transport::LobbyMessage,
 };
-use orpheus_wire::jam::codec::{Fields, Schemas, Value};
+use lucy_wire::jam::codec::{Fields, Schemas, Value};
 
 const GOLDEN: &str = include_str!("../../tests/golden/messages.json");
 /// The Python test's patched `time.time`.
@@ -419,7 +419,7 @@ impl Content {
 #[test]
 #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn messages_are_unchanged() {
-    let data = orpheus_testkit::runtime_dir().join("data");
+    let data = lucy_testkit::runtime_dir().join("data");
     let templates = RetailTemplates::captured();
     let items = Arc::new(ItemDb::load(&data).unwrap());
     let extra_preload = extra_preload_themes(&items).collect();

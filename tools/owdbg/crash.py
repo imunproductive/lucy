@@ -122,7 +122,7 @@ def format_report(rep):
         lines.append(f"  {r} -> {t}")
     lines.append("stack:")
     for i, f in enumerate(rep.get("stack") or []):
-        extra = f" (orpheus {f['orpheus']})" if f.get("orpheus") else ""
+        extra = f" (lucy {f['lucy']})" if f.get("lucy") else ""
         lines.append(f"  #{i:<2} {f['va']:>18} {f['text']}{extra} [{f['method']}]")
     lines.append("disassembly:")
     for d in rep["disasm"]:

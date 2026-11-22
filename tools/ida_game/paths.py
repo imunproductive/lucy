@@ -4,7 +4,7 @@ import os
 
 from tools import paths as _p
 
-ORPHEUS = str(_p.ORPHEUS)  # cwd of the detached build
+LUCY = str(_p.LUCY)  # cwd of the detached build
 IDA_DIR = str(_p.IDA_DIR)
 ROSE_BIN = str(_p.ROSE_BIN)
 
@@ -12,7 +12,7 @@ DUMP = str(_p.DUMP)
 GAME_EXE = str(_p.GAME_EXE)  # the exe the dump ran
 OBFUSCATED_JSON = str(_p.OBFUSCATED_JSON)
 ANALYSIS_DIR = str(_p.ANALYSIS_DIR)
-# ORPHEUS's statescript codec table (read only): state property-block offsets/types for `types`
+# Lucy's statescript codec table (read only): state property-block offsets/types for `types`
 CODECS_JSON = str(_p.CODECS_JSON)
 
 OUT_DIR = str(_p.IDA_GAME)

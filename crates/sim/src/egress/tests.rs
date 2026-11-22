@@ -1,9 +1,9 @@
 use super::*;
-use orpheus_core::bits::{BitReader, BitWriter};
-use orpheus_physics::mover::correction::CorrectionHistory;
-use orpheus_wire::entity::{MAX_ENTITY_RECORDS, MAX_PAYLOAD, Movement, Operation};
-use orpheus_wire::jam::codec::Schemas;
-use orpheus_wire::messages::read_channel;
+use lucy_core::bits::{BitReader, BitWriter};
+use lucy_physics::mover::correction::CorrectionHistory;
+use lucy_wire::entity::{MAX_ENTITY_RECORDS, MAX_PAYLOAD, Movement, Operation};
+use lucy_wire::jam::codec::Schemas;
+use lucy_wire::messages::read_channel;
 
 const MESSAGE: [u8; 2] = [1, 2];
 
@@ -359,7 +359,7 @@ fn selected_send_advances_ack_only_after_budget_and_transport_succeed() {
     let alone = (0..MAX_PAYLOAD)
         .rev()
         .find(|&len| {
-            orpheus_wire::entity::frame(107, 0, 0, &[], &[], &[&record(len)])
+            lucy_wire::entity::frame(107, 0, 0, &[], &[], &[&record(len)])
                 .is_ok_and(|bytes| bytes.len() <= MAX_PAYLOAD)
         })
         .unwrap();

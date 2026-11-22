@@ -7,11 +7,11 @@
 //! respawn, the match flow's teams and objectives). The other clients see
 //! him through the same path as any other player (`others.rs`): his card,
 //! his entry in the team list, his body and its observer frames. His
-//! commands come from an [`AiController`] (`orpheus_sim::ai`) once a tick.
+//! commands come from an [`AiController`] (`lucy_sim::ai`) once a tick.
 //!
 //! His body is possessed by his AI entity ([`ai_entity`]), made from the
 //! hero body's AI definition at the room's difficulty
-//! (`orpheus_script::ai_definitions`): the body's graphs see an AI
+//! (`lucy_script::ai_definitions`): the body's graphs see an AI
 //! possessor with component 92 and read his weapons' damage from its
 //! difficulty profile (Soldier: 76's rifle 4, 10 or 20 for the player's 20),
 //! as retail's weapon graphs are written to. The AI entity is the
@@ -32,13 +32,13 @@
 
 use std::{io, time::Duration};
 
-use orpheus_content::heroes::SOLDIER;
-use orpheus_lobby::login::Identity;
-use orpheus_script::{
+use lucy_content::heroes::SOLDIER;
+use lucy_lobby::login::Identity;
+use lucy_script::{
     placed::{DummyChange, NextDummy},
     vm::DummyBot,
 };
-use orpheus_sim::{
+use lucy_sim::{
     ai::{AiController, Difficulty, Goal, Random, Seen, Senses, pick_heroes, ticks},
     match_flow::{MatchFlow, Phase},
     navigate::PathBudget,
@@ -46,7 +46,7 @@ use orpheus_sim::{
     scene::PlayerCard,
     scene_assets::PreparedScene,
 };
-use orpheus_wire::commands::Command;
+use lucy_wire::commands::Command;
 
 use super::{
     FIRST_AI_CONNECTION, MatchId, MatchPlayer, Peer, Player, PlayerStats, Room, State, invalid,
@@ -477,14 +477,14 @@ impl State {
                 room_heal: false,
                 room_hurt: false,
                 support_tag_given: false,
-                support_tag_delivered: (false, orpheus_script::wire::Value::Null),
+                support_tag_delivered: (false, lucy_script::wire::Value::Null),
                 picker: None,
                 console_button: false,
                 picker_raised: false,
                 picker_hides_hud: false,
                 spawn_effect: false,
                 spawn_scope: Vec::new(),
-                hold_to_sprint_delivered: orpheus_script::wire::Value::Null,
+                hold_to_sprint_delivered: lucy_script::wire::Value::Null,
                 workshop: Vec::new(),
             })
             .collect();
@@ -505,7 +505,7 @@ impl State {
             body.support_tag_delivered = peer.world.body_delivered(
                 0x01cf,
                 117,
-                orpheus_content::hero_settings::ALLIED_HEALTH_BARS as u32,
+                lucy_content::hero_settings::ALLIED_HEALTH_BARS as u32,
             );
             body.picker = peer.world.controller_scope_instances(126).first().copied();
             body.console_button = peer.world.body_delivered(0x265f, 9, 25456).0;
@@ -518,7 +518,7 @@ impl State {
                 .map(|index| {
                     peer.world
                         .workshop_variable(index)
-                        .unwrap_or(orpheus_script::wire::Value::Null)
+                        .unwrap_or(lucy_script::wire::Value::Null)
                 })
                 .collect();
         }
@@ -613,14 +613,14 @@ pub(crate) struct BodyState {
     pub room_heal: bool,
     pub room_hurt: bool,
     /// His body's `01CF` st117 is active: ALLIED HEALTH BARS at ALWAYS gave
-    /// it the support tag (`orpheus_content::hero_settings`).
+    /// it the support tag (`lucy_content::hero_settings`).
     pub support_tag_given: bool,
     /// The last owner frame his client acknowledged: whether st117 runs in
     /// it, and its ALLIED HEALTH BARS variable (`#8336e`).
-    pub support_tag_delivered: (bool, orpheus_script::wire::Value),
+    pub support_tag_delivered: (bool, lucy_script::wire::Value),
     /// Its HOLD TO SPRINT variable (`#7644e`, Soldier: 76's `1DDC.01C`) in
     /// that frame.
-    pub hold_to_sprint_delivered: orpheus_script::wire::Value,
+    pub hold_to_sprint_delivered: lucy_script::wire::Value,
     /// His controller's instance of the Training Partner console's scope
     /// 126, where its picker sends `1213` from.
     pub picker: Option<u16>,
@@ -643,5 +643,5 @@ pub(crate) struct BodyState {
     /// record names on each.
     pub spawn_scope: Vec<(u32, Option<u16>)>,
     /// His Workshop player variables 0-11, as his controller holds them.
-    pub workshop: Vec<orpheus_script::wire::Value>,
+    pub workshop: Vec<lucy_script::wire::Value>,
 }

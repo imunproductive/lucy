@@ -1,13 +1,13 @@
 //! The hero derivations against the runtime pack: the heroes, their bodies'
 //! movers and the Tab board's stats.
 
-use orpheus_assets::{DERIVATIONS, Difference, Install, diff};
+use lucy_assets::{DERIVATIONS, Difference, Install, diff};
 
 /// Derive `name` with the pack as the build folder and compare every output
 /// with the pack's.
 fn matches_the_pack(name: &str) {
-    let install = Install::open(&orpheus_testkit::game_dir(), "enUS").unwrap();
-    let pack = orpheus_testkit::oracle_pack();
+    let install = Install::open(&lucy_testkit::game_dir(), "enUS").unwrap();
+    let pack = lucy_testkit::oracle_pack();
     let derivation = DERIVATIONS
         .iter()
         .find(|derivation| derivation.name == name)
@@ -46,7 +46,7 @@ fn game_stats_matches_the_pack() {
 #[test]
 #[ignore = "requires an Overwatch 1.74 install"]
 fn the_stat_rules_come_from_the_stats_own_fields() {
-    let table = orpheus_testkit::runtime_json("data/game_stat_rules_174.json");
+    let table = lucy_testkit::runtime_json("data/game_stat_rules_174.json");
     let stat = |index: u32| format!("0x0860{:012X}", index);
     assert_eq!(table["best"][stat(0x346)], "max");
     assert_eq!(table["best"][stat(0x23b)], "max");

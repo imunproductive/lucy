@@ -2,7 +2,7 @@ use serde_json::json;
 
 use super::*;
 use crate::{player_messages, templates::restore_value};
-use orpheus_wire::jam::codec::{Fields, Schemas};
+use lucy_wire::jam::codec::{Fields, Schemas};
 
 fn entry(value: i64, key: u64) -> Value {
     Value::Struct(Fields::from([

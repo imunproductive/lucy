@@ -726,7 +726,7 @@ impl ProjectileBallistics {
 
 /// The derived tunables file, in the runtime `data` folder: every tunable
 /// value (type `130`, `STU_A0E5F3ED`) in the install, its `m_3E5360A1` by
-/// GUID (the `orpheus-assets` derivation `game_tunables`).
+/// GUID (the `lucy-assets` derivation `game_tunables`).
 pub const TUNABLES_FILE: &str = "game_tunables_174.json";
 
 /// The tunable values the graphs read through `STU_082FA44E`, by tunable
@@ -1106,7 +1106,7 @@ mod tests {
     #[test]
     #[ignore = "requires the derived 104319 statescript catalog"]
     fn only_anas_volleys_strike_allies() {
-        let data = orpheus_testkit::runtime_dir().join("data");
+        let data = lucy_testkit::runtime_dir().join("data");
         let graphs =
             crate::graph::GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap();
         let mut striking = Vec::new();
@@ -1150,7 +1150,7 @@ mod tests {
     #[test]
     #[ignore = "requires the derived 104319 statescript catalog"]
     fn direct_hits_take_their_critical_multiplier_from_the_data() {
-        let data = orpheus_testkit::runtime_dir().join("data");
+        let data = lucy_testkit::runtime_dir().join("data");
         let graphs =
             crate::graph::GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap();
         let multipliers = |index| {
@@ -1185,7 +1185,7 @@ mod tests {
     #[test]
     #[ignore = "requires the derived 104319 statescript catalog"]
     fn projectile_radii_come_from_the_data() {
-        let data = orpheus_testkit::runtime_dir().join("data");
+        let data = lucy_testkit::runtime_dir().join("data");
         let graphs =
             crate::graph::GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap();
         let radii = |index| {
@@ -1237,7 +1237,7 @@ mod tests {
     #[test]
     #[ignore = "requires the 1.74 game data"]
     fn the_install_s_pulse_bomb_tunable_is_350() {
-        let data = orpheus_testkit::runtime_dir().join("data");
+        let data = lucy_testkit::runtime_dir().join("data");
         let tunables = Tunables::load(data.join(TUNABLES_FILE)).unwrap();
         let config = json!({"$": "STU_082FA44E",
             "m_DBF61E9A": {"$": "STU_D9BDAA46", "m_DBF61E9A": "0x0F4800000000015D"}});

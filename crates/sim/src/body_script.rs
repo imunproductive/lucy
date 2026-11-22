@@ -22,15 +22,15 @@ use crate::{
     scene::target_tags_component,
     weapon_spread::{ring_directions, shot_direction},
 };
-use orpheus_content::{hero_settings::HeroSettings, heroes::Hero};
+use lucy_content::{hero_settings::HeroSettings, heroes::Hero};
 #[cfg(any(test, feature = "fixtures"))]
-use orpheus_content::{heroes::SOLDIER, maps::PRACTICE_RANGE_MODE};
-use orpheus_core::guid::parse_guid;
-use orpheus_physics::{
+use lucy_content::{heroes::SOLDIER, maps::PRACTICE_RANGE_MODE};
+use lucy_core::guid::parse_guid;
+use lucy_physics::{
     mover::Mover,
     mover::modifiers::{Modifier, ModifierKey},
 };
-use orpheus_script::{
+use lucy_script::{
     ai_definitions::AiControl,
     codecs::CodecTable,
     expr::{EntityRelation, Scope, Variable, team_from_filter, to_float},
@@ -53,7 +53,7 @@ use orpheus_script::{
     },
     wire::{Value, Variables},
 };
-use orpheus_wire::{
+use lucy_wire::{
     commands::Command,
     entity::{Component as EntityComponent, GAME_MODE_ENTITY, Movement},
 };
@@ -62,8 +62,8 @@ use orpheus_wire::{
 /// maximum health: entity variables no graph writes (driver.py
 /// `OWNER_HEALTH`, `HUD_HEALTH`, `HUD_MAX_HEALTH`).
 const OWNER_HEALTH: u32 = 253;
-/// The body's dead flag (`orpheus_script::bot::DEAD_FLAG`, entity variable #478).
-const DEAD_FLAG: u32 = orpheus_script::bot::DEAD_FLAG;
+/// The body's dead flag (`lucy_script::bot::DEAD_FLAG`, entity variable #478).
+const DEAD_FLAG: u32 = lucy_script::bot::DEAD_FLAG;
 const HUD_HEALTH: u32 = 1732;
 const HUD_MAX_HEALTH: u32 = 1737;
 /// The native that answers the body's move-speed scale.
@@ -123,7 +123,7 @@ pub struct OwnerBodySpawn {
 /// Where the server runs the mode graph (the Practice Range's `13C0`,
 /// `crate::mode_script`), it holds `06FD` to every entity and the room
 /// gives it to each body once (`crate::messages::deliver_held`). Where it
-/// doesn't (every PvP mode today, their gaps, `orpheus_script::mode`), the
+/// doesn't (every PvP mode today, their gaps, `lucy_script::mode`), the
 /// body takes `06FD` from the mode as it starts. Either way the body counts
 /// its respawn once its mode script took `06FD`. Assumptions: the mode body
 /// script is the body's last root instance, after the hero's weapons (the
@@ -183,14 +183,14 @@ impl PlayerBodyFactory {
             .ok_or_else(|| {
                 unsupported("the hero body definition is absent from the graph bundle")
             })?;
-        let roots = orpheus_script::vm::player_roots(body, &graphs).map_err(unsupported)?;
+        let roots = lucy_script::vm::player_roots(body, &graphs).map_err(unsupported)?;
         let health = pools.unwrap_or(FALLBACK_POOLS).total();
-        let mut variables = orpheus_script::vm::player_entity_variables(body, health, health);
+        let mut variables = lucy_script::vm::player_entity_variables(body, health, health);
         // The ruleset's ultimate generation settings, which `0B8B` reads as
-        // entity variables (`orpheus_script::ultimate`), a match's own
+        // entity variables (`lucy_script::ultimate`), a match's own
         // ruleset first (a Workshop script's), or the override.
         variables.extend(ult_generation.unwrap_or_else(|| {
-            orpheus_script::ultimate::generation_variables(|key| {
+            lucy_script::ultimate::generation_variables(|key| {
                 graphs.ruleset_value(key, hero.guid, mode, ruleset)
             })
         }));
@@ -737,7 +737,7 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
         self.world.take_tracked_stats()
     }
 
-    fn take_environment_credits(&mut self) -> Vec<orpheus_script::vm::EnvironmentCredit> {
+    fn take_environment_credits(&mut self) -> Vec<lucy_script::vm::EnvironmentCredit> {
         self.world.take_environment_credits()
     }
 
@@ -1069,13 +1069,13 @@ pub fn fixture_body_factory() -> (PlayerBodyFactory, OwnerBodySpawn) {
         graphs,
         codecs,
         PRACTICE_RANGE_MODE,
-        orpheus_content::maps::PRACTICE_RANGE_RULESET,
+        lucy_content::maps::PRACTICE_RANGE_RULESET,
         &hero,
         None,
         false,
         BodyCombat {
             // combat.py `EYE`, `EYE_CROUCHED`: Soldier: 76's.
-            eyes: orpheus_content::heroes::Eyes {
+            eyes: lucy_content::heroes::Eyes {
                 standing: 1.55,
                 crouched: 1.085,
             },

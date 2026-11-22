@@ -8,7 +8,7 @@
 //! before them is its type byte 1 and a value byte.
 
 use crate::heroes::{Hero, HeroCatalog};
-use orpheus_wire::{jam::codec::Value, messages::Message};
+use lucy_wire::{jam::codec::Value, messages::Message};
 
 pub const CLIENT_GAME_MESSAGE: u32 = 21616;
 pub const PICK_HERO: u64 = 0x0240_0000_0000_1361;
@@ -277,8 +277,8 @@ mod tests {
     use super::*;
 
     use crate::heroes::SOLDIER;
-    use orpheus_core::bits::BitReader;
-    use orpheus_wire::{
+    use lucy_core::bits::BitReader;
+    use lucy_wire::{
         jam::codec::{Fields, Schemas},
         messages::read_channel,
     };
@@ -411,7 +411,7 @@ mod tests {
     #[test]
     #[ignore = "requires derived 104319 game schemas and hero catalog"]
     fn reliable_21616_messages_match_the_python_reader_and_hero_select_requests() {
-        let data = orpheus_testkit::runtime_dir().join("data");
+        let data = lucy_testkit::runtime_dir().join("data");
         let schemas = Schemas::game();
         let heroes = HeroCatalog::load(data.join("game_heroes_174.json")).unwrap();
         // Python game.messages.write_channel with synthetic entity IDs and the

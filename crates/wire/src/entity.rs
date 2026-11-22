@@ -86,7 +86,7 @@ use std::{borrow::Borrow, error::Error, fmt};
 
 use crate::link::{HEADER_SIZE, MAX_DATAGRAM};
 use crate::messages::{ChannelError, MAX_PER_KIND, write_channel};
-use orpheus_core::bits::{BitError, BitWriter};
+use lucy_core::bits::{BitError, BitWriter};
 
 pub const MAX_ENTITY_RECORDS: usize = 127;
 pub const MAX_PAYLOAD: usize = MAX_DATAGRAM - HEADER_SIZE;
@@ -448,7 +448,7 @@ pub fn pool(id: u32, kind: u32, most: f32, now: f32) -> [u8; 20] {
 }
 
 /// Encode supplied pool fields at `kind * POOLS + slot`, omitting all others.
-/// A zero ID clears a slot. ORPHEUS writes an all-zero blob for a clear;
+/// A zero ID clears a slot. Lucy writes an all-zero blob for a clear;
 /// the client's ancillary bytes for a native clear have not been verified.
 pub fn pool_component(slots: impl IntoIterator<Item = (usize, [u8; 20])>) -> Component {
     let mut fields = vec![None; 3 * POOLS];
@@ -481,7 +481,7 @@ pub struct Movement {
     /// "field 3", a teleport generation). The owner's client compares it
     /// with its own body's: equal, a different state is a correction it
     /// replays its later commands on; different, it takes the state as it
-    /// is, without replay (`orpheus_physics::mover::correction`). A create
+    /// is, without replay (`lucy_physics::mover::correction`). A create
     /// starts the body at 0.
     pub discontinuity: u32,
     /// The `MoveTo` move's record, present exactly while `flags` has

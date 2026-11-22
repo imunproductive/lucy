@@ -8,9 +8,9 @@ use crate::{
     ai::Difficulty,
     messages::{Players, Recipients, deliver},
 };
-use orpheus_content::maps::SpawnChoice;
-use orpheus_script::{mode::EVERY_ENTITY, vm::Unknowns};
-use orpheus_wire::entity::GAME_MODE_ENTITY;
+use lucy_content::maps::SpawnChoice;
+use lucy_script::{mode::EVERY_ENTITY, vm::Unknowns};
+use lucy_wire::entity::GAME_MODE_ENTITY;
 
 const PLAYER: u32 = 0xa000_0100;
 const AI: u32 = 0xa000_0200;
@@ -28,7 +28,7 @@ const SENDER: u32 = 40;
 
 /// The Range with every Training Bot's script running.
 fn scene() -> (PreparedScene, u32) {
-    let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let mut assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
     assets.set_player_unknowns(Unknowns::Tolerate);
     assets.set_bot_unknowns(Unknowns::Tolerate);
     let mut scene = assets.prepare(GameMap::practice_range()).unwrap();

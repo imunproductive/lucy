@@ -1,6 +1,6 @@
 //! `data/collision_props_174.json`, reduced to what the server reads: each
 //! game mode's placeable identifiers (`modes`), which decide the props of a
-//! mode (`orpheus_sim`'s scene assets keep a collision cache's placements of
+//! mode (`lucy_sim`'s scene assets keep a collision cache's placements of
 //! the identifiers the mode lists).
 //!
 //! The Python reference's catalogue (made by a scratch tool that isn't in the

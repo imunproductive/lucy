@@ -1,4 +1,4 @@
-//! Start a stand-in process the way `orpheus play` starts the game, load the
+//! Start a stand-in process the way `lucy play` starts the game, load the
 //! relay and the probe into it, and check they came up. Needs
 //! `owwfd_relay.dll` and `owprobe.dll` next to the test binaries: run
 //! `just test-windows`.
@@ -14,7 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use orpheus_launcher::process::{ProbeSetup, RelaySetup, inject, inject_when_ready, start_game};
+use lucy_launcher::process::{ProbeSetup, RelaySetup, inject, inject_when_ready, start_game};
 
 struct Kill(Child);
 

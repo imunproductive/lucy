@@ -13,8 +13,8 @@
 //! that stays silent gets it for half a second, then neutral frames.
 
 use super::*;
-use orpheus_script::snapshot::{ProjectedSnapshot, View};
-use orpheus_wire::{
+use lucy_script::snapshot::{ProjectedSnapshot, View};
+use lucy_wire::{
     commands::{Click, Command, FIRE, JUMP, SUBFRAME},
     entity::Movement,
 };
@@ -57,7 +57,7 @@ fn viewer(card: &PlayerCard) -> PlayerAppearance<'_> {
         slot: 0,
         team: 0,
         spawn: 0,
-        room: orpheus_content::maps::SpawnChoice::First,
+        room: lucy_content::maps::SpawnChoice::First,
         card,
     }
 }
@@ -150,7 +150,7 @@ fn delivery(index: u32) -> (Option<u32>, bool) {
 #[test]
 #[ignore = "requires a derived 104319 Practice Range pack"]
 fn the_server_runs_each_frame_as_the_client_predicted_it_while_nothing_is_lost() {
-    let scene = SceneAssets::load(orpheus_testkit::runtime_dir())
+    let scene = SceneAssets::load(lucy_testkit::runtime_dir())
         .unwrap()
         .prepare(GameMap::practice_range())
         .unwrap();
@@ -250,7 +250,7 @@ fn the_server_runs_each_frame_as_the_client_predicted_it_while_nothing_is_lost()
 #[test]
 #[ignore = "requires a derived 104319 Practice Range pack"]
 fn a_tap_a_long_stall_repeated_still_fires() {
-    let scene = SceneAssets::load(orpheus_testkit::runtime_dir())
+    let scene = SceneAssets::load(lucy_testkit::runtime_dir())
         .unwrap()
         .prepare(GameMap::practice_range())
         .unwrap();
@@ -322,7 +322,7 @@ fn a_tap_a_long_stall_repeated_still_fires() {
 #[test]
 #[ignore = "requires a derived 104319 Practice Range pack"]
 fn a_silent_body_keeps_falling_but_holds_nothing_past_the_repeats() {
-    let scene = SceneAssets::load(orpheus_testkit::runtime_dir())
+    let scene = SceneAssets::load(lucy_testkit::runtime_dir())
         .unwrap()
         .prepare(GameMap::practice_range())
         .unwrap();
@@ -451,7 +451,7 @@ fn a_silent_body_keeps_falling_but_holds_nothing_past_the_repeats() {
 #[test]
 #[ignore = "requires a derived 104319 Practice Range pack"]
 fn a_stall_with_the_keys_held_runs_as_his_client_predicted_it() {
-    let scene = SceneAssets::load(orpheus_testkit::runtime_dir())
+    let scene = SceneAssets::load(lucy_testkit::runtime_dir())
         .unwrap()
         .prepare(GameMap::practice_range())
         .unwrap();
@@ -493,7 +493,7 @@ fn a_stall_with_the_keys_held_runs_as_his_client_predicted_it() {
                 let window: Vec<_> = sent
                     .iter()
                     .rev()
-                    .take(usize::from(orpheus_wire::commands::MAX_COMMANDS))
+                    .take(usize::from(lucy_wire::commands::MAX_COMMANDS))
                     .rev()
                     .filter(|command| command.frame + 1 >= acked)
                     .copied()
@@ -545,8 +545,8 @@ fn a_stall_with_the_keys_held_runs_as_his_client_predicted_it() {
 fn the_server_pulls_widowmaker_along_her_grappling_hook_as_her_client_predicts() {
     const WIDOWMAKER: u64 = 0x02e0_0000_0000_000a;
     const HOOK: u32 = 0x08;
-    let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
-    assets.set_player_unknowns(orpheus_script::vm::Unknowns::Tolerate);
+    let mut assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
+    assets.set_player_unknowns(lucy_script::vm::Unknowns::Tolerate);
     let scene = assets.prepare(GameMap::practice_range()).unwrap();
     let card = PlayerCard::default();
     // Up a little along the spawn's facing (+z), where the Range's ledge

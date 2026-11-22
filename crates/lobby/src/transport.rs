@@ -6,11 +6,11 @@ use std::net::TcpStream;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use orpheus_wire::jam::cipher::Jam;
-use orpheus_wire::jam::codec::Fields;
-use orpheus_wire::jam::framing::{self, FrameReader};
-use orpheus_wire::jam::handshake::Channel;
-use orpheus_wire::tcp::PeerStream;
+use lucy_wire::jam::cipher::Jam;
+use lucy_wire::jam::codec::Fields;
+use lucy_wire::jam::framing::{self, FrameReader};
+use lucy_wire::jam::handshake::Channel;
+use lucy_wire::tcp::PeerStream;
 
 use crate::clock::Clock;
 

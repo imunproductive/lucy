@@ -9,7 +9,7 @@ use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
 
 use crate::transport::LobbyMessage;
-use orpheus_wire::jam::codec::{Fields, Value, id16};
+use lucy_wire::jam::codec::{Fields, Value, id16};
 
 /// The solo Practice Range create-game request.
 pub const GAME_REQUEST: u32 = 0xa6e5_3896;
@@ -314,7 +314,7 @@ pub fn is_request((crc, id, fields): &LobbyMessage) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orpheus_wire::jam::codec::Schemas;
+    use lucy_wire::jam::codec::Schemas;
 
     const REQUEST: &[u8] = b"\x02\x00\x04\x00\x00\x00";
 

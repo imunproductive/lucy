@@ -1,7 +1,7 @@
-"""owprobe CLI: talk to owprobe.dll in a running game (`orpheus play --probe`, or `launch` below).
+"""owprobe CLI: talk to owprobe.dll in a running game (`lucy play --probe`, or `launch` below).
 
-Addresses: ORPHEUS VAs (0x7FF7...), index/docs names (GetComp4, Msg25005_Handler), `c59`/`ent`/`c4` (the local
-player's component 59, entity, component 4, once the frame sampler ran). Run from the ORPHEUS root.
+Addresses: Lucy VAs (0x7FF7...), index/docs names (GetComp4, Msg25005_Handler), `c59`/`ent`/`c4` (the local
+player's component 59, entity, component 4, once the frame sampler ran). Run from the Lucy root.
 """
 import argparse
 import json
@@ -81,7 +81,7 @@ def cmd_eval(args):
 def cmd_disasm(args):
     p = connect(args)
     for line in p.disasm(args.addr, args.count):
-        print(f"{p.orpheus(line['addr']):016X}  {line['bytes']:24} {line['text']}")
+        print(f"{p.lucy(line['addr']):016X}  {line['bytes']:24} {line['text']}")
 
 
 def cmd_scan(args):
@@ -294,7 +294,7 @@ def cmd_call(args):
 
 def cmd_launch(args):
     from .session import Session
-    with Session(orpheus=args.orpheus, game=args.game, port=args.port, enter_range=args.enter_range,
+    with Session(lucy=args.lucy, game=args.game, port=args.port, enter_range=args.enter_range,
                  hero=args.hero, keep_state=args.keep_state, seed_state=args.seed_state,
                  rust_log=args.rust_log) as s:
         print(f"[owprobe] ready: PID {s.pid}, probe on 127.0.0.1:{s.port}; state {s.state}", flush=True)
@@ -306,7 +306,7 @@ def cmd_launch(args):
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="python -m tools.owprobe", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--port", type=int, help="the probe's port (default ORPHEUS_PROBE_PORT or 21150)")
+    ap.add_argument("--port", type=int, help="the probe's port (default LUCY_PROBE_PORT or 21150)")
     sub = ap.add_subparsers(dest="command", required=True)
 
     def command(name, fn, help):
@@ -381,8 +381,8 @@ def main(argv=None):
     c.add_argument("--no-camera", action="store_true", help="don't read the camera")
     c.add_argument("--corrections", action="store_true",
                    help="hook the movement correction gate, the owner chunk applier and the rollback (for compare)")
-    c = command("compare", cmd_compare, "the server's orpheus::pose trace against a probe trace, frame by frame")
-    c.add_argument("--server", required=True, help="the server's log with orpheus::pose debug lines (play.log)")
+    c = command("compare", cmd_compare, "the server's lucy::pose trace against a probe trace, frame by frame")
+    c.add_argument("--server", required=True, help="the server's log with lucy::pose debug lines (play.log)")
     c.add_argument("--trace", required=True, help="a probe trace (trace --corrections)")
     c.add_argument("--body", help="the body's entity id in hex (default the first in the log)")
     c.add_argument("--threshold", type=float, default=0.01, help="print frames farther apart than this (m)")
@@ -399,17 +399,17 @@ def main(argv=None):
     c.add_argument("args", nargs="*")
     c.add_argument("--thread", choices=("frame", "probe"), default="frame")
     c.add_argument("--force", action="store_true", help="also a target that is not a function start")
-    c = command("launch", cmd_launch, "orpheus play --probe on a temp state copy (debug build), optionally into "
+    c = command("launch", cmd_launch, "lucy play --probe on a temp state copy (debug build), optionally into "
                                       "the Practice Range; stays up for --duration")
-    c.add_argument("--orpheus", help="orpheus.exe with owwfd_relay.dll and owprobe.dll next to it (ORPHEUS_BIN)")
+    c.add_argument("--lucy", help="lucy.exe with owwfd_relay.dll and owprobe.dll next to it (LUCY_BIN)")
     c.add_argument("--game", help=f"the game (default {paths.GAME_EXE})")
     c.add_argument("--enter-range", action="store_true")
     c.add_argument("--hero")
     c.add_argument("--duration", type=float, default=600)
     c.add_argument("--keep-state", action="store_true")
     c.add_argument("--seed-state", help="state folder to copy the derived game data and profiles from "
-                                        "(default %%APPDATA%%/orpheus, read only)")
-    c.add_argument("--rust-log", help="the server's RUST_LOG (info,orpheus::pose=debug for compare's server poses "
+                                        "(default %%APPDATA%%/lucy, read only)")
+    c.add_argument("--rust-log", help="the server's RUST_LOG (info,lucy::pose=debug for compare's server poses "
                                       "in <state>/play.log; with --keep-state)")
     args = ap.parse_args(argv)
     try:
@@ -417,7 +417,7 @@ def main(argv=None):
     except ProbeError as e:
         sys.exit(f"owprobe: {e}")
     except ConnectionRefusedError:
-        sys.exit("owprobe: no probe listening (orpheus play --probe, or python -m tools.owprobe launch)")
+        sys.exit("owprobe: no probe listening (lucy play --probe, or python -m tools.owprobe launch)")
 
 
 if __name__ == "__main__":

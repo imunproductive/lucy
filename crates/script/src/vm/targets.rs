@@ -97,14 +97,14 @@
 //!     `0x10000000`; no body carries it.
 //!   - The candidate's word is the client's component 25 `+0x58`; the
 //!     server takes it to be the body's filter bits as it sends them
-//!     (component 26, `orpheus_sim::scene::body_filter`): its team's bit
+//!     (component 26, `lucy_sim::scene::body_filter`): its team's bit
 //!     `0x800000 << team` (team 4 in a free-for-all), the kinds `0x41` (1 a
 //!     hero, 64 a body that can be hit) and 16 once dead. So `m_84065FD1` 1
 //!     or 64 finds bodies, `m_4EA686DB` 16 leaves the dead out, the
 //!     objective graph `1225`'s `m_1E14CCA8` `0x800000 << team` finds a
 //!     team's bodies, and bits no body carries (none-of 4 in the hits,
 //!     `0x200000` in heals) change nothing. Assumption: the two words are
-//!     the same (`orpheus_sim::scene` module notes).
+//!     the same (`lucy_sim::scene` module notes).
 //!   - The client's filter test (`ScriptHost_EntityPassesFilter`
 //!     0x7FF789C1DA20) also requires component 97 when a mask is set and
 //!     the any-of mask isn't every kind (bodies have it), then tests the
@@ -180,7 +180,7 @@
 //!   where that player saw them, rewound (`0x7FF789CBB340`,
 //!   `0x7FF789CC1AA0`). The world says where ([`World::seen_bodies`]): a
 //!   player's body's world at the view of the command its script runs
-//!   (`orpheus_sim::combat::TargetRewind`, the history the server's shots
+//!   (`lucy_sim::combat::TargetRewind`, the history the server's shots
 //!   rewind with), a bot's and a map placeable's as listed (no player).
 //!   The searcher's own body stays where it is (its player sees it
 //!   there); a body that did not exist at the view is left out. A world
@@ -822,7 +822,7 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
             None => search.offset,
         };
         let filter_config = field(&node.fields, "m_filter");
-        let traced = tracing::enabled!(target: "orpheus::targets", tracing::Level::DEBUG);
+        let traced = tracing::enabled!(target: "lucy::targets", tracing::Level::DEBUG);
         let mut considered = String::new();
         let mut entities = Vec::new();
         for candidate in &bodies {
@@ -867,7 +867,7 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
                 format!(" cone ({dx:.4}, {dy:.4}, {dz:.4}) cos {:.4?}", cone.cos)
             });
             tracing::debug!(
-                target: "orpheus::targets",
+                target: "lucy::targets",
                 "search of {:08X} graph {:04X} node {:?} frame {}: centre ({x:.3}, {y:.3}, {z:.3}){cone}:{considered}",
                 site.entity,
                 site.graph & 0xFFFF,

@@ -28,7 +28,7 @@ use crate::{
     templates::{CONFIG, IN_CONNECT, LOBBY, RetailTemplates},
     transport::{Event, LobbyMessage, LobbyTransport},
 };
-use orpheus_wire::{
+use lucy_wire::{
     jam::codec::{Fields, Schemas, Value},
     jam::handshake::handshake_io,
     tcp::PeerStream,
@@ -452,7 +452,7 @@ fn resolve_battle_tag(accounts: &Accounts, name: &str) -> String {
     battle_tag(name, id)
 }
 
-fn invalid(error: orpheus_wire::jam::codec::CodecError) -> io::Error {
+fn invalid(error: lucy_wire::jam::codec::CodecError) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error)
 }
 

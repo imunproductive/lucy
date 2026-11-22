@@ -12,7 +12,7 @@
 //! = a full frame (a delta reads with full = 0). A state whose payload the
 //! server cannot write is sent only while it is off, and never when it is an
 //! StEC class (an StEC state carries its payload when off too). Reader widths
-//! are documented in `orpheus_core::bits`.
+//! are documented in `lucy_core::bits`.
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -26,7 +26,7 @@ use serde::Deserialize;
 
 use crate::graph::Node;
 use crate::wire::{Value, ValueEncoding, WireError, write_value};
-use orpheus_core::bits::{BitError, BitWriter};
+use lucy_core::bits::{BitError, BitWriter};
 
 pub type StatePayload = BTreeMap<String, Value>;
 pub type LayoutFields<'a> = BTreeMap<&'a str, FieldValue<'a>>;
@@ -143,7 +143,7 @@ impl CodecTable {
     /// state of that class could never be sent (a release build leaves it
     /// out of frames and logs it once, `snapshot.rs`).
     pub fn client() -> Self {
-        let mut table = Self::from_json(orpheus_fixed::STATESCRIPT_CODECS)
+        let mut table = Self::from_json(lucy_fixed::STATESCRIPT_CODECS)
             .expect("the embedded codec table parses");
         // Every client table is the same table.
         table.id = 0;

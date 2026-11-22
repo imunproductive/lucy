@@ -1,4 +1,4 @@
-//! The ORPHEUS server for Overwatch 1.74.0.0.104319.
+//! The Lucy server for Overwatch 1.74.0.0.104319.
 
 #![forbid(unsafe_code)]
 
@@ -28,13 +28,13 @@ use tracing::error;
 use serve::Hosting;
 use settings::{Mode, ModeArgs, ServerArgs, Settings, default_state_dir};
 
-/// Without a command, `orpheus` asks which mode to start (Enter is retail);
+/// Without a command, `lucy` asks which mode to start (Enter is retail);
 /// with no console to answer, it starts retail.
 #[derive(Parser)]
-#[command(version, about = "The ORPHEUS server for Overwatch 1.74.0.0.104319")]
+#[command(version, about = "The Lucy server for Overwatch 1.74.0.0.104319")]
 struct Cli {
-    /// Folder for profiles, logs, config.toml and remembered answers [default: %APPDATA%\orpheus].
-    #[arg(long, global = true, env = "ORPHEUS_STATE_DIR", value_name = "DIR")]
+    /// Folder for profiles, logs, config.toml and remembered answers [default: %APPDATA%\lucy].
+    #[arg(long, global = true, env = "LUCY_STATE_DIR", value_name = "DIR")]
     state: Option<PathBuf>,
     /// What to start without a command; without it you are asked.
     #[arg(long, value_enum)]
@@ -308,11 +308,11 @@ mod tests {
     use std::{net::Ipv4Addr, time::Duration};
 
     fn parse(arguments: &[&str]) -> Cli {
-        parse_cli(["orpheus"].iter().chain(arguments)).unwrap()
+        parse_cli(["lucy"].iter().chain(arguments)).unwrap()
     }
 
     /// Everything after `--` goes to Overwatch.exe as it is, also options
-    /// orpheus has itself; without `--` there are none.
+    /// lucy has itself; without `--` there are none.
     #[test]
     fn arguments_after_a_double_dash_go_to_the_game() {
         let cli = parse(&[
@@ -393,7 +393,7 @@ mod tests {
             ["--host", "1.2.3.4", "play"],
         ] {
             assert!(
-                parse_cli(["orpheus"].iter().chain(&arguments)).is_err(),
+                parse_cli(["lucy"].iter().chain(&arguments)).is_err(),
                 "{arguments:?}"
             );
         }

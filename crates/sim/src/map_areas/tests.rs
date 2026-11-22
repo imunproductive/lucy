@@ -1,5 +1,5 @@
 use super::*;
-use orpheus_content::maps::GameMap;
+use lucy_content::maps::GameMap;
 
 fn level(y: f64, size: f64, mask: u16) -> SceneTriangle {
     SceneTriangle {

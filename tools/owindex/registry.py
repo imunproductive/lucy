@@ -1,15 +1,15 @@
 """The statescript/config-var registration list: records, kinds, winners, runtime vtables and named slots.
 
-List (ORPHEUS extract_statescript_codecs.py): head qword at RVA 0x32969D8, nodes {next, record}, records
+List (Lucy extract_statescript_codecs.py): head qword at RVA 0x32969D8, nodes {next, record}, records
 {+0 factory, +8 construct, +0x10 destroy (returns the object size), +0x18 node typeinfo, +0x20 priority}.
 The client's builder keeps per typeinfo the record with the highest priority, ties to the later record.
 
 Kinds: the record's typeinfo chain (typeinfo+8 = parent) contains the typeinfo of one base class (KIND_BASES,
 first match wins). Runtime vtables: states = the last state-shaped vtable the construct function stores
-(ORPHEUS primary_vtable); the others are 8-byte handler objects whose factory and construct store one vtable.
+(Lucy primary_vtable); the others are 8-byte handler objects whose factory and construct store one vtable.
 
 Named slots (runtime vtable index):
-- state: writer +0x150, reader +0x158, block +0x168 (ORPHEUS; read in 0x7FF78AA82060).
+- state: writer +0x150, reader +0x158, block +0x168 (Lucy; read in 0x7FF78AA82060).
 - config: evaluate = slot 4 (verified: STU_CD7F3617 -> 0x7FF789BE27C0, STU_3832D36C -> 0x7FF789BDFAC0).
 - action: slots 0-8 and 11-14 are the same in all 260 action vtables; slot 10 is per class (225 distinct, the
   base STUStatescriptAction's is `mov al, 1; ret`) and slot 9 (233 of 260 share the base's) calls
@@ -102,7 +102,7 @@ def build_registry(img, stu):
         if not ti:
             problems.append(f"kind {kind}: base STU_{h:08X} has no typeinfo")
     if kind_ti["state"] != img.base + STATE_TYPEINFO_RVA:
-        problems.append(f"state base typeinfo {kind_ti['state']} != 0x7FF78BCE53F0 (ORPHEUS)")
+        problems.append(f"state base typeinfo {kind_ti['state']} != 0x7FF78BCE53F0 (Lucy)")
 
     records, node = [], img.q(img.base + LIST_HEAD_RVA)
     while node and img.inimg(node) and len(records) < 10000:

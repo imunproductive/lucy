@@ -5,7 +5,7 @@
 //! Ported from leafall903/ORPHEUS (MIT), `src/ow174/game/weapon_spread.py`
 //! (commit c239a84) and `src/ow174/game/projectiles.py`
 //! `launch_directions` (commit 7cb4018). The tables are the client's
-//! (`orpheus_script::random_tables`).
+//! (`lucy_script::random_tables`).
 //! Upstream's notes on what is known and what is a guess:
 //! - The tables (`uniform_table`, `float_table`), the seed arithmetic
 //!   (`seed_base`, `seed_index`) and the cone (`direction`) are the
@@ -22,8 +22,8 @@
 
 use std::f64::consts::TAU;
 
-use orpheus_physics::static_ray::Vec3;
-use orpheus_script::{
+use lucy_physics::static_ray::Vec3;
+use lucy_script::{
     expr::EvalError,
     graph::Node,
     random_tables::{TABLE, float_table, uniform_table},

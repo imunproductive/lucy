@@ -6,8 +6,8 @@
 
 use std::{collections::HashMap, io, sync::Arc};
 
-use orpheus_lobby::accounts::Account;
-use orpheus_wire::jam::codec::Fields;
+use lucy_lobby::accounts::Account;
+use lucy_wire::jam::codec::Fields;
 
 use super::{Lobby, peer::Peer};
 

@@ -1,5 +1,5 @@
 [package]
-name = "orpheus-script"
+name = "lucy-script"
 description = "The statescript VM and its replication for retail build 104319"
 version.workspace = true
 edition.workspace = true
@@ -8,17 +8,17 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
-orpheus-fixed.workspace = true
+lucy-fixed.workspace = true
 flate2.workspace = true
 indexmap.workspace = true
-orpheus-content.workspace = true
-orpheus-core.workspace = true
-orpheus-physics.workspace = true
-orpheus-wire.workspace = true
+lucy-content.workspace = true
+lucy-core.workspace = true
+lucy-physics.workspace = true
+lucy-wire.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
 tracing.workspace = true
 
 [dev-dependencies]
-orpheus-testkit.workspace = true
+lucy-testkit.workspace = true
 sha2.workspace = true

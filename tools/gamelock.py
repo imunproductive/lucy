@@ -4,9 +4,9 @@
     python tools/gamelock.py release <name>
     python tools/gamelock.py status
 
-The lock is the folder `D:/Temp/orpheus-game.lock` (the convention agents use) with
+The lock is the folder `D:/Temp/lucy-game.lock` (the convention agents use) with
 `owner.txt` inside: the holder's name and when it took the lock. Waiters queue in
-`D:/Temp/orpheus-game.queue/` (one file each, named by arrival time), so the lock goes
+`D:/Temp/lucy-game.queue/` (one file each, named by arrival time), so the lock goes
 to whoever asked first instead of whoever retries at the right moment.
 
 A lock held longer than `--stale` minutes (default 25) while no Overwatch process
@@ -22,7 +22,7 @@ import sys
 import time
 from pathlib import Path
 
-LOCK = Path(os.environ.get("ORPHEUS_GAME_LOCK", "D:/Temp/orpheus-game.lock"))
+LOCK = Path(os.environ.get("LUCY_GAME_LOCK", "D:/Temp/lucy-game.lock"))
 QUEUE = LOCK.with_name(LOCK.name.replace(".lock", ".queue"))
 OWNER = LOCK / "owner.txt"
 

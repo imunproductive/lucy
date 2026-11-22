@@ -2,7 +2,7 @@
 
 use std::io::Read;
 
-use orpheus_assets::{DERIVATIONS, Install, Output, first_difference};
+use lucy_assets::{DERIVATIONS, Install, Output, first_difference};
 use serde_json::Value;
 
 /// Graphs the derivation adds to the pack's bundles (hero and bot): the initial graphs
@@ -16,7 +16,7 @@ const SPAWNED_GRAPHS: &[u64] = &[
 ];
 
 fn derived(path: &str) -> Output {
-    let install = Install::open(&orpheus_testkit::game_dir(), "enUS").unwrap();
+    let install = Install::open(&lucy_testkit::game_dir(), "enUS").unwrap();
     let graphs = DERIVATIONS
         .iter()
         .find(|derivation| derivation.name == "graphs")
@@ -24,7 +24,7 @@ fn derived(path: &str) -> Output {
     // The derivation reads other derivations' outputs (the placed entities
     // of `game_map_areas_174.json`, since 5866ba3, which no pack has), so it
     // runs over the derived cache, not the pack.
-    (graphs.derive)(&install, &orpheus_testkit::runtime_dir())
+    (graphs.derive)(&install, &lucy_testkit::runtime_dir())
         .unwrap()
         .into_iter()
         .find(|output| output.path == path)
@@ -88,7 +88,7 @@ fn keeps_the_pack(path: &str, equal: &[&str]) -> std::collections::BTreeMap<u64,
             entity.as_object_mut().unwrap().remove("target_tags");
         }
     }
-    let pack = json(&std::fs::read(orpheus_testkit::oracle_pack().join(path)).unwrap());
+    let pack = json(&std::fs::read(lucy_testkit::oracle_pack().join(path)).unwrap());
     let by_index = |bundle: &Value| -> std::collections::BTreeMap<u64, Value> {
         bundle["graphs"]
             .as_array()

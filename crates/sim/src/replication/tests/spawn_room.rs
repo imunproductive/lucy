@@ -15,9 +15,9 @@ use crate::messages::{HeldReach, Players, deliver_held};
 use crate::mode_script::ModeRunner;
 use crate::scene::{MOVING_KINDS, filter_component};
 use crate::scene_assets::{FellOut, install_collision_build};
-use orpheus_content::{maps::SpawnChoice, stats::PlayerStats};
-use orpheus_script::vm::{GameMessage, MessageEnd};
-use orpheus_wire::combat_messages::CombatNotice;
+use lucy_content::{maps::SpawnChoice, stats::PlayerStats};
+use lucy_script::vm::{GameMessage, MessageEnd};
+use lucy_wire::combat_messages::CombatNotice;
 
 const OWNER: u32 = 0xa000_0100;
 /// The Range's spawn room, the placeable `0D62` runs on.
@@ -26,8 +26,8 @@ const ROOM: u32 = 0x8000_007e;
 const IN_ROOM: u64 = 0x0240_0000_0000_0723;
 
 fn scene() -> PreparedScene {
-    let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
-    assets.set_player_unknowns(orpheus_script::vm::Unknowns::Tolerate);
+    let mut assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
+    assets.set_player_unknowns(lucy_script::vm::Unknowns::Tolerate);
     assets.prepare(GameMap::practice_range()).unwrap()
 }
 
@@ -125,8 +125,8 @@ fn charge(world: &WorldDelivery) -> f64 {
     snapshot
         .unwrap()
         .variables
-        .get(&orpheus_script::ultimate::ULT_CHARGE)
-        .map_or(0.0, orpheus_script::expr::to_float)
+        .get(&lucy_script::ultimate::ULT_CHARGE)
+        .map_or(0.0, lucy_script::expr::to_float)
 }
 
 /// A direct grant (`00EB.025`, `002A` the amount), which the body's `0B8B`
@@ -158,7 +158,7 @@ fn hit(body: u32, amount: f64) -> PlayerHit {
         frame: FIRST_TICK,
         world_tick: None,
         heal: false,
-        tags: orpheus_script::weapons::DamageTags::NONE,
+        tags: lucy_script::weapons::DamageTags::NONE,
         direction: None,
         environment: false,
         from: None,
@@ -184,7 +184,7 @@ fn flags(world: &WorldDelivery) -> Vec<bool> {
             };
             assert_eq!(component.index, 74);
             assert!(component.fields[..6].iter().all(Option::is_none));
-            component.fields[6] == Some(orpheus_wire::entity::ComponentValue::U8(1))
+            component.fields[6] == Some(lucy_wire::entity::ComponentValue::U8(1))
         })
         .collect()
 }
@@ -203,8 +203,7 @@ fn shields(world: &WorldDelivery) -> Vec<bool> {
             };
             assert_eq!(record.update.entity, body);
             assert_eq!(components.len(), 1);
-            let Some(orpheus_wire::entity::ComponentValue::Id(bits)) = &components[0].fields[0]
-            else {
+            let Some(lucy_wire::entity::ComponentValue::Id(bits)) = &components[0].fields[0] else {
                 panic!("component 26's word");
             };
             assert_eq!(components[0].index, 26);
@@ -409,7 +408,7 @@ fn lift(
     viewer: &PlayerAppearance<'_>,
     tick: &mut u32,
 ) -> f64 {
-    let ballistics = orpheus_script::weapons::ProjectileBallistics {
+    let ballistics = lucy_script::weapons::ProjectileBallistics {
         speed: 50.0,
         lifetime: 2.0,
         definition: None,
@@ -456,7 +455,7 @@ fn rise(
         *tick += 1;
         world.queue_commands(
             *tick,
-            &[orpheus_wire::commands::Command {
+            &[lucy_wire::commands::Command {
                 frame: *tick,
                 ..Default::default()
             }],
@@ -485,7 +484,7 @@ fn blasted(
     tick: &mut u32,
 ) -> f64 {
     use crate::combat::apply_player_pushes;
-    use orpheus_script::weapons::{
+    use lucy_script::weapons::{
         AllyHits, Blast, DamageTags, HitDefinition, Knockback, ProjectileBallistics,
     };
     let hit = |amount| HitDefinition {
@@ -880,11 +879,11 @@ fn a_fall_after_an_enemys_knock_is_the_enemys_kill() {
 #[ignore = "requires a derived 104319 pack and the install (Gibraltar's collision)"]
 fn a_fall_off_gibraltar_dies_in_its_kill_volume() {
     const GIBRALTAR: u64 = 0x0800_0000_0000_0184;
-    let runtime = orpheus_testkit::runtime_dir();
+    let runtime = lucy_testkit::runtime_dir();
     let assets = SceneAssets::load(&runtime)
         .unwrap()
-        .with_collision_build(install_collision_build(orpheus_testkit::game_dir()));
-    let map = orpheus_content::maps::MapCatalog::load(runtime.join("data"))
+        .with_collision_build(install_collision_build(lucy_testkit::game_dir()));
+    let map = lucy_content::maps::MapCatalog::load(runtime.join("data"))
         .unwrap()
         .game_map(
             GIBRALTAR,
@@ -930,11 +929,11 @@ fn gibraltars_team_walls_stand_while_their_scripts_run_state_3() {
     const WALL_MESSAGE: u64 = 0x0240_0000_0000_0845;
     const WALL_GRAPH: u32 = 0x0FA8;
     const WALL_TEAM: u32 = 1777;
-    let runtime = orpheus_testkit::runtime_dir();
+    let runtime = lucy_testkit::runtime_dir();
     let assets = SceneAssets::load(&runtime)
         .unwrap()
-        .with_collision_build(install_collision_build(orpheus_testkit::game_dir()));
-    let map = orpheus_content::maps::MapCatalog::load(runtime.join("data"))
+        .with_collision_build(install_collision_build(lucy_testkit::game_dir()));
+    let map = lucy_content::maps::MapCatalog::load(runtime.join("data"))
         .unwrap()
         .game_map(
             GIBRALTAR,
@@ -1007,7 +1006,7 @@ fn gibraltars_team_walls_stand_while_their_scripts_run_state_3() {
         let (_, placed) = scene.message_recipients(tick);
         for &entity in &walls {
             placed.receive_message(&GameMessage {
-                sender: orpheus_wire::entity::GAME_MODE_ENTITY,
+                sender: lucy_wire::entity::GAME_MODE_ENTITY,
                 target: entity,
                 message: WALL_MESSAGE,
                 parameters: Variables::new(),
@@ -1103,7 +1102,7 @@ fn the_server_placeables_follow_the_player_and_the_mode() {
     let scene = scene();
     let card = PlayerCard::default();
     let updates = scene.initial_world(&viewer(&card)).unwrap();
-    let creates: Vec<(u32, &Vec<orpheus_wire::entity::Component>)> = updates
+    let creates: Vec<(u32, &Vec<lucy_wire::entity::Component>)> = updates
         .iter()
         .filter_map(|update| match &update.operation {
             Some(Operation::Placeable(_, components)) => {
@@ -1145,11 +1144,11 @@ fn the_server_placeables_follow_the_player_and_the_mode() {
 fn rialto_and_volskaya_get_their_server_placeables() {
     const RIALTO: u64 = 0x0800_0000_0000_0871;
     const VOLSKAYA: u64 = 0x0800_0000_0000_01DB;
-    let runtime = orpheus_testkit::runtime_dir();
+    let runtime = lucy_testkit::runtime_dir();
     let assets = SceneAssets::load(&runtime)
         .unwrap()
-        .with_collision_build(install_collision_build(orpheus_testkit::game_dir()));
-    let catalog = orpheus_content::maps::MapCatalog::load(runtime.join("data")).unwrap();
+        .with_collision_build(install_collision_build(lucy_testkit::game_dir()));
+    let catalog = lucy_content::maps::MapCatalog::load(runtime.join("data")).unwrap();
     let card = PlayerCard::default();
     for (map, mode, name, server) in [
         (RIALTO, crate::match_flow::ESCORT, "Escort", 224),

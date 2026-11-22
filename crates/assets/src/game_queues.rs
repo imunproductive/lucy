@@ -8,7 +8,7 @@
 //! free-for-all), the role slots, the maps and the largest party. The client
 //! ships only 4 of the 43 catalogs the cards name. For the other cards the
 //! maps come from the retail capture (message 36300 of
-//! [`orpheus_fixed::RETAIL_TEMPLATES`] lists each competitive card with its
+//! [`lucy_fixed::RETAIL_TEMPLATES`] lists each competitive card with its
 //! maps), or else from the map headers that support the card's modes,
 //! narrowed to the maps its Arcade tags name. `maps_source` says which.
 
@@ -18,7 +18,7 @@ use std::{
     path::Path,
 };
 
-use orpheus_stu::{Asset, Object, Types, Value};
+use lucy_stu::{Asset, Object, Types, Value};
 use serde_json::{Map, Value as Json, json};
 
 use crate::{Install, Output, Result, asset_error};
@@ -182,10 +182,7 @@ impl<'a> Node<'a> {
 /// A GUID as the 64-bit key the game sends, as `0x` and sixteen hex digits:
 /// its index and type, as DataTool names it.
 pub(crate) fn key(guid: u64) -> String {
-    format!(
-        "0x{:016X}",
-        typed(guid & INDEX, orpheus_casc::guid_type(guid))
-    )
+    format!("0x{:016X}", typed(guid & INDEX, lucy_casc::guid_type(guid)))
 }
 
 /// The GUID of an index as an asset type: the type minus one, bits
@@ -442,7 +439,7 @@ impl<'a> Queues<'a> {
     /// lists the competitive cards (`+0x98`), each with its card (`+0x18`)
     /// and maps (`+0xD8`).
     fn captured(&self) -> Result<HashMap<u64, Vec<u64>>> {
-        let templates: Json = serde_json::from_str(orpheus_fixed::RETAIL_TEMPLATES)
+        let templates: Json = serde_json::from_str(lucy_fixed::RETAIL_TEMPLATES)
             .map_err(|error| asset_error(format!("retail templates: {error}")))?;
         let ranked = templates["server"]
             .as_array()
@@ -517,7 +514,7 @@ impl<'a> Queues<'a> {
         let title = self
             .titles
             .get(&(display & INDEX))
-            .filter(|_| display != 0 && orpheus_casc::guid_type(display) == 0x0D9)
+            .filter(|_| display != 0 && lucy_casc::guid_type(display) == 0x0D9)
             .and_then(|asset| Node::root(asset).ok())
             .and_then(|title| self.text(title.guid("m_name")))
             .filter(|title| !title.is_empty());

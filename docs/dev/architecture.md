@@ -1,14 +1,14 @@
 # Architecture
 
-ORPHEUS is one Cargo workspace. It builds one program, `orpheus.exe`, and one DLL, `owwfd_relay.dll`. The server supports only the client build 1.74.0.0.104319.
+Lucy is one Cargo workspace. It builds one program, `lucy.exe`, and one DLL, `owwfd_relay.dll`. The server supports only the client build 1.74.0.0.104319.
 
 ## Layout
 
 ```
-ORPHEUS/
+Lucy/
 ├─ Cargo.toml          workspace only
 ├─ crates/             the libraries (below)
-├─ apps/orpheus/       the orpheus program: command line, doctor, modes
+├─ apps/lucy/       the lucy program: command line, doctor, modes
 ├─ web/dashboard/      dashboard front end (JavaScript), embedded into the binary
 ├─ web/tests/          the dashboard JavaScript test
 ├─ research/ida/       the IDA script that extracted the statescript codecs
@@ -17,12 +17,12 @@ ORPHEUS/
 ├─ docs/dev/           for developers
 ├─ docs/notes/         research notes: protocol, behavior, references
 ├─ justfile            the developer recipes
-└─ START.cmd           builds, then runs orpheus
+└─ START.cmd           builds, then runs lucy
 ```
 
 ## Crates
 
-Each package is named `orpheus-<folder>`.
+Each package is named `lucy-<folder>`.
 
 | Crate | Responsibility |
 | --- | --- |
@@ -42,7 +42,7 @@ Each package is named `orpheus-<folder>`.
 | `launcher` | Windows: finds, checks, starts and injects the client |
 | `relay` | Windows `cdylib`, `owwfd_relay.dll`: pipes the client's Battle.net stream to the local server |
 | `testkit` | Test support: finds the game for ignored tests, builds synthetic storages |
-| `apps/orpheus` | The `orpheus` program |
+| `apps/lucy` | The `lucy` program |
 
 ### Dependency rules
 
@@ -50,7 +50,7 @@ An arrow means "depends on". Only these edges exist (normal dependencies, from t
 
 ```mermaid
 graph TD
-  app[apps/orpheus] --> server
+  app[apps/lucy] --> server
   app --> launcher
   app --> assets
   app --> lobby
@@ -84,7 +84,7 @@ Most crates also use `core` and `fixed` directly; the graph leaves out those edg
 - `assets` produces files, not types. It does not depend on `content`, `script` or `physics`; the server's loaders read the files it writes.
 - `testkit` is only a dev-dependency.
 - Only `launcher`, `relay` and `probe` (the client probe DLL, `docs/dev/client-tools.md`) use `unsafe`. Every other crate, the app included, has `#![forbid(unsafe_code)]`. In those three, every `unsafe` block states why it is sound, and `unsafe_op_in_unsafe_fn` is denied.
-- Library crates return typed errors or `io::Error`. `apps/orpheus` reports them and sets the exit code.
+- Library crates return typed errors or `io::Error`. `apps/lucy` reports them and sets the exit code.
 
 When you add a dependency between crates, keep it in the direction of the graph. Cargo refuses cycles.
 
@@ -101,7 +101,7 @@ flowchart LR
   state[(state folder)] <--> server
 ```
 
-1. **Install.** The user names the game with `--game`, `ORPHEUS_GAME` or `game` in `config.toml`. The launcher reads `.build.info` and refuses any build other than 104319.
+1. **Install.** The user names the game with `--game`, `LUCY_GAME` or `game` in `config.toml`. The launcher reads `.build.info` and refuses any build other than 104319.
 2. **casc.** Reads the build config, the local indices and `data.NNN` archives, the encoding table and the 104319 manifest. It decodes BLTE blocks, including Salsa20-encrypted blocks. One key the install's keyring lacks comes from TACTLib's static keyring.
 3. **stu.** Decodes STUv2 assets (graphs, entity definitions, game modes and more) with the type table in `crates/stu/data/types.txt`.
 4. **assets.** Runs the derivations in dependency order (`DERIVATIONS`). Each writes one file in the format of the old prepared runtime pack. Collision for a map other than the Practice Range is built when a match on that map first starts.
@@ -113,7 +113,7 @@ flowchart LR
 
 ## The server
 
-`orpheus_server::server::Server::start` starts these services. Each has its own threads; there is no async runtime.
+`lucy_server::server::Server::start` starts these services. Each has its own threads; there is no async runtime.
 
 | Service | Transport | Default port |
 | --- | --- | --- |
@@ -159,17 +159,17 @@ So a debug build can stop a hero that a release build plays. Use a release build
 
 The dashboard backend is in `server` and serves the files of `web/dashboard`, which are embedded into the binary. It shows the server state and the saved profiles and can change them. It can also start a second game for another account.
 
-With `ORPHEUS_DEBUG_SEND=1` it also has the debug routes (`server/dashboard/debug.rs`, [troubleshooting](../user/troubleshooting.md#marker-messages)). The marker message routes encode a message with the schema encoder and send it on the normal paths: a game link message goes to the game service as a request (`GameService::debug_send`), which queues it on the seat's reliable channel like the server's own messages; a lobby message is posted to the account's session through the hub. `POST /api/debug/kill` asks the game service to kill an account's hero through the normal death path (`Combat::environment_kill`); the client tools' `die` action uses it.
+With `LUCY_DEBUG_SEND=1` it also has the debug routes (`server/dashboard/debug.rs`, [troubleshooting](../user/troubleshooting.md#marker-messages)). The marker message routes encode a message with the schema encoder and send it on the normal paths: a game link message goes to the game service as a request (`GameService::debug_send`), which queues it on the seat's reliable channel like the server's own messages; a lobby message is posted to the account's session through the hub. `POST /api/debug/kill` asks the game service to kill an account's hero through the normal death path (`Combat::environment_kill`); the client tools' `die` action uses it.
 
 ## The program
 
-`apps/orpheus` reads the command line with `clap`, resolves the settings, starts logging and runs a mode. Settings come from, in this order: the command-line flag, the `ORPHEUS_*` environment variable, `config.toml`, the default. See the [commands reference](../user/commands.md) and [configuration](../user/configuration.md).
+`apps/lucy` reads the command line with `clap`, resolves the settings, starts logging and runs a mode. Settings come from, in this order: the command-line flag, the `LUCY_*` environment variable, `config.toml`, the default. See the [commands reference](../user/commands.md) and [configuration](../user/configuration.md).
 
-`play` and `host` start the server, then the launcher starts the game with `--BNetServer` and `--tank_Locale`, and injects the relay. The relay must be the `owwfd_relay.dll` next to `orpheus.exe`, so the DLL always comes from the same build. The launcher tells the relay its log file and the RPC port through environment variables.
+`play` and `host` start the server, then the launcher starts the game with `--BNetServer` and `--tank_Locale`, and injects the relay. The relay must be the `owwfd_relay.dll` next to `lucy.exe`, so the DLL always comes from the same build. The launcher tells the relay its log file and the RPC port through environment variables.
 
 ## State folder
 
-The state folder is `%APPDATA%\orpheus` on Windows (from the `directories` crate). `--state` or `ORPHEUS_STATE_DIR` chooses another folder. Nothing is written into the checkout.
+The state folder is `%APPDATA%\lucy` on Windows (from the `directories` crate). `--state` or `LUCY_STATE_DIR` chooses another folder. Nothing is written into the checkout.
 
 | Path | Content |
 | --- | --- |
@@ -179,7 +179,7 @@ The state folder is `%APPDATA%\orpheus` on Windows (from the `directories` crate
 | `default_account.txt` | The account the local game logs in as |
 | `game_path.txt` | The game picked in the file dialog |
 | `public_address.txt`, `server_address.txt`, `player_name.txt` | Answers the modes remember |
-| `logs/orpheus.log` | Server log, 2 MB, with two older files |
+| `logs/lucy.log` | Server log, 2 MB, with two older files |
 | `logs/game.log`, `logs/relay.log` | Game output and the relay log |
 | `cache/104319/` | Data derived from the install |
 

@@ -9,7 +9,7 @@ use crate::{
         COMMON, EPIC, HALLOWEEN, HERO, ICON, LEGENDARY, RARE, SPRAY, collection, economy,
     },
 };
-use orpheus_wire::jam::codec::Schemas;
+use lucy_wire::jam::codec::Schemas;
 
 /// Rolls given in advance: `unit` for Python's `random.random()`, `picks`
 /// for `random.choice` and the shuffle's `randbelow`.
@@ -277,7 +277,7 @@ fn the_box_messages_match_python() {
 #[test]
 #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn the_installs_credits_are_pythons() {
-    let economy = Economy::load(&orpheus_testkit::runtime_dir().join("data")).unwrap();
+    let economy = Economy::load(&lucy_testkit::runtime_dir().join("data")).unwrap();
     let duplicates =
         ["Common", "Rare", "Epic", "Legendary"].map(|rarity| economy.duplicate_credits(rarity));
     assert_eq!(duplicates, [5, 15, 50, 200]);

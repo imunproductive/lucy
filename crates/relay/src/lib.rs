@@ -36,7 +36,7 @@ pub const MAX_RELAYS: usize = 64;
 /// The server's default Battle.net RPC port, which takes the plaintext.
 pub const RELAY_PORT: u16 = 21119;
 /// The launcher passes the server's RPC port in this variable.
-pub const PORT_VARIABLE: &str = "ORPHEUS_RELAY_PORT";
+pub const PORT_VARIABLE: &str = "LUCY_RELAY_PORT";
 
 /// The RPC port from the launcher's variable, or the default.
 pub fn relay_port(value: Option<&str>) -> u16 {

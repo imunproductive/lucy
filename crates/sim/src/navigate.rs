@@ -20,7 +20,7 @@
 
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 
-use orpheus_physics::{
+use lucy_physics::{
     ai_cells::WalkSearch,
     contact::body::CharacterBody,
     mover::ground::standing_origin,

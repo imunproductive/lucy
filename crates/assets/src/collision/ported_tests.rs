@@ -1,11 +1,11 @@
 //! The collision chunk's format and the cache, on hand-made chunks, ported
 //! from `tests/test_game_mover.py::ChunkTests` (`parse_chunk`, `pack` and
 //! `World.load` in `ow174/game/collision.py`). The cache is read back with
-//! the server's reader, `orpheus_physics`.
+//! the server's reader, `lucy_physics`.
 
 use std::collections::{BTreeSet, HashMap};
 
-use orpheus_physics::{
+use lucy_physics::{
     collision::{
         cache::{self, CacheError, RayCacheIdentity, read_movement_cache, read_ray_cache},
         scene::CollisionScene,

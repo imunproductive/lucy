@@ -3,8 +3,8 @@
     python tools/stu.py <class key | address | name> [--depth N] [--json] [--no-code] [--no-idb]
                         [--shared] [--no-where-used] [--max-lines N] [--slots differ|all]
 
-key: CD7F3617, STU_CD7F3617, an OWLib class name, an ORPHEUS alias (crates/fixed/data/statescript_names.json,
-e.g. HeroSelect); an address (0x7FF789B983D0 ORPHEUS VA, 0x140C883D0 IDB VA,
+key: CD7F3617, STU_CD7F3617, an OWLib class name, a Lucy alias (crates/fixed/data/statescript_names.json,
+e.g. HeroSelect); an address (0x7FF789B983D0 Lucy VA, 0x140C883D0 IDB VA,
 0xC883D0 RVA) of a slot function or class object (descriptor, typeinfo, vtable, record); or an index name
 (Eval_STU_CD7F3617, Read_STU_9935FBC8). An address resolves to the class owning the function.
 
@@ -22,8 +22,8 @@ research/out/ida_game/ow_game.exe (the dump with restored code and Rose deobfusc
 class's fields; direct callees to --depth with index names and the classes of callees that are slot
 functions; string literals. Functions shared with unrelated classes (base implementations) are listed but
 not decompiled unless --shared; tiny bodies are shown as one line. Then where the class is used in the
-game data (ORPHEUS `script query class`, temp copy of the ORPHEUS state folder).
-Addresses: `rva` plus the ORPHEUS VA (0x7FF788F10000 + rva).
+game data (Lucy `script query class`, temp copy of the Lucy state folder).
+Addresses: `rva` plus the Lucy VA (0x7FF788F10000 + rva).
 """
 import argparse
 import json
@@ -52,9 +52,9 @@ STATE_SLOT_ROLES = {
     24: ("end", "inference: 0x7FF78AA80E20, the deactivation, calls +0xC0 (edx=7), then clears +0x40 flags"),
     25: ("update", "inference: 0x7FF78AA854D0, run from the state's update list at +0xE0, calls +0xC8"),
     28: ("after_begin", "inference: 0x7FF78AA80FA0 calls +0xE0 once right after begin (flag 0x8000)"),
-    42: ("writer", "ORPHEUS (+0x150)"),
-    43: ("reader", "ORPHEUS (+0x158; read in 0x7FF78AA82060)"),
-    45: ("block", "ORPHEUS (+0x168)"),
+    42: ("writer", "Lucy (+0x150)"),
+    43: ("reader", "Lucy (+0x158; read in 0x7FF78AA82060)"),
+    45: ("block", "Lucy (+0x168)"),
 }
 HANDLER_SLOT_ROLES = {  # tools/owindex/registry.py SLOTS (established)
     "config": {1: "type_tag", 4: "evaluate"},
@@ -129,10 +129,10 @@ class Dossier:
         d["component"] = self.component(st["hash"])
         d["class"]["alias"] = cls.alias(h)
         d["functions"] = self.functions(h, regs, eff if inherited else None, info, d["vtables"])
-        from tools.studossier import orpheus
-        d["net_codec"] = orpheus.codec(st["hash"]) if is_state else None
+        from tools.studossier import lucy
+        d["net_codec"] = lucy.codec(st["hash"]) if is_state else None
         if not self.args.no_where_used:
-            d["where_used"] = orpheus.where_used(st["hash"])
+            d["where_used"] = lucy.where_used(st["hash"])
         return d
 
     # ------------------------------------------------------------------ runtime vtables
@@ -381,7 +381,7 @@ def render(d, out):
         p("%s -> %s of %s%s" % (d["query"], ", ".join(r["roles"]), c["label"],
                                 ("  [%s]" % r["note"]) if r.get("note") else ""))
     p("STU_%s%s  size %#x" % (c["hash"], "  (OWLib label: %s)" % c["owlib_label"] if c["owlib_label"] else "",
-                              c["size"] or 0) + ("  ORPHEUS alias: %s" % c["alias"] if c.get("alias") else ""))
+                              c["size"] or 0) + ("  Lucy alias: %s" % c["alias"] if c.get("alias") else ""))
     comp = d.get("component")
     if comp:
         p("  entity component %d%s%s%s%s" % (
@@ -447,7 +447,7 @@ def render(d, out):
                 p("    * %s: %s" % (s["role"], s["evidence"]))
     nc = d.get("net_codec")
     if nc:
-        p("  network codec (ORPHEUS statescript_codecs.json): %s, %s; layout %s" % (
+        p("  network codec (Lucy statescript_codecs.json): %s, %s; layout %s" % (
             nc.get("codec"), nc.get("status"), " ".join(
                 "%s%s" % (op.get("op"), ":" + str(op.get("f")) if op.get("f") else "") for op in nc.get("layout", []))))
         if nc.get("evidence"):
@@ -494,7 +494,7 @@ def render(d, out):
     wu = d.get("where_used")
     if wu is not None:
         p("")
-        p("where used in the game data (orpheus script query class %s):" % c["hash"])
+        p("where used in the game data (lucy script query class %s):" % c["hash"])
         if wu.get("error"):
             p("  " + wu["error"])
         else:
@@ -526,7 +526,7 @@ def main(argv=None):
     ap.add_argument("--no-idb", action="store_true", help="capstone only, do not open the game IDB")
     ap.add_argument("--idb-timeout", type=float, default=0.0, help="seconds to wait for the IDB lock")
     ap.add_argument("--shared", action="store_true", help="also show code of shared/inherited functions")
-    ap.add_argument("--no-where-used", action="store_true", help="skip the ORPHEUS game-data query")
+    ap.add_argument("--no-where-used", action="store_true", help="skip the Lucy game-data query")
     ap.add_argument("--max-lines", type=int, default=400, help="disassembly lines per function")
     ap.add_argument("--slots", choices=("differ", "all"), default="differ",
                     help="runtime vtable slots whose code is shown: those differing from the base registration's "

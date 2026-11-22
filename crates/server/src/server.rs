@@ -18,13 +18,13 @@ use crate::{
     platform::{LocalGames, Platform},
     server::dashboard::{Dashboard, DashboardParts},
 };
-use orpheus_bnet::{
+use lucy_bnet::{
     protocol::Protocol,
     rpc::Player,
     service::{self, BnetService},
 };
-use orpheus_content::catalog::ItemDb;
-use orpheus_lobby::{
+use lucy_content::catalog::ItemDb;
+use lucy_lobby::{
     accounts::{Account, Accounts, load_or_create_profile},
     arcade::Arcade,
     celebrations::Celebrations,
@@ -37,8 +37,8 @@ use orpheus_lobby::{
     templates::RetailTemplates,
     xp_table::XpTable,
 };
-use orpheus_sim::scene_assets::SceneAssets;
-use orpheus_wire::jam::codec::Schemas;
+use lucy_sim::scene_assets::SceneAssets;
+use lucy_wire::jam::codec::Schemas;
 
 pub struct ServerConfig {
     pub runtime: PathBuf,
@@ -73,8 +73,8 @@ pub struct ServerConfig {
     /// `ow174/lobby/settings.py`).
     pub test_players: usize,
     /// AI heroes of this level fill the missing players of a match that
-    /// `test_players` starts (`--test-ai`; Practice vs AI, `orpheus_sim::ai`).
-    pub test_ai: Option<orpheus_sim::ai::Difficulty>,
+    /// `test_players` starts (`--test-ai`; Practice vs AI, `lucy_sim::ai`).
+    pub test_ai: Option<lucy_sim::ai::Difficulty>,
     /// The template profile for new accounts (`--save`); `profile.json` in
     /// the state folder when unset.
     pub template: Option<PathBuf>,
@@ -162,7 +162,7 @@ impl Server {
             ));
         }
         let data = config.runtime.join("data");
-        let signing_key = *orpheus_fixed::LOBBY_STATE_BLOB_KEY;
+        let signing_key = *lucy_fixed::LOBBY_STATE_BLOB_KEY;
         let schemas = Schemas::lobby();
         let game_schemas = Arc::new(Schemas::game());
         let templates = RetailTemplates::captured();
@@ -304,7 +304,7 @@ impl Server {
             .transpose()?;
         let (stop_lobby, shutdown) = mpsc::channel();
         let lobby = thread::Builder::new()
-            .name("orpheus-lobby".into())
+            .name("lucy-lobby".into())
             .spawn(move || serve(listener, shared, shutdown))?;
         Ok(Self {
             lobby_addr,
@@ -475,7 +475,7 @@ mod tests {
         time::Duration,
     };
 
-    use orpheus_lobby::{
+    use lucy_lobby::{
         battle_tag_query,
         collection::{HERO_CATALOG, PROGRESSION},
         handoff::GAME_REQUEST,
@@ -483,7 +483,7 @@ mod tests {
         player_messages as player,
         templates::IN_CONNECT,
     };
-    use orpheus_wire::{
+    use lucy_wire::{
         jam::codec::{Fields, Value},
         jam::framing::{self, FrameReader},
         jam::handshake::client_handshake,
@@ -548,21 +548,21 @@ mod tests {
     #[ignore = "serial: asserts the server stops within 3 s, which other tests' load stretches; requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn serial_native_server_logs_in_saved_profile_and_loads_practice_over_udp() {
         use crate::server::{Server, ServerConfig};
-        use orpheus_content::{heroes::SOLDIER, maps::PRACTICE_RANGE_MAP};
-        use orpheus_core::bits::BitReader;
-        use orpheus_lobby::{
+        use lucy_content::{heroes::SOLDIER, maps::PRACTICE_RANGE_MAP};
+        use lucy_core::bits::BitReader;
+        use lucy_lobby::{
             accounts::load_or_create_profile,
             gallery::{EQUIP, EQUIPPED, GALLERY_OUT},
             handoff::CREATE_GAME,
             handoff::{HANDOFF, HANDOFF_MESSAGE},
         };
-        use orpheus_wire::{
+        use lucy_wire::{
             link::{ACK, KIND_FRAME, LinkCipher, MAX_DATAGRAM, Packet, SYN},
             messages::read_channel,
         };
         use std::{fs, net::UdpSocket, time::Instant};
 
-        let runtime = orpheus_testkit::runtime_dir();
+        let runtime = lucy_testkit::runtime_dir();
         let state = tempfile::tempdir().unwrap();
         let mut config = ServerConfig::new(runtime.clone(), state.path().into());
         config.lobby_port = 0;
@@ -803,7 +803,7 @@ mod tests {
     #[test]
     #[ignore = "requires a derived 104319 runtime"]
     fn lobby_services_answer_the_game_and_dashboard_edits_reach_it() {
-        use orpheus_lobby::{
+        use lucy_lobby::{
             accounts::load_or_create_profile,
             leaderboard::{LEADERBOARD_OUT, PAGE_REQUEST, PROFILES},
             lookups::{
@@ -823,7 +823,7 @@ mod tests {
             test_client::{Client, run},
         };
 
-        let runtime = orpheus_testkit::runtime_dir();
+        let runtime = lucy_testkit::runtime_dir();
         let state = tempfile::tempdir().unwrap();
         let mut config = ServerConfig::new(runtime.clone(), state.path().into());
         config.lobby_port = 0;

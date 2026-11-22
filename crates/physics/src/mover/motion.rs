@@ -225,7 +225,7 @@ mod tests {
         contact::world::{ContactWorld, StaticGeometry, StaticShape},
         mover::settings::MoverSettings,
     };
-    use orpheus_wire::commands::Command;
+    use lucy_wire::commands::Command;
 
     const DT: f64 = 0.016;
 

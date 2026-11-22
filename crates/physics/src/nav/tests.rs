@@ -359,7 +359,7 @@ const ANUBIS: u64 = 0x0800_0000_0000_005B;
 const PRACTICE_RANGE: u64 = 0x0800_0000_0000_0688;
 
 fn derived(map: u64) -> Navigation {
-    Navigation::load(file(&orpheus_testkit::runtime_dir(), map)).unwrap()
+    Navigation::load(file(&lucy_testkit::runtime_dir(), map)).unwrap()
 }
 
 /// The counts in `docs/notes/ow1-preservation.md` ("Navigation data").
@@ -404,7 +404,7 @@ fn anubis_and_practice_range_graphs_match_the_notes() {
 #[test]
 #[ignore = "requires derived 104319 navigation and maps"]
 fn anubis_attackers_walk_to_both_points() {
-    let runtime = orpheus_testkit::runtime_dir();
+    let runtime = lucy_testkit::runtime_dir();
     let maps: Value =
         serde_json::from_slice(&std::fs::read(runtime.join("data/game_maps_174.json")).unwrap())
             .unwrap();

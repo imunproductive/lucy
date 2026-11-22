@@ -18,7 +18,7 @@
 //! 0.2 m for Helix Rockets) and surfaces as a point; the reference swept
 //! points. An explosion also hurts and pushes its own shooter
 //! ([`ProjectileFlight::own_blast`]). A projectile with a bounce block
-//! (`orpheus_script::weapons::Bounce`: Moira's Biotic Orbs, Junkrat's
+//! (`lucy_script::weapons::Bounce`: Moira's Biotic Orbs, Junkrat's
 //! grenades) bounces off the map's surfaces as the client's does: its
 //! velocity's part into the surface turns back, scaled by the
 //! restitution, and it flies the rest of the tick from 1 mm off the
@@ -27,9 +27,9 @@
 //! bounce off a body isn't modelled: a body ends it, as before.
 
 use crate::hitscan::{Impact, TargetPose};
-use orpheus_core::tick::TICK_PERIOD;
-use orpheus_physics::{collision::index::IndexError, static_ray::Vec3};
-use orpheus_script::{
+use lucy_core::tick::TICK_PERIOD;
+use lucy_physics::{collision::index::IndexError, static_ray::Vec3};
+use lucy_script::{
     vm::CombatMod,
     weapons::{DamageTags, HitDefinition, ProjectileBallistics},
 };
@@ -544,7 +544,7 @@ impl ProjectileFlight {
     }
 
     /// The aura its explosion puts on a body at `pose` (Biotic Grenade's
-    /// [`orpheus_script::weapons::Blast::aura`]), once it exploded: when the
+    /// [`lucy_script::weapons::Blast::aura`]), once it exploded: when the
     /// body is within its rings.
     pub fn blast_aura(&self, pose: &TargetPose) -> Option<u64> {
         let blast = self.ballistics.blast.as_ref().filter(|_| self.exploded)?;
@@ -637,8 +637,8 @@ fn pose_of(targets: &[(u32, TargetPose)], entity: u32) -> Option<&TargetPose> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orpheus_physics::collision::index::{SceneTriangle, TriangleIndex};
-    use orpheus_script::weapons::{
+    use lucy_physics::collision::index::{SceneTriangle, TriangleIndex};
+    use lucy_script::weapons::{
         AllyHits, Blast, DamageFalloff, DamageTags, HitDefinition, Knockback, STICK_FUSE,
     };
 
@@ -914,7 +914,7 @@ mod tests {
     /// ends at the wall.
     #[test]
     fn a_bouncing_projectile_comes_back_off_the_wall() {
-        use orpheus_script::weapons::Bounce;
+        use lucy_script::weapons::Bounce;
         let orb = |bounce| ProjectileBallistics {
             speed: 20.0,
             lifetime: 7.0,

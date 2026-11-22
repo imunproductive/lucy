@@ -16,7 +16,7 @@ use tungstenite::{Error, Message, WebSocket, accept_hdr_with_config};
 
 use crate::protocol::Protocol;
 use crate::rpc::{Clock, Player, RpcSession};
-use orpheus_wire::tcp::{PeerStream, PeerWorkers, accept, retryable};
+use lucy_wire::tcp::{PeerStream, PeerWorkers, accept, retryable};
 
 pub const STALL_PORT: u16 = 1119;
 pub const RPC_PORT: u16 = 21119;

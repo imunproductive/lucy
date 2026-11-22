@@ -29,8 +29,8 @@ use crate::{
     templates::{LOBBY, restore_fields, restore_value},
     transport::LobbyMessage,
 };
-use orpheus_content::catalog::{game_region_number, region_of};
-use orpheus_wire::jam::codec::{
+use lucy_content::catalog::{game_region_number, region_of};
+use lucy_wire::jam::codec::{
     Fields, Schemas,
     Value::{self, Array, Bool, Float32, Signed, Struct, Unsigned},
     id16,
@@ -90,10 +90,10 @@ pub fn hello(profile: &Profile, identity: Identity) -> Fields {
 /// developer features (`refs/reports/AdminMode.md`).
 const UNKNOWN_HELLO_FLAGS: [u32; 6] = [0x148, 0x149, 0x14a, 0x154, 0x155, 0x156];
 
-/// A debugging switch: `ORPHEUS_DEBUG_HELLO_FLAGS=1` sends every one of
+/// A debugging switch: `LUCY_DEBUG_HELLO_FLAGS=1` sends every one of
 /// [`UNKNOWN_HELLO_FLAGS`] true, to see whether the client unlocks anything.
 static HELLO_FLAGS: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
-    let on = std::env::var("ORPHEUS_DEBUG_HELLO_FLAGS").is_ok_and(|value| value == "1");
+    let on = std::env::var("LUCY_DEBUG_HELLO_FLAGS").is_ok_and(|value| value == "1");
     if on {
         tracing::warn!("debugging: the hello message (20500) sends its six unknown flags true");
     }

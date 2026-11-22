@@ -172,7 +172,7 @@ SLOT_ARGS = {
 }
 # State readers (state vt+0x158) and writers (vt+0x150) run on the runtime state object (`this`),
 # whose property block (an STU instance) sits at a class-specific offset. The offsets and block
-# types come from ORPHEUS's statescript_codecs.json (classes[H].block {offset, type_hash}).
+# types come from Lucy's statescript_codecs.json (classes[H].block {offset, type_hash}).
 # Each such class gets `struct StateRt_<H> { void *vftable; ...; STU_<block> block; ... }` sized
 # by its factory's allocation, applied as `this` of its reader and writer.
 STATE_SLOTS = ("reader", "writer")

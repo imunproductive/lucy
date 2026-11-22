@@ -30,9 +30,9 @@ use serde_json::Value as Json;
 use crate::{
     bot_script::SeenDelivery, placed_script::PlacedFrame, projectile_wire, replication::BodyId,
 };
-use orpheus_core::tick::MAX_LEASE_FRAME;
-use orpheus_physics::static_ray::Vec3;
-use orpheus_script::{
+use lucy_core::tick::MAX_LEASE_FRAME;
+use lucy_physics::static_ray::Vec3;
+use lucy_script::{
     expr::EvalError,
     graph::{GraphStore, Node, asset_guid},
     snapshot::{ProjectedSnapshot, ProjectedState},
@@ -41,7 +41,7 @@ use orpheus_script::{
     weapons::authored_number,
     wire::Value,
 };
-use orpheus_wire::entity::{EntityUpdate, LeaseBlock, Operation, SkinTheme};
+use lucy_wire::entity::{EntityUpdate, LeaseBlock, Operation, SkinTheme};
 
 const LEASE_FIRST: u32 = 0x0010_0000;
 const LEASE_SPAN: u32 = 1 << 22;
@@ -408,7 +408,7 @@ pub enum ProjectileDelivery {
 }
 
 impl ProjectileDelivery {
-    pub fn update(self) -> Result<EntityUpdate, orpheus_core::bits::BitError> {
+    pub fn update(self) -> Result<EntityUpdate, lucy_core::bits::BitError> {
         match self {
             Self::Confirm {
                 entity, definition, ..
@@ -1731,8 +1731,8 @@ impl ServerCopies {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orpheus_core::bits::BitWriter;
-    use orpheus_script::vm::{
+    use lucy_core::bits::BitWriter;
+    use lucy_script::vm::{
         Component, EmptyWorld, MAX_INIT_WORK, player_entity_variables, player_roots,
     };
     use std::sync::Arc;
@@ -1857,7 +1857,7 @@ mod tests {
     #[test]
     #[ignore = "requires the derived 104319 statescript catalog"]
     fn authored_soldier_leases_match_python_and_exclude_the_rifle() {
-        let root = orpheus_testkit::runtime_dir();
+        let root = lucy_testkit::runtime_dir();
         let graphs = Arc::new(
             GraphStore::load_runtime(root.join("data"), "game_graphs_174.json.gz").unwrap(),
         );

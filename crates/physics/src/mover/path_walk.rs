@@ -45,7 +45,7 @@
 //! components are on the AI entity that possesses it); no platform under
 //! the body (the velocity is set in world space).
 
-use orpheus_wire::entity::{NAV_PATH, NAV_PATH_POINTS, NavPathRecord};
+use lucy_wire::entity::{NAV_PATH, NAV_PATH_POINTS, NavPathRecord};
 
 use crate::{
     ai_cells::{AiCells, ledge_path},

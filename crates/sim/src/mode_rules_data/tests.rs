@@ -439,9 +439,9 @@ fn changed_data_fails_the_load() {
 /// Elimination first to 3 with 135 s rounds, a 105 s tiebreaker and 20 s
 /// of hero select, Deathmatch 20 and Team Deathmatch 30 kills in 10 min).
 #[test]
-#[ignore = "requires the 1.74 game data (ORPHEUS_GAME_DIR)"]
+#[ignore = "requires the 1.74 game data (LUCY_GAME_DIR)"]
 fn the_install_gives_the_fixture_rules() {
-    let data = orpheus_testkit::runtime_dir().join("data");
+    let data = lucy_testkit::runtime_dir().join("data");
     let graphs = GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap();
     let rules = ModeRulesData::load(&graphs, &data).unwrap();
     for mode in FLOW_MODES {

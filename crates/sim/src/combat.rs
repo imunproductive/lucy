@@ -50,10 +50,10 @@ use crate::{
     scene_assets::PreparedScene,
     spawned::{ServerFlight, SpawnedEntities},
 };
-use orpheus_content::{heroes::Eyes, stats::PlayerStats};
-use orpheus_core::guid::parse_guid;
-use orpheus_physics::static_ray::Vec3;
-use orpheus_script::{
+use lucy_content::{heroes::Eyes, stats::PlayerStats};
+use lucy_core::guid::parse_guid;
+use lucy_physics::static_ray::Vec3;
+use lucy_script::{
     ai_definitions::AiControl,
     bot::{DAMAGE_AMOUNT, DAMAGE_DIRECTION, DAMAGE_SOURCE, DAMAGE_TAGS, DAMAGED, DIED},
     vitals::{Death, Vitals},
@@ -65,7 +65,7 @@ use orpheus_script::{
     weapons::{AllyHits, DamageTags, HitDefinition, ProjectileBallistics},
     wire::{Value, Variables},
 };
-use orpheus_wire::{
+use lucy_wire::{
     combat_messages::CombatNotice,
     commands::Command,
     entity::{EntityUpdate, GAME_MODE_ENTITY, Operation},
@@ -332,7 +332,7 @@ pub struct PosedHitscan {
     pub shot_frame: u32,
     pub reach: f64,
     pub hit: HitDefinition,
-    /// The volley's ray profile (`orpheus_script::weapons::ray_profile`).
+    /// The volley's ray profile (`lucy_script::weapons::ray_profile`).
     pub ray_profile: Option<u64>,
 }
 
@@ -407,7 +407,7 @@ pub struct BotDeath {
 }
 
 /// A hit a training bot took and survived: its script's damage message
-/// (`0011.025`, [`orpheus_script::bot::DAMAGED`]) carries these.
+/// (`0011.025`, [`lucy_script::bot::DAMAGED`]) carries these.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BotDamage {
     /// Who dealt it.
@@ -431,7 +431,7 @@ pub struct BotHit {
     /// ultimate; 0 for a damaging hit.
     pub healed: f64,
     /// The health change's tags (the hit's, or the heal's), for the
-    /// shooter's damage dealt or healing done (`orpheus_script::ultimate`).
+    /// shooter's damage dealt or healing done (`lucy_script::ultimate`).
     pub tags: DamageTags,
     /// The health change's source besides the shooter
     /// ([`HealthChange::source`]: a Biotic Orb), which takes the damage
@@ -585,7 +585,7 @@ pub struct PlayerTarget {
     /// human's.
     pub ai: Option<AiControl>,
     /// The modifiers of the damage and healing the body deals that its
-    /// graphs hold now (`orpheus_script::vm::statuses`: Nano Boost's
+    /// graphs hold now (`lucy_script::vm::statuses`: Nano Boost's
     /// `0B9F` st19), for its hits.
     pub dealt: Vec<CombatMod>,
 }
@@ -595,7 +595,7 @@ impl PlayerTarget {
     /// compares them ([`Vitals::hurt`]).
     pub fn hurt(&self) -> bool {
         self.health
-            .is_some_and(|[now, most]| now < most - orpheus_script::expr::EPSILON)
+            .is_some_and(|[now, most]| now < most - lucy_script::expr::EPSILON)
     }
 }
 
@@ -623,7 +623,7 @@ struct PlayerSlot {
 }
 
 /// Where a player's client showed the bodies (`TrackTargets` `m_1C2A9945`,
-/// `orpheus_script::vm::World::seen_bodies`): rewound to a command's view
+/// `lucy_script::vm::World::seen_bodies`): rewound to a command's view
 /// by the history the server's shots rewind with ([`TargetHistory::at`]).
 /// Assumption: a search sees them at the view of the command its script
 /// runs, as that command's shots do (the client's view time for a search,
@@ -698,7 +698,7 @@ pub struct Combat {
 }
 
 /// An aura a hit put on a body ([`Combat::take_auras`]): the match puts it
-/// on the body's script (`vm/auras.rs` in `orpheus_script`).
+/// on the body's script (`vm/auras.rs` in `lucy_script`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AuraHit {
     pub body: u32,
@@ -1017,7 +1017,7 @@ impl Combat {
                     .at(view, scene.bot_target(bot))
                     .map(|pose| (bot.entity, pose))
             });
-        let traced = tracing::enabled!(target: "orpheus::hits", tracing::Level::DEBUG);
+        let traced = tracing::enabled!(target: "lucy::hits", tracing::Level::DEBUG);
         if traced {
             trace_shot(
                 shooter,
@@ -1037,7 +1037,7 @@ impl Combat {
             .map_err(io::Error::other)?;
         if traced {
             tracing::debug!(
-                target: "orpheus::hits",
+                target: "lucy::hits",
                 "shot of {:08X} at frame {shot_frame}: {}",
                 shooter.source,
                 impact.map_or_else(
@@ -1254,7 +1254,7 @@ impl Combat {
     }
 
     /// A hit of `amount` with `tags` on `target` as the shooter's dealt
-    /// modifiers make it (`orpheus_script::vm::statuses`): a heal scaled
+    /// modifiers make it (`lucy_script::vm::statuses`): a heal scaled
     /// by those of the healing he gives, damage by those of the damage he
     /// deals, as he holds them at the hit ([`Self::dealt_modifiers`]) or,
     /// for a projectile's hit, as `launched` kept them at its launch; with
@@ -1304,7 +1304,7 @@ impl Combat {
     }
 
     /// The notices of the changes modifiers made to the hits since the
-    /// last call (`orpheus_script::vm::MODIFIED`), each to the entity its
+    /// last call (`lucy_script::vm::MODIFIED`), each to the entity its
     /// modifier credits ([`crate::messages`]): the shooters' dealt ones
     /// and the bots' taken ones (a player's taken ones go with his body's
     /// messages, `WorldDelivery::take_messages`).
@@ -2654,7 +2654,7 @@ pub fn deliver_projectiles(
     }
 }
 
-/// The `orpheus::hits` debug trace of a hitscan shot: its ray and view,
+/// The `lucy::hits` debug trace of a hitscan shot: its ray and view,
 /// and each candidate body the ray's line passes within 2 m of, as the
 /// shot meets it (rewound to the view): its feet and facing, and each
 /// critical shape's middle, radius and how far the line passes from it.
@@ -2696,7 +2696,7 @@ fn trace_shot(
         }
     }
     tracing::debug!(
-        target: "orpheus::hits",
+        target: "lucy::hits",
         "shot of {:08X} at frame {shot_frame} {view:?}: from ({ox:.3}, {oy:.3}, {oz:.3}) along ({dx:.4}, {dy:.4}, {dz:.4}){near}",
         shooter.source,
     );

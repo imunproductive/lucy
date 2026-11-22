@@ -1,7 +1,7 @@
 use super::*;
 
 use crate::{player::PlayerWorld, weapons::DamageTags};
-use orpheus_content::{heroes::SOLDIER, maps::PRACTICE_RANGE_MODE};
+use lucy_content::{heroes::SOLDIER, maps::PRACTICE_RANGE_MODE};
 use serde_json::json;
 
 /// Soldier: 76's body (`006E.075` `m_gameplayEntity`).
@@ -2089,7 +2089,7 @@ const TEAM_ONE: u64 = 0x0080_0000;
 #[test]
 #[ignore = "requires a derived 1.74 graph bundle"]
 fn authored_sprint_stack_gates_track_input_and_reveal_the_base_on_release() {
-    let data = orpheus_testkit::runtime_dir().join("data");
+    let data = lucy_testkit::runtime_dir().join("data");
     let graphs = Arc::new(GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap());
     let mut world = soldier_world(&graphs);
     let mut component = Component::start(
@@ -2169,7 +2169,7 @@ fn authored_sprint_stack_gates_track_input_and_reveal_the_base_on_release() {
 #[test]
 #[ignore = "requires a derived 1.74 graph bundle"]
 fn isolated_soldier_sprint_ability_matches_the_authored_toggle_and_modifier_states() {
-    let data = orpheus_testkit::runtime_dir().join("data");
+    let data = lucy_testkit::runtime_dir().join("data");
     let graphs = Arc::new(GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap());
     let mut world = soldier_world(&graphs);
     let mut component = Component::start(
@@ -2514,7 +2514,7 @@ fn switches_on_a_volleys_ammunition_follow_each_shot() {
 #[test]
 #[ignore = "requires a derived 1.74 graph bundle"]
 fn authored_helix_uses_its_six_second_cooldown_before_the_next_volley() {
-    let data = orpheus_testkit::runtime_dir().join("data");
+    let data = lucy_testkit::runtime_dir().join("data");
     let graphs = Arc::new(GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap());
     let body = &graphs.bodies()[&0x0400_0000_0000_03cf];
     let mut world = soldier_world(&graphs);
@@ -2646,7 +2646,7 @@ fn authored_helix_uses_its_six_second_cooldown_before_the_next_volley() {
 fn authored_biotic_orb_throws_the_healing_or_the_damaging_orb() {
     const MOIRA: u64 = 0x02e0_0000_0000_01a2;
     const MOIRA_BODY: u64 = 0x0400_0000_0000_1c46;
-    let data = orpheus_testkit::runtime_dir().join("data");
+    let data = lucy_testkit::runtime_dir().join("data");
     let graphs = Arc::new(GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap());
     let body = &graphs.bodies()[&MOIRA_BODY];
     for (fire, volley, orb) in [
@@ -2743,7 +2743,7 @@ fn authored_biotic_orb_throws_the_healing_or_the_damaging_orb() {
 #[test]
 #[ignore = "requires a derived 1.74 graph bundle"]
 fn authored_soldier_rifle_holds_releases_and_reloads_on_the_reference_clock() {
-    let data = orpheus_testkit::runtime_dir().join("data");
+    let data = lucy_testkit::runtime_dir().join("data");
     let graphs = Arc::new(GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap());
     let body = &graphs.bodies()[&0x0400_0000_0000_03cf];
     let mut world = soldier_world(&graphs);
@@ -2887,7 +2887,7 @@ fn authored_soldier_rifle_holds_releases_and_reloads_on_the_reference_clock() {
 fn baptistes_automatic_reload_begins_after_the_magazines_last_burst() {
     const BAPTISTE: u64 = 0x02e0_0000_0000_0221;
     const BAPTISTE_BODY: u64 = 0x0400_0000_0000_29a6;
-    let data = orpheus_testkit::runtime_dir().join("data");
+    let data = lucy_testkit::runtime_dir().join("data");
     let graphs = Arc::new(GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap());
     let body = &graphs.bodies()[&BAPTISTE_BODY];
     let mut world = PlayerWorld::new(
@@ -3198,7 +3198,7 @@ fn buffered_action_press_uses_the_shared_clock_and_releases_after_one_millisecon
 #[test]
 #[ignore = "requires the derived game data's bot graph bundle (graph 0B92)"]
 fn firing_placement_reset_and_timer_boundaries_match_python() {
-    let data = orpheus_testkit::runtime_dir().join("data");
+    let data = lucy_testkit::runtime_dir().join("data");
     let graphs = Arc::new(GraphStore::load_runtime(&data, "game_graphs_bots_174.json.gz").unwrap());
     assert!(
         graphs.graph(0x0b92).is_some(),
@@ -3286,7 +3286,7 @@ fn firing_placement_reset_and_timer_boundaries_match_python() {
 #[test]
 #[ignore = "requires the derived game data's bot graph bundle"]
 fn controller_and_training_bot_supported_startup_edges_match_python() {
-    let data = orpheus_testkit::runtime_dir().join("data");
+    let data = lucy_testkit::runtime_dir().join("data");
     let graphs = GraphStore::load_runtime(&data, "game_graphs_bots_174.json.gz").unwrap();
     let run = |entity, roots| {
         initialize(
@@ -3935,11 +3935,11 @@ fn move_to_exposes_only_a_fixed_target_while_active() {
             instance: 1,
             raw_state: 0,
             activation: 1,
-            params: orpheus_physics::mover::Behaviour::MoveTo(orpheus_physics::mover::MoveTo {
+            params: lucy_physics::mover::Behaviour::MoveTo(lucy_physics::mover::MoveTo {
                 destination: [1.0, 2.0, -3.0],
                 surface: [0.0; 3],
                 free_spot: false,
-                speed: orpheus_physics::mover::Speed::MetresPerSecond(5.5),
+                speed: lucy_physics::mover::Speed::MetresPerSecond(5.5),
                 acceleration: 0.0,
                 slow_radius: 0.0,
                 lateral_seconds: 0.0,
@@ -4781,7 +4781,7 @@ fn player_world_answers_the_ruleset_defaults_of_its_hero_and_mode() {
 #[ignore = "requires a local 1.74 graph pack"]
 fn tracer_pistols_load_forty_rounds_from_the_ruleset_defaults() {
     const TRACER: u64 = 0x02e0_0000_0000_0003;
-    let data = orpheus_testkit::runtime_dir().join("data");
+    let data = lucy_testkit::runtime_dir().join("data");
     let graphs = Arc::new(GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap());
     let body = &graphs.bodies()[&0x0400_0000_0000_0001];
     assert_eq!(body.hero.as_deref(), Some("0x02E0000000000003"));
@@ -4852,7 +4852,7 @@ fn tracer_pistols_load_forty_rounds_from_the_ruleset_defaults() {
 fn wrecking_balls_reticle_follows_the_growing_spread() {
     const WRECKING_BALL: u64 = 0x02e0_0000_0000_01ca;
     const QUAD_CANNONS: u32 = 0x1514;
-    let data = orpheus_testkit::runtime_dir().join("data");
+    let data = lucy_testkit::runtime_dir().join("data");
     let graphs = Arc::new(GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap());
     let body = &graphs.bodies()[&0x0400_0000_0000_200b];
     let mut world = PlayerWorld::new(
@@ -6287,7 +6287,7 @@ fn combat_modifiers_honour_tags_and_combine_by_kind() {
 
 /// The derived bundle's hero graphs.
 fn hero_bundle() -> GraphStore {
-    let data = orpheus_testkit::runtime_dir().join("data");
+    let data = lucy_testkit::runtime_dir().join("data");
     GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap()
 }
 

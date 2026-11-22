@@ -46,7 +46,7 @@ const LAST_TEXT_ID: u32 = 20765;
 const MESSAGE_TARGETS: u32 = 20176;
 
 fn host() -> ModeScript {
-    let data = orpheus_testkit::runtime_dir().join("data");
+    let data = lucy_testkit::runtime_dir().join("data");
     let graphs = Arc::new(GraphStore::load_runtime(data, "game_graphs_174.json.gz").unwrap());
     let mut world = ModeWorld::new(graphs, ASSAULT, Unknowns::Refuse);
     world.players = vec![

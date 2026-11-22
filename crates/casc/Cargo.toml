@@ -1,5 +1,5 @@
 [package]
-name = "orpheus-casc"
+name = "lucy-casc"
 description = "Reads build 104319's game assets from the local install: CASC storage, BLTE, the encoding table and the content manifests"
 version.workspace = true
 edition.workspace = true
@@ -14,5 +14,5 @@ md-5.workspace = true
 sha1.workspace = true
 
 [dev-dependencies]
-orpheus-testkit.workspace = true
+lucy-testkit.workspace = true
 tempfile.workspace = true

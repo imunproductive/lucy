@@ -1,21 +1,21 @@
 use super::*;
 use crate::{instance::RETAIL_QUANTA, scene::PlayerCard, scene_assets::SceneAssets};
-use orpheus_content::{
+use lucy_content::{
     heroes::SOLDIER,
     maps::GameMap,
     parameters::{CLIENT_GAME_MESSAGE, PICK_HERO},
 };
-use orpheus_core::{bits::BitReader, tick::FIRST_TICK};
-use orpheus_physics::{
+use lucy_core::{bits::BitReader, tick::FIRST_TICK};
+use lucy_physics::{
     collision::index::TriangleIndex, contact::world::ContactWorld, mover::settings::MoverSettings,
 };
-use orpheus_script::{
+use lucy_script::{
     codecs::CodecTable,
     graph::GraphStore,
     timeline::FRAME_MS,
     vm::{Component, EmptyWorld, MAX_INIT_WORK, Root},
 };
-use orpheus_wire::{
+use lucy_wire::{
     commands::{FIRE, SUBFRAME},
     entity::{ComponentValue, MAX_ENTITY_RECORDS, Movement},
     jam::codec::{Fields, Value},
@@ -36,8 +36,8 @@ fn forward(frame: u32) -> Command {
 #[test]
 fn bot_health_replaces_stale_packets_and_respawn_keeps_creation_order() {
     use crate::{bots::BOT_ENTITY, egress::PacketDelivery};
-    use orpheus_script::vitals::health;
-    use orpheus_wire::entity::Create;
+    use lucy_script::vitals::health;
+    use lucy_wire::entity::Create;
     let old = BOT_ENTITY;
     let new = old + 1;
     let create = |entity| EntityUpdate {
@@ -228,7 +228,7 @@ fn a_respawned_bots_controller_link_follows_its_new_body() {
         bots::{BOT_CONTROLLER_ENTITY, BOT_ENTITY},
         egress::PacketDelivery,
     };
-    use orpheus_wire::entity::{Component, ComponentValue, Create};
+    use lucy_wire::entity::{Component, ComponentValue, Create};
     let controller = BOT_CONTROLLER_ENTITY;
     let [old, new, newer] = [BOT_ENTITY, BOT_ENTITY + 15, BOT_ENTITY + 16];
     let create = |entity| EntityUpdate {
@@ -531,7 +531,7 @@ fn a_dry_tick_waits_and_the_late_commands_run_as_the_client_made_them() {
     // and runs as it was made, at its own frame.
     let tap = Command {
         buttons: FIRE | SUBFRAME,
-        click: Some(orpheus_wire::commands::Click {
+        click: Some(lucy_wire::commands::Click {
             subframe: 7,
             yaw: 1,
             pitch: 2,
@@ -684,7 +684,7 @@ fn past_the_wait_a_dry_tick_repeats_the_last_input_then_runs_neutral_frames() {
 #[test]
 #[ignore = "requires a derived 104319 Practice Range pack without bot VM graphs"]
 fn native_world_resumes_a_gap_before_switching_the_body_and_acknowledging_input() {
-    let runtime = orpheus_testkit::runtime_dir();
+    let runtime = lucy_testkit::runtime_dir();
     let assets = SceneAssets::load(runtime).unwrap();
     let scene = assets.prepare(GameMap::practice_range()).unwrap();
     let owner = 0xa000_0100;
@@ -693,7 +693,7 @@ fn native_world_resumes_a_gap_before_switching_the_body_and_acknowledging_input(
         slot: 0,
         team: 0,
         spawn: 0,
-        room: orpheus_content::maps::SpawnChoice::First,
+        room: lucy_content::maps::SpawnChoice::First,
         card: &PlayerCard::default(),
     };
     let mut world = WorldDelivery::new(owner).unbuffered();
@@ -851,7 +851,7 @@ fn body(id: BodyId) -> Body {
 fn record(entity: u32, delivery: Delivery) -> Record {
     let operation = match delivery {
         Delivery::CreateBody(_) => {
-            Operation::Create(Box::new(orpheus_wire::entity::Create::new(1, Vec::new())))
+            Operation::Create(Box::new(lucy_wire::entity::Create::new(1, Vec::new())))
         }
         Delivery::DestroyBody(_) => Operation::Destroy,
         _ => Operation::Update(Vec::new()),
@@ -994,7 +994,7 @@ fn transport_outcome(
 
 #[test]
 fn projectile_retirement_retries_destroys_and_ignores_stale_confirmations() {
-    use orpheus_script::vm::ShotEvent;
+    use lucy_script::vm::ShotEvent;
 
     const DEFINITION: u64 = 0x0400_0000_0000_072c;
     let id = avatar(1, 1);
@@ -1061,7 +1061,7 @@ fn projectile_retirement_retries_destroys_and_ignores_stale_confirmations() {
 fn a_controller_frame_bigger_than_a_datagram_goes_in_parts() {
     let mut world = WorldDelivery::new(OWNER);
     world.started = Some(100);
-    let mut payload = orpheus_core::bits::BitWriter::new();
+    let mut payload = lucy_core::bits::BitWriter::new();
     for byte in 0..3000u32 {
         payload.bits(u64::from(byte % 251), 8).unwrap();
     }
@@ -1075,7 +1075,7 @@ fn a_controller_frame_bigger_than_a_datagram_goes_in_parts() {
     }
     assert_eq!(eligible(&world), [0, 1, 2]);
     world.sent(&[0, 1, 2]);
-    let mut next = orpheus_core::bits::BitWriter::new();
+    let mut next = lucy_core::bits::BitWriter::new();
     next.bits(1, 8).unwrap();
     let next = world.controller.full(&next).unwrap();
     world.push(Record::script(next, false));
@@ -1098,8 +1098,8 @@ fn a_controller_frame_bigger_than_a_datagram_goes_in_parts() {
 
 #[test]
 fn owner_health_waits_for_creation_and_discards_superseded_lifetimes() {
-    use orpheus_script::vitals::health;
-    use orpheus_wire::entity::{ARMOUR_POOL, POOLS, pool, pool_component};
+    use lucy_script::vitals::health;
+    use lucy_wire::entity::{ARMOUR_POOL, POOLS, pool, pool_component};
 
     let id = avatar(1, 1);
     let mut world = WorldDelivery::new(OWNER);
@@ -1531,7 +1531,7 @@ fn a_teleport_waits_for_the_create_and_a_packet_of_its_frame() {
 #[test]
 #[ignore = "requires a derived 104319 Practice Range pack without bot VM graphs"]
 fn prepared_worker_resumes_unposed_vm_frames_before_advancing_physics() {
-    let runtime = orpheus_testkit::runtime_dir();
+    let runtime = lucy_testkit::runtime_dir();
     let assets = SceneAssets::load(runtime).unwrap();
     let mut scene = assets.prepare(GameMap::practice_range()).unwrap();
     let (factory, _) = crate::body_script::fixture_body_factory();
@@ -1543,7 +1543,7 @@ fn prepared_worker_resumes_unposed_vm_frames_before_advancing_physics() {
         slot: 0,
         team: 0,
         spawn: 0,
-        room: orpheus_content::maps::SpawnChoice::First,
+        room: lucy_content::maps::SpawnChoice::First,
         card: &PlayerCard::default(),
     };
     let mut world = WorldDelivery::new(OWNER).unbuffered();
@@ -1726,7 +1726,7 @@ fn scripted_world(owner: u32, id: BodyId, runtime: Box<dyn OwnerBodyRuntime>) ->
 #[test]
 fn a_body_message_runs_the_named_bodys_entries() {
     use crate::body_script::{fixture_body_factory, fixture_graph_factory};
-    use orpheus_script::wire::Value;
+    use lucy_script::wire::Value;
     use serde_json::{Value as Json, json};
 
     const RECEIVER: u32 = 0xa000_0200;
@@ -1891,7 +1891,7 @@ fn body_messages_reach_the_named_body_or_every_body_but_the_senders() {
         parameters: Variables::new(),
     };
     let outbox = vec![
-        mail(orpheus_script::mode::EVERY_ENTITY, 7777),
+        mail(lucy_script::mode::EVERY_ENTITY, 7777),
         mail(NOBODY, 1000),
         mail(receiving.entity, 1),
     ];
@@ -1928,11 +1928,11 @@ fn body_messages_reach_the_named_body_or_every_body_but_the_senders() {
 #[test]
 fn hero_settings_reach_the_bodys_graphs_as_entity_variables() {
     use crate::body_script::{fixture_body_factory, fixture_graph_factory};
-    use orpheus_content::hero_settings::{
+    use lucy_content::hero_settings::{
         ALLIED_HEALTH_BARS, ALLIED_HEALTH_BARS_ALWAYS, ALLIED_HEALTH_BARS_OFF, FRIENDLY_OUTLINES,
         FRIENDLY_OUTLINES_ALWAYS, HeroSetting,
     };
-    use orpheus_script::wire::Value as ScriptValue;
+    use lucy_script::wire::Value as ScriptValue;
     use serde_json::json;
 
     let graph = json!({
@@ -2015,11 +2015,11 @@ fn hero_settings_reach_the_bodys_graphs_as_entity_variables() {
 /// setting at DEFAULT is null.
 #[test]
 fn hero_settings_are_the_sent_values_else_the_defaults() {
-    use orpheus_content::{
+    use lucy_content::{
         hero_settings::{ALLIED_HEALTH_BARS, HeroSetting, HeroSettings},
         heroes::ANA,
     };
-    use orpheus_script::wire::Value as ScriptValue;
+    use lucy_script::wire::Value as ScriptValue;
 
     const NANO_BOOST_SENSITIVITY: u64 = 0x0d80_0000_0000_2582;
     const HOLD_TO_SPRINT: u64 = 0x0d80_0000_0000_1ddc;
@@ -2068,10 +2068,10 @@ fn hero_settings_are_the_sent_values_else_the_defaults() {
 #[test]
 #[ignore = "requires a derived 104319 Practice Range pack without bot VM graphs"]
 fn allied_health_bars_give_or_take_the_support_tag_of_the_body() {
-    use orpheus_content::hero_settings::{
+    use lucy_content::hero_settings::{
         ALLIED_HEALTH_BARS, ALLIED_HEALTH_BARS_ALWAYS, ALLIED_HEALTH_BARS_OFF, HeroSetting,
     };
-    use orpheus_script::{
+    use lucy_script::{
         snapshot::ProjectedSnapshot,
         stream::BodyStream,
         vm::{StateKind, TargetTagEffect},
@@ -2080,10 +2080,10 @@ fn allied_health_bars_give_or_take_the_support_tag_of_the_body() {
     use std::cell::Cell;
 
     const SUPPORT_TAG: u64 = 0x0d60_0000_0000_0042;
-    let runtime = orpheus_testkit::runtime_dir();
+    let runtime = lucy_testkit::runtime_dir();
     let mut assets = SceneAssets::load(runtime).unwrap();
     // Ana's graphs still have gaps: tolerated, as release builds do.
-    assets.set_player_unknowns(orpheus_script::vm::Unknowns::Tolerate);
+    assets.set_player_unknowns(lucy_script::vm::Unknowns::Tolerate);
     let scene = assets.prepare(GameMap::practice_range()).unwrap();
     let owner = 0xa000_0100;
     let viewer = PlayerAppearance {
@@ -2091,7 +2091,7 @@ fn allied_health_bars_give_or_take_the_support_tag_of_the_body() {
         slot: 0,
         team: 0,
         spawn: 0,
-        room: orpheus_content::maps::SpawnChoice::First,
+        room: lucy_content::maps::SpawnChoice::First,
         card: &PlayerCard::default(),
     };
     let mut world = WorldDelivery::new(owner);
@@ -2277,7 +2277,7 @@ fn allied_health_bars_give_or_take_the_support_tag_of_the_body() {
 }
 
 /// The hero settings a body starts with (`hero_setting_defaults`, from
-/// `orpheus_content::hero_settings::SCRIPT_SETTINGS`) are every setting of
+/// `lucy_content::hero_settings::SCRIPT_SETTINGS`) are every setting of
 /// the data (`054/0126`) that a node the server runs (not client-only)
 /// reads, with the data's hero and default. A setting a networked node reads
 /// that the table lacked would be null on the server, and the node could
@@ -2290,8 +2290,8 @@ fn allied_health_bars_give_or_take_the_support_tag_of_the_body() {
 fn the_script_settings_are_the_hero_settings_server_nodes_read() {
     use std::collections::BTreeSet;
 
-    use orpheus_content::hero_settings::{SCRIPT_SETTINGS, ScriptSetting, SettingDefault};
-    use orpheus_stu::{Asset, Object, Value as Stu};
+    use lucy_content::hero_settings::{SCRIPT_SETTINGS, ScriptSetting, SettingDefault};
+    use lucy_stu::{Asset, Object, Value as Stu};
     use serde_json::Value as Json;
 
     const INDEX: u64 = 0xffff_ffff_ffff;
@@ -2321,7 +2321,7 @@ fn the_script_settings_are_the_hero_settings_server_nodes_read() {
         }
     }
 
-    let install = orpheus_assets::Install::open(&orpheus_testkit::game_dir(), "enUS").unwrap();
+    let install = lucy_assets::Install::open(&lucy_testkit::game_dir(), "enUS").unwrap();
     let guid = install
         .guids(0x054)
         .into_iter()
@@ -2373,8 +2373,7 @@ fn the_script_settings_are_the_hero_settings_server_nodes_read() {
     assert_eq!(data.len(), 91, "the settings of 054/0126");
 
     let graphs =
-        GraphStore::load(orpheus_testkit::runtime_dir().join("data/game_graphs_174.json.gz"))
-            .unwrap();
+        GraphStore::load(lucy_testkit::runtime_dir().join("data/game_graphs_174.json.gz")).unwrap();
     let mut read = BTreeSet::new();
     for index in graphs.graph_indexes() {
         let nodes = graphs.graph(index).unwrap().nodes.iter();

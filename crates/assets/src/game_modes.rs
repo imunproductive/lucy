@@ -24,7 +24,7 @@
 
 use std::path::Path;
 
-use orpheus_stu::Value;
+use lucy_stu::Value;
 use serde_json::{Map, Value as Json, json};
 
 use crate::{

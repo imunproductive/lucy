@@ -1,5 +1,5 @@
 //! The Workshop catalog of the install (`data/workshop_catalog_174.json`,
-//! derived by `orpheus_assets` from `054/0154`, `0155` and `0162`): the
+//! derived by `lucy_assets` from `054/0154`, `0155` and `0162`): the
 //! events, the condition, the actions with their graphs, the values, the
 //! enums, the predefined strings, and the hero, map and game mode names the
 //! text form uses.

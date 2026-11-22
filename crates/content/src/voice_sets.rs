@@ -1,7 +1,7 @@
 //! Which voice lines a body can say: each hero and training bot body's voice
 //! set, read from `game_voice_sets_174.json` (derived from the install's
 //! `STUVoiceSetComponent`, `05F` voice sets and `078` voice stimuli; see
-//! `orpheus-assets` `voice_sets.rs`).
+//! `lucy-assets` `voice_sets.rs`).
 //!
 //! A body's graphs raise a criteria identifier on it
 //! (`STUStatescriptActionCriteria`); the stimulus of its set whose criteria
@@ -11,7 +11,7 @@
 use std::{collections::HashMap, fs, io, path::Path};
 
 use indexmap::IndexMap;
-use orpheus_core::guid::parse_guid;
+use lucy_core::guid::parse_guid;
 use serde::Deserialize;
 
 /// What raises a stimulus, or lets a line play (`STUCriteriaContainer`).

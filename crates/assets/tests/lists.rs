@@ -4,17 +4,17 @@
 
 use std::sync::LazyLock;
 
-use orpheus_assets::{DERIVATIONS, Difference, Install, Output, diff};
+use lucy_assets::{DERIVATIONS, Difference, Install, Output, diff};
 use serde_json::Value;
 
 /// The derivation's files, derived once for every test.
 static OUTPUTS: LazyLock<Vec<Output>> = LazyLock::new(|| {
-    let install = Install::open(&orpheus_testkit::game_dir(), "enUS").unwrap();
+    let install = Install::open(&lucy_testkit::game_dir(), "enUS").unwrap();
     let lists = DERIVATIONS
         .iter()
         .find(|derivation| derivation.name == "lists")
         .expect("the lists derivation is registered");
-    (lists.derive)(&install, &orpheus_testkit::oracle_pack()).unwrap()
+    (lists.derive)(&install, &lucy_testkit::oracle_pack()).unwrap()
 });
 
 fn output(path: &str) -> &'static Output {
@@ -25,7 +25,7 @@ fn output(path: &str) -> &'static Output {
 }
 
 fn assert_same(path: &str) {
-    let difference = diff(output(path), &orpheus_testkit::oracle_pack()).unwrap();
+    let difference = diff(output(path), &lucy_testkit::oracle_pack()).unwrap();
     assert_eq!(difference, Difference::Same, "{path}");
 }
 
@@ -62,7 +62,7 @@ fn extracted_general_unlocks_matches_the_pack() {
 fn extracted_maps_matches_the_pack() {
     let path = "data/extracted_maps.json";
     let derived: Value = serde_json::from_slice(&output(path).bytes).unwrap();
-    let pack = std::fs::read(orpheus_testkit::oracle_pack().join(path)).unwrap();
+    let pack = std::fs::read(lucy_testkit::oracle_pack().join(path)).unwrap();
     let pack: Value = serde_json::from_slice(&pack).unwrap();
     let mut found = Vec::new();
     differences(&derived, &pack, "", &mut found);

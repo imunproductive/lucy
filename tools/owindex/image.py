@@ -78,7 +78,7 @@ def rip_target(ins):
     return ins.address + ins.size + int(ins.op_str.split("rip + ")[1].split("]")[0], 16)
 
 
-# --- tracing through this image's opaque predicates (ported from ORPHEUS
+# --- tracing through this image's opaque predicates (ported from Lucy
 # research/ida/extract_statescript_codecs.py, which proved it on the same image) ---
 
 _PAIR = {

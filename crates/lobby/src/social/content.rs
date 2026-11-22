@@ -3,7 +3,7 @@
 
 use std::{io, sync::Arc, time::Duration};
 
-use orpheus_wire::jam::codec::{
+use lucy_wire::jam::codec::{
     Fields,
     Value::{self, Array, Bool, Struct},
 };

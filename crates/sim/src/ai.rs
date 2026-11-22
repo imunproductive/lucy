@@ -18,7 +18,7 @@
 //!   and 100% damage; bots never headshot; harder bots aim better. The
 //!   damage is the data's: the hero's weapon graphs read it from the
 //!   difficulty profile of the body's AI entity
-//!   (`orpheus_script::ai_definitions`; Soldier: 76's rifle 4, 10 and 20
+//!   (`lucy_script::ai_definitions`; Soldier: 76's rifle 4, 10 and 20
 //!   against the player's 20);
 //! - rule 124: the AI heroes are Roadhog, Zarya, Bastion, McCree (Cassidy),
 //!   Mei, Reaper, Soldier: 76, Sombra, Torbjörn, Ana, Lúcio and Zenyatta
@@ -35,10 +35,10 @@
 
 use std::f64::consts::TAU;
 
-use orpheus_core::tick::TICK_PERIOD;
-use orpheus_physics::{mover::kinematics::poses, nav::Navigation};
-use orpheus_script::ai_definitions::{EASY, HARD, MEDIUM};
-use orpheus_wire::commands::{Command, FIRE, JUMP};
+use lucy_core::tick::TICK_PERIOD;
+use lucy_physics::{mover::kinematics::poses, nav::Navigation};
+use lucy_script::ai_definitions::{EASY, HARD, MEDIUM};
+use lucy_wire::commands::{Command, FIRE, JUMP};
 
 use crate::navigate::{PathBudget, PathQuery};
 
@@ -150,7 +150,7 @@ impl Difficulty {
     }
 
     /// The difficulty identifier of its AI profiles
-    /// (`orpheus_script::ai_definitions`).
+    /// (`lucy_script::ai_definitions`).
     pub fn identifier(self) -> u64 {
         match self {
             Self::Easy => EASY,
@@ -323,7 +323,7 @@ pub fn choose_target(
 
 /// The command angles (yaw, pitch) that look from `eye` at `point`: the
 /// forward axis is (sin yaw, 0, cos yaw), and the pitch is positive looking
-/// down (`orpheus_wire::commands`).
+/// down (`lucy_wire::commands`).
 pub fn aim_at(eye: [f64; 3], point: [f64; 3]) -> (i32, i32) {
     let [dx, dy, dz] = [0, 1, 2].map(|axis| point[axis] - eye[axis]);
     let yaw = dx.atan2(dz);
@@ -336,7 +336,7 @@ pub fn aim_at(eye: [f64; 3], point: [f64; 3]) -> (i32, i32) {
 
 /// The throttles (forward, right) that walk along the ground direction
 /// `(dx, dz)` while looking at `yaw`: the right axis is (-cos yaw, 0,
-/// sin yaw) (`orpheus_wire::commands`).
+/// sin yaw) (`lucy_wire::commands`).
 pub fn throttles(yaw: i32, direction: [f64; 2]) -> (i8, i8) {
     let [dx, dz] = direction;
     let length = dx.hypot(dz);
@@ -659,7 +659,7 @@ impl AiController {
         self.yaw = command.yaw;
         self.pitch = command.pitch;
         // The frames between two commands are the body's last input held
-        // (`orpheus_physics::mover::kinematics::poses`): how far this one
+        // (`lucy_physics::mover::kinematics::poses`): how far this one
         // walks it.
         let walking = |pose: &Command| pose.forward != 0 || pose.right != 0;
         self.walked = poses(self.last, command).filter(walking).count() as u32;

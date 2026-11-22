@@ -15,9 +15,9 @@ use serde_json::{Map, Value as Json, json};
 
 use super::events::EVENT_INFO;
 use crate::{game_service::PlayerState, lobby::services::Services};
-use orpheus_content::catalog::{GAME_REGIONS, REGIONS, Unlock};
-use orpheus_core::guid::parse_guid as parse_guid_text;
-use orpheus_lobby::{
+use lucy_content::catalog::{GAME_REGIONS, REGIONS, Unlock};
+use lucy_core::guid::parse_guid as parse_guid_text;
+use lucy_lobby::{
     accounts::{
         Account, Accounts, BOX_TYPES, LootBox, Profile, account_id_for, load_or_create_profile,
         save_profile,

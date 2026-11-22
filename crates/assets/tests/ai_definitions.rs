@@ -5,10 +5,10 @@ use serde_json::{Value, json};
 
 fn derived() -> Value {
     assert_eq!(
-        orpheus_testkit::derived_outputs("game_ai_definitions"),
+        lucy_testkit::derived_outputs("game_ai_definitions"),
         ["data/game_ai_definitions_174.json"]
     );
-    orpheus_testkit::runtime_json("data/game_ai_definitions_174.json")
+    lucy_testkit::runtime_json("data/game_ai_definitions_174.json")
 }
 
 /// The twelve heroes the AI plays each have an AI definition of their own;

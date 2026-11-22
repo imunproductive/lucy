@@ -1,10 +1,10 @@
 """The connection to owprobe.dll: framed JSON over 127.0.0.1 (a u32 little-endian length, then UTF-8 JSON).
 
     from tools.owprobe import Probe
-    p = Probe()                       # port: ORPHEUS_PROBE_PORT or 21150
+    p = Probe()                       # port: LUCY_PROBE_PORT or 21150
     p.info()["base"]
     p.read_f32(p.addr("c4") + 0x160, 3)
-    hook = p.hook(0x7FF78991F5D0, name="rollback", stack=4)   # ORPHEUS VAs are converted
+    hook = p.hook(0x7FF78991F5D0, name="rollback", stack=4)   # Lucy VAs are converted
     for record in p.records(kinds=["hit"], seconds=5): ...
 """
 import json
@@ -13,7 +13,7 @@ import socket
 import struct
 import time
 
-from tools.owdbg.names import ORPHEUS_BASE
+from tools.owdbg.names import LUCY_BASE
 
 DEFAULT_PORT = 21150
 
@@ -28,7 +28,7 @@ class ProbeError(Exception):
 
 def port_from_env():
     try:
-        return int(os.environ.get("ORPHEUS_PROBE_PORT", DEFAULT_PORT)) or DEFAULT_PORT
+        return int(os.environ.get("LUCY_PROBE_PORT", DEFAULT_PORT)) or DEFAULT_PORT
     except ValueError:
         return DEFAULT_PORT
 
@@ -120,21 +120,21 @@ class Probe:
         return self._names
 
     def runtime(self, va):
-        """An ORPHEUS VA (base 0x7FF788F10000) in the client image -> this run's address; else as is."""
+        """A Lucy VA (base 0x7FF788F10000) in the client image -> this run's address; else as is."""
         info = self.info(fresh=False)
-        if ORPHEUS_BASE <= va < ORPHEUS_BASE + info["image_size"]:
-            return va - ORPHEUS_BASE + info["base"]
+        if LUCY_BASE <= va < LUCY_BASE + info["image_size"]:
+            return va - LUCY_BASE + info["base"]
         return va
 
-    def orpheus(self, va):
-        """This run's address in the client image -> its ORPHEUS VA; else as is."""
+    def lucy(self, va):
+        """This run's address in the client image -> its Lucy VA; else as is."""
         info = self.info(fresh=False)
         if info["base"] <= va < info["base"] + info["image_size"]:
-            return va - info["base"] + ORPHEUS_BASE
+            return va - info["base"] + LUCY_BASE
         return va
 
     def addr(self, spec):
-        """An address: an int or hex text (ORPHEUS VAs converted), an index/docs name (Eval_STU_x,
+        """An address: an int or hex text (Lucy VAs converted), an index/docs name (Eval_STU_x,
         GetComp4, Msg25005_Handler), 'base', or 'c59'/'ent'/'c4' (the frame sampler's local body)."""
         if isinstance(spec, int):
             return self.runtime(spec)
@@ -156,7 +156,7 @@ class Probe:
     def describe(self, va):
         """'Name+0xOFF (0x7FF7...)' for a code address."""
         d = self.names.describe(va)
-        return d["text"] + (f" ({d['orpheus']})" if d.get("orpheus") else "")
+        return d["text"] + (f" ({d['lucy']})" if d.get("lucy") else "")
 
     # ---- memory
     def read(self, addr, length, partial=False):
@@ -206,7 +206,7 @@ class Probe:
         return self.request("scan", **args)
 
     def components(self, vtable, max=65536):
-        """[{component, entity, id}] of the components with this vtable (an ORPHEUS VA is converted)."""
+        """[{component, entity, id}] of the components with this vtable (a Lucy VA is converted)."""
         return self.request("components", vtable=self.addr(vtable), max=max)
 
     def component(self, entity_id, kind):

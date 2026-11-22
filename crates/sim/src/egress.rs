@@ -2,10 +2,8 @@
 
 use std::{borrow::Borrow, collections::VecDeque, error::Error, fmt, mem};
 
-use orpheus_wire::entity::{
-    EntityUpdate, FrameCandidates, SelectedFrame, WorldError, select_frame,
-};
-use orpheus_wire::link::delivery;
+use lucy_wire::entity::{EntityUpdate, FrameCandidates, SelectedFrame, WorldError, select_frame};
+use lucy_wire::link::delivery;
 
 type Reliable = (u32, Vec<u8>);
 
@@ -46,7 +44,7 @@ impl<E: Error + 'static> Error for SendError<E> {
 
 pub struct FrameRecords<'a, Queued = EntityUpdate> {
     pub tick: u32,
-    /// The ch3 clock flags (`orpheus_wire::entity::CLOCK_*`).
+    /// The ch3 clock flags (`lucy_wire::entity::CLOCK_*`).
     pub clock: u8,
     /// The match supplies the records eligible to send in dependency order.
     pub queued: &'a [Queued],

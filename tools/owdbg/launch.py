@@ -1,11 +1,11 @@
-"""Start ORPHEUS serve + the debug build under the owdbg debugger with the relay, and keep it running.
+"""Start Lucy serve + the debug build under the owdbg debugger with the relay, and keep it running.
 
 usage: python -m tools.owdbg.launch [--duration S] [--screenshot PNG [--screenshot-at S]]
                                     [--enter-range] [--actions SCRIPT [--foreground-input]]
                                     [--no-server] [--no-login] [--account NAME] [--game-arg ARG] [--keep-state]
 
 The game (the research repo's game/_retail_/Overwatch.debug.exe, locations in tools/paths.py) runs
-windowed (--tank_NoFullScreen=1) with cwd _retail_; ORPHEUS's relay (target/release/owwfd_relay.dll)
+windowed (--tank_NoFullScreen=1) with cwd _retail_; Lucy's relay (target/release/owwfd_relay.dll)
 is loaded by a remote LoadLibraryW thread created at the system breakpoint.
 The client's first Battle.net attempt usually ends in "UNABLE TO LOG YOU IN / DISCONNECTED"; the
 session then clicks LOGIN (PostMessage) until the relay log shows `relay CONNECTED` (--no-login

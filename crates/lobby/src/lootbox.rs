@@ -18,7 +18,7 @@ use crate::{
     economy::{CreditDrop, Economy},
     transport::LobbyMessage,
 };
-use orpheus_wire::jam::codec::{
+use lucy_wire::jam::codec::{
     Fields,
     Value::{Array, Bool, Signed, Struct, Unsigned},
 };

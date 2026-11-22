@@ -6,7 +6,7 @@
 //! Research: the Practice Range has 15 spawners, 11 Training Bots on the red
 //! team and 4 Friendly Bots on the blue one (retail's OW2 Practice Range
 //! showed 15 bots too, each with a movement record in every frame, idle or
-//! not). Graph 0B8E (`orpheus_script::bot::PATROL_GRAPH`) runs in the bot's
+//! not). Graph 0B8E (`lucy_script::bot::PATROL_GRAPH`) runs in the bot's
 //! script and decides when and where it walks: variable #6947 (0D80/1B23)
 //! lists AI hint points, #39 (0D80/0027) is the route index (2 to start); it
 //! waits 2 s, then 1 s (two StateWaits), sets `#39 = (#39 + 1) %
@@ -68,23 +68,23 @@ use std::{
 
 use serde::Deserialize;
 
-use orpheus_core::guid::parse_guid;
-use orpheus_core::tick::TICK_PERIOD;
-use orpheus_physics::contact::body::CharacterBody;
-use orpheus_physics::contact::cache::CapsulePose;
-use orpheus_physics::contact::math::{add, sub};
-use orpheus_physics::contact::world::ContactWorld;
-use orpheus_physics::mover::ground::{pogo, standing_body, standing_capsule, standing_origin};
-use orpheus_physics::mover::settings::MoverSettings;
-use orpheus_physics::nav::Navigation;
-use orpheus_physics::{
+use lucy_core::guid::parse_guid;
+use lucy_core::tick::TICK_PERIOD;
+use lucy_physics::contact::body::CharacterBody;
+use lucy_physics::contact::cache::CapsulePose;
+use lucy_physics::contact::math::{add, sub};
+use lucy_physics::contact::world::ContactWorld;
+use lucy_physics::mover::ground::{pogo, standing_body, standing_capsule, standing_origin};
+use lucy_physics::mover::settings::MoverSettings;
+use lucy_physics::nav::Navigation;
+use lucy_physics::{
     collision::index::TriangleIndex,
     mover::{Mover, resting_spring, sample_movement_flags},
 };
-use orpheus_script::bot::{BOT_MOVEMENT_SAMPLE, PATROL_GRAPH, Patrol};
-use orpheus_script::vm::Motion;
-use orpheus_wire::commands::Command;
-use orpheus_wire::entity::{Movement, NO_INPUT};
+use lucy_script::bot::{BOT_MOVEMENT_SAMPLE, PATROL_GRAPH, Patrol};
+use lucy_script::vm::Motion;
+use lucy_wire::commands::Command;
+use lucy_wire::entity::{Movement, NO_INPUT};
 
 use crate::{
     bot_animation::{AnimRequest, BodyRig, BotAnimation},
@@ -927,7 +927,7 @@ impl Bot {
     /// sent the spring steps as 0, the bottom of their range, -(stance 2.0 +
     /// pogo 0.5): the client put the bot's collision capsule 2.5 m too low,
     /// its top 0.5 m under the bot's feet (`Posture::spring_steps` in
-    /// `orpheus-physics`), so players walked through the bots. (The client's
+    /// `lucy-physics`), so players walked through the bots. (The client's
     /// own shots passing through them had another cause: `scene.rs` module
     /// notes.)
     /// Upstream measured that capsule on its NPCs and sent them their rest

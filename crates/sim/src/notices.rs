@@ -8,7 +8,7 @@
 //! controller 0C90: the server sends 037F.025 to the switching player's
 //! controller script, whose rid220 keeps three presence variables (the old
 //! hero, the new one and the player) that a client-only Watch posts once
-//! (`orpheus_script::controller::ControllerScript::hero_switched`). They go
+//! (`lucy_script::controller::ControllerScript::hero_switched`). They go
 //! in one controller frame only, and only to a client whose last frame had
 //! none of them.
 //!
@@ -33,9 +33,9 @@
 use std::time::Duration;
 
 use crate::scene::PlayerCard;
-use orpheus_content::maps::GameMode;
-use orpheus_script::controller::HeroSwitch;
-use orpheus_wire::{
+use lucy_content::maps::GameMode;
+use lucy_script::controller::HeroSwitch;
+use lucy_wire::{
     jam::codec::{Fields, Value, id16},
     messages::Message,
 };
@@ -124,7 +124,7 @@ pub(crate) struct Switch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orpheus_content::maps::{GameModes, MODES_FILE, ModeTeam};
+    use lucy_content::maps::{GameModes, MODES_FILE, ModeTeam};
 
     #[test]
     fn cards_carry_the_python_flags() {
@@ -198,7 +198,7 @@ mod tests {
     #[ignore = "requires the derived 104319 game modes"]
     fn the_switch_modes_are_the_install_s() {
         let modes =
-            GameModes::load(orpheus_testkit::runtime_dir().join("data").join(MODES_FILE)).unwrap();
+            GameModes::load(lucy_testkit::runtime_dir().join("data").join(MODES_FILE)).unwrap();
         let mut switching: Vec<u64> = modes
             .iter()
             .filter(|(_, mode)| switch_notices(Some(mode)))

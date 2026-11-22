@@ -22,7 +22,7 @@
 //! hero : v940`). Retail OW2 traffic works the same way.
 //!
 //! The owner's frames are the controller graph's own: the server runs 0C90
-//! on the player's controller entity ([`orpheus_script::controller`]),
+//! on the player's controller entity ([`lucy_script::controller`]),
 //! routes the client's picks and opens (21616) to its 288B, and projects its
 //! snapshot ([`Controller::controller_frame`]): the instance tree as the VM
 //! made it (0C90, 288A, 0215, 288B, 288D in its entries' order), the states
@@ -55,9 +55,9 @@
 
 use std::{io, sync::Arc};
 
-use orpheus_content::{heroes::HeroCatalog, maps::PRACTICE_RANGE_MODE};
-use orpheus_core::bits::BitWriter;
-use orpheus_script::{
+use lucy_content::{heroes::HeroCatalog, maps::PRACTICE_RANGE_MODE};
+use lucy_core::bits::BitWriter;
+use lucy_script::{
     codecs::CodecTable,
     controller::{
         ControllerScript, ControllerWorld, HERO_SELECT_SCREEN, HeroSwitch, MULTIKILLS,
@@ -157,7 +157,7 @@ impl Controller {
     }
 
     /// Start `0C90` on the player's controller entity `entity` at world
-    /// tick `tick` ([`orpheus_script::controller`]): the player of team
+    /// tick `tick` ([`lucy_script::controller`]): the player of team
     /// `team` who may play the catalog's `heroes`.
     pub fn start_script(
         &self,

@@ -2,7 +2,7 @@
 //! (`D:/Work/Coding/refs/reports/Navigation.md`, "Document 0").
 //!
 //! The data is `data/aicells/<map>.bin.gz`, the map chunk 0x12's document 0
-//! (`STU_3BC32A6E`) as `orpheus_assets` derives it: one byte block per cell,
+//! (`STU_3BC32A6E`) as `lucy_assets` derives it: one byte block per cell,
 //! keyed as the client keys its grid.
 //!
 //! The grid (`0x7FF78AA64190` builds it with `0x7FF78A614BD0(grid, {16.0,

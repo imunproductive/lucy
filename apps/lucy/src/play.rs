@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use orpheus_launcher::game::{
+use lucy_launcher::game::{
     GAME_EXE, GAME_PATH_FILE, TARGET_VERSION, build_info, choose_locale, find_game,
 };
 
@@ -48,8 +48,8 @@ pub fn configured_game(settings: &Settings) -> io::Result<PathBuf> {
         io::Error::new(
             io::ErrorKind::NotFound,
             format!(
-                "no game configured: pass --game with the path of {GAME_EXE}, set ORPHEUS_GAME, \
-                 or run `orpheus play` once to pick it"
+                "no game configured: pass --game with the path of {GAME_EXE}, set LUCY_GAME, \
+                 or run `lucy play` once to pick it"
             ),
         )
     })
@@ -83,7 +83,7 @@ fn checked(game: PathBuf) -> io::Result<PathBuf> {
 /// Ask for the game in a file dialog until it is one.
 #[cfg(windows)]
 fn pick_game() -> io::Result<PathBuf> {
-    use orpheus_launcher::{dialog::open_game_dialog, game::resolve_game};
+    use lucy_launcher::{dialog::open_game_dialog, game::resolve_game};
     use tracing::{info, warn};
 
     info!("Select the game's {GAME_EXE} (the game itself, not a shortcut or a launcher).");
@@ -135,9 +135,9 @@ fn built_dll(name: &str) -> io::Result<PathBuf> {
 pub fn probe_setup(
     settings: &Settings,
     port: Option<u16>,
-) -> io::Result<Option<orpheus_launcher::process::ProbeSetup>> {
+) -> io::Result<Option<lucy_launcher::process::ProbeSetup>> {
     port.map(|port| {
-        Ok(orpheus_launcher::process::ProbeSetup {
+        Ok(lucy_launcher::process::ProbeSetup {
             dll: built_dll(PROBE_DLL)?,
             port,
             log: settings.logs().join("probe.log"),
@@ -160,7 +160,7 @@ pub fn locale(settings: &Settings, game: &Path) -> Option<String> {
 
 #[cfg(windows)]
 fn system_locale() -> Option<String> {
-    orpheus_launcher::process::system_locale()
+    lucy_launcher::process::system_locale()
 }
 
 #[cfg(not(windows))]
@@ -184,11 +184,11 @@ mod client {
         time::Duration,
     };
 
-    use orpheus_launcher::{
+    use lucy_launcher::{
         process,
         retail::{GameSetup, RetailGames, Started},
     };
-    use orpheus_server::platform::LocalGames;
+    use lucy_server::platform::LocalGames;
     use tracing::{error, info};
 
     use super::{game, locale, probe_setup, relay_dll};

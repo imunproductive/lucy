@@ -2,7 +2,7 @@
 //! client component 27): the parts of a model that the client's physics
 //! world places by the model's animation (category 0x1000), posed as the
 //! client poses them (`game_map_areas_174.json` `idle_animations`, derived
-//! by `orpheus-assets` `map_areas`).
+//! by `lucy-assets` `map_areas`).
 //!
 //! The client (static reading, refs `MapEntities.md` "MapAnim"): each frame
 //! its component 27 system (`0x7FF7895811C0`) gives every component 27 the

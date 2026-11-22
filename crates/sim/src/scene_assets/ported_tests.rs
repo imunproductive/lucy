@@ -2,8 +2,8 @@
 //! movement mods, ported from `tests/test_game_mover.py` (`SprintTests`,
 //! `MatchMoverTests`; `ow174/game/mover.py`, `ow174/game/match.py`).
 
-use orpheus_content::heroes::SOLDIER;
-use orpheus_physics::{
+use lucy_content::heroes::SOLDIER;
+use lucy_physics::{
     collision::{
         cache::{Mesh, Triangle},
         index::SceneTriangle,
@@ -13,7 +13,7 @@ use orpheus_physics::{
         world::{StaticGeometry, StaticShape},
     },
 };
-use orpheus_wire::commands::{CROUCH, Command};
+use lucy_wire::commands::{CROUCH, Command};
 
 use super::*;
 use crate::{instance::RETAIL_QUANTA, replication::BodyStep, scene::team_bit};
@@ -68,7 +68,7 @@ fn flat_floor() -> (TriangleIndex, Arc<ContactWorld>) {
 /// The Practice Range, its players' body scripts treating unknown content
 /// so.
 fn practice_range(unknowns: Unknowns) -> PreparedScene {
-    let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let mut assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
     assets.set_player_unknowns(unknowns);
     assets.prepare(GameMap::practice_range()).unwrap()
 }
@@ -190,7 +190,7 @@ fn crouching_waits_for_the_frame_after_sprint_ends() {
 #[test]
 #[ignore = "requires a derived 104319 Practice Range pack without bot VM graphs"]
 fn a_players_body_walks_on_the_maps_collision_with_its_heros_values() {
-    let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
     let scene = assets.prepare(GameMap::practice_range()).unwrap();
     assert!(scene.movement_ready());
     let walk = |hero: u64, first: u32| {
@@ -243,8 +243,8 @@ fn a_players_body_walks_on_the_maps_collision_with_its_heros_values() {
 #[test]
 #[ignore = "requires a derived 104319 Practice Range pack without bot VM graphs"]
 fn ana_and_widowmaker_walk_at_35_percent_once_fully_zoomed() {
-    use orpheus_content::heroes::ANA;
-    use orpheus_wire::commands::SECONDARY;
+    use lucy_content::heroes::ANA;
+    use lucy_wire::commands::SECONDARY;
     const WIDOWMAKER: u64 = 0x02e0_0000_0000_000a;
     // Their owner scripts start whole (their zoom-in flag `STU_D1BF5FA6`
     // runs): a gap would refuse them.
@@ -271,11 +271,11 @@ fn ana_and_widowmaker_walk_at_35_percent_once_fully_zoomed() {
                 let owner = body
                     .runtime
                     .encoder()
-                    .project(snapshot, orpheus_script::snapshot::View::Owner)
+                    .project(snapshot, lucy_script::snapshot::View::Owner)
                     .unwrap();
                 assert_eq!(
                     owner.entity_variable(23184),
-                    Some(&orpheus_script::wire::Value::Null),
+                    Some(&lucy_script::wire::Value::Null),
                     "{hero:x}"
                 );
                 let (graph, field_of_view, stack) = fov;
@@ -288,18 +288,18 @@ fn ana_and_widowmaker_walk_at_35_percent_once_fully_zoomed() {
                 assert!(script.states[&stack].active, "{hero:x}");
                 assert_eq!(
                     owner.state_payload(weapon, field_of_view),
-                    Some(&orpheus_script::codecs::StatePayload::new()),
+                    Some(&lucy_script::codecs::StatePayload::new()),
                     "{hero:x}"
                 );
                 assert_eq!(
                     owner.instance_variable(weapon, 172),
-                    Some(&orpheus_script::wire::Value::Integer(30)),
+                    Some(&lucy_script::wire::Value::Integer(30)),
                     "{hero:x}"
                 );
                 // Nothing else sets `#168`: the client adds the stack's 30.
                 assert_eq!(
                     owner.instance_variable(weapon, 168),
-                    Some(&orpheus_script::wire::Value::Null),
+                    Some(&lucy_script::wire::Value::Null),
                     "{hero:x}"
                 );
             }

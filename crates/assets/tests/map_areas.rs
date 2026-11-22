@@ -17,7 +17,7 @@ const WALL_TEAM: &str = "0x0D800000000006F1";
 #[test]
 #[ignore = "requires an Overwatch 1.74 install (just test-game <install>)"]
 fn team_walls_stop_the_team_their_definition_and_script_name() {
-    let table = orpheus_testkit::runtime_json("data/game_map_areas_174.json");
+    let table = lucy_testkit::runtime_json("data/game_map_areas_174.json");
     let models = table["models"].as_object().unwrap();
     let mut walls: BTreeMap<&str, usize> = BTreeMap::new();
     let mut maps = 0;

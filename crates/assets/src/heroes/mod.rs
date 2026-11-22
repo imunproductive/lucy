@@ -12,7 +12,7 @@ pub(crate) mod stats;
 
 use std::{collections::BTreeMap, fs, path::Path};
 
-use orpheus_stu::{Object, Types, Value};
+use lucy_stu::{Object, Types, Value};
 use serde_json::{Map, json};
 
 use crate::{Install, Output, Result, asset_error, guid_hex, guid_type};
@@ -128,7 +128,7 @@ impl Assets {
     }
 
     /// The asset with this index, decoded; `None` when the install has none.
-    pub(crate) fn read(&self, install: &Install, index: u64) -> Result<Option<orpheus_stu::Asset>> {
+    pub(crate) fn read(&self, install: &Install, index: u64) -> Result<Option<lucy_stu::Asset>> {
         self.0
             .get(&(index & INDEX))
             .map(|guid| install.stu(*guid))
