@@ -91,37 +91,40 @@
 
 <div class="shell" class:drawer={menuOpen}>
   <aside class="sidebar" aria-label="Navigation">
-    <div class="brand">
-      <a href="/" aria-label="Lucy: profile"><Logo /></a>
-      <button class="icon-btn menu-close" type="button" aria-label="Close menu" onclick={() => (menuOpen = false)}>
-        <Icon name="close" />
-      </button>
-    </div>
+    <!-- The column runs the page's full height; its content stays in view while the page scrolls. -->
+    <div class="sidebar-inner">
+      <div class="brand">
+        <a href="/" aria-label="Lucy: profile"><Logo /></a>
+        <button class="icon-btn menu-close" type="button" aria-label="Close menu" onclick={() => (menuOpen = false)}>
+          <Icon name="close" />
+        </button>
+      </div>
 
-    <nav>
-      {#each groups as group (group.label)}
-        <div class="nav-group">
-          <span class="nav-label">{group.label}</span>
-          {#each group.items as item (item.page)}
-            <a class="nav-link" class:active={active === item.page} aria-current={active === item.page ? 'page' : undefined} href={paths[item.page]}>
-              <Icon name={item.icon} />
-              <span>{item.label}</span>
-              {#if item.page === 'boxes' && app.state}
-                <span class="count numeric">{number(app.state.profile.loot_boxes_count)}</span>
-              {:else if item.page === 'events' && app.state?.profile.events.length}
-                <span class="pip" title="An event is on"></span>
-              {/if}
-            </a>
-          {/each}
+      <nav>
+        {#each groups as group (group.label)}
+          <div class="nav-group">
+            <span class="nav-label">{group.label}</span>
+            {#each group.items as item (item.page)}
+              <a class="nav-link" class:active={active === item.page} aria-current={active === item.page ? 'page' : undefined} href={paths[item.page]}>
+                <Icon name={item.icon} />
+                <span>{item.label}</span>
+                {#if item.page === 'boxes' && app.state}
+                  <span class="count numeric">{number(app.state.profile.loot_boxes_count)}</span>
+                {:else if item.page === 'events' && app.state?.profile.events.length}
+                  <span class="pip" title="An event is on"></span>
+                {/if}
+              </a>
+            {/each}
+          </div>
+        {/each}
+      </nav>
+
+      <div class="sidebar-foot">
+        <span class="dot" class:on={app.connected === true} class:off={app.connected === false}></span>
+        <div>
+          <strong>{app.connected === false ? 'No connection' : app.connected ? 'Server is up' : 'Connecting…'}</strong>
+          <span class="muted">{server ? `Lobby ${server.host}:${server.port}` : 'Local server'} · client 1.74</span>
         </div>
-      {/each}
-    </nav>
-
-    <div class="sidebar-foot">
-      <span class="dot" class:on={app.connected === true} class:off={app.connected === false}></span>
-      <div>
-        <strong>{app.connected === false ? 'No connection' : app.connected ? 'Server is up' : 'Connecting…'}</strong>
-        <span class="muted">{server ? `Lobby ${server.host}:${server.port}` : 'Local server'} · client 1.74</span>
       </div>
     </div>
   </aside>
@@ -238,16 +241,22 @@
     min-height: 100vh;
   }
 
+  /* The column stretches with the page (its background and border run the
+     whole height); the content inside stays in view as the page scrolls. */
   .sidebar {
+    border-right: 1px solid var(--border);
+    background: var(--surface);
+  }
+
+  .sidebar-inner {
     position: sticky;
     top: 0;
     height: 100vh;
+    height: 100dvh;
     display: flex;
     flex-direction: column;
     gap: var(--space-5);
     padding: var(--space-5) var(--space-4);
-    border-right: 1px solid var(--border);
-    background: var(--surface);
     overflow-y: auto;
   }
 
