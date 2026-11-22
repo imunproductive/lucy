@@ -66,7 +66,7 @@ Mode 5. `join`:
 2. starts a local Battle.net on this PC that logs you in with that name and sends the game to the server's lobby;
 3. starts the game with the relay.
 
-Without `--server` or `--name`, `lucy` asks for them and remembers the answers (`server_address.txt`, `player_name.txt`). A name has at most 24 characters. Keep the window open while you play; closing it disconnects the game.
+Without `--server` or `--name`, `lucy` asks for them and remembers the answers (`server_address.txt`, `player_name.txt`). The name must follow the rule in [Player names](#player-names). Keep the window open while you play; closing it disconnects the game.
 
 `join` needs the Battle.net ports 1119 and 21119 free on your PC. Do not run a server or another game on the same PC at the same time.
 
@@ -77,6 +77,20 @@ target\release\lucy.exe join-tournament --server 203.0.113.7:3724
 ```
 
 Mode 6. It checks that the server can be reached, then starts the game in tournament mode, pointed at that lobby. There is no relay and no Battle.net. You can close the console window after the game starts.
+
+## Player names
+
+Your name is your account on the server: the host keeps your profile in the file `profiles\<name>.json`. So the server accepts only names that can be a file name as you typed them:
+
+- 1 to 24 characters, and at most 58 bytes in UTF-8 (the Battle.net login has room for 58). A letter outside Latin can take 2 or 3 bytes: a Chinese or Korean name can have up to 19 characters.
+- Only letters and digits of any alphabet (`Ana`, `Zoë`, `Жора`, `玩家`), `-` and `_`. No spaces, dots, slashes or other symbols.
+- Not a name that Windows keeps for a device: `CON`, `PRN`, `AUX`, `NUL`, `COM0` to `COM9`, `LPT0` to `LPT9`, in any letter case.
+
+Letter case does not matter: `Ana` and `ana` are the same account. Different names are different accounts: `Ana` with a Latin A and `Аna` with a Cyrillic А are two accounts.
+
+`lucy join` checks the name before it starts the game. If the server gets a name that breaks the rule (in tournament mode, the game sends the name you typed), it disconnects the game. The game shows "Name contains invalid characters." when a character is not allowed, and "Account has an invalid battle tag" when the name is too long or is a device name. The host's log shows the name and the reason.
+
+Profiles saved by an older version under a name that breaks the rule (for example `John Smith.json`) still load on the host: the dashboard lists them and `--account` chooses them. Players can't log in to them from another PC. To make one usable again, rename its file to a name that follows the rule.
 
 ## Join messages
 

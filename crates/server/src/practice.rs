@@ -255,7 +255,7 @@ mod tests {
             temporary.path().join("seed"),
         )
         .unwrap();
-        let account = accounts.get("fixture player").unwrap();
+        let account = accounts.get("fixture_player").unwrap();
         let login = PreparedLogin {
             identity: Identity::create(account.account_lo, 0x1234).unwrap(),
             account,
@@ -288,7 +288,7 @@ mod tests {
                 assert_eq!(map.mode_guid, PRACTICE_RANGE_MODE);
                 assert_eq!(map.team_sizes, [1, 0]);
                 assert_eq!(players.len(), 1);
-                assert_eq!(players[0].name, "fixture player");
+                assert_eq!(players[0].name, "fixture_player");
                 assert!(players[0].tournament);
                 assert!(!players[0].ranked);
                 game.open_match(id, map, players)

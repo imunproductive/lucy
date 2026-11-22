@@ -6,34 +6,65 @@
 //! frontends run the game at different command frame lengths, which the game
 //! server must know. SIGNED_IN_ELSEWHERE (13C84.07C) is "Connection
 //! interrupted: the Battle.net account signed in on another device.".
+//!
+//! A name the account rule refuses ([`account_name::check`]) is refused at
+//! login with a reason the client shows: 12D97.07C "Name contains invalid
+//! characters." for a character outside the rule, else 47B9.07C "Account
+//! has an invalid battle tag" (empty, too long, a Windows device name).
 
 use std::io;
 
 use lucy_bnet::session_key::name_in_key;
 use lucy_wire::jam::codec::{Fields, Value, id16};
 
+use crate::account_name::{self, NameError};
+
 pub const OUT_CONNECT: u32 = 0x3c7e_3468;
 pub const LOGIN_MESSAGE: u32 = 21800;
 pub const INCOMPATIBLE_CLIENT: u64 = 0x0de0_0000_0001_03bf;
 pub const SIGNED_IN_ELSEWHERE: u64 = 0x0de0_0000_0001_3c84;
+pub const NAME_INVALID_CHARACTERS: u64 = 0x0de0_0000_0001_2d97;
+pub const INVALID_BATTLE_TAG: u64 = 0x0de0_0000_0000_47b9;
 pub(crate) const ID_HIGH_TAG: u64 = 1 << 56;
 pub(crate) const PARTY_ENTITY_TYPE: u64 = 0x1d << 40;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Login {
-    Named { name: String, tournament: bool },
+    Named {
+        name: String,
+        tournament: bool,
+    },
     LocalDefault,
     IncompatibleRemote,
+    /// A name the account rule refuses.
+    InvalidName {
+        name: String,
+        error: NameError,
+    },
+}
+
+impl Login {
+    fn named(name: String, tournament: bool) -> Self {
+        match account_name::check(&name) {
+            Ok(()) => Self::Named { name, tournament },
+            Err(error) => Self::InvalidName { name, error },
+        }
+    }
+}
+
+/// The disconnect reason the client shows for a refused name.
+pub fn invalid_name_reason(error: NameError) -> u64 {
+    match error {
+        NameError::Character(_) => NAME_INVALID_CHARACTERS,
+        NameError::Empty | NameError::TooLong | NameError::Reserved => INVALID_BATTLE_TAG,
+    }
 }
 
 pub fn identify(fields: &Fields, local: bool) -> io::Result<Login> {
     if let Some(Value::String(name)) = fields.get(&0x78) {
         let name = name.trim();
         if !name.is_empty() {
-            return Ok(Login::Named {
-                name: name.into(),
-                tournament: true,
-            });
+            return Ok(Login::named(name.into(), true));
         }
     }
 
@@ -54,10 +85,7 @@ pub fn identify(fields: &Fields, local: bool) -> io::Result<Login> {
             Some(_) => return Err(invalid_key()),
         };
         if let Some(name) = name {
-            return Ok(Login::Named {
-                name,
-                tournament: false,
-            });
+            return Ok(Login::named(name, false));
         }
     }
 
@@ -160,6 +188,38 @@ mod tests {
         assert_eq!(
             identify(&Fields::new(), false).unwrap(),
             Login::IncompatibleRemote
+        );
+    }
+
+    #[test]
+    fn names_outside_the_account_rule_are_refused_with_a_shown_reason() {
+        let refused = |fields: Fields| match identify(&fields, true).unwrap() {
+            Login::InvalidName { error, .. } => (error, invalid_name_reason(error)),
+            login => panic!("{login:?} was not refused"),
+        };
+        let typed = |name: &str| Fields::from([(0x78, Value::String(name.into()))]);
+        let key = |key: &[u8]| {
+            Fields::from([(
+                0xb8,
+                Value::Struct(Fields::from([(0x20, Value::Blob(key.to_vec()))])),
+            )])
+        };
+        assert_eq!(
+            refused(typed("../../profile")),
+            (NameError::Character('.'), NAME_INVALID_CHARACTERS)
+        );
+        assert_eq!(
+            refused(typed(&"x".repeat(25))),
+            (NameError::TooLong, INVALID_BATTLE_TAG)
+        );
+        assert_eq!(
+            refused(key(b"ow174:CON")),
+            (NameError::Reserved, INVALID_BATTLE_TAG)
+        );
+        // Bytes that aren't UTF-8 decode to U+FFFD, which no name has.
+        assert_eq!(
+            refused(key(b"ow174:\xff\xfe")),
+            (NameError::Character('\u{fffd}'), NAME_INVALID_CHARACTERS)
         );
     }
 

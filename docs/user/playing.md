@@ -44,7 +44,7 @@ Keep the console window open while you play. When you close the game or the wind
 
 `--timeout <seconds>` (default 30) is how long `lucy` waits for the game to be ready for the relay. A slow PC may need more.
 
-`--account <name>` chooses the saved account the game logs in as. Without it, the account in `default_account.txt` is used. A name without a profile gets a new profile from the template on its first login.
+`--account <name>` chooses the saved account the game logs in as. Without it, the account in `default_account.txt` is used. A name without a profile gets a new profile from the template on its first login, if it follows the [rule for player names](hosting.md#player-names).
 
 ### Game language
 

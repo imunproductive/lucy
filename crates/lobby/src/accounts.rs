@@ -4,7 +4,7 @@ use std::{
     collections::{HashMap, HashSet},
     fs,
     io::{self, Write},
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     sync::{
         Arc, Mutex, MutexGuard,
         atomic::{AtomicU8, Ordering},
@@ -15,6 +15,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use crate::account_name;
 use lucy_core::guid::parse_guid;
 use lucy_wire::jam::codec::{Fields, Value as JamValue};
 
@@ -528,6 +529,11 @@ impl Accounts {
         })
     }
 
+    /// The account of `name`, loaded or created. A saved profile loads under
+    /// the name its file has, whatever it is (profiles saved before the
+    /// account rule keep loading), in its file's letter case; a new one is
+    /// created only for a name the rule accepts ([`account_name::check`]),
+    /// as `<name>.json`.
     pub fn get(&self, name: &str) -> io::Result<Arc<Account>> {
         let name = trim_name(name);
         let key = name_key(name);
@@ -538,30 +544,65 @@ impl Accounts {
         if let Some(account) = accounts.get(&key) {
             return Ok(Arc::clone(account));
         }
-        let path = self.path_for(name)?;
-        let profile = match load_existing_profile(&path) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                let mut profile = match read_profile(&self.template) {
-                    Ok((profile, _)) => profile,
-                    Err(error)
-                        if matches!(
-                            error.kind(),
-                            io::ErrorKind::NotFound | io::ErrorKind::InvalidData
-                        ) =>
-                    {
-                        new_profile()
-                    }
-                    Err(error) => return Err(error),
-                };
-                profile.player_name = name.into();
-                create_profile(profile, &path)?
+        let (path, profile) = match self.saved_path(name)? {
+            Some(path) => {
+                let profile = load_existing_profile(&path)?;
+                (path, profile)
             }
-            result => result?,
+            None => self.create(name)?,
         };
+        let name = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or(name)
+            .to_owned();
         let created = creation_seconds(&fs::metadata(&path)?);
-        let account = Arc::new(Account::new(name.into(), profile, Some(path), created));
+        let account = Arc::new(Account::new(name, profile, Some(path), created));
         accounts.insert(key, Arc::clone(&account));
         Ok(account)
+    }
+
+    /// Save a new profile from the template for a name the rule accepts.
+    fn create(&self, name: &str) -> io::Result<(PathBuf, Profile)> {
+        account_name::check(name).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid account name {name:?}: {error}"),
+            )
+        })?;
+        let path = profile_path(&self.directory, name)?;
+        let mut profile = match read_profile(&self.template) {
+            Ok((profile, _)) => profile,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::InvalidData
+                ) =>
+            {
+                new_profile()
+            }
+            Err(error) => return Err(error),
+        };
+        profile.player_name = name.into();
+        match write_profile(&profile, &path, false) {
+            Ok(()) => Ok((path, profile)),
+            // Another server process saved the name first, or the file
+            // system matched the file name to a saved profile of another
+            // name (it may fold more than letter case): that one isn't ours.
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                match self.saved_path(name)? {
+                    Some(saved) => {
+                        let profile = load_existing_profile(&saved)?;
+                        Ok((saved, profile))
+                    }
+                    None => Err(io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        format!("the file system takes {name:?} for another saved profile"),
+                    )),
+                }
+            }
+            Err(error) => Err(error),
+        }
     }
 
     pub fn all_saved(&self) -> io::Result<Vec<String>> {
@@ -616,30 +657,45 @@ impl Accounts {
         Ok(None)
     }
 
-    fn path_for(&self, name: &str) -> io::Result<PathBuf> {
-        let safe: String = name
-            .chars()
-            .filter(|character| character.is_alphanumeric() || matches!(character, '-' | '_' | ' '))
-            .collect();
-        let safe = trim_name(&safe);
-        let safe = if safe.is_empty() { "player" } else { safe };
-        let filename = format!("{safe}.json");
-        let path = self.directory.join(&filename);
-        if path.try_exists()? {
-            return Ok(path);
+    /// The saved profile of `name`: the file named so, else one whose name
+    /// differs only in letter case (even on a case-sensitive file system).
+    /// Found in the folder's listing, not by the file system's own name
+    /// matching, which may fold more than letter case.
+    fn saved_path(&self, name: &str) -> io::Result<Option<PathBuf>> {
+        let key = name_key(name);
+        let mut found = None;
+        for path in json_files(&self.directory)? {
+            let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+                continue;
+            };
+            if stem == name {
+                return Ok(Some(path));
+            }
+            if found.is_none() && name_key(stem) == key {
+                found = Some(path);
+            }
         }
-        let key = filename.to_lowercase();
-        // Find profiles created with a different letter case even on case-sensitive filesystems.
-        Ok(json_files(&self.directory)?
-            .into_iter()
-            .find(|saved| {
-                saved
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.to_lowercase() == key)
-            })
-            .unwrap_or(path))
+        Ok(found)
     }
+}
+
+/// `<stem>.json` in `directory`. A guard behind the account rule: the file
+/// name must be one plain path component and no device, so the path stays
+/// a file inside the folder.
+fn profile_path(directory: &Path, stem: &str) -> io::Result<PathBuf> {
+    let file = format!("{stem}.json");
+    let mut parts = Path::new(&file).components();
+    let plain = matches!(
+        (parts.next(), parts.next()),
+        (Some(Component::Normal(part)), None) if part == file.as_str()
+    );
+    if !plain || account_name::is_reserved_device_name(&file) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{file:?} is not a file inside {}", directory.display()),
+        ));
+    }
+    Ok(directory.join(file))
 }
 
 /// The names of the profiles saved in a folder, sorted without regard to
@@ -791,17 +847,101 @@ mod tests {
     }
 
     #[test]
-    fn a_login_cannot_escape_the_profiles_directory() {
+    fn a_name_gets_its_own_file_or_is_refused() {
         let directory = tempfile::tempdir().unwrap();
         let profiles = directory.path().join("profiles");
         let registry = Accounts::new(&profiles, directory.path().join("missing.json")).unwrap();
-        let account = registry.get("../ A/B\\ ? ").unwrap();
+        let long = "x".repeat(account_name::MAX_CHARS + 1);
+        for name in [
+            "../evil",
+            "..\\evil",
+            "../../x",
+            "/etc/passwd",
+            "C:\\Windows\\win",
+            "\\\\host\\share",
+            "CON",
+            "con.json",
+            "nul",
+            "COM1",
+            &long,
+            "bell\u{7}",
+            "left\u{202e}right",
+            // The old file names stripped what wasn't a letter or digit:
+            // "Al!ce" shared Alce.json with "Alce", and every name of
+            // symbols alone shared player.json, each with its own account id.
+            "Al!ce",
+            "!!!",
+        ] {
+            let Err(error) = registry.get(name) else {
+                panic!("{name:?} was accepted");
+            };
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput, "{name:?}");
+        }
+        let written: Vec<_> = fs::read_dir(directory.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(written, ["profiles"]);
+        assert!(registry.all_saved().unwrap().is_empty());
+
+        let alce = registry.get("Alce").unwrap();
+        assert_eq!(alce.path, Some(profiles.join("Alce.json")));
+        // Mixed scripts: "Аlice" with a Cyrillic А is another name than the
+        // Latin "Alice", with its own file and account.
+        let latin = registry.get("Alice").unwrap();
+        let mixed = registry.get("\u{410}lice").unwrap();
+        assert_eq!(mixed.path, Some(profiles.join("\u{410}lice.json")));
+        assert_ne!(mixed.path, latin.path);
+        assert_ne!(mixed.account_lo, latin.account_lo);
+        // Letter case is the same name.
+        assert!(Arc::ptr_eq(&latin, &registry.get("ALICE").unwrap()));
+        let restarted = Accounts::new(&profiles, directory.path().join("missing.json")).unwrap();
+        let again = restarted.get("aLiCe").unwrap();
+        assert_eq!(again.path, latin.path);
+        assert_eq!(again.name, "Alice");
+        assert_eq!(restarted.all_saved().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn profiles_saved_before_the_name_rule_still_load() {
+        let directory = tempfile::tempdir().unwrap();
+        let profiles = directory.path().join("profiles");
+        fs::create_dir(&profiles).unwrap();
+        let old = profiles.join("John Smith.json");
+        save_profile(
+            &Profile {
+                credits: 7,
+                ..Profile::default()
+            },
+            &old,
+        )
+        .unwrap();
+        let registry = Accounts::new(&profiles, directory.path().join("missing.json")).unwrap();
+        assert_eq!(registry.all_saved().unwrap(), ["John Smith"]);
+        let account = registry.get("john smith").unwrap();
+        assert_eq!(account.path, Some(old));
+        assert_eq!(account.profile().credits, 7);
+        assert_eq!(account.name, "John Smith");
+        assert_eq!(registry.all_saved().unwrap(), ["John Smith"]);
+    }
+
+    #[test]
+    fn profile_paths_stay_files_inside_the_folder() {
+        let folder = Path::new("profiles");
         assert_eq!(
-            account.path.as_deref(),
-            Some(profiles.join("AB.json").as_path())
+            profile_path(folder, "Alice").unwrap(),
+            folder.join("Alice.json")
         );
-        assert_eq!(account.profile().player_name, "../ A/B\\ ?");
-        assert_eq!(registry.all_saved().unwrap().len(), 2);
-        assert_eq!(account.profile().loot_boxes.len(), 140);
+        let mut outside = vec!["../x", "a/b", "/root", "CON", "nul", "LPT1"];
+        if cfg!(windows) {
+            outside.extend(["a\\b", "C:x", "\\\\host\\share\\x"]);
+        }
+        for stem in outside {
+            assert_eq!(
+                profile_path(folder, stem).unwrap_err().kind(),
+                io::ErrorKind::InvalidInput,
+                "{stem:?}"
+            );
+        }
     }
 }

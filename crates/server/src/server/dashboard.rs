@@ -271,8 +271,8 @@ fn read_body(request: &mut Request) -> Result<Map<String, Json>, ApiError> {
     }
 }
 
-/// A picture inside the assets folder: `boxes/<a-z0-9_>.png` or
-/// `previews/<16 upper-case hex digits>.webp`.
+/// A picture inside the assets folder: `boxes/<a-z0-9_>.png` (not a Windows
+/// device name such as `con`) or `previews/<16 upper-case hex digits>.webp`.
 fn picture(assets: &Path, path: &str) -> Option<(PathBuf, &'static str)> {
     let relative = path.strip_prefix("/assets/")?;
     let (folder, name) = relative.split_once('/')?;
@@ -282,6 +282,7 @@ fn picture(assets: &Path, path: &str) -> Option<(PathBuf, &'static str)> {
                 && stem
                     .bytes()
                     .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+                && !lucy_lobby::account_name::is_reserved_device_name(stem)
         }),
         "previews" => name.strip_suffix(".webp").is_some_and(|stem| {
             stem.len() == 16
@@ -558,6 +559,8 @@ mod tests {
         for path in [
             "/assets/boxes/../secret.png",
             "/assets/boxes/Golden.png",
+            "/assets/boxes/con.png",
+            "/assets/boxes/com1.png",
             "/assets/previews/0250000000001149.png",
             "/assets/previews/0250000000001i49.webp",
             "/assets/dashboard.js",
