@@ -158,7 +158,7 @@ impl Setup {
         };
         let world_players = (0..players)
             .map(|index| {
-                let name = format!("load{}x{index}#1000", id[1]);
+                let name = format!("load{}x{index}#1000", id[0]);
                 WorldPlayer {
                     player: MatchPlayer {
                         name: name.clone(),
@@ -170,7 +170,7 @@ impl Setup {
                         ranked: false,
                     },
                     card: PlayerCard {
-                        account: [7, 0x0100_0000_0000_0000 | (id[1] << 8) | index as u64],
+                        account: [7, 0x0100_0000_0000_0000 | (id[0] << 8) | index as u64],
                         battle_tag: name.clone(),
                         record: Fields::from([(0x40, Value::String(name))]),
                         ..PlayerCard::default()
@@ -494,7 +494,8 @@ fn measured(start: &[Option<TickStats>], end: &[Option<TickStats>]) -> Vec<Optio
 }
 
 fn match_id(room: usize) -> MatchId {
-    [5, 8 + room as u64]
+    // The logs name a match by its first half.
+    [5 + room as u64, 8]
 }
 
 /// `rooms` matches of `kind` with `players` each on the virtual clock.
