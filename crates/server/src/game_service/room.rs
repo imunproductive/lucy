@@ -28,6 +28,7 @@ use lucy_content::{
     maps::{GameMap, SpawnChoice},
     stats::PlayerStats,
 };
+use lucy_core::phase::{self, Phase};
 use lucy_lobby::handoff::Handoff;
 use lucy_sim::{
     ai::Random,
@@ -51,6 +52,7 @@ use super::{
     PlayerSnapshot, PlayerState, RECEIVE_BATCH, Room, RoomRequest, RoomSettings, RoomSnapshot,
     RoomState, RoomWorkshop, Transport, WorldPlayer, WorldStart, ai, check_scene, invalid,
     leave_message, player_entity, router::Inbound, send, spawn_number, take_placeable_removals,
+    timing::TickTiming,
 };
 use crate::{
     clock::{GameClock, Step, next_tick_after},
@@ -142,7 +144,11 @@ impl RoomLoop {
         if self.abandoned {
             return Pass::default();
         }
+        // What the thread did before the pass (its wait, another room's
+        // pass on the tests' thread) isn't the room's.
+        phase::take();
         let stepped = panic::catch_unwind(AssertUnwindSafe(|| self.step(socket, inbound, &clock)));
+        self.state.timing.add(&phase::take());
         match stepped {
             Ok(Ok(pass)) => pass,
             Ok(Err(error)) => {
@@ -173,6 +179,7 @@ impl RoomLoop {
             handled += 1;
         }
         let now = clock();
+        let _simulate = phase::enter(Phase::Simulate);
         // The tick that is due runs each player's command of its own
         // (`RoomState::release_input`) before it simulates and sends.
         let due = if now >= self.due {
@@ -202,6 +209,14 @@ impl RoomLoop {
             // it, before whatever comes in next: not when the next
             // datagram, request or tick wakes the loop.
             input_ready = self.state.input_waits();
+            self.state.timing.add(&phase::take());
+            if let Some(window) = self.state.timing.tick(now, late, missed) {
+                tracing::info!(
+                    target: "lucy::timing",
+                    "[game] match {:04X}: {window}",
+                    self.state.id[0] & 0xFFFF
+                );
+            }
         }
         Ok(Pass {
             handled,
@@ -281,6 +296,7 @@ impl RoomState {
             next_input_peer: 0,
             timers,
             events,
+            timing: TickTiming::default(),
             #[cfg(all(test, unwinds))]
             fail: false,
         };
@@ -301,6 +317,7 @@ impl RoomState {
     fn take(&mut self, socket: &impl Transport, inbound: Inbound, now: Duration) {
         match inbound {
             Inbound::Datagram(datagram) => {
+                let _receive = phase::enter(Phase::Receive);
                 self.receive(
                     socket,
                     &datagram.bytes,
@@ -459,6 +476,7 @@ impl RoomState {
                 .workshop
                 .as_ref()
                 .map(|workshop| workshop.logic.rules.len()),
+            timing: self.timing.snapshot(),
             waiting: room
                 .flow
                 .as_ref()
@@ -1008,6 +1026,7 @@ impl RoomState {
             // before the players' steps.
             self.update_flows(tick, now);
             // The AI heroes' input for this tick (ai.rs).
+            let _ai = phase::enter(Phase::Ai);
             self.drive_ai(tick, now);
         }
         // What every player's graphs counted (the AI heroes' too), what the
@@ -1038,10 +1057,13 @@ impl RoomState {
             let slot = self.seats[&connection];
             let room = &mut self.room;
             if simulate
-                && peer
-                    .update(&self.schemas, room, slot, timers, now, tick)
-                    .is_err()
+                && let Err(error) = peer.update(&self.schemas, room, slot, timers, now, tick)
             {
+                tracing::warn!(
+                    "[game] match {:04X}: {} is sent home: {error}",
+                    self.id[0] & 0xFFFF,
+                    room.players[slot].info.name
+                );
                 peer.leave(&mut self.links, &self.schemas, connection, now);
             }
             if simulate {
@@ -1080,16 +1102,19 @@ impl RoomState {
         if simulate {
             self.say_player_lines(tick);
             self.route_messages(tick);
+            let _replicate = phase::enter(Phase::Replicate);
             self.show_players(tick, now);
         }
         for (&connection, peer) in &mut self.peers {
             if peer.ai.is_some() {
                 // What a client would get arrives at once (ai.rs).
                 if simulate {
+                    let _ai = phase::enter(Phase::Ai);
                     peer.world.deliver_locally(tick, now);
                 }
                 continue;
             }
+            let _replicate = phase::enter(Phase::Replicate);
             // Each tick sends every client a datagram (62.5 a second, as
             // retail's PC default); the forced last drain step only retires.
             if !force && peer.open {

@@ -238,6 +238,7 @@ impl WorkshopRun {
     ///   Rocket Punch's victim graph `0D07`). A ModifyHealth's knockback
     ///   rings (uppercut, slam, quick melee) push nobody yet.
     pub fn player_events(&mut self, happened: &[PlayerEvent]) {
+        let _workshop = lucy_core::phase::enter(lucy_core::phase::Phase::Workshop);
         for event in happened {
             match *event {
                 PlayerEvent::Damage {
@@ -357,6 +358,7 @@ impl WorkshopRun {
         mode: &mut ModeRunner,
         players: &mut [WorkshopPlayer<'_>],
     ) {
+        let _workshop = lucy_core::phase::enter(lucy_core::phase::Phase::Workshop);
         let kills = std::mem::take(&mut self.kills);
         let Some(script) = mode.script_mut() else {
             return;

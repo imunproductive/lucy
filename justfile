@@ -43,9 +43,9 @@ build:
 export CARGO_BUILD_JOBS := env_var_or_default("CARGO_BUILD_JOBS", `[Math]::Max(1, [Math]::Floor([Environment]::ProcessorCount / 4))`)
 export RUST_TEST_THREADS := env_var_or_default("RUST_TEST_THREADS", CARGO_BUILD_JOBS)
 
-# Ignored tests that read an Overwatch 1.74 install or the game data derived from it, without the slow group; then the serial_ tests, one at a time.
+# Ignored tests that read an Overwatch 1.74 install or the game data derived from it, without the slow group and the load harness; then the serial_ tests, one at a time.
 test-game game:
-    cargo build -p lucy-relay --locked; $env:LUCY_GAME_DIR = '{{game}}'; cargo nextest run --workspace --exclude lucy-launcher --locked --cargo-profile gametest --run-ignored only -j $env:RUST_TEST_THREADS -E 'not (test(/datatool/) | test(/matches_the_pack/) | test(/dpk_archive/) | test(/(^|::)slow_/) | test(/(^|::)serial_/))'; $parallel = $LASTEXITCODE; cargo nextest run --workspace --exclude lucy-launcher --locked --cargo-profile gametest --run-ignored only -j 1 -E 'test(/(^|::)serial_/) & not test(/(^|::)slow_/)'; exit [Math]::Max($parallel, $LASTEXITCODE)
+    cargo build -p lucy-relay --locked; $env:LUCY_GAME_DIR = '{{game}}'; cargo nextest run --workspace --exclude lucy-launcher --locked --cargo-profile gametest --run-ignored only -j $env:RUST_TEST_THREADS -E 'not (test(/datatool/) | test(/matches_the_pack/) | test(/dpk_archive/) | test(/(^|::)slow_/) | test(/(^|::)serial_/) | test(/(^|::)load_/))'; $parallel = $LASTEXITCODE; cargo nextest run --workspace --exclude lucy-launcher --locked --cargo-profile gametest --run-ignored only -j 1 -E 'test(/(^|::)serial_/) & not test(/(^|::)slow_/)'; exit [Math]::Max($parallel, $LASTEXITCODE)
 
 # The game-install tests that play a whole match or run over a minute: their names start with slow_.
 # The ones that read the Doomfist parkour archive run in test-dpk.
@@ -59,7 +59,16 @@ test-named game crate filter profile="dev":
 # The tests of the crates a change can affect (tools/affected.py), game-install tests included: an
 # agent's own check before reporting. Merges run `test` and `test-game`.
 test-affected game:
-    cargo build -p lucy-relay -p lucy-probe --locked; $env:LUCY_GAME_DIR = '{{game}}'; $crates = (python tools/affected.py --cargo-args) -split ' '; if ($crates.Count -lt 2) { 'no crate affected'; exit 0 }; cargo nextest run @crates --locked --run-ignored all -j $env:RUST_TEST_THREADS -E 'not (test(/datatool/) | test(/matches_the_pack/) | test(/dpk_archive/) | test(/(^|::)slow_/) | test(/(^|::)serial_/))'
+    cargo build -p lucy-relay -p lucy-probe --locked; $env:LUCY_GAME_DIR = '{{game}}'; $crates = (python tools/affected.py --cargo-args) -split ' '; if ($crates.Count -lt 2) { 'no crate affected'; exit 0 }; cargo nextest run @crates --locked --run-ignored all -j $env:RUST_TEST_THREADS -E 'not (test(/datatool/) | test(/matches_the_pack/) | test(/dpk_archive/) | test(/(^|::)slow_/) | test(/(^|::)serial_/) | test(/(^|::)load_/))'
+
+# The load harness (`crates/server/src/game_service/tests/load.rs`): headless games in C32S2 and
+# Practice vs AI matches, N players each and several matches at once, on the virtual clock (CPU per
+# tick by phase, memory per room) and the real clock (tick rate, lateness); prints a table a test.
+# Release code with line tables (profile `profiling`), one test at a time; `filter` picks tests
+# (`load_parkour`, `virtual_clock`). Run it on a quiet PC: the real clock measures the machine.
+# mimalloc gives freed memory back at once, so the process's private bytes measure the matches.
+load game archive filter="load_":
+    $env:LUCY_GAME_DIR = '{{game}}'; $env:LUCY_DPK_ARCHIVE = '{{archive}}'; $env:MIMALLOC_PURGE_DELAY = 0; cargo nextest run -p lucy-server --locked --cargo-profile profiling --run-ignored only --no-capture -E 'test(/(^|::)load_/)' {{filter}}
 
 # Ignored tests that derive the runtime pack's files from an install and compare them with the pack.
 test-assets game runtime:

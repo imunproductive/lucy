@@ -107,6 +107,7 @@ impl LinkCipher {
     ///
     /// The sender must not reuse a sequence with the same key and salt.
     pub fn seal(&self, packet: &Packet) -> Result<Vec<u8>, aes_gcm::Error> {
+        let _crypto = lucy_core::phase::enter(lucy_core::phase::Phase::Crypto);
         let header = packet.header();
         let nonce = make_nonce(self.salt_out, packet.seq);
         let mut datagram = Vec::with_capacity(HEADER_SIZE + packet.payload.len());
@@ -124,6 +125,7 @@ impl LinkCipher {
 
     /// Open a client-to-server datagram, returning None on format or authentication failure.
     pub fn open(&self, datagram: &[u8]) -> Option<Packet> {
+        let _crypto = lucy_core::phase::enter(lucy_core::phase::Phase::Crypto);
         if !(HEADER_SIZE..=MAX_DATAGRAM).contains(&datagram.len())
             || datagram[HEADER_SIZE - 1] != MAGIC
         {

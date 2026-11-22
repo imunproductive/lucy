@@ -13,6 +13,7 @@ lucy-assets.workspace = true
 flate2.workspace = true
 getrandom.workspace = true
 indexmap.workspace = true
+mimalloc.workspace = true
 mio.workspace = true
 lucy-bnet.workspace = true
 lucy-content.workspace = true
@@ -31,5 +32,6 @@ windows-sys = { workspace = true, features = ["Win32_Media"] }
 [dev-dependencies]
 lucy-testkit.workspace = true
 tempfile.workspace = true
+tracing-subscriber.workspace = true
 lucy-sim = { workspace = true, features = ["fixtures"] }
 lucy-wire = { workspace = true, features = ["fixtures"] }

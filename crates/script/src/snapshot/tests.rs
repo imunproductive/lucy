@@ -602,7 +602,7 @@ fn initial_owner_delta_matches_python_stack_bindings_and_payloads() {
     // are Python's bytes for those (body_full_frame, remote_full_frame, then
     // owner_delta at CmFD 1001).
     let mut python = owner.clone();
-    python.variables.values[&7] = Value::Integer(31);
+    python.variables_mut().values[&7] = Value::Integer(31);
     instance_mut(&mut python, 1).variables.values[&100] = Value::Integer(17);
     check(
         &encoder.full(&python).unwrap(),
@@ -639,7 +639,7 @@ fn initial_owner_delta_matches_python_stack_bindings_and_payloads() {
     );
     // The bindings going away resend the values.
     let mut unbound = owner.clone();
-    unbound.variables.bindings.clear();
+    unbound.variables_mut().bindings.clear();
     instance_mut(&mut unbound, 1).variables.bindings.clear();
     let delta = encoder
         .differences(&owner, &unbound, &BTreeSet::new(), &BTreeSet::new())
@@ -748,11 +748,11 @@ fn a_stack_adding_to_its_own_variable_counts_once_on_the_owners_client() {
 
 /// A projected instance to edit (a copy of its own if shared).
 fn instance_mut(snapshot: &mut ProjectedSnapshot, id: u16) -> &mut ProjectedInstance {
-    Arc::make_mut(snapshot.instances.get_mut(&id).unwrap())
+    edit_instance(snapshot.instances.get_mut(&id).unwrap())
 }
 
 fn after_body_change(mut snapshot: ProjectedSnapshot) -> ProjectedSnapshot {
-    snapshot.variables.values.swap_remove(&55);
+    snapshot.variables_mut().values.swap_remove(&55);
     let root = instance_mut(&mut snapshot, 1);
     root.variables.values.insert(100, Value::Integer(99));
     root.variables.values.swap_remove(&200);
@@ -1988,7 +1988,7 @@ fn an_observer_delta_carries_only_what_the_queued_chunks_hold_beyond_the_base() 
         .unwrap();
     stream.sent(one.last);
     let mut second = first.clone();
-    second.variables.values.insert(55, Value::Integer(7));
+    second.variables_mut().values.insert(55, Value::Integer(7));
     let two = encoder
         .queue_delta(&mut stream, &second, kind, 16)
         .unwrap()
@@ -1997,7 +1997,7 @@ fn an_observer_delta_carries_only_what_the_queued_chunks_hold_beyond_the_base() 
     assert_eq!(keys(&stream, two.last), BTreeSet::from([entity, root]));
     assert!(stream.arrived(one.last).advanced);
     let mut third = second.clone();
-    third.variables.values.insert(55, Value::Integer(8));
+    third.variables_mut().values.insert(55, Value::Integer(8));
     let three = encoder
         .queue_delta(&mut stream, &third, kind, 16)
         .unwrap()
@@ -2079,17 +2079,7 @@ fn a_delta_lists_a_variable_that_went_from_unset_to_false_or_zero() {
         (4, Value::Integer(0)),
         (5, Value::Array(vec![Value::Bool(false)])),
     ]);
-    let mut changes = BTreeSet::new();
-    let delta = delta_variables(
-        7,
-        Some(&before),
-        &current,
-        &BTreeSet::new(),
-        false,
-        &mut changes,
-    );
-    let mut listed: Vec<_> = delta.values.keys().copied().collect();
-    listed.sort_unstable();
+    let listed: Vec<_> = current.differing_from(&before).into_iter().collect();
     assert_eq!(listed, [2, 5, 1821]);
 }
 
