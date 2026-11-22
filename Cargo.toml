@@ -126,3 +126,10 @@ overflow-checks = true
 codegen-units = 256
 incremental = true
 debug = "line-tables-only"
+
+# The load harness (`just load`) and the profiler measure the release build's
+# code: this profile is release with line tables, so a sampling profiler can
+# name the functions (`tools/sample_threads.py`).
+[profile.profiling]
+inherits = "release"
+debug = "line-tables-only"

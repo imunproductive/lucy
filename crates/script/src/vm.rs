@@ -2989,6 +2989,7 @@ impl Component {
         if self.halted {
             return Err(InitFault::Halted);
         }
+        let _script = lucy_core::phase::enter(lucy_core::phase::Phase::Script);
         self.machine.work_left = self.machine.max_work;
         let result = operation(&mut Vm::new(&self.graphs, world, &mut self.machine));
         self.halted = result.is_err();
@@ -3007,6 +3008,7 @@ pub fn initialize(
     world: &mut impl World,
     max_work: usize,
 ) -> Result<Snapshot, InitFault> {
+    let _script = lucy_core::phase::enter(lucy_core::phase::Phase::Script);
     let world = erase(world);
     let mut machine = Machine::new(entity, entity_variables, 0, max_work)?;
     Vm::new(graphs, world, &mut machine).start(roots)?;

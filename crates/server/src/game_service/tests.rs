@@ -7138,6 +7138,7 @@ fn a_firing_practice_bot_shoots_the_player() {
 
 mod assault;
 mod collision_ready;
+mod load;
 mod rooms;
 mod victims;
 mod workshop;

@@ -4,4 +4,5 @@
 
 pub mod bits;
 pub mod guid;
+pub mod phase;
 pub mod tick;
