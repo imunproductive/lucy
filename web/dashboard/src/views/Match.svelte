@@ -250,6 +250,25 @@
           </ul>
           <label class="field reason"><span>Kick reason (optional)</span><input maxlength="120" bind:value={kickReason} /></label>
         </section>
+
+        <section class="card">
+          <div class="card-header">
+            <div>
+              <h2>Server ticks</h2>
+              <p>{match.timing.ticks} ticks in the last {match.timing.span_s} s{match.timing.skipped ? `, ${match.timing.skipped} skipped` : ''}.</p>
+            </div>
+          </div>
+          <dl class="timing">
+            <dt>Work</dt>
+            <dd class="numeric">{match.timing.work_mean_ms} ms mean · {match.timing.work_p99_ms} p99 · {match.timing.work_max_ms} max</dd>
+            <dt>Start late</dt>
+            <dd class="numeric">{match.timing.late_mean_ms} ms mean · {match.timing.late_p99_ms} p99</dd>
+            {#each Object.entries(match.timing.phases_mean_ms).filter(([, ms]) => ms > 0) as [phase, ms] (phase)}
+              <dt>{phase}</dt>
+              <dd class="numeric">{ms} ms</dd>
+            {/each}
+          </dl>
+        </section>
       </aside>
     </div>
   {/if}
@@ -319,6 +338,23 @@
 
   .reason {
     margin-top: var(--space-4);
+  }
+
+  .timing {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: var(--space-1) var(--space-3);
+    margin: 0;
+    font-size: 13px;
+  }
+
+  .timing dt {
+    color: var(--muted);
+    text-transform: capitalize;
+  }
+
+  .timing dd {
+    margin: 0;
   }
 
   .players {

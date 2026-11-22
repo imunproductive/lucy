@@ -60,6 +60,21 @@ export interface LiveMatch {
   players: MatchPlayer[];
   chat_seq: number;
   controls: FlowControl[];
+  /** The room's tick timing: its last 10 s window (all ticks before the first closes). */
+  timing: TickTiming;
+}
+
+export interface TickTiming {
+  ticks: number;
+  span_s: number;
+  skipped: number;
+  work_mean_ms: number;
+  work_p99_ms: number;
+  work_max_ms: number;
+  late_mean_ms: number;
+  late_p99_ms: number;
+  /** Mean milliseconds per tick in each part of the work (simulate, script, replicate…). */
+  phases_mean_ms: Record<string, number>;
 }
 
 export interface LiveSnapshot {

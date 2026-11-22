@@ -20,13 +20,14 @@ use serde_json::{Map, Value as Json, json};
 
 use super::api::{ApiError, ApiResult};
 use crate::{
-    game_service::{Driven, FlowAction, FlowRefusal, MatchId, MatchSnapshot},
+    game_service::{Driven, FlowAction, FlowRefusal, MatchId, MatchSnapshot, RoomTiming},
     lobby::{
         Lobby,
         chat_log::{ChatLine, LineChannel, LineKind},
         host::{self, Audience, Scope},
     },
 };
+use lucy_core::phase::Phase as TickPhase;
 use lucy_sim::match_flow::Phase;
 
 /// The live view's revisions: the last view, its number, and when each
@@ -160,6 +161,7 @@ pub(super) fn live(
                 })).collect::<Vec<_>>(),
                 "chat_seq": lobby.chat_log.last(found.id),
                 "controls": flow.controls.iter().map(|control| control.name()).collect::<Vec<_>>(),
+                "timing": timing_json(&found.timing),
             })
         })
         .collect();
@@ -175,6 +177,32 @@ pub(super) fn live(
     let mut reply = view;
     reply["rev"] = json!(rev);
     Ok(reply)
+}
+
+/// A room's tick timing (`game_service/timing.rs`): its last closed window,
+/// or every tick so far before the first closes; milliseconds.
+fn timing_json(timing: &RoomTiming) -> Json {
+    let stats = if timing.window.ticks() > 0 {
+        &timing.window
+    } else {
+        &timing.total
+    };
+    let ms = |time: std::time::Duration| (time.as_secs_f64() * 1e5).round() / 100.0;
+    let phases: Map<String, Json> = TickPhase::ALL
+        .into_iter()
+        .map(|phase| (phase.name().to_owned(), json!(ms(stats.phase_mean(phase)))))
+        .collect();
+    json!({
+        "ticks": stats.ticks(),
+        "span_s": stats.span.as_secs(),
+        "skipped": stats.skipped,
+        "work_mean_ms": ms(stats.work.mean()),
+        "work_p99_ms": ms(stats.work.quantile(0.99)),
+        "work_max_ms": ms(stats.work.max()),
+        "late_mean_ms": ms(stats.late.mean()),
+        "late_p99_ms": ms(stats.late.quantile(0.99)),
+        "phases_mean_ms": phases,
+    })
 }
 
 fn line_json(line: &ChatLine) -> Json {
