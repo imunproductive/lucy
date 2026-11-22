@@ -91,10 +91,32 @@ impl RoomState {
             // His body's searches that rewind see the bodies by the room's
             // history, as his shots do.
             let combat = world.combat.as_ref();
-            let (used, leave) = peer
-                .world
-                .advance_input(&world.scene, &viewer, context.quanta, budget, combat)
-                .unwrap_or((budget, true));
+            let name = &room.players[slot].info.name;
+            let id = self.id[0] & 0xFFFF;
+            let (used, leave) = match peer.world.advance_input(
+                &world.scene,
+                &viewer,
+                context.quanta,
+                budget,
+                combat,
+            ) {
+                Ok((used, leave)) => {
+                    if leave {
+                        // `InputQueue::push`: more than `MAX_PENDING_INPUT`
+                        // waited, or a command the queue can't take in turn.
+                        tracing::warn!(
+                            "[game] match {id:04X}: {name} is sent home: his input queue closed"
+                        );
+                    }
+                    (used, leave)
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        "[game] match {id:04X}: {name} is sent home: his input failed: {error}"
+                    );
+                    (budget, true)
+                }
+            };
             remaining -= used;
             self.next_input_peer = (index + 1) % count;
             let shots = peer.world.take_shots();

@@ -17,7 +17,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error,
     fmt,
-    sync::Arc,
+    sync::{Arc, Mutex, PoisonError, Weak},
 };
 
 use crate::codecs::{Codec, CodecTable, PayloadError, PayloadMode, StatePayload};
@@ -48,7 +48,8 @@ pub enum View {
 pub struct ProjectedSnapshot {
     entity: u32,
     view: View,
-    variables: ProjectedVariables,
+    /// Shared with its copies (the chunks queued from it, a client's base).
+    variables: Arc<EntityVariables>,
     /// Each shared with the projections it didn't change in
     /// ([`SnapshotEncoder::project_cached`]).
     instances: BTreeMap<u16, Arc<ProjectedInstance>>,
@@ -171,21 +172,33 @@ impl ProjectedSnapshot {
 
     /// An entity variable as this projection sends it.
     pub fn entity_variable(&self, id: u32) -> Option<&Value> {
-        self.variables.values.get(&id)
+        self.variables.variables.values.get(&id)
     }
 
     /// Send `value` for an entity variable instead of the script's (none:
     /// leave it out), without Stack links: what the frames carry for
     /// content the server doesn't run.
     pub fn set_entity_variable(&mut self, id: u32, value: Option<Value>) {
-        self.variables.set(id, value);
+        let mut variables = self.variables.variables.clone();
+        variables.set(id, value);
+        // A new allocation: comparisons kept for the old one stay its own.
+        self.variables = EntityVariables::new(variables);
+    }
+
+    /// Tests: the entity variables to change, in a new allocation.
+    #[cfg(test)]
+    fn variables_mut(&mut self) -> &mut ProjectedVariables {
+        self.variables = EntityVariables::new(self.variables.variables.clone());
+        &mut Arc::get_mut(&mut self.variables)
+            .expect("a new allocation")
+            .variables
     }
 
     /// As [`Self::set_entity_variable`], for an instance's variable;
     /// nothing without the instance.
     pub fn set_instance_variable(&mut self, instance: u16, id: u32, value: Option<Value>) {
         if let Some(instance) = self.instances.get_mut(&instance) {
-            Arc::make_mut(instance).variables.set(id, value);
+            edit_instance(instance).variables.set(id, value);
         }
     }
 
@@ -225,7 +238,7 @@ impl ProjectedSnapshot {
         let Some(instance) = self.instances.get_mut(&instance) else {
             return;
         };
-        let instance = Arc::make_mut(instance);
+        let instance = edit_instance(instance);
         match value {
             Some(value) => {
                 instance.states.insert(state, value);
@@ -303,7 +316,7 @@ impl ProjectedSnapshot {
             if value.as_ref() == current {
                 continue;
             }
-            let states = &mut Arc::make_mut(instance).states;
+            let states = &mut edit_instance(instance).states;
             match value {
                 Some(value) => states.insert(raw, value),
                 None => states.remove(&raw),
@@ -327,6 +340,7 @@ struct ProjectedInstance {
     states: BTreeMap<u16, ProjectedState>,
     events: Vec<ProjectedEvent>,
     self_same: SelfSame,
+    compared: Compared<ProjectedInstance, InstanceDifferences>,
 }
 
 /// [`ProjectedInstance::self_same`], worked out once. It takes no part
@@ -414,6 +428,140 @@ struct VolleyActivation {
 struct ProjectedVariables {
     values: Variables,
     bindings: Bindings,
+}
+
+impl ProjectedVariables {
+    /// The ids of the variables whose value or links on the wire differ
+    /// from `was`'s.
+    fn differing_from(&self, was: &Self) -> BTreeSet<u32> {
+        let links_differ = |id: &u32| self.bindings.get(id) != was.bindings.get(id);
+        // Usually both list the same ids in the same order (the same
+        // variables projected again): entry by entry, without lookups.
+        if self.values.keys().eq(was.values.keys()) {
+            return self
+                .values
+                .iter()
+                .zip(&was.values)
+                .filter(|((id, now), (_, before))| !same_on_wire(now, before) || links_differ(id))
+                .map(|((&id, _), _)| id)
+                .collect();
+        }
+        self.values
+            .keys()
+            .chain(was.values.keys())
+            .copied()
+            .filter(|id| {
+                let now = self.values.get(id).unwrap_or(&Value::Null);
+                let before = was.values.get(id).unwrap_or(&Value::Null);
+                !same_on_wire(now, before) || links_differ(id)
+            })
+            .collect()
+    }
+}
+
+/// What a shared projection part (a projection's [`EntityVariables`], a
+/// [`ProjectedInstance`]) was found to differ in from each base it was
+/// compared with. The chunks queued from a projection share its parts, so
+/// every client whose base is the same gets the same comparison, made
+/// once: a Workshop match's mode entity has hundreds of action instances,
+/// each with its parameters, which every client's delta compared again
+/// each tick (most of a 12-player C32S2 match's tick). A weak reference
+/// names each base: while it is listed, no other part can take the
+/// base's address. It takes no part in comparisons, and a clone (made to
+/// be edited) starts empty; an edit in place empties it
+/// ([`edit_instance`]).
+#[derive(Debug)]
+struct Compared<T, D>(Mutex<Vec<(Weak<T>, Arc<D>)>>);
+
+impl<T, D> Default for Compared<T, D> {
+    fn default() -> Self {
+        Self(Mutex::default())
+    }
+}
+
+impl<T, D> Clone for Compared<T, D> {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl<T, D> PartialEq for Compared<T, D> {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl<T, D> Compared<T, D> {
+    /// The differences from `base`, made by `compare` the first time.
+    fn with(&self, base: &Arc<T>, compare: impl FnOnce() -> D) -> Arc<D> {
+        let mut found = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some((_, differences)) = found
+            .iter()
+            .find(|(kept, _)| std::ptr::eq(kept.as_ptr(), Arc::as_ptr(base)))
+        {
+            return Arc::clone(differences);
+        }
+        let differences = Arc::new(compare());
+        found.retain(|(kept, _)| kept.strong_count() != 0);
+        found.push((Arc::downgrade(base), Arc::clone(&differences)));
+        differences
+    }
+
+    fn clear(&mut self) {
+        self.0
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
+    }
+}
+
+/// A projection's entity variables, shared with its copies (the chunks
+/// queued from it, a client's base), with their comparisons
+/// ([`Compared`]). A Workshop match's mode entity holds the rules' global
+/// variables here.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct EntityVariables {
+    variables: ProjectedVariables,
+    compared: Compared<EntityVariables, BTreeSet<u32>>,
+}
+
+impl std::ops::Deref for EntityVariables {
+    type Target = ProjectedVariables;
+
+    fn deref(&self) -> &ProjectedVariables {
+        &self.variables
+    }
+}
+
+impl EntityVariables {
+    fn new(variables: ProjectedVariables) -> Arc<Self> {
+        Arc::new(Self {
+            variables,
+            compared: Compared::default(),
+        })
+    }
+
+    /// The ids of the variables that differ from `base`'s.
+    fn differing_from(&self, base: &Arc<Self>) -> Arc<BTreeSet<u32>> {
+        self.compared
+            .with(base, || self.variables.differing_from(&base.variables))
+    }
+}
+
+/// What a [`ProjectedInstance`] differs in from a base's: its variables'
+/// ids and its states' slots.
+#[derive(Debug)]
+struct InstanceDifferences {
+    variables: BTreeSet<u32>,
+    states: BTreeSet<u16>,
+}
+
+/// `instance` to edit, alone (a clone if shared), with no comparisons
+/// kept from before the edit.
+fn edit_instance(instance: &mut Arc<ProjectedInstance>) -> &mut ProjectedInstance {
+    let instance = Arc::make_mut(instance);
+    instance.compared.clear();
+    instance
 }
 
 impl ProjectedVariables {
@@ -867,6 +1015,7 @@ impl<'a> SnapshotEncoder<'a> {
                     states,
                     events,
                     self_same: SelfSame::default(),
+                    compared: Compared::default(),
                 }),
             );
         }
@@ -881,7 +1030,7 @@ impl<'a> SnapshotEncoder<'a> {
         Ok(ProjectedSnapshot {
             entity: snapshot.entity,
             view,
-            variables,
+            variables: EntityVariables::new(variables),
             instances,
             actions,
             action_serial: snapshot
@@ -1078,7 +1227,10 @@ impl<'a> SnapshotEncoder<'a> {
             }
             instances.push(wire);
         }
-        Ok(wire::remote_full(&instances, &snapshot.variables.values)?)
+        Ok(wire::remote_full(
+            &instances,
+            &snapshot.variables.variables.values,
+        )?)
     }
 
     /// An owner's full frame of the projection (owner view) at command
@@ -1132,7 +1284,7 @@ impl<'a> SnapshotEncoder<'a> {
             )?;
         }
         out.w_u16(0);
-        let variables = &snapshot.variables;
+        let variables = &snapshot.variables.variables;
         wire::bound_variable_list(
             &mut out,
             &variables.values,
@@ -1214,8 +1366,12 @@ impl<'a> SnapshotEncoder<'a> {
         let payload = self.full(snapshot)?;
         let mut baseline = snapshot.clone();
         if baseline.view == View::Owner {
-            baseline.variables.bindings.clear();
-            for instance in baseline.instances.values_mut().map(Arc::make_mut) {
+            if !baseline.variables.variables.bindings.is_empty() {
+                let mut variables = baseline.variables.variables.clone();
+                variables.bindings.clear();
+                baseline.variables = EntityVariables::new(variables);
+            }
+            for instance in baseline.instances.values_mut().map(edit_instance) {
                 instance.variables.bindings.clear();
                 instance.states.clear();
                 instance.events.clear();
@@ -1406,7 +1562,7 @@ impl<'a> SnapshotEncoder<'a> {
                     continue;
                 }
                 let (owner, values) = match variable.scope {
-                    Scope::Entity => (0, &current.variables.values),
+                    Scope::Entity => (0, &current.variables.variables.values),
                     Scope::Instance => (id, &instance.variables.values),
                 };
                 if values.contains_key(&variable.id) {
@@ -1425,12 +1581,18 @@ impl<'a> SnapshotEncoder<'a> {
         known: &BTreeSet<u16>,
     ) -> Result<SnapshotDelta<'s>, SnapshotError> {
         let mut delta = SnapshotDelta::default();
-        delta.variables = delta_variables(
+        // The entity's variables that differ from the base's, found once
+        // for every client with this base ([`EntityVariables`]), and the
+        // touched ones.
+        let differing = current.variables.differing_from(&base.variables);
+        delta.variables = listed_variables(
             0,
-            Some(&base.variables),
-            &current.variables,
-            touched,
-            false,
+            differing
+                .iter()
+                .copied()
+                .chain(touched_variables(0, touched))
+                .collect(),
+            &current.variables.variables,
             &mut delta.keys,
         );
         for (&id, next) in &current.instances {
@@ -1448,16 +1610,40 @@ impl<'a> SnapshotEncoder<'a> {
                 delta.keys.insert(ChangeKey::Instance(id));
             }
             // A baseline instance the projection shares lists only what
-            // was touched: each entry compares equal to itself.
+            // was touched: each entry compares equal to itself. What it
+            // differs in from another base is found once for every client
+            // with that base ([`Compared`]).
             let shared = before.is_some_and(|before| Arc::ptr_eq(before, next) && next.self_same());
-            let variables = delta_variables(
-                id,
-                before.map(|before| &before.variables),
-                &next.variables,
-                touched,
-                shared,
-                &mut delta.keys,
-            );
+            let differing = before.filter(|_| !shared).map(|before| {
+                next.compared.with(before, || InstanceDifferences {
+                    variables: next.variables.differing_from(&before.variables),
+                    states: next
+                        .states
+                        .keys()
+                        .chain(before.states.keys())
+                        .copied()
+                        .filter(|raw| next.states.get(raw) != before.states.get(raw))
+                        .collect(),
+                })
+            });
+            let touched_ids = touched_variables(id, touched);
+            let variables = match &differing {
+                Some(differing) => listed_variables(
+                    id,
+                    differing
+                        .variables
+                        .iter()
+                        .copied()
+                        .chain(touched_ids)
+                        .collect(),
+                    &next.variables,
+                    &mut delta.keys,
+                ),
+                None if shared => {
+                    listed_variables(id, touched_ids.collect(), &next.variables, &mut delta.keys)
+                }
+                None => new_variables(id, &next.variables, touched, &mut delta.keys),
+            };
             let graph = self.graph(id, next.graph)?;
             let touched_states = touched
                 .range(ChangeKey::State(id, 0)..=ChangeKey::State(id, u16::MAX))
@@ -1465,19 +1651,15 @@ impl<'a> SnapshotEncoder<'a> {
                     ChangeKey::State(_, state) => Some(*state),
                     _ => None,
                 });
-            let raw_slots: BTreeSet<_> = if shared {
-                touched_states.collect()
-            } else {
-                next.states
-                    .keys()
+            let raw_slots: BTreeSet<_> = match &differing {
+                Some(differing) => differing
+                    .states
+                    .iter()
                     .copied()
-                    .chain(
-                        before
-                            .into_iter()
-                            .flat_map(|before| before.states.keys().copied()),
-                    )
                     .chain(touched_states)
-                    .collect()
+                    .collect(),
+                None if shared => touched_states.collect(),
+                None => next.states.keys().copied().chain(touched_states).collect(),
             };
             let mut states = BTreeMap::new();
             for raw in raw_slots {
@@ -1931,54 +2113,49 @@ struct InstanceDelta<'a> {
     states: BTreeMap<u16, Option<Cow<'a, ProjectedState>>>,
 }
 
-/// The variables of `current` a delta from `before` lists. `shared`:
-/// `before` is `current`, and each entry is the same as itself
-/// ([`ProjectedInstance::self_same`]), so only the touched ones are.
-fn delta_variables(
+/// The variables of a new instance's `current` a delta lists: those the
+/// client doesn't hold as unset ([`ProjectedVariables::differing_from`]
+/// an empty base) and the touched ones.
+fn new_variables(
     instance: u16,
-    before: Option<&ProjectedVariables>,
     current: &ProjectedVariables,
     touched: &BTreeSet<ChangeKey>,
-    shared: bool,
     changes: &mut BTreeSet<ChangeKey>,
 ) -> ProjectedVariables {
-    let touched_ids = touched
+    let listed = current
+        .differing_from(&ProjectedVariables::default())
+        .into_iter()
+        .chain(touched_variables(instance, touched))
+        .collect();
+    listed_variables(instance, listed, current, changes)
+}
+
+/// The ids of `instance`'s variables in `touched`.
+fn touched_variables(instance: u16, touched: &BTreeSet<ChangeKey>) -> impl Iterator<Item = u32> {
+    touched
         .range(ChangeKey::Variable(instance, 0)..=ChangeKey::Variable(instance, u32::MAX))
         .filter_map(|key| match key {
             ChangeKey::Variable(_, id) => Some(*id),
             _ => None,
-        });
-    let ids: BTreeSet<_> = if shared {
-        touched_ids.collect()
-    } else {
-        current
-            .values
-            .keys()
-            .copied()
-            .chain(
-                before
-                    .into_iter()
-                    .flat_map(|vars| vars.values.keys().copied()),
-            )
-            .chain(touched_ids)
-            .collect()
-    };
+        })
+}
+
+/// The variables `ids` of `current` (unset ones as null), in id order, for
+/// a delta: each a change of `instance`.
+fn listed_variables(
+    instance: u16,
+    ids: BTreeSet<u32>,
+    current: &ProjectedVariables,
+    changes: &mut BTreeSet<ChangeKey>,
+) -> ProjectedVariables {
     let mut result = ProjectedVariables::default();
     for id in ids {
         let now = current.values.get(&id).unwrap_or(&Value::Null);
-        let was = before
-            .and_then(|vars| vars.values.get(&id))
-            .unwrap_or(&Value::Null);
-        let bindings = current.bindings.get(&id);
-        let previous_bindings = before.and_then(|vars| vars.bindings.get(&id));
-        let key = ChangeKey::Variable(instance, id);
-        if touched.contains(&key) || !same_on_wire(now, was) || bindings != previous_bindings {
-            result.values.insert(id, now.clone());
-            if let Some(bindings) = bindings {
-                result.bindings.insert(id, bindings.clone());
-            }
-            changes.insert(key);
+        result.values.insert(id, now.clone());
+        if let Some(bindings) = current.bindings.get(&id) {
+            result.bindings.insert(id, bindings.clone());
         }
+        changes.insert(ChangeKey::Variable(instance, id));
     }
     result
 }

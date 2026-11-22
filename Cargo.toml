@@ -42,6 +42,7 @@ hmac = "0.12"
 indexmap = { version = "2", features = ["serde"] }
 md-5 = "0.10"
 lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz"] }
+mimalloc = "0.1.52"
 mio = { version = "1.1.1", features = ["net", "os-poll"] }
 prost = "0.14"
 prost-reflect = "0.16"
@@ -125,4 +126,11 @@ debug-assertions = true
 overflow-checks = true
 codegen-units = 256
 incremental = true
+debug = "line-tables-only"
+
+# The load harness (`just load`) and the profiler measure the release build's
+# code: this profile is release with line tables, so a sampling profiler can
+# name the functions (`tools/sample_threads.py`).
+[profile.profiling]
+inherits = "release"
 debug = "line-tables-only"

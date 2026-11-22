@@ -88,6 +88,7 @@ use lucy_wire::{
 };
 
 use router::Router;
+pub use timing::{RoomTiming, Spread, TickStats};
 
 const GAME_SOCKET: Token = Token(0);
 const REQUESTS: Token = Token(1);
@@ -131,6 +132,9 @@ pub struct MatchSnapshot {
     /// A Workshop match (a custom game, or `--workshop`): how many rules
     /// its script has for the Workshop engine; `None` for every other match.
     pub workshop_rules: Option<usize>,
+    /// How long its ticks take, by phase, and how late they start
+    /// (`timing.rs`).
+    pub timing: RoomTiming,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1223,6 +1227,8 @@ struct RoomState {
     hurt: HurtFeedback,
     /// What the router learns from the room.
     events: router::Events,
+    /// Its ticks' timing (`timing.rs`).
+    timing: timing::TickTiming,
     /// Tests: the next tick panics ([`GameService::fail_match`]).
     #[cfg(all(test, unwinds))]
     fail: bool,
@@ -1267,7 +1273,9 @@ impl Transport for std::net::UdpSocket {
 }
 
 fn send(socket: &impl Transport, outgoing: Outgoing) -> io::Result<u32> {
+    let send = lucy_core::phase::enter(lucy_core::phase::Phase::Send);
     let count = socket.send_to(&outgoing.datagram, outgoing.address)?;
+    drop(send);
     if count != outgoing.datagram.len() {
         return Err(io::Error::new(
             io::ErrorKind::WriteZero,
@@ -1285,6 +1293,7 @@ mod peer;
 mod room;
 mod router;
 mod timer;
+mod timing;
 
 #[cfg(test)]
 pub(crate) mod lockstep;
