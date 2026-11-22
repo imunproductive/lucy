@@ -263,6 +263,236 @@ fn dpk_archive_c32s2_hosted_match_shows_a_hud_text_on_the_mode_entity() {
     server.stop().unwrap();
 }
 
+/// Rules of [`a_workshop_match_keeps_each_team_in_its_own_spawn_room`]:
+/// the match's clock skips assemble and setup, and Team 1's player goes
+/// to point A 2 s after he spawns.
+const ROOM_TELEPORT: &str = r#"
+rule("Match time")
+{
+	event
+	{
+		Ongoing - Global;
+	}
+
+	actions
+	{
+		Wait(0.250, Ignore Condition);
+		Set Match Time(1);
+		Wait(1.100, Ignore Condition);
+		Set Match Time(1);
+		Wait(1.100, Ignore Condition);
+		Set Match Time(3600);
+	}
+}
+
+rule("Team 1 goes to point A")
+{
+	event
+	{
+		Ongoing - Each Player;
+		Team 1;
+		All;
+	}
+
+	conditions
+	{
+		Has Spawned(Event Player) == True;
+	}
+
+	actions
+	{
+		Wait(2.000, Ignore Condition);
+		Teleport(Event Player, Vector(-4.265, 1.156, 0.578));
+	}
+}
+"#;
+
+/// Two Doomfists, one a team, in a Workshop match on Hanamura Assault
+/// ([`ROOM_TELEPORT`]). Each spawns in his own team's spawn room: its
+/// `0D62` sends him `0723`, so his `0C8E` heals him (st13), and no room
+/// of the other team sends him `0B7B` (st45, 400 a second). Then Team 1's
+/// rule teleports him to point A, out of his room: the room's search
+/// drops him and lets its `0723` go, so the heal stops.
+#[test]
+#[ignore = "requires an Overwatch 1.74 install (ORPHEUS_GAME_DIR)"]
+fn a_workshop_match_keeps_each_team_in_its_own_spawn_room() {
+    let runtime = orpheus_testkit::runtime_dir();
+    let data = runtime.join("data");
+    let catalog = Arc::new(orpheus_workshop::Catalog::load(&data).unwrap());
+    let logic = Arc::new(
+        orpheus_workshop::parse(ROOM_TELEPORT, &catalog)
+            .unwrap()
+            .logic,
+    );
+    let maps = MapCatalog::load(&data)
+        .unwrap()
+        .with_modes(GameModes::load(data.join(MODES_FILE)).unwrap());
+    let hanamura = maps
+        .map_catalog()
+        .into_iter()
+        .find(|listing| listing.name == "Hanamura")
+        .unwrap();
+    let map = maps
+        .game_map(
+            hanamura.guid,
+            orpheus_sim::match_flow::ASSAULT,
+            "Assault",
+            false,
+            &[1, 1],
+        )
+        .expect("Hanamura in Assault");
+    let assets = Arc::new(
+        SceneAssets::load(&runtime)
+            .unwrap()
+            .with_collision_build(collision_build(orpheus_testkit::game_dir())),
+    );
+    let schemas = Arc::new(Schemas::game());
+    let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
+    let prepare = {
+        let (assets, map) = (Arc::clone(&assets), map.clone());
+        Box::new(move || assets.prepare(map))
+    };
+    let players = ["first#1111", "second#2222"]
+        .iter()
+        .enumerate()
+        .map(|(team, tag)| WorldPlayer {
+            player: MatchPlayer {
+                name: (*tag).into(),
+                team: team as u8,
+                tournament: false,
+                ranked: false,
+            },
+            card: PlayerCard::default(),
+            hero: 0,
+        })
+        .collect();
+    let tickets = server
+        .open_world(MATCH, map, players, None, prepare)
+        .unwrap();
+    assert!(server.attach_workshop(MATCH, logic, catalog).unwrap());
+    server.await_scenes();
+    let mut watchers: Vec<Watcher> = tickets
+        .iter()
+        .enumerate()
+        .map(|(slot, ticket)| {
+            let mut client = Client::new(&server, ticket);
+            client.handshake();
+            Watcher {
+                client,
+                owner: player_entity(slot),
+                tick: 0,
+                sequences: HashSet::new(),
+                datagrams: Vec::new(),
+                ticks: Vec::new(),
+            }
+        })
+        .collect();
+    let [first, second] = &mut watchers[..] else {
+        unreachable!()
+    };
+    pump_until(&mut [first, second], &schemas, "the instance", |watchers| {
+        watchers.iter().all(|watcher| {
+            watcher
+                .datagrams
+                .iter()
+                .any(|(messages, _)| messages.iter().any(|message| message.id == 20300))
+        })
+    });
+    for watcher in [&mut *first, &mut *second] {
+        let loaded = encode(&schemas, 21602, &Fields::new()).unwrap();
+        let mut payload = BitWriter::new();
+        write_channel(&mut payload, &[(0, loaded)], &[]).unwrap();
+        watcher.client.send(ACK, payload.into_bytes());
+    }
+    // "Match time" ends Assemble and Setup by 2.35 s; they pick in the
+    // Round.
+    let world = first.client.now();
+    pump_within(
+        &mut [first, second],
+        &schemas,
+        "the round",
+        Duration::from_secs(6),
+        |watchers| watchers[0].client.now() >= world + Duration::from_secs(4),
+    );
+    for watcher in [&mut *first, &mut *second] {
+        let owner = watcher.owner;
+        send_player_message(
+            &mut watcher.client,
+            &schemas,
+            owner,
+            1,
+            PICK_HERO,
+            DOOMFIST.to_le_bytes().to_vec(),
+        );
+    }
+    let (mut first_input, mut second_input) = (first.tick + 1, second.tick + 1);
+    let mut step = |first: &mut Watcher, second: &mut Watcher| {
+        send_input(first, &mut first_input, 0, 0, 0, false);
+        send_input(second, &mut second_input, 0, 0, 0, false);
+        first.pump(&schemas);
+        second.pump(&schemas);
+    };
+    let deadline = server.now() + Duration::from_secs(5);
+    while server
+        .bodies(MATCH)
+        .unwrap()
+        .iter()
+        .any(|body| body.health.is_none())
+    {
+        assert!(server.now() < deadline, "{:?}", server.bodies(MATCH));
+        step(first, second);
+    }
+    // A second in their rooms: each room's search (every 12 frames) has
+    // found its team's player.
+    let settled = server.now() + Duration::from_secs(1);
+    while server.now() < settled {
+        step(first, second);
+        for body in server.bodies(MATCH).unwrap() {
+            assert!(!body.room_hurt, "{body:?}");
+            assert_eq!(body.health, Some(1.0), "{body:?}");
+        }
+    }
+    for body in server.bodies(MATCH).unwrap() {
+        assert_eq!(
+            (body.spawn_room, body.room_heal),
+            (Some(true), true),
+            "{body:?}"
+        );
+    }
+    // Team 1 on point A, out of his room.
+    let on_point = |server: &Lockstep| {
+        server.bodies(MATCH).unwrap()[0]
+            .position
+            .is_some_and(|feet| (feet[0] + 4.265).hypot(feet[2] - 0.578) < 0.5)
+    };
+    let deadline = server.now() + Duration::from_secs(3);
+    while !on_point(&server) {
+        assert!(server.now() < deadline, "{:?}", server.bodies(MATCH));
+        step(first, second);
+    }
+    let left = server.now() + Duration::from_millis(500);
+    while server.now() < left {
+        step(first, second);
+    }
+    let [team1, team2] = <[_; 2]>::try_from(server.bodies(MATCH).unwrap()).unwrap();
+    assert_eq!(
+        (team1.spawn_room, team1.room_heal, team1.room_hurt),
+        (Some(false), false, false),
+        "{team1:?}"
+    );
+    assert_eq!(
+        (
+            team2.spawn_room,
+            team2.room_heal,
+            team2.room_hurt,
+            team2.health
+        ),
+        (Some(true), true, false, Some(1.0)),
+        "{team2:?}"
+    );
+    server.stop().unwrap();
+}
+
 /// A Workshop script with a rule on each player event, its variables the
 /// events' counts (`a_workshop_rule_runs_on_each_player_event`).
 const PLAYER_EVENTS: &str = r#"

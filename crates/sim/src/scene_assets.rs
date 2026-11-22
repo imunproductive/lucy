@@ -69,7 +69,7 @@ use orpheus_script::{
     codecs::CodecTable,
     graph::GraphStore,
     map_tags::MapTags,
-    placed::{DummyChange, NextDummy},
+    placed::{DummyChange, EntityVolumes, NextDummy},
     vitals::Vitals,
     vm::{
         GameMessage, Hardpoints, MapRays, MessageEnd, ParentWrite, ScopeChange, ScopeSource,
@@ -287,6 +287,8 @@ pub struct PreparedScene {
     objectives: Arc<MapObjectives>,
     /// The map's spawn rooms.
     spawn_rooms: Arc<[SpawnRoom]>,
+    /// The areas of the rooms and capture points (`map_areas::MapVolumes`).
+    volumes: Arc<dyn EntityVolumes>,
     /// The map's damage areas that kill, in this mode.
     lethal_areas: Arc<[DamageArea]>,
     /// The map's kill volumes (`map_areas` module notes).
@@ -616,6 +618,11 @@ impl SceneAssets {
                 map.name, map.mode_guid
             )));
         }
+        let volumes: Arc<dyn EntityVolumes> = Arc::new(map_areas::MapVolumes::new(
+            Arc::clone(&spawn_rooms),
+            &map,
+            &objectives,
+        ));
         let placed_scripts = PlacedScripts::new(
             Arc::clone(&scripts.graphs),
             map_mode,
@@ -624,7 +631,7 @@ impl SceneAssets {
             server_placeables.clone(),
             Arc::clone(&map_tags),
             map_rays,
-            Arc::clone(&spawn_rooms),
+            Arc::clone(&volumes),
         );
         let mut scene = PreparedScene {
             respawn: self.respawns.for_mode(map.mode_guid),
@@ -659,6 +666,7 @@ impl SceneAssets {
             mode_graph_values: scripts.mode_graph_values,
             objectives,
             spawn_rooms,
+            volumes,
             lethal_areas,
             kill_volumes,
             kill_height,
@@ -891,7 +899,14 @@ impl PreparedScene {
             yaw,
             mover_category(&self.map, team),
         )
-        .map(|mover| mover.with_navigation(self.navigation.clone()))
+        .map(|mover| {
+            mover
+                .with_navigation(self.navigation.clone())
+                .with_death_zones(Some(Arc::new(map_areas::DeathZones {
+                    kill_height: self.kill_height,
+                    areas: Arc::clone(&self.lethal_areas),
+                })))
+        })
         .map_err(invalid)
     }
 
@@ -943,11 +958,13 @@ impl PreparedScene {
     }
 
     /// The map as a player body's scripts meet it: its collision for their
-    /// ray casts and its tagged entities for their tag queries.
+    /// ray casts, its tagged entities for their tag queries and the areas
+    /// of its rooms and capture points.
     pub fn body_map(&self) -> BodyMap {
         BodyMap {
             rays: self.map_rays(),
             tags: self.map_tags(),
+            volumes: Arc::clone(&self.volumes),
         }
     }
 
@@ -1113,6 +1130,12 @@ impl PreparedScene {
         })
     }
 
+    /// The placed scripts' game messages the match hasn't taken yet
+    /// ([`Self::take_placed_messages`]).
+    pub fn placed_messages(&self) -> &[GameMessage] {
+        self.placed_scripts.messages()
+    }
+
     /// The placed scripts' game messages and message ends since the last
     /// call, for the match to route ([`crate::messages`]).
     pub fn take_placed_messages(&mut self) -> (Vec<GameMessage>, Vec<MessageEnd>) {
@@ -1167,6 +1190,12 @@ impl PreparedScene {
         self.placed_scripts.set_target_candidates(candidates);
     }
 
+    /// The mode entity's variables as the mode's graph keeps them, for the
+    /// placed scripts that read them (`PlacedScripts::set_mode_variables`).
+    pub fn set_placed_mode_variables(&mut self, variables: &Variables) {
+        self.placed_scripts.set_mode_variables(variables);
+    }
+
     /// The pickups the server placeables hold now (the health packs), for
     /// the bodies' searches ([`PlacedScripts::pickups`]).
     pub fn pickups(&self) -> Vec<orpheus_script::vm::Pickup> {
@@ -1177,6 +1206,12 @@ impl PreparedScene {
     /// (a health pack's heal), for the match's health code.
     pub fn take_placed_health_changes(&mut self) -> Vec<orpheus_script::vm::HealthChange> {
         self.placed_scripts.take_health_changes()
+    }
+
+    /// The auras the server placeables put on bodies or took off since the
+    /// last call (a capture point's area aura), for the bodies' scripts.
+    pub fn take_placed_aura_changes(&mut self) -> Vec<orpheus_script::vm::AuraChange> {
+        self.placed_scripts.take_auras()
     }
 
     /// The statescript graphs, for runs outside the scene (the mode graph).
@@ -2046,28 +2081,9 @@ mod tests {
                 (
                     0x0043,
                     Some(10),
-                    "STUStatescriptModifyHealth m_knockbackRings",
-                    "not read"
-                ),
-                (
-                    0x0043,
-                    Some(10),
-                    "STUStatescriptModifyHealth m_C0139FA6",
-                    "not read"
-                ),
-                (
-                    0x0043,
-                    Some(10),
-                    "STUStatescriptModifyHealth m_E33EFEE1",
-                    "not read"
-                ),
-                (
-                    0x0043,
-                    Some(10),
                     "STUStatescriptModifyHealth m_10399AE7",
                     "not read"
                 ),
-                (0x0043, Some(63), "STU_0A6BE10E", "no effect"),
                 (
                     0x0043,
                     Some(43),

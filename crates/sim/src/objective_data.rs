@@ -379,9 +379,9 @@ mod tests {
     }
 
     /// The flows of the install's maps start with their objectives' times:
-    /// Anubis 4:00 either way, King's Row and Dorado 5:00 without
-    /// Competitive rules and 4:00 with them; Nepal's Control and Black
-    /// Forest's Elimination find their points.
+    /// King's Row and Dorado 5:00 without Competitive rules and 4:00 with
+    /// them; Nepal's Control and Black Forest's Elimination find their
+    /// points. (Assault's clock is `0F4A`'s, which the flow follows.)
     #[test]
     #[ignore = "requires the 1.74 game data (ORPHEUS_GAME_DIR)"]
     fn the_install_maps_start_their_flows_with_their_times() {
@@ -413,7 +413,6 @@ mod tests {
             flow.clock()
         };
         for (map, mode, quick_play, competitive) in [
-            (ANUBIS, ASSAULT, 240.0, 240.0),
             (KINGS_ROW, HYBRID, 300.0, 240.0),
             (DORADO, ESCORT, 300.0, 240.0),
         ] {

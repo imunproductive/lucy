@@ -62,6 +62,38 @@ impl CaptureBox {
             .all(|(along, half)| along.abs() <= half)
     }
 
+    /// The share of the way from `start` to `end` at which the segment
+    /// first is in the box (0 when it starts inside), if it ever is.
+    pub fn entry(&self, start: [f64; 3], end: [f64; 3]) -> Option<f64> {
+        let [x, y, z, w] = self.rotation;
+        let local = |point: [f64; 3]| {
+            rotate(
+                [-x, -y, -z],
+                w,
+                std::array::from_fn(|axis| point[axis] - self.centre[axis]),
+            )
+        };
+        let (from, to) = (local(start), local(end));
+        let (mut low, mut high) = (0.0_f64, 1.0_f64);
+        for axis in 0..3 {
+            let way = to[axis] - from[axis];
+            let half = self.half[axis];
+            if way.abs() < f64::EPSILON {
+                if from[axis].abs() > half {
+                    return None;
+                }
+                continue;
+            }
+            let (a, b) = ((-half - from[axis]) / way, (half - from[axis]) / way);
+            low = low.max(a.min(b));
+            high = high.min(a.max(b));
+            if low > high {
+                return None;
+            }
+        }
+        Some(low)
+    }
+
     /// A box with a size and a unit rotation.
     pub(crate) fn check(&self) -> Result<(), String> {
         let norm = self.rotation.iter().map(|part| part * part).sum::<f64>();

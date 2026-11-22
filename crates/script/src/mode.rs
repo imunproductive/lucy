@@ -16,10 +16,11 @@ use crate::{
     graph::GraphStore,
     map_tags::MapTags,
     placed::{DummyChange, Gaps, MapEntityWorld, NextDummy, PlacedEntity},
+    target_tags::TargetTags,
     vm::{
         ACTION_PARAMETERS, ActionOutcome, Component, DummyBot, EntityCreation, GameMessage,
-        HealthChange, InitFault, MAX_INIT_WORK, MapRays, PlayRequest, Root, ScopeChange,
-        ScopeSource, Site, Snapshot, Unknowns, World,
+        HealthChange, InitFault, MAX_INIT_WORK, MapRays, MessageEnd, PlayRequest, Root,
+        ScopeChange, ScopeSource, Site, Snapshot, TargetTagEffect, Unknowns, World,
     },
     wire::{Value, Variables},
 };
@@ -129,6 +130,19 @@ pub struct ModeWorld {
     /// (`STU_AFC074B3`) lists them, with their bodies' entity definitions
     /// (`m_gameplayEntity`, `STU_94AED9DC`); none: unknown.
     pub heroes: Option<Vec<(u64, u64)>>,
+    /// Where the map's server placeables stand (the objectives `0F4A`
+    /// places its `0C49` over, `STU_71A87E92(#10551)`).
+    pub placeables: BTreeMap<u32, [f64; 3]>,
+    /// The tags the graphs' target tag states add to and suppress on map
+    /// placeables (Skirmish's `0D76` rid5/rid6/rid8 and Control's `0EC2`
+    /// rid221-224 give the entity of tag `0405`/`0406`/`0407` the tag
+    /// `034D`, which only the Elimination controller's client-only `0D5E`
+    /// reads).
+    placeable_tags: BTreeMap<u32, TargetTags>,
+    /// Mode entity variables that hold before the root graph starts, over
+    /// the mode's: what the map's placeables reported before it (the
+    /// objectives' `0813`, `orpheus_sim::mode_script`).
+    pub start_variables: Variables,
     /// Other entities' variables as the mode entity's graphs know them:
     /// the server's ([`ModeScript::set_foreign_variable`]) and the graphs'
     /// own writes (a Workshop action's player variables, `STU_0BDBC7B2`).
@@ -162,6 +176,13 @@ pub struct ModeWorld {
     /// takes them ([`ModeScript::take_own_messages`]).
     own: Vec<GameMessage>,
     held: Vec<GameMessage>,
+    /// The ends of the graphs' persistent sends to other entities, until
+    /// [`ModeScript`] hands them on.
+    ends: Vec<MessageEnd>,
+    /// The new parameters of the graphs' persistent sends to other
+    /// entities that still hold them, until the match takes them
+    /// ([`ModeScript::take_message_updates`]).
+    updates: Vec<GameMessage>,
     /// The entities the graphs made that [`ModeScript`] hasn't started
     /// yet, and those it runs.
     made: Vec<CreatedEntity>,
@@ -189,6 +210,9 @@ impl ModeWorld {
             map_tags: None,
             map_rays: None,
             heroes: None,
+            placeables: BTreeMap::new(),
+            placeable_tags: BTreeMap::new(),
+            start_variables: Variables::new(),
             foreign: BTreeMap::new(),
             variable_writes: Vec::new(),
             scope_changes: Vec::new(),
@@ -200,10 +224,21 @@ impl ModeWorld {
             outbox: Vec::new(),
             own: Vec::new(),
             held: Vec::new(),
+            ends: Vec::new(),
+            updates: Vec::new(),
             made: Vec::new(),
             created: Vec::new(),
             destroyed: Vec::new(),
             next_created: 0,
+        }
+    }
+
+    /// Another entity's entity variables as the graphs find them when they
+    /// start (a map placeable's; the match gives them after with
+    /// [`ModeScript::set_foreign_variables`]).
+    pub fn set_foreign_variables(&mut self, entity: u32, variables: &Variables) {
+        for (&id, value) in variables {
+            self.foreign.insert((entity, id), value.clone());
         }
     }
 
@@ -336,10 +371,13 @@ impl World for ModeWorld {
         Some(entities)
     }
 
-    /// A map placeable's tags; a player's body's are its definition's
-    /// (the bundle's `bodies`), as the victim's tags at a kill
-    /// (`orpheus_sim::replication`). Assumption: its states add or remove
-    /// none the mode graph asks about.
+    /// A map placeable's tags: those the graphs' states hold on it, else
+    /// its authored ones (none for a server placeable the map lists no tag
+    /// of: Workshop Chamber's capture point, whose `07CB` Skirmish's
+    /// `0D76` rid33 asks for tag `041B`); a player's body's are its
+    /// definition's (the bundle's `bodies`), as the victim's tags at a kill
+    /// (`orpheus_sim::replication`). Assumption: a body's states add or
+    /// remove none the mode graph asks about.
     fn has_target_tag(&self, site: Site, entity: u32, tag: u64) -> Option<bool> {
         if let Some(player) = self.player_of(entity)
             && player.body == Some(entity)
@@ -353,16 +391,55 @@ impl World for ModeWorld {
                 .as_ref()?;
             return Some(tags.contains(&tag));
         }
-        let placed = self.map_tags.as_ref()?.get(entity)?;
-        Some(placed.tags.contains(&tag))
+        if let Some(held) = self
+            .placeable_tags
+            .get(&entity)
+            .and_then(|tags| tags.has(tag))
+        {
+            return Some(held);
+        }
+        match self.map_tags.as_ref()?.get(entity) {
+            Some(placed) => Some(placed.tags.contains(&tag)),
+            None => self.placeables.contains_key(&entity).then_some(false),
+        }
+    }
+
+    /// A target tag state on a map placeable. Only the mode entity's
+    /// graphs see it: the placeables' component 76 isn't sent, and their
+    /// own scripts read their authored tags (as `crate::placed`'s world
+    /// keeps its own entity's). One on no entity (a tag query that found
+    /// none: Workshop Chamber has no `0405`) tags nothing.
+    fn set_target_tag_effect(
+        &mut self,
+        _site: Site,
+        effect: TargetTagEffect,
+        active: bool,
+    ) -> bool {
+        if effect.entity == 0 {
+            return true;
+        }
+        if self
+            .map_tags
+            .as_ref()
+            .and_then(|tags| tags.get(effect.entity))
+            .is_none()
+        {
+            return false;
+        }
+        self.placeable_tags
+            .entry(effect.entity)
+            .or_default()
+            .set(effect, active)
     }
 
     /// The mode entity, the players' controllers and bodies, the map's
-    /// tagged placeables and the entities the graphs made exist.
+    /// server placeables and tagged placeables and the entities the graphs
+    /// made exist.
     fn entity_exists(&self, _site: Site, entity: u32) -> Option<bool> {
         let known = entity == GAME_MODE_ENTITY
             || self.player_of(entity).is_some()
             || self.made_entity(entity).is_some()
+            || self.placeables.contains_key(&entity)
             || self
                 .map_tags
                 .as_ref()
@@ -373,6 +450,9 @@ impl World for ModeWorld {
     fn entity_position(&self, _site: Site, entity: u32) -> Option<[f64; 3]> {
         if let Some(made) = self.made_entity(entity) {
             return Some(made.position);
+        }
+        if let Some(&position) = self.placeables.get(&entity) {
+            return Some(position);
         }
         Some(self.map_tags.as_ref()?.get(entity)?.position)
     }
@@ -672,16 +752,36 @@ impl World for ModeWorld {
         true
     }
 
-    /// Only a held broadcast's end is followed; the mode graph's other
-    /// persistent sends end nowhere yet.
+    /// A held broadcast's end drops it ([`ModeScript::held`]); a
+    /// persistent send's to an entity goes to the match (the capture
+    /// point's rates `079E`, which `0F4A` holds to the current objective in
+    /// setup and again in the round: the point's entry st0 takes the
+    /// round's only once the setup's ended), or to an entity the graphs
+    /// made ([`ModeScript::take_message_ends`]).
     fn end_message(&mut self, _source: Site, target: u32, message: u64) -> bool {
         if target != EVERY_ENTITY {
-            return false;
+            self.ends.push(MessageEnd {
+                sender: GAME_MODE_ENTITY,
+                target,
+                message,
+            });
+            return true;
         }
         if let Some(index) = self.held.iter().position(|held| held.message == message) {
             self.held.remove(index);
         }
         true
+    }
+
+    /// A persistent send's new parameters go to the match, which hands
+    /// them to the target's receivers ([`ModeScript::take_message_updates`]).
+    fn update_message(&mut self, _source: Site, target: u32, message: u64, parameters: &Variables) {
+        self.updates.push(GameMessage {
+            sender: GAME_MODE_ENTITY,
+            target,
+            message,
+            parameters: parameters.clone(),
+        });
     }
 }
 
@@ -715,6 +815,9 @@ pub struct ModeScript {
     /// The messages [`Self::settle`] handed on to the match
     /// ([`Self::take_messages`]).
     routed: Vec<GameMessage>,
+    /// The ends of the graphs' persistent sends that [`Self::settle`]
+    /// handed on to the match ([`Self::take_message_ends`]).
+    routed_ends: Vec<MessageEnd>,
 }
 
 /// A Workshop action graph started on the mode entity
@@ -749,12 +852,13 @@ impl ModeScript {
     /// ruleset `0C0:34` sets the hero limit #9548 to `254D`.
     pub fn start(mut world: ModeWorld, graph: u32, frame: u32) -> Result<Self, InitFault> {
         let graphs = Arc::clone(&world.graphs);
-        let variables: Variables = graphs
+        let mut variables: Variables = graphs
             .mode_variables(world.mode, world.ruleset)
             .iter()
             .flat_map(|variables| variables.iter())
             .map(|(&id, &value)| (id, Value::from(value)))
             .collect();
+        variables.extend(std::mem::take(&mut world.start_variables));
         let mut component = Component::start(
             graphs,
             GAME_MODE_ENTITY,
@@ -772,6 +876,7 @@ impl ModeScript {
             frame,
             actions: Vec::new(),
             routed: Vec::new(),
+            routed_ends: Vec::new(),
         };
         script.settle()?;
         Ok(script)
@@ -798,6 +903,7 @@ impl ModeScript {
             frame,
             actions: Vec::new(),
             routed: Vec::new(),
+            routed_ends: Vec::new(),
         };
         script.settle()?;
         Ok(script)
@@ -876,6 +982,38 @@ impl ModeScript {
     /// (a player variable a chase on the player's own script moved).
     pub fn set_foreign_variable(&mut self, entity: u32, id: u32, value: Value) {
         self.world.foreign.insert((entity, id), value);
+    }
+
+    /// Another entity's entity variables now, as the match gives them (a
+    /// map placeable's: the capture point's progress #9866e and owner
+    /// #99e, the objective's times #10552e, which `0F4A` reads through
+    /// `#10551.id(...)`): each that changed is set, and the states that
+    /// read it take the change ([`Component::foreign_variable_changed`]);
+    /// one that went reads null.
+    pub fn set_foreign_variables(
+        &mut self,
+        entity: u32,
+        variables: &Variables,
+    ) -> Result<(), InitFault> {
+        let gone: Vec<u32> = self
+            .world
+            .foreign
+            .range((entity, 0)..=(entity, u32::MAX))
+            .filter(|((_, id), value)| **value != Value::Null && !variables.contains_key(id))
+            .map(|((_, id), _)| *id)
+            .collect();
+        let changed: Vec<(u32, Value)> = variables
+            .iter()
+            .filter(|&(&id, value)| self.world.foreign.get(&(entity, id)) != Some(value))
+            .map(|(&id, value)| (id, value.clone()))
+            .chain(gone.into_iter().map(|id| (id, Value::Null)))
+            .collect();
+        for (id, value) in changed {
+            self.world.foreign.insert((entity, id), value);
+            self.component
+                .foreign_variable_changed(entity, id, &mut self.world)?;
+        }
+        self.settle()
     }
 
     /// Set Workshop global variable `index`: the mode entity's entity
@@ -1140,8 +1278,16 @@ impl ModeScript {
                     self.routed.push(message);
                 }
             }
-            // Their persistent sends end nowhere, as the mode entity's own
-            // but its held broadcasts (`ModeWorld::end_message`).
+            for end in std::mem::take(&mut self.world.ends) {
+                if self.world.made_entity(end.target).is_some() {
+                    self.entities
+                        .end_message(end.target, end.sender, end.message);
+                    moved = true;
+                } else {
+                    self.routed_ends.push(end);
+                }
+            }
+            // The made entities' persistent sends end nowhere yet.
             self.entities.take_message_ends();
             let removed = std::mem::take(&mut self.world.destroyed);
             for &entity in &removed {
@@ -1238,6 +1384,21 @@ impl ModeScript {
         let mut messages = std::mem::take(&mut self.routed);
         messages.append(&mut self.world.take_messages());
         messages
+    }
+
+    /// The ends of the graphs' persistent sends to the match's other
+    /// entities ([`World::end_message`]), for the match to route.
+    pub fn take_message_ends(&mut self) -> Vec<MessageEnd> {
+        let mut ends = std::mem::take(&mut self.routed_ends);
+        ends.append(&mut self.world.ends);
+        ends
+    }
+
+    /// The new parameters of the graphs' persistent sends that other
+    /// entities still hold ([`World::update_message`]), for the match to
+    /// route. The entities the mode entity made get none.
+    pub fn take_message_updates(&mut self) -> Vec<GameMessage> {
+        std::mem::take(&mut self.world.updates)
     }
 
     /// The messages of [`Self::take_messages`] to the entities `to`

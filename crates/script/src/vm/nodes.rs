@@ -77,6 +77,50 @@ const SERVER_NO_OPS: &[&str] = &[
     // (`docs/dev/loose-ends.md`), so they only go on.
     "STU_B80EB51C",
     "STU_61975068",
+    // `0F4A` rid71 at the match's end: the match's record (its round count
+    // `m_1AF7DD3E`, the map's objective name, the attackers, each team's
+    // progress, time bank and score, the winner `m_9870F4ED` = #7525) for
+    // a server-only action (no registration of its own: the base action's
+    // run, `python tools/stu.py STU_86A2C83C`). Likewise `STU_88DE7AD3`,
+    // the winner `m_F97A13C6` = #7525 alone as each mode graph's match
+    // end begins (`0F4A` rid57, `0D0B`, `0D76`, `0EC2`, `0F60`; no
+    // registration of its own, `python tools/stu.py STU_88DE7AD3`). The
+    // server keeps the match's result itself from #7525
+    // (`orpheus_sim::match_flow` `MatchFlow::follow`) for the lobby.
+    "STU_86A2C83C",
+    "STU_88DE7AD3",
+    // A SendGameMessage of its own (`Action_STU_1470EF32` 0x7FF7898164B0,
+    // parent `STU_473D3BBD`): `180A` rid39 and `0281`/`0282`/`0EC2` send
+    // `07F1` with it, which only client-only entries take (`0D57` rid141,
+    // `1A52` rid99). Nothing on the server takes it.
+    "STU_1470EF32",
+    // The capture points' `0E8E` match stats and calls, server-only with
+    // no registration of their own (the base action's run, `python
+    // tools/stu.py STU_1F2DB0E9`, `STU_3A276B3A`): `STU_1F2DB0E9` adds
+    // `m_amount` to the `m_targets`' stat `m_B44A42A0` (an `E7FEC166`
+    // enum: 18 on the capturers as the point falls, rid65), and
+    // `STU_3A276B3A` sends a message with no target field (`0680`,
+    // `113A`, `0114` as the point is taken, rid165/rid166/rid169). The
+    // server keeps no `E7FEC166` stats and whom the message goes to is
+    // not in the data (docs/dev/loose-ends.md).
+    "STU_1F2DB0E9",
+    "STU_3A276B3A",
+    // A text the client shows (`Action_STU_D6EB7F8D` 0x7FF7899E24E0, its
+    // own execute of the display texts `m_B14A97B7`/`m_7E04D264`; `0E8E`
+    // rid125, remote 19, formats the point's letter `#1753` and owner
+    // `#99e` into `730B.07C` as the point falls). The client runs it from
+    // the frames' remote action pulses, as `STUStatescriptActionEffect`;
+    // nothing on the server.
+    "STU_D6EB7F8D",
+    // Server-only actions of the match with no registration of their own
+    // (the base action's run and `execute` 0x7FF789C44A80, `mov al, 1`;
+    // `python tools/stu.py`): `STU_43B63AD0` (an identifier
+    // `m_9ACAD20A`, a text `m_980D78D3` and `m_targets`; `0E8E` rid70 as
+    // a point falls, `0F4A` rid107/rid109/rid244) and `STU_E160831C` (an
+    // enum `m_5ED79353`, `0F4A` rid241). The client runs the base action;
+    // what the retail server kept of them is not in the data.
+    "STU_43B63AD0",
+    "STU_E160831C",
 ];
 
 /// Unnamed actions the server runs as no-ops without knowing what they do,
@@ -115,13 +159,10 @@ const ASSUMED_NO_OPS: &[&str] = &[
     // Mode actions with no registration of their own (the base action's
     // run 0x7FF78AA7EBA0: the client follows m_outPlug; leafall903/ORPHEUS
     // (MIT) `rust` `vm/nodes.rs`, the 104319 class registry, checked with
-    // `tools/stu.py`). Server-only meaning unknown: STU_88DE7AD3 (one
-    // dynamic m_F97A13C6; the phase handoff of 0D0B, 0D76, 0EC2, 0F4A
-    // rid57, 0F60), STU_147B34C6 (no fields; 0D76, 180A rid17's phase
-    // cleanup), STU_7947FBE4 (no fields; 181D), STU_5B025A5D and
-    // STU_8A8255AF (an integer m_5FAC4660, the latter a float m_5CF63914;
-    // 0D94).
-    "STU_88DE7AD3",
+    // `tools/stu.py`). Server-only meaning unknown: STU_147B34C6 (no
+    // fields; 0D76, 180A rid17's phase cleanup), STU_7947FBE4 (no fields;
+    // 181D), STU_5B025A5D and STU_8A8255AF (an integer m_5FAC4660, the
+    // latter a float m_5CF63914; 0D94).
     "STU_147B34C6",
     "STU_7947FBE4",
     "STU_5B025A5D",
@@ -154,9 +195,19 @@ const ASSUMED_INERT_STATES: &[&str] = &[
 /// (st46-st49, no fields, under the phase stacks #19528e setup, #12113e
 /// round, #19527e round end, #19526e match end) and `STU_54BBC96C` (st35,
 /// no fields, 12 s after a round's end while #8078e is false). What the
-/// retail server did with them is not known. Server-only too: the mode
-/// graphs' `STU_0FAD550D` (`m_41F2FA6C`, a bool; `0F4A` st34 as a round
-/// starts, false, before the ForCodeSynced st33 rows `2271`/`226F`/`2270`).
+/// retail server did with them is not known.
+///
+/// Meteor Strike's (`0C51`, Doomfist.md §24): `STU_3BC72DE1` (st26, the
+/// view: its begin and end `0x7FF7898267C0` set component 43's camera
+/// configs) and `STU_582E0D5F` (st20, a runtime of its own, slots 17 and
+/// 36, 25 view fields) are the client's to run from their remote states;
+/// `STU_D07EBF01` (st76 with `m_69603948` true, st78 without; 23 nodes in
+/// 19 graphs, among them Reinhardt's Charge `1537`, D.Va `026A`, the
+/// Biotic Field `017B` and the 9999 kill volumes `09BB`, always naming the
+/// owner) has no client registration: server-only, its meaning unknown
+/// (an inference from its users: a native exemption for a body the
+/// ability moves in ways a walk can't, such as the retail server's
+/// movement checks; the server has none to exempt).
 /// And the Workshop chase helpers' `STU_F89A564A` (Chase Player / Global
 /// Variable At Rate's `1CCF`/`1CD0` st2: `m_entity` the owner,
 /// `m_B3867877` the chased variable's index; the base state on the
@@ -170,7 +221,9 @@ const ASSUMED_PLAIN_STATES: &[&str] = &[
     "STUStatescriptStateHero",
     "STU_7F488C3E",
     "STU_54BBC96C",
-    "STU_0FAD550D",
+    "STU_3BC72DE1",
+    "STU_582E0D5F",
+    "STU_D07EBF01",
     "STU_F89A564A",
 ];
 
@@ -412,19 +465,35 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
                 let contained = expr::contains(&container, &value);
                 self.branch(id, node, caller, contained, depth)
             }
+            // `Cond_STU_7DEB522D` 0x7FF78AA858C0: false while the button is
+            // disabled; during an edge of its button (`recheck_button_
+            // conditions`) true on a press with `m_87F97379` or a release
+            // with `m_12A75BC7`; else true while held with `m_00994FF0` or
+            // up with `m_F2B4B71D`.
             "STU_7DEB522D" => {
                 let Some(button) =
                     self.evaluate(id, node, field(&node.fields, "m_logicalButton"), None)
                 else {
                     return Ok(false);
                 };
-                let button = expr::to_int(&button, 0);
+                let button = expr::to_int(&button, -1);
+                let flag = |name: &str| field(&node.fields, name).as_u64().unwrap_or(0) != 0;
                 let held = self
                     .machine
                     .held_buttons
                     .iter()
                     .any(|&held| i64::from(held) == button);
-                self.branch(id, node, caller, held, depth)
+                let edge = self
+                    .machine
+                    .current_edge
+                    .filter(|edge| i64::from(edge.button) == button);
+                let met = !self.disabled(button)
+                    && (edge.is_some_and(|edge| {
+                        (flag("m_87F97379") && edge.pressed)
+                            || (flag("m_12A75BC7") && !edge.pressed)
+                    }) || (flag("m_00994FF0") && held)
+                        || (flag("m_F2B4B71D") && !held));
+                self.branch(id, node, caller, met, depth)
             }
             "STU_1113EBD5" => {
                 // A join is only reached through a plug (`follow`).
@@ -850,6 +919,19 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
             }
             return Ok(());
         }
+        // A state of a state group (`m_stateGroup`) ends the group's other
+        // states it lists (`m_4F8F2F3F`, their indices) as it begins. The
+        // bundles' one group is `0F4A`'s round (`0069.023`): st54 hands on
+        // to st65 by its transition, and st65's capture branch begins st54
+        // again for the next objective, which takes st65 down and up anew
+        // (the objective's `#9901` and its `079E`). Inference from the data:
+        // the two list each other; the client's reader was not traced.
+        for other in array_field(&node.fields, "m_4F8F2F3F") {
+            let Some(raw) = other.as_u64().and_then(|raw| u16::try_from(raw).ok()) else {
+                continue;
+            };
+            self.end(StateKey { instance: id, raw }, false, depth + 1)?;
+        }
         let kind = match node.class.as_str() {
             // These client presentation states use the base state lifecycle on
             // the server, as every state class without a model does in the
@@ -882,6 +964,40 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
             // (`who_reads.py --component 74 +0x100`, ControllerWorld.md).
             // Codec none. Nothing for the server to keep.
             "STU_D9498E7C" => StateKind::Plain,
+            // `0F4A` st104 at the match's end (#59 5): no fields and no
+            // registration of its own (the base state, `python tools/stu.py
+            // STU_109F9DE0`), so the client runs it plain; a server rule,
+            // if any, is the match's end itself, which the server keeps
+            // (`orpheus_sim::match_flow::MatchFlow::follow`).
+            "STU_109F9DE0" => StateKind::Plain,
+            // The capture points' `0E8E` stat over time on `m_targets`
+            // (`m_B44A42A0`, an `E7FEC166` enum: 41/42 on the two teams
+            // while both stand on the point, st35/st36; 17 in st34):
+            // server-only, no registration of its own (the base state,
+            // `python tools/stu.py
+            // STU_63D801B1`), so the client runs it plain. The server keeps
+            // no `E7FEC166` stats (docs/dev/loose-ends.md).
+            "STU_63D801B1" => StateKind::Plain,
+            // `0F4A` st124: no fields and no registration of its own (the
+            // base state, `python tools/stu.py STU_7F5C3F95`), so the
+            // client runs it plain.
+            "STU_7F5C3F95" => StateKind::Plain,
+            // The mode graphs' `STU_0FAD550D` (`m_41F2FA6C`, a bool):
+            // `0F4A` st34 as a round starts (false, before the
+            // ForCodeSynced st33 rows `2271`/`226F`/`2270`), Skirmish's
+            // `0D76` rid35 under its `0CBB` from the match's start. No
+            // registration of its own (the base state, codec none:
+            // `python tools/stu.py STU_0FAD550D`), so the client runs it
+            // plain; what the retail server did with it is not in the data.
+            "STU_0FAD550D" => StateKind::Plain,
+            // A UX presenter of the match's end (`180A` st19, remote 11:
+            // the cards' fades `m_AD8C28BA`/`m_D7ED647E`/`m_C69C2A73`).
+            // The client shows it; its block is one bit (`+0x470`, set by
+            // its event 1, 0x7FF7899E7BE0) the server sends unset
+            // (`snapshot.rs`). What sets it, and so its `m_82A8A67E` plug
+            // to the next card (#59 + 1), is not read: the server's match
+            // end sends the players home after its own wait.
+            "STU_4BD2E886" => StateKind::Plain,
             // The authored zero-valued form inherits the base state reader.
             "STU_D9843704"
                 if node.is_networked() && node.remote == -1 && {
@@ -1000,6 +1116,7 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
             "STUStatescriptStateMoveTo" => StateKind::MoveTo,
             "STU_4BBC5D09" => StateKind::GrappleCast,
             "STU_1F5ED928" => StateKind::NavPath,
+            "STU_6154B909" => StateKind::Rise,
             // The scoped heroes' zoom-in input flag (Widowmaker `001B`
             // st103, Ana `0B94` st78, Ashe `14FC` st111; codec none). The
             // client's begin puts the state on its instance's update list
@@ -1052,6 +1169,7 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
             "STUStatescriptStateTrackTargets" => StateKind::TrackTargets,
             "STUStatescriptStateRayCast" | "STUStatescriptStateTrackRay" => StateKind::Ray,
             "STU_FBFF5DE7" => StateKind::WallCheck,
+            "STU_96F571ED" => StateKind::AreaResidency,
             "STU_4C96470A" => StateKind::Landing,
             "STU_9935FBC8" => StateKind::ViewLimits { radians: [0; 6] },
             "STUStatescriptStateShockwave" => StateKind::Shockwave,
@@ -1209,6 +1327,10 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
             StateKind::MoveTo => self.begin_move_to(key, node),
             StateKind::GrappleCast => self.begin_grapple(key, node, depth)?,
             StateKind::NavPath => self.begin_nav_path(key, node)?,
+            StateKind::Rise => {
+                self.rise_block(key, node);
+                self.register_tick(key, self.machine.now_ms);
+            }
             StateKind::AiMove => self.resolve_ai_move(key, node),
             StateKind::Rewind { .. } => self.begin_rewind(key, node)?,
             StateKind::WaitFrames { .. } => self.arm_frame_wait(key, node)?,
@@ -1242,12 +1364,13 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
                 let seen = self.evaluate(id, node, field(&node.fields, "m_B7A3CF78"), Some(key));
                 self.state_mut(key).expect("active Watch").watch_seen = seen;
             }
-            StateKind::FilterArray => self.refresh_filter_array(key)?,
+            StateKind::FilterArray => self.begin_filter_array(key)?,
             StateKind::HeroSelect => self.refresh_hero_select(key),
             StateKind::WeaponVolley { .. } => self.begin_volley(key, node, depth)?,
             StateKind::TrackTargets => self.begin_track_targets(key, node)?,
             StateKind::Ray => self.begin_ray(key, node, depth)?,
             StateKind::WallCheck => self.begin_wall_check(key, node)?,
+            StateKind::AreaResidency => self.begin_area_residency(key, node)?,
             StateKind::Landing => self.begin_landing(key, node)?,
             StateKind::ViewLimits { .. } => self.refresh_view_limits(key),
             StateKind::Shockwave => self.begin_shockwave(key, node)?,
@@ -1257,11 +1380,6 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
             StateKind::CombatMod => self.begin_combat_mod(key, node),
             StateKind::Assist => self.begin_assist(key, node),
             StateKind::ApplyAura => {
-                self.assume(
-                    self.site(id, node),
-                    "STU_431F3FCC lifetime",
-                    "on each listed body while listed (server-only rule)",
-                );
                 self.refresh_auras(key, node)?;
                 self.register_tick(key, self.machine.now_ms);
             }

@@ -14,13 +14,13 @@
 //! The same world runs the entities the game spawns during the match
 //! ([`MapEntityWorld::spawn`]: Soldier: 76's Biotic Field `03DC`, whose
 //! `0258` searches for allies, puts its aura `025F` on them and destroys
-//! itself). A spawned entity has an owner (its hero's controller), puts
+//! itself. A spawned entity has an owner (its hero's controller), puts
 //! auras on the bodies ([`MapEntityWorld::take_auras`]) and removes itself
 //! (`STU_523EE38D`), which ends its graphs, so its ApplyAura takes its
 //! auras off ([`MapEntityWorld::take_destroyed`]). A map placeable removes
-//! itself the same way (a health pack whose ruleset turns packs off).
-//! Assumption: the map's own placeables put no auras on bodies yet (their
-//! auras have no client side here).
+//! itself the same way (a health pack whose ruleset turns packs off), and
+//! puts auras on bodies the same way (a capture point's `0E8E` puts its
+//! area aura `02A2` on every body).
 //!
 //! A script can make and remove dummy bots (`STU_FC3921B1`,
 //! `STU_C1561031`: the Practice Range's Training Partner console `265F`):
@@ -208,6 +208,21 @@ impl PlacedEntity {
         self.component.as_ref()?.snapshot()
     }
 
+    /// Its entity variables as other entities read them (`#E.id(N)`): the
+    /// stored ones with the stacked ones over them.
+    pub fn entity_variables(&self) -> Variables {
+        let Some(snapshot) = self.snapshot() else {
+            return Variables::new();
+        };
+        let mut variables = snapshot.variables.clone();
+        for (&(instance, id), value) in &snapshot.resolved_bindings {
+            if instance == 0 {
+                variables.insert(id, value.clone());
+            }
+        }
+        variables
+    }
+
     /// Whether its graphs ran only on what the VM implements: no gap was
     /// refused and no answer was an assumption.
     pub fn complete(&self) -> bool {
@@ -302,6 +317,9 @@ struct Shared<'a> {
     graphs: &'a GraphStore,
     mode: u64,
     ruleset: u64,
+    /// The mode entity's variables as its graph keeps them, over the
+    /// mode's ([`MapEntityWorld::set_mode_variables`]).
+    mode_variables: &'a Variables,
     mode_random: f32,
     unknowns: Unknowns,
     players: &'a [TargetCandidate],
@@ -380,6 +398,9 @@ impl World for EntityWorld<'_, '_> {
         }
         if entity != GAME_MODE_ENTITY {
             return Value::Null;
+        }
+        if let Some(value) = self.shared.mode_variables.get(&id) {
+            return value.clone();
         }
         self.shared
             .graphs
@@ -605,21 +626,39 @@ impl World for EntityWorld<'_, '_> {
     }
 
     /// A listed body's word, as the target searches take it
-    /// ([`TargetCandidate::filter_word`]).
+    /// ([`TargetCandidate::filter_word`]); a tagged map placeable's 0: the
+    /// server creates its placeables without component 26 but the moving
+    /// ones (`orpheus_sim::scene::placeable_components`), and the map's own
+    /// entities carry none [assumption: no definition of a tagged map entity
+    /// gives it one]. `0E8E` st1 asks the tagged entities for kind 1 (the
+    /// bodies) so.
     fn entity_filter_flags(&self, _site: Site, entity: u32) -> Option<u64> {
-        self.shared
+        if let Some(body) = self
+            .shared
             .players
             .iter()
             .find(|player| player.entity == entity)
-            .map(TargetCandidate::filter_word)
+        {
+            return Some(body.filter_word());
+        }
+        self.shared.tagged(entity).map(|_| 0)
     }
 
-    /// A spawned entity's ApplyAura puts its auras on the bodies through
-    /// the match.
+    /// The map's tagged placeables, then the listed bodies (every hero
+    /// body's definition has a target tag component), as the mode entity's
+    /// world lists them (`crate::mode`): a tag query with no tag (`0E8E`
+    /// st1, the bodies a capture point puts its area aura on).
+    fn tagged_entities(&self, _site: Site) -> Option<Vec<u32>> {
+        let mut entities: Vec<u32> = self.shared.map_tags?.entities().collect();
+        entities.extend(self.shared.players.iter().map(|player| player.entity));
+        Some(entities)
+    }
+
+    /// An ApplyAura puts its auras on the bodies through the match: a
+    /// spawned entity's (the Biotic Field's `025F`) and a map placeable's
+    /// (a capture point's `0E8E` st37/st38: `02A2`, whose `0F00` on each
+    /// body reports it in the point's area).
     fn change_aura(&mut self, _site: Site, change: AuraChange) -> bool {
-        if self.owner.is_none() {
-            return false;
-        }
         self.shared.out.auras.push(change);
         true
     }
@@ -782,6 +821,9 @@ pub struct MapEntityWorld {
     mode: u64,
     /// The game's ruleset ([`GraphStore::mode_variables`]); 0: none.
     ruleset: u64,
+    /// The mode entity's variables as its graph keeps them
+    /// ([`Self::set_mode_variables`]); empty where no graph drives it.
+    mode_variables: Variables,
     /// The match's mode entity value (`World::mode_random`).
     mode_random: f32,
     unknowns: Unknowns,
@@ -823,6 +865,7 @@ impl MapEntityWorld {
             graphs,
             mode,
             ruleset,
+            mode_variables: Variables::new(),
             mode_random,
             unknowns,
             players: Vec::new(),
@@ -836,6 +879,37 @@ impl MapEntityWorld {
         };
         world.place(placements);
         world
+    }
+
+    /// The mode entity's variables now, as the graph that drives it keeps
+    /// them: the scripts read them through `STU_A3DEF368` (`0FA8` st5 the
+    /// attacking team #10795e), over the mode's own values. The states
+    /// that read one that changed take the change.
+    pub fn set_mode_variables(&mut self, variables: &Variables) {
+        let changed: Vec<u32> = variables
+            .iter()
+            .filter(|&(id, value)| self.mode_variables.get(id) != Some(value))
+            .map(|(&id, _)| id)
+            .chain(
+                self.mode_variables
+                    .keys()
+                    .filter(|&id| !variables.contains_key(id))
+                    .copied(),
+            )
+            .collect();
+        if changed.is_empty() {
+            return;
+        }
+        self.mode_variables = variables.clone();
+        self.run_scripts(
+            |_| true,
+            |component, world| {
+                for &id in &changed {
+                    component.foreign_variable_changed(GAME_MODE_ENTITY, id, world)?;
+                }
+                Ok(())
+            },
+        );
     }
 
     /// From now on the graphs make the entities they ask for
@@ -955,6 +1029,7 @@ impl MapEntityWorld {
             graphs,
             mode,
             ruleset,
+            mode_variables,
             mode_random,
             unknowns,
             players,
@@ -970,6 +1045,7 @@ impl MapEntityWorld {
             graphs,
             mode: *mode,
             ruleset: *ruleset,
+            mode_variables,
             mode_random: *mode_random,
             unknowns: *unknowns,
             players,
@@ -1179,6 +1255,21 @@ impl MapEntityWorld {
         );
     }
 
+    /// A persistent sender (`sender`) that the placed entity `target`
+    /// holds changed its parameters ([`Component::update_message`]).
+    pub fn update_message(
+        &mut self,
+        target: u32,
+        sender: u32,
+        message: u64,
+        parameters: &Variables,
+    ) {
+        self.run_scripts(
+            |entity| entity == target,
+            |component, world| component.update_message(sender, message, parameters.clone(), world),
+        );
+    }
+
     /// Run `run` on the running script of each entity `pick` takes, with
     /// its world (a script that faults stops), then hand on what they
     /// asked for ([`Self::settle`]).
@@ -1296,7 +1387,7 @@ impl MapEntityWorld {
         std::mem::take(&mut self.out.outbox)
     }
 
-    /// The auras the spawned entities put on bodies or took off, for the
+    /// The auras the entities put on bodies or took off, for the
     /// match to hand to the bodies' scripts.
     pub fn take_auras(&mut self) -> Vec<AuraChange> {
         std::mem::take(&mut self.out.auras)

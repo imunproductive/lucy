@@ -286,6 +286,24 @@ impl Posture {
         self.flags = (self.flags & !(JUMPED | FELL)) | FELL;
     }
 
+    /// A frame Meteor Strike's flight moves (mover behaviour kind 13): its
+    /// slot 8 (`0x7FF789B58E70`) takes the place of the ground probe and the
+    /// transitions, so nothing lands, jumps or counts air ticks, and clears
+    /// flag 0x20000.
+    pub fn rise_hold(&mut self) {
+        self.landed = false;
+        self.jumped = false;
+        self.flags &= !TOUCHING;
+    }
+
+    /// Kind 13's slot 10 (`0x7FF789B583A0`): the spring's offset is `offset`
+    /// and its speed 0, each on its grid (`0x7FF789B774B0`).
+    pub fn pin_spring(&mut self, offset: f32) {
+        self.spring.primary = offset;
+        self.spring.speed = 0.0;
+        self.spring.encode();
+    }
+
     pub fn apply_fall(&mut self, gravity_scale: f64, dt: f64) {
         self.fall += (-WORLD_GRAVITY * gravity_scale) as f32 * dt as f32;
     }

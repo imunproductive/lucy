@@ -489,6 +489,24 @@ pub trait OwnerBodyRuntime: Send {
         Vec::new()
     }
 
+    /// The ends of the body's persistent sends to other entities since the
+    /// last call ([`crate::messages::deliver`]).
+    fn take_message_ends(&mut self) -> Vec<MessageEnd> {
+        Vec::new()
+    }
+
+    /// The body's persistent sends' new parameters since the last call
+    /// ([`crate::messages::deliver_updates`]).
+    fn take_message_updates(&mut self) -> Vec<GameMessage> {
+        Vec::new()
+    }
+
+    /// The ends of the persistent sends the body's graphs hold now: what
+    /// goes when its script stops.
+    fn held_sends(&self) -> Vec<MessageEnd> {
+        Vec::new()
+    }
+
     /// Whether the body's graphs revived it since the last call (`0C8E`'s
     /// `STU_621AF478` on the Workshop's Resurrect).
     fn take_revive(&mut self) -> bool {
@@ -552,6 +570,10 @@ pub trait OwnerBodyRuntime: Send {
     /// The pickups the map's placeables hold now (the health packs), for
     /// the body's search (`0033` st11, `orpheus_script` `vm/pickups.rs`).
     fn set_pickups(&mut self, _pickups: &[Pickup]) {}
+
+    /// The map placeables' entity variables now, which the body's graphs
+    /// read of other entities.
+    fn set_map_variables(&mut self, _variables: &Arc<[(u32, Variables)]>) {}
 
     /// The death layer's parameters of the death message for a kill by the
     /// body `killer` ([`DeathCamera`]), as the body's world knows the
@@ -1876,6 +1898,8 @@ pub struct WorldDelivery {
     /// The pickups the placeables held as the match last looked; a new
     /// body starts with them.
     pickups: Vec<Pickup>,
+    /// The map placeables' entity variables now ([`Self::set_map_variables`]).
+    map_variables: Arc<[(u32, Variables)]>,
     /// The current body's death and respawn (combat.py `Vitals.died_at`).
     death: Option<BodyDeath>,
     /// Who last hurt which of the player's bodies, and when: the player
@@ -1899,6 +1923,9 @@ pub struct WorldDelivery {
     /// The PvP "assemble your team" countdown runs (match.py `assembling`):
     /// a pick keeps hero select open, which shows the skin selector.
     assembling: bool,
+    /// The mode's own graph drives the match (`MatchFlow::follows_graph`):
+    /// hero select and its skin selector are the graphs' own.
+    mode_graph: bool,
     /// An AI player's world (`crate::ai`): no client receives it, so it
     /// views nobody, and its records arrive as soon as they are ready
     /// ([`Self::deliver_locally`]).
@@ -1965,6 +1992,9 @@ pub struct WorldDelivery {
     /// body's health changes dealt ([`Self::source_dealt`]), to go with its
     /// messages.
     modified: Vec<GameMessage>,
+    /// The ends of the persistent sends his bodies' scripts held as they
+    /// stopped ([`Self::take_message_ends`]).
+    retired_sends: Vec<MessageEnd>,
     /// Where his bodies come into the world instead of a spawn point, and
     /// their facing (1/65536 turns): a dummy bot's ([`Self::place_bodies_at`]).
     placement: Option<([f64; 3], i32)>,
@@ -2113,6 +2143,7 @@ impl WorldDelivery {
             placed_made: HashSet::new(),
             target_candidates: Vec::new(),
             pickups: Vec::new(),
+            map_variables: Arc::new([]),
             death: None,
             attackers: Vec::new(),
             knocks: KnockCredit::default(),
@@ -2122,6 +2153,7 @@ impl WorldDelivery {
             tag_revision: 0,
             board: BoardDelivery::default(),
             assembling: false,
+            mode_graph: false,
             headless: false,
             ai: None,
             overtime: false,
@@ -2140,6 +2172,7 @@ impl WorldDelivery {
             controller_scopes: Vec::new(),
             multikill_due: false,
             modified: Vec::new(),
+            retired_sends: Vec::new(),
             placement: None,
         }
     }
@@ -2248,6 +2281,7 @@ impl WorldDelivery {
         self.mover = None;
         self.teleported = None;
         self.body_script = None;
+        self.retired_sends.clear();
         self.script_failed = false;
         self.projectile_destroys.clear();
         self.projectile_events.clear();
@@ -2719,11 +2753,14 @@ impl WorldDelivery {
     /// Practice Range: its mode graph `13C0` holds no `0692`, so `288B`
     /// st35 never sets #25377 there, and the client's st38 says Athena's
     /// hero select line (`0918` → `03F2` VoiceStimulus `0168.078`) each
-    /// time #25377 turns on.
+    /// time #25377 turns on. Where the mode graph drives the match
+    /// ([`Self::set_mode_graph`]) the skin selector is `288B`'s own: its
+    /// st32-st35 set #25377 while the graph holds `0692` (`0F4A` st9).
     fn select_input(&self, practice: bool) -> Option<(SelectShown, ControllerFrame)> {
         let state = self.controller_script.as_ref()?.hero_select_state()?;
         let open = state.open || self.keep_open;
-        let skins = open && self.assembling;
+        let graph = self.mode_graph && !practice;
+        let skins = !graph && open && self.assembling;
         let hero = self.body.map(|body| body.hero);
         Some((
             SelectShown {
@@ -2734,7 +2771,7 @@ impl WorldDelivery {
             },
             ControllerFrame {
                 keep_open: self.keep_open,
-                skins,
+                skins: (!graph).then_some(skins),
                 hide_assemble: practice,
                 notice: None,
                 hero,
@@ -3801,6 +3838,10 @@ impl WorldDelivery {
     fn cancel_body_script(&mut self) {
         self.script_failed = false;
         if let Some(mut script) = self.body_script.take() {
+            // Its persistent sends go with it.
+            self.retired_sends
+                .extend(script.runtime.take_message_ends());
+            self.retired_sends.extend(script.runtime.held_sends());
             script.stream.retire();
             if let Some(mover) = &mut self.mover {
                 let frame = mover.pose().frame.unwrap_or(script.frame);
@@ -3921,6 +3962,13 @@ impl WorldDelivery {
 
     pub fn set_assembling(&mut self, assembling: bool) {
         self.assembling = assembling;
+    }
+
+    /// Whether the mode's own graph drives the match: its `0692` opens hero
+    /// select while the heroes assemble and its end closes it (`288B`
+    /// st32-st36), with no hand of the server's ([`Self::select_input`]).
+    pub fn set_mode_graph(&mut self, mode_graph: bool) {
+        self.mode_graph = mode_graph;
     }
 
     /// The messages the mode graph holds to every entity now
@@ -4265,6 +4313,17 @@ impl WorldDelivery {
         self.pickups.extend_from_slice(pickups);
         if let Some(script) = &mut self.body_script {
             script.runtime.set_pickups(pickups);
+        }
+    }
+
+    /// The map placeables' entity variables now
+    /// (`PlacedScripts::entity_variables`), which the body's graphs read
+    /// (the capture area aura's `0F00` st8 asks its point's owner
+    /// `#9901.id(99)`).
+    pub fn set_map_variables(&mut self, variables: &Arc<[(u32, Variables)]>) {
+        self.map_variables = Arc::clone(variables);
+        if let Some(script) = &mut self.body_script {
+            script.runtime.set_map_variables(variables);
         }
     }
 
@@ -5478,6 +5537,30 @@ impl WorldDelivery {
         messages
     }
 
+    /// The ends of his body's persistent sends to other entities since the
+    /// last call, with those its stopped scripts held, for the match to
+    /// route with his messages ([`crate::messages::deliver`]).
+    pub fn take_message_ends(&mut self) -> Vec<MessageEnd> {
+        let mut ends = std::mem::take(&mut self.retired_sends);
+        if self.world_started()
+            && let Some(script) = self.body_script.as_mut()
+        {
+            ends.extend(script.runtime.take_message_ends());
+        }
+        ends
+    }
+
+    /// His body's persistent sends' new parameters since the last call
+    /// ([`crate::messages::deliver_updates`]).
+    pub fn take_message_updates(&mut self) -> Vec<GameMessage> {
+        if !self.world_started() {
+            return Vec::new();
+        }
+        self.body_script
+            .as_mut()
+            .map_or_else(Vec::new, |script| script.runtime.take_message_updates())
+    }
+
     fn take_body_messages(&mut self) -> Vec<GameMessage> {
         if !self.world_started() {
             return Vec::new();
@@ -6373,6 +6456,7 @@ impl WorldDelivery {
             .and_then(|mut runtime| {
                 runtime.set_target_candidates(&self.target_candidates);
                 runtime.set_pickups(&self.pickups);
+                runtime.set_map_variables(&self.map_variables);
                 // The body starts with the defaults; what the client sent
                 // replaces them.
                 let settings = hero_setting_variables(&self.hero_settings, hero.guid);

@@ -2102,6 +2102,7 @@ fn state_payload(
             | StateKind::ServerFrames
             | StateKind::MoveTo
             | StateKind::NavPath
+            | StateKind::Rise
             | StateKind::AiMove
             | StateKind::ModifyHealth { .. }
             | StateKind::Status
@@ -2128,6 +2129,12 @@ fn state_payload(
             | StateKind::PickupSearch { .. },
             Some("none"),
         ) if codec.empty() => StatePayload::new(),
+        // `STU_4BD2E886`, the match end's card presenter (`180A` st19):
+        // its one bit (`+0x470`) unset; what sets it is not read
+        // (`vm/nodes.rs`).
+        (StateKind::Plain, Some("bit")) => {
+            StatePayload::from([("value".into(), Value::Bool(false))])
+        }
         // The landing search (`0B27` st6, `vm/landing.rs`): its block's
         // byte, which its begin sets to 0 and only its input plug
         // `m_6647ED22` (no link in the landing form) sets to 1

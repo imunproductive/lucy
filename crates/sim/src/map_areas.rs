@@ -117,11 +117,14 @@
 //! node `0x8000` and `0x200000000000`, refs `OwnerPrediction.md` §12.4)
 //! take the model's physics out with its drawing; not read in the client.
 //! The mode graphs send `0845` (`0F4A` st60, `0D76` st19); the Rust match
-//! flow that stands in for them in normal matches doesn't, so there every
-//! wall stays off, on the server as on the clients. Where `0845` comes,
-//! state 3 begins with state 6 (`STU_E56BA8D8`), whose target tags are a
-//! conditional the VM refuses ("target tag literal"), so that script is
-//! incomplete and its wall stays off too (docs/dev/loose-ends.md).
+//! flow that stands in for them (Escort, Hybrid and the other modes)
+//! doesn't, so there every wall stays off, on the server as on the
+//! clients. Under `0F4A` (Assault) the walls take it, and st5 reads the
+//! attacking team from the mode graph's #10795e
+//! (`MapEntityWorld::set_mode_variables`; before that the placed scripts
+//! read the mode entity's ruleset values only, the attacking team null,
+//! and Anubis's defenders' doorway walls stood all match). Measured on
+//! Anubis (Practice vs AI): no wall on in assemble, setup or the round.
 
 use std::{
     collections::{BTreeSet, HashMap},
@@ -150,7 +153,10 @@ use orpheus_script::{
 };
 use serde::Deserialize;
 
-use crate::objectives::CaptureBox;
+use crate::{
+    objective_data::MapObjectives,
+    objectives::{Area, CaptureBox},
+};
 
 /// The file in the runtime `data` folder.
 pub const FILE: &str = "game_map_areas_174.json";
@@ -196,16 +202,43 @@ impl SpawnRoom {
     }
 }
 
-/// The spawn rooms' areas, as their `0D62` asks for its own
-/// (`STU_73E1C5F0`).
-pub struct RoomVolumes(pub Arc<[SpawnRoom]>);
+/// The areas of the map's entities that have one (`STU_73E1C5F0`,
+/// `STU_96F571ED`): the spawn rooms', as their `0D62` asks for its own, and
+/// the capture points', as the capture area aura's `0F00` asks for its
+/// point (`orpheus_script` `vm/residency.rs`): each point's boxes where
+/// its objective stands ([`Area::of_point`]).
+pub struct MapVolumes {
+    rooms: Arc<[SpawnRoom]>,
+    points: Vec<(u32, Area)>,
+}
 
-impl EntityVolumes for RoomVolumes {
-    fn contains(&self, entity: u32, point: [f64; 3]) -> Option<bool> {
-        self.0
+impl MapVolumes {
+    pub fn new(rooms: Arc<[SpawnRoom]>, map: &GameMap, objectives: &MapObjectives) -> Self {
+        let points = objectives
+            .points
             .iter()
-            .find(|room| room.entity() == entity)
-            .map(|room| room.contains(point))
+            .map(|point| {
+                let at = map
+                    .objectives
+                    .iter()
+                    .find(|objective| objective.placeable == point.placeable)
+                    .map_or(point.position, |objective| objective.position);
+                (0x8000_0000 | point.placeable, Area::of_point(point, at))
+            })
+            .collect();
+        Self { rooms, points }
+    }
+}
+
+impl EntityVolumes for MapVolumes {
+    fn contains(&self, entity: u32, point: [f64; 3]) -> Option<bool> {
+        if let Some(room) = self.rooms.iter().find(|room| room.entity() == entity) {
+            return Some(room.contains(point));
+        }
+        self.points
+            .iter()
+            .find(|(placed, _)| *placed == entity)
+            .map(|(_, area)| area.contains(point))
     }
 }
 
@@ -855,6 +888,52 @@ pub fn kill_height<'a>(
 /// on or below the catch floor at `height`.
 pub fn caught(height: f64, y: f64, above_feet: f64) -> bool {
     y < height + above_feet + CATCH_MARGIN
+}
+
+/// The zones the client's `0x7FF789B2F280` tests a falling ray against
+/// (Meteor Strike's floor, `orpheus_physics::mover::rise`): the world's
+/// kill height (the client's world `+276`; here the catch floor,
+/// [`kill_height`], an assumption) and the damage areas (the client keeps
+/// those with `m_1BB427AE` set; here the lethal ones, an assumption).
+#[derive(Debug)]
+pub struct DeathZones {
+    pub kill_height: Option<f64>,
+    pub areas: std::sync::Arc<[DamageArea]>,
+}
+
+impl orpheus_physics::mover::DeathZones for DeathZones {
+    /// Below the kill height: the start when it is below, else where the
+    /// segment crosses it (the start when it is level within 0.004); then
+    /// the highest entry into an area's box over that.
+    fn entry(&self, start: [f64; 3], end: [f64; 3]) -> Option<[f64; 3]> {
+        let mut found = None;
+        if let Some(height) = self.kill_height {
+            if start[1] < height {
+                return Some(start);
+            }
+            if end[1] < height {
+                found = Some(if (start[1] - end[1]).abs() > 0.0040000002 {
+                    let share = (height - start[1]) / (end[1] - start[1]);
+                    std::array::from_fn(|axis| (end[axis] - start[axis]) * share + start[axis])
+                } else {
+                    start
+                });
+            }
+        }
+        for share in self
+            .areas
+            .iter()
+            .flat_map(|area| &area.boxes)
+            .filter_map(|area| area.entry(start, end))
+        {
+            let point: [f64; 3] =
+                std::array::from_fn(|axis| (end[axis] - start[axis]) * share + start[axis]);
+            if found.is_none_or(|best: [f64; 3]| point[1] > best[1]) {
+                found = Some(point);
+            }
+        }
+        found
+    }
 }
 
 fn invalid(error: impl std::fmt::Display) -> io::Error {

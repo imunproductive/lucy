@@ -55,6 +55,7 @@ impl Machine {
             command_buttons: 0,
             held_buttons: Vec::new(),
             owner_dead: false,
+            current_edge: None,
             deferred: BTreeMap::new(),
             disabled: BTreeMap::new(),
             movements: BTreeMap::new(),
@@ -65,6 +66,8 @@ impl Machine {
             applied_auras: BTreeMap::new(),
             scopes: BTreeMap::new(),
             outcomes: BTreeMap::new(),
+            sent: BTreeMap::new(),
+            collected: BTreeMap::new(),
         })
     }
 
@@ -201,16 +204,22 @@ impl Machine {
             let graph = graphs.graph(item.graph).expect("registered graph");
             // An entry runs in the instances of its scope (`vm/scopes.rs`).
             let scope = item.scope.as_ref().map_or(0, |scope| scope.id);
+            let active = |node: &&Node| {
+                node.is_state()
+                    && node
+                        .state
+                        .is_some_and(|raw| item.states.get(&raw).is_some_and(|state| state.active))
+            };
             entries.extend(
                 graph
                     .message_nodes(message)
                     .filter(|node| {
                         (is_message_entry(node) && super::scopes::entry_scope(node) == scope)
-                            || (node.is_state()
-                                && node.state.is_some_and(|raw| {
-                                    item.states.get(&raw).is_some_and(|state| state.active)
-                                }))
+                            || active(node)
                     })
+                    // A receiving state whose message is an expression
+                    // takes it if it names this one (`Vm::deliver`).
+                    .chain(graph.computed_message_nodes().filter(active))
                     .map(|node| (id, node.pos)),
             );
         }
@@ -222,6 +231,7 @@ impl Machine {
                 self.now_ms,
                 Event::Message {
                     position,
+                    message,
                     sender,
                     parameters: Arc::clone(&parameters),
                 },
