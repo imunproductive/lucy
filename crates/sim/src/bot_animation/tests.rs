@@ -355,7 +355,11 @@ mod game {
 /// parts settle, the head then flies up past 4 m, drops through 0.8 m and
 /// swings to 0.5 m behind at 1.14 to 1.39 m, and settles at 1.80 m; the
 /// server's pose follows the same course, the client's about 0.1 s later
-/// (its view delay). So the head is hit where it is drawn.
+/// (its view delay). So the head is hit where it is drawn. While the body
+/// bone holds at 1.62 m the head bone is scaled down: the client's read
+/// 0.034 (2026-11-22, refs report `CombatFeel.md`), its own track's
+/// scale, not that times its parent's, so the head's shape is 0.44 ×
+/// 0.034 m round then, as in the client's hit test.
 #[test]
 #[ignore = "requires a derived 104319 Practice Range scene"]
 fn the_assembly_poses_the_bones_where_the_client_draws_them() {
@@ -393,4 +397,21 @@ fn the_assembly_poses_the_bones_where_the_client_draws_them() {
             );
         }
     }
+    let input = PoseInput {
+        age: 0.3,
+        anim: Some(AnimRequest {
+            alias: 0x0C80_0000_0000_0451,
+            elapsed: 0.3,
+            over: Some(2.5),
+        }),
+        ..PoseInput::default()
+    };
+    let scale = body.rig.places(&input)[34].scale;
+    assert!(
+        scale.iter().all(|s| (s - 0.034).abs() < 0.0005),
+        "{scale:?}"
+    );
+    let head = body.shapes(&input)[0];
+    assert!(head.critical);
+    assert!((head.radius - 0.44 * scale[0]).abs() < 1e-9, "{head:?}");
 }
