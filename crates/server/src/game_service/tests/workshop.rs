@@ -547,7 +547,7 @@ rule("Team 1 stands on point A")
 
 	actions
 	{
-		Teleport(Event Player, Vector(-4.265, 1.156, 0.578));
+		Teleport(Event Player, Vector(-4.265, 1.156, 3.078));
 	}
 }
 
@@ -568,7 +568,7 @@ rule("Team 2 stands 2.5 m ahead of him")
 
 	actions
 	{
-		Teleport(Event Player, Vector(-4.265, 1.156, 3.078));
+		Teleport(Event Player, Vector(-4.265, 1.156, 5.578));
 	}
 }
 
@@ -789,7 +789,9 @@ rule("Received healing")
 /// Two Doomfists, one a team, in a Workshop match on Hanamura Assault
 /// whose rules count each player event in player variables
 /// ([`PLAYER_EVENTS`]): the rules put them 2.5 m apart on point A (out of
-/// both spawn rooms, whose `0C8E` hurts an enemy inside), and
+/// both spawn rooms, whose `0C8E` hurts an enemy inside, and north of the
+/// point's server placeable `0428`, whose model stops a punch from its
+/// centre), and
 /// Team 1's client punches Team 2 (a tapped Rocket Punch, held 0.3 s). His
 /// `0D06` plays its victim graph `0D07` on Team 2's body, whose velocity
 /// action pushes it and whose `STU_AFBB59E9` reports the knockback:
@@ -946,7 +948,7 @@ fn a_workshop_rule_runs_on_each_player_event() {
     let placed = |server: &Lockstep| {
         let bodies = server.bodies(MATCH).unwrap();
         bodies.len() == 2
-            && [[-4.265, 0.578], [-4.265, 3.078]]
+            && [[-4.265, 3.078], [-4.265, 5.578]]
                 .iter()
                 .zip(&bodies)
                 .all(|(&[x, z], body)| {

@@ -24,7 +24,11 @@ use std::{
 
 use orpheus_core::guid::parse_guid;
 use orpheus_physics::{
-    collision::{index::IndexError, scene::CollisionScene},
+    collision::{
+        index::{IndexError, RayHit},
+        scene::CollisionScene,
+    },
+    contact::world::ContactWorld,
     static_ray::{Vec3, capsule_entry_distance, segment_distance},
 };
 use orpheus_script::{
@@ -137,20 +141,85 @@ impl RayProfiles {
     }
 }
 
+/// The server placeables' models that the client's shots meet
+/// (`crate::map_areas::PlaceableBody::ray_scene`), each with its switched
+/// group in the movers' world and its entity: a model meets a ray while
+/// its group is on there (`crate::scene_assets` switches the groups as the
+/// placeables stand or go), unless the ray is its own entity's.
+#[derive(Default)]
+pub struct PlaceableRays {
+    contacts: Option<Arc<ContactWorld>>,
+    scenes: Vec<(usize, u32, CollisionScene)>,
+}
+
+impl std::fmt::Debug for PlaceableRays {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PlaceableRays")
+            .field("scenes", &self.scenes)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PlaceableRays {
+    /// `scenes`: each model's switched group, entity and shapes.
+    pub fn new(contacts: Arc<ContactWorld>, scenes: Vec<(usize, u32, CollisionScene)>) -> Self {
+        Self {
+            contacts: Some(contacts),
+            scenes,
+        }
+    }
+
+    /// The map's first hit along a unit direction (`scene`), or a standing
+    /// placeable model's nearer one, but not `caster`'s own model.
+    pub fn cast_ray(
+        &self,
+        scene: &CollisionScene,
+        caster: Option<u32>,
+        origin: Vec3,
+        direction: Vec3,
+        length: f64,
+        mask: u16,
+    ) -> Result<Option<RayHit>, IndexError> {
+        let mut hit = scene.cast_ray(origin, direction, length, mask)?;
+        let Some(contacts) = &self.contacts else {
+            return Ok(hit);
+        };
+        for (group, entity, model) in &self.scenes {
+            if !contacts.is_on(*group) || caster == Some(*entity) {
+                continue;
+            }
+            let reach = hit.map_or(length, |hit| hit.distance);
+            if let Some(found) = model.cast_ray(origin, direction, reach, mask)? {
+                if found.distance < reach {
+                    hit = Some(found);
+                }
+            }
+        }
+        Ok(hit)
+    }
+}
+
 /// The map's collision as a script's ray casts meet it
-/// (`orpheus_script::vm` ray casts): the ray cache, masked by the cast's
-/// ray profile's map mask as a shot of that profile is.
+/// (`orpheus_script::vm` ray casts): the ray cache and the standing server
+/// placeables' models, masked by the cast's ray profile's map mask as a
+/// shot of that profile is.
 #[derive(Debug)]
 pub struct SceneRays {
     scene: Arc<CollisionScene>,
+    placeables: Arc<PlaceableRays>,
     profiles: Arc<RayProfiles>,
 }
 
 impl SceneRays {
     /// The map for every script world of a match.
-    pub fn shared(scene: &Arc<CollisionScene>, profiles: &Arc<RayProfiles>) -> Arc<dyn MapRays> {
+    pub fn shared(
+        scene: &Arc<CollisionScene>,
+        placeables: &Arc<PlaceableRays>,
+        profiles: &Arc<RayProfiles>,
+    ) -> Arc<dyn MapRays> {
         Arc::new(Self {
             scene: Arc::clone(scene),
+            placeables: Arc::clone(placeables),
             profiles: Arc::clone(profiles),
         })
     }
@@ -159,14 +228,22 @@ impl SceneRays {
 impl MapRays for SceneRays {
     fn cast(
         &self,
+        caster: Option<u32>,
         origin: [f64; 3],
         direction: [f64; 3],
         reach: f64,
         profile: Option<u64>,
     ) -> Option<Option<MapHit>> {
         let hit = self
-            .scene
-            .cast_ray(origin, direction, reach, self.profiles.map_mask(profile))
+            .placeables
+            .cast_ray(
+                &self.scene,
+                caster,
+                origin,
+                direction,
+                reach,
+                self.profiles.map_mask(profile),
+            )
             .ok()?;
         Some(hit.map(|hit| MapHit {
             distance: hit.distance,
@@ -985,5 +1062,65 @@ mod tests {
         assert_eq!(chest.damage, 20.0);
         // The chest sphere: 0.48 m round, its centre 1.37 m up.
         assert!((chest.distance - 7.54).abs() < 0.01, "{chest:?}");
+    }
+
+    /// A standing placeable's model meets a shot nearer than the map's wall
+    /// behind it; while its group is off in the movers' world (the
+    /// placeable gone) the shot passes it, and a model behind the wall
+    /// never wins.
+    #[test]
+    fn placeable_models_meet_rays_while_their_group_is_on() {
+        use orpheus_physics::collision::cache::{Mesh, Placement, Shape, Triangle};
+        let wall = |z: f32| {
+            let shape = Shape::Mesh {
+                mask: 0x1FDF,
+                mesh: Mesh {
+                    vertices: vec![[-5.0, 0.0, z], [5.0, 0.0, z], [0.0, 5.0, z]],
+                    triangles: vec![Triangle {
+                        corners: [0, 1, 2],
+                        wings: [-1; 3],
+                        mask: 0x1FDF,
+                        surface: 0,
+                    }],
+                },
+            };
+            let placement = Placement {
+                model: 0,
+                group: 0,
+                translation: [0.0; 3],
+                scale: [1.0; 3],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+            };
+            CollisionScene::placed_model(&[shape], placement).unwrap()
+        };
+        let map = wall(10.0);
+        let contacts = Arc::new(
+            ContactWorld::new(Vec::new())
+                .unwrap()
+                .with_switched(vec![Vec::new(), Vec::new()])
+                .unwrap(),
+        );
+        let rays = PlaceableRays::new(
+            Arc::clone(&contacts),
+            vec![(0, 0x8000_0001, wall(5.0)), (1, 0x8000_0002, wall(15.0))],
+        );
+        let distance = |caster: Option<u32>| {
+            rays.cast_ray(&map, caster, [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], 50.0, 0x1FDF)
+                .unwrap()
+                .unwrap()
+                .distance
+        };
+        assert_eq!(distance(None), 10.0);
+        contacts.switch(1, true);
+        assert_eq!(distance(None), 10.0);
+        contacts.switch(0, true);
+        assert_eq!(distance(None), 5.0);
+        // A placeable's own ray passes its model.
+        assert_eq!(distance(Some(0x8000_0001)), 10.0);
+        // A mask the model doesn't stop passes it.
+        let hit = rays
+            .cast_ray(&map, None, [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], 50.0, 0x2000)
+            .unwrap();
+        assert!(hit.is_none());
     }
 }

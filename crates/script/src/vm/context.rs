@@ -304,10 +304,10 @@ impl<W: World + ?Sized> Context for InstanceContext<'_, W> {
         reach: f64,
     ) -> Option<Option<[f64; 3]>> {
         self.read_native = true;
-        let hit = self
-            .world
-            .map_rays()?
-            .cast(origin, direction, reach, None)?;
+        let hit =
+            self.world
+                .map_rays()?
+                .cast(Some(self.site.entity), origin, direction, reach, None)?;
         Some(hit.map(|hit| hit.point))
     }
 

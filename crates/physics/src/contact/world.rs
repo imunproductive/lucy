@@ -506,7 +506,6 @@ fn placed_geometry(
     slot: usize,
     raw_meshes: &mut HashMap<(u32, usize), Arc<Mesh>>,
 ) -> Result<StaticGeometry, ContactWorldError> {
-    let scale = placement.scale;
     match shape {
         Shape::Mesh { mask, mesh } => {
             let raw = raw_meshes
@@ -514,10 +513,21 @@ fn placed_geometry(
                 .or_insert_with(|| Arc::new(mesh.clone()));
             Ok(StaticGeometry::Mesh(Arc::new(ContactMesh::new(
                 Arc::clone(raw),
-                scale,
+                placement.scale,
                 *mask,
             )?)))
         }
+        _ => Ok(scaled_solid(shape, placement.scale).expect("only solid shapes remain")),
+    }
+}
+
+/// A model's polytope, capsule or sphere scaled as the movement cache
+/// scales a placed prop's ([`ContactWorld::from_movement_cache`]), for a
+/// [`StaticShape`] in the prop's frame; `None` for a mesh (a
+/// [`ContactMesh`] scales it).
+pub fn scaled_solid(shape: &Shape, scale: [f32; 3]) -> Option<StaticGeometry> {
+    match shape {
+        Shape::Mesh { .. } => None,
         Shape::Hull(hull) => {
             let mut hull = hull.clone();
             if scale != [1.0; 3] {
@@ -529,12 +539,18 @@ fn placed_geometry(
                     plane[3] *= scale[0];
                 }
             }
-            Ok(StaticGeometry::Hull(Arc::new(hull)))
+            Some(StaticGeometry::Hull(Arc::new(hull)))
         }
-        _ => {
-            let obstacle =
-                RoundObstacle::from_placement(shape, placement).expect("only round shapes remain");
-            Ok(StaticGeometry::Round {
+        Shape::Capsule { .. } | Shape::Sphere { .. } => {
+            let placement = Placement {
+                model: 0,
+                group: 0,
+                translation: [0.0; 3],
+                scale,
+                rotation: [0.0, 0.0, 0.0, 1.0],
+            };
+            let obstacle = RoundObstacle::from_placement(shape, placement)?;
+            Some(StaticGeometry::Round {
                 shape: obstacle.shape,
                 mask: obstacle.mask,
             })
