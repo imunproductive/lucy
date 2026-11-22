@@ -31,20 +31,23 @@
 //!   the world's; 46 searches give `STU_C8C4C20D(owner())`, the owner's
 //!   heading, as the yaw); with `m_08285CD6` the aim's pitch (component 28
 //!   `+66`, positive down) is taken off `p`, so the cone follows the aim.
-//!   A body in the sphere is in the cone when the point of its axis
-//!   nearest the sphere's diameter along the direction is within half the
-//!   angle of it, or that diameter crosses the axis ahead of the centre
-//!   (`0x7FF789B9E660`). The half-angle scales `m_B9BEAC7F` (horizontal)
+//!   A body in the sphere is in the cone when the point of its capsule's
+//!   surface nearest the sphere's diameter along the direction (the axis
+//!   point nearest it, moved the body's radius toward it) is within half
+//!   the angle of it, or that diameter enters the capsule ahead of the
+//!   centre (`0x7FF789B9E660`, game run of 2026-11-22: `in_cone`). The
+//!   half-angle scales `m_B9BEAC7F` (horizontal)
 //!   and `m_3119AD61` (vertical, unset: 1) narrow or widen the cone
 //!   (`0x7FF789BAA430` @0x7FF789BABB45: the cosines of the half-angle times
 //!   each, clamped to `[0, π]`); the test takes the cosine between the two
-//!   by how far the line to the body's axis point rises (its unit `|y|`).
+//!   by how far the line to that surface point rises (its unit `|y|`).
 //!   With `m_E474FFD6` (Rocket Punch's searches, `0D06` st6 and st72) the
 //!   shape is a cylinder along the diameter instead: a body passes when its
-//!   axis point is ahead of the centre and within `sin(half) × radius ×
-//!   scale` of the diameter (`m_8862A75D`, the radius it lerps to, unset),
-//!   the scale again between the two by the rise between the points
-//!   (clamped to 1 m). The inner cone `m_544C3E6F` is not modelled.
+//!   surface point is ahead of the centre and the capsule within
+//!   `sin(half) × radius × scale` of the diameter (`m_8862A75D`, the radius
+//!   it lerps to, unset), the scale again between the two by the rise
+//!   between the points (clamped to 1 m). The inner cone `m_544C3E6F` is
+//!   not modelled.
 //! - `m_84E5DE4E`: the targets' score, lowest first (`0x7FF789BA6E10`):
 //!   `STU_B61DA2A5` sums its entries' terms, each with its `m_weight` (a
 //!   weight within 0.004 of 0 counts nothing); a `STU_0BCD3EFA` term maps
@@ -1430,13 +1433,17 @@ pub(super) struct Cone {
 }
 
 /// Whether a body within the sphere is in the cone (the client's shape test
-/// `0x7FF789B9E660`): the point of its axis nearest the sphere's diameter
-/// along the cone's direction is within the half-angle of it, the cosine
-/// taken between the horizontal and the vertical one by the unit line's
-/// `|y|`, or that diameter crosses the axis ahead of the centre; for the
-/// cylinder, the point is ahead of the centre and within the sine's share
-/// of the radius of the diameter, taken between the two by the rise
-/// between the points (clamped to 1).
+/// `0x7FF789B9E660`): the point of its capsule's surface nearest the
+/// sphere's diameter along the cone's direction (the axis point nearest the
+/// diameter, moved the body's radius toward it, `0x7FF789CD8720`) is within
+/// the half-angle of it, the cosine taken between the horizontal and the
+/// vertical one by the unit line's `|y|`, or that diameter enters the
+/// capsule ahead of the centre; for the cylinder, the point is ahead of the
+/// centre and the capsule within the sine's share of the radius of the
+/// diameter, taken between the two by the rise between the points (clamped
+/// to 1). The game showed the surface: 1082 of the client's own tests of
+/// the Tactical Visor's cone in a game run, 8 of them true where the axis
+/// point was outside (refs report `CombatFeel.md`).
 pub(super) fn in_cone(body: &TargetCandidate, centre: [f64; 3], cone: &Cone, radius: f64) -> bool {
     // The client's test of a half-angle wider than the whole sphere.
     const WHOLE: f64 = -0.9999;
@@ -1453,19 +1460,28 @@ pub(super) fn in_cone(body: &TargetCandidate, centre: [f64; 3], cone: &Cone, rad
         along(centre, direction, radius),
         along(centre, direction, -radius),
     );
-    let offset = sub(axis, centre);
-    let off = sub(axis, diameter);
+    let toward = sub(diameter, axis);
+    let reach = dot(toward, toward).sqrt();
+    let (surface, gap) = if reach > body.radius {
+        (
+            along(axis, toward.map(|value| value / reach), body.radius),
+            reach - body.radius,
+        )
+    } else {
+        (diameter, 0.0)
+    };
+    let offset = sub(surface, centre);
     let ahead = dot(offset, direction);
-    if off == [0.0; 3] && ahead > 0.0 {
+    if gap == 0.0 && ahead > 0.0 {
         return true;
     }
     if let Some([horizontal, vertical]) = cone.cylinder {
         if ahead < 0.0 {
             return false;
         }
-        let rise = off[1].abs().clamp(0.0, 1.0);
+        let rise = (surface[1] - diameter[1]).abs().clamp(0.0, 1.0);
         let most = (horizontal + (vertical - horizontal) * rise) * radius;
-        return dot(off, off).sqrt() <= most;
+        return gap <= most;
     }
     let length = dot(offset, offset).sqrt();
     let unit = if length < 1e-18 {

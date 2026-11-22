@@ -2,9 +2,15 @@
 //! by `orpheus-assets`, whose `hitboxes` module says where they come from):
 //! spheres and capsules in the body's frame (the bots' in their idle pose,
 //! the heroes' at rest), its origin at the feet, Y up and +Z forward, each
-//! critical or not. A bot with a rig is posed each tick instead
-//! ([`crate::bot_animation`]); these static shapes serve a body without
-//! one.
+//! critical or not. They are the shapes of the model's physics body, fixed
+//! in its frame: the client's hit test (`0x7FF789B00C50`) tests the
+//! animated hit list first, then the physics body (`0x7FF789CFAD50`), whose
+//! hit replaces the hit list's. Every hit the client's own shots made on a
+//! Training Bot in four game runs (350 of 352, its assembly included) lay on
+//! these shapes' surfaces, not on the posed ones (refs report
+//! `CombatFeel.md`). A bot with a rig also has its posed shapes
+//! ([`crate::bot_animation`]), which a ray meets only where it misses all
+//! of these.
 //!
 //! New: the Python reference hit every body as one capsule from the feet to
 //! the mover's height (combat.py `_targets`, `ray_capsule`) and called a
@@ -26,6 +32,10 @@ pub struct HitShape {
     pub radius: f64,
     /// A hit on it is critical (the body's damage zones list its zone).
     pub critical: bool,
+    /// It is on the model's physics body, fixed in the body's frame (this
+    /// catalog's), not on the animated hit list (the posed shapes): a ray
+    /// that enters one is decided by those (module notes).
+    pub fixed: bool,
 }
 
 /// Every body's [`HitShape`]s and model hardpoints.
@@ -85,6 +95,7 @@ impl HitboxCatalog {
                         b: centre,
                         radius,
                         critical,
+                        fixed: true,
                     },
                     RawShape::Capsule {
                         a,
@@ -96,6 +107,7 @@ impl HitboxCatalog {
                         b,
                         radius,
                         critical,
+                        fixed: true,
                     },
                 })
                 .collect();
@@ -158,13 +170,15 @@ mod tests {
                     a: [0.0, 1.5, 0.0],
                     b: [0.0, 1.5, 0.0],
                     radius: 0.44,
-                    critical: true
+                    critical: true,
+                    fixed: true,
                 },
                 HitShape {
                     a: [0.5, 0.9, 0.0],
                     b: [0.5, 0.9, 0.8],
                     radius: 0.1,
-                    critical: false
+                    critical: false,
+                    fixed: true,
                 },
             ]
         );

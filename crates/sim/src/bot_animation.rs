@@ -407,8 +407,9 @@ impl BodyRig {
     /// shape in its bone's frame, the ray divided by the bone's scale,
     /// `0x7FF78AA3E2E0`). Under a scale that differs by axis (the first
     /// tenth of a second of the assembly) the client's shape is an
-    /// ellipsoid; the radius takes the largest axis's.
-    pub fn shapes(&self, input: &PoseInput) -> Arc<[HitShape]> {
+    /// ellipsoid; the radius takes the largest axis's. Then `fixed`, the
+    /// model's physics body (`crate::hitboxes`), whose shapes don't move.
+    pub fn shapes(&self, input: &PoseInput, fixed: &[HitShape]) -> Arc<[HitShape]> {
         let places = self.rig.places(input);
         self.shapes
             .iter()
@@ -421,6 +422,7 @@ impl BodyRig {
                     ..*shape
                 }
             })
+            .chain(fixed.iter().copied())
             .collect()
     }
 }
@@ -663,6 +665,7 @@ impl BotRigCatalog {
                                 b: centre,
                                 radius,
                                 critical,
+                                fixed: false,
                             },
                         ),
                         RawShape::Capsule {
@@ -678,6 +681,7 @@ impl BotRigCatalog {
                                 b,
                                 radius,
                                 critical,
+                                fixed: false,
                             },
                         ),
                     };
@@ -804,10 +808,14 @@ impl ScriptAnims {
     }
 }
 
-/// A bot's animation: its rig, clocks and this tick's shapes.
+/// A bot's animation: its rig, clocks and this tick's shapes, its physics
+/// body's fixed ones after the posed ones.
 #[derive(Clone, Debug)]
 pub struct BotAnimation {
     body: Arc<BodyRig>,
+    /// The model's physics body (`crate::hitboxes`): empty for a body the
+    /// hitboxes don't list.
+    fixed: Arc<[HitShape]>,
     /// The first tick the bot was animated: its clock's start.
     born: Option<u32>,
     /// The tick it set off, while it walks.
@@ -817,10 +825,11 @@ pub struct BotAnimation {
 
 impl BotAnimation {
     /// A new body, posed standing at the start of its clock.
-    pub fn new(body: Arc<BodyRig>) -> Self {
-        let shapes = body.shapes(&PoseInput::default());
+    pub fn new(body: Arc<BodyRig>, fixed: Arc<[HitShape]>) -> Self {
+        let shapes = body.shapes(&PoseInput::default(), &fixed);
         Self {
             body,
+            fixed,
             born: None,
             set_off: None,
             shapes,
@@ -829,7 +838,7 @@ impl BotAnimation {
 
     /// The same body made again (a respawn): its clocks start over.
     pub fn fresh(&self) -> Self {
-        Self::new(Arc::clone(&self.body))
+        Self::new(Arc::clone(&self.body), Arc::clone(&self.fixed))
     }
 
     /// Pose the body at `tick`: `walking` its route, with the script's
@@ -848,15 +857,18 @@ impl BotAnimation {
             None
         };
         let seconds = |from: u32| f64::from(tick.wrapping_sub(from)) * TICK_PERIOD.as_secs_f64();
-        self.shapes = self.body.shapes(&PoseInput {
-            age: seconds(born),
-            moving: self.set_off.map(seconds),
-            arms_forward,
-            anim,
-        });
+        self.shapes = self.body.shapes(
+            &PoseInput {
+                age: seconds(born),
+                moving: self.set_off.map(seconds),
+                arms_forward,
+                anim,
+            },
+            &self.fixed,
+        );
     }
 
-    /// The body's shapes as posed last.
+    /// The body's shapes as posed last, then its fixed ones.
     pub fn shapes(&self) -> Arc<[HitShape]> {
         Arc::clone(&self.shapes)
     }

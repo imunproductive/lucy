@@ -67,7 +67,7 @@ fn rig() -> BotRigCatalog {
 }
 
 fn height(input: PoseInput) -> f64 {
-    rig().for_body(BODY).unwrap().shapes(&input)[0].a[1]
+    rig().for_body(BODY).unwrap().shapes(&input, &[])[0].a[1]
 }
 
 fn close(a: f64, b: f64) -> bool {
@@ -151,7 +151,7 @@ fn a_walking_bot_plays_the_moving_branch_from_where_it_set_off() {
         3.0
     ));
 
-    let mut animation = BotAnimation::new(rig().for_body(BODY).unwrap());
+    let mut animation = BotAnimation::new(rig().for_body(BODY).unwrap(), Arc::from([]));
     animation.advance(100, false, false, None);
     assert!(close(animation.shapes()[0].a[1], 1.0));
     animation.advance(110, true, false, None);
@@ -182,7 +182,7 @@ fn the_posed_shapes_follow_the_bob_over_time() {
     assert!(close(at(3.0), 1.05));
     // The bob loops every 4 s.
     assert!(close(at(6.0), 1.1));
-    let animation = BotAnimation::new(rig().for_body(BODY).unwrap());
+    let animation = BotAnimation::new(rig().for_body(BODY).unwrap(), Arc::from([]));
     let mut later = animation.fresh();
     later.advance(1000, false, false, None);
     later.advance(1125, false, false, None);
@@ -411,7 +411,7 @@ fn the_assembly_poses_the_bones_where_the_client_draws_them() {
         scale.iter().all(|s| (s - 0.034).abs() < 0.0005),
         "{scale:?}"
     );
-    let head = body.shapes(&input)[0];
+    let head = body.shapes(&input, &[])[0];
     assert!(head.critical);
     assert!((head.radius - 0.44 * scale[0]).abs() < 1e-9, "{head:?}");
 }
