@@ -10,6 +10,10 @@ use lucy_wire::messages::{ChannelError, Message, read_channel};
 const PONG: u32 = 20306;
 const PING_INDEX: u32 = 0x78;
 const PING_STAMPS: u32 = 0x80;
+/// A client's reliable messages wait for a lost one before them at most
+/// this many at a time ([`IngressError::Backlog`]): the client sends the
+/// lost one again long before so many others follow it.
+const MAX_PARKED: usize = 256;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MessageKind {
@@ -40,6 +44,9 @@ impl From<u32> for MessageKind {
 pub enum IngressError {
     Channel(ChannelError),
     Commands(InputError),
+    /// More reliable messages wait for a lost one than [`MAX_PARKED`]: the
+    /// client is broken, and its player leaves.
+    Backlog,
 }
 
 impl fmt::Display for IngressError {
@@ -47,6 +54,7 @@ impl fmt::Display for IngressError {
         match self {
             Self::Channel(error) => write!(f, "bad game channel: {error}"),
             Self::Commands(error) => write!(f, "bad game input: {error}"),
+            Self::Backlog => write!(f, "over {MAX_PARKED} game messages wait for a lost one"),
         }
     }
 }
@@ -56,6 +64,7 @@ impl Error for IngressError {
         match self {
             Self::Channel(error) => Some(error),
             Self::Commands(error) => Some(error),
+            Self::Backlog => None,
         }
     }
 }
@@ -86,6 +95,12 @@ impl GameIngress {
         for reliable in channel.reliable {
             if u64::from(reliable.sequence) < self.expected_reliable {
                 continue;
+            }
+            if self.parked.len() == MAX_PARKED
+                && u64::from(reliable.sequence) != self.expected_reliable
+                && !self.parked.contains_key(&reliable.sequence)
+            {
+                return Err(IngressError::Backlog);
             }
             self.parked.insert(reliable.sequence, reliable.message);
             while let Ok(expected) = u32::try_from(self.expected_reliable) {
@@ -317,6 +332,31 @@ mod tests {
             ingress.receive(&schemas, frame.as_bytes(), |_| panic!("duplicate message")),
             Err(IngressError::Commands(_))
         ));
+    }
+
+    #[test]
+    fn too_many_messages_after_a_lost_one_refuse_the_client() {
+        let schemas = schemas();
+        let mut ingress = GameIngress::new();
+        // Message 0 is lost: 1 to 256 wait for it, a 257th is one too many.
+        for sequence in 1..=256 {
+            let frame = channel(&schemas, &[(sequence, 21600)], &[]);
+            ingress
+                .receive(&schemas, frame.as_bytes(), |_| panic!("message 0 is lost"))
+                .unwrap();
+        }
+        let frame = channel(&schemas, &[(257, 21600)], &[]);
+        assert!(matches!(
+            ingress.receive(&schemas, frame.as_bytes(), |_| panic!("message 0 is lost")),
+            Err(IngressError::Backlog)
+        ));
+        // A message that is already waiting comes again, or the lost one.
+        let mut delivered = 0;
+        let frame = channel(&schemas, &[(256, 21600), (0, 21602)], &[]);
+        ingress
+            .receive(&schemas, frame.as_bytes(), |_| delivered += 1)
+            .unwrap();
+        assert_eq!(delivered, 257);
     }
 
     #[test]

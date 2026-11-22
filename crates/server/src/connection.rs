@@ -168,6 +168,11 @@ impl GameConnections {
             .is_some_and(|entry| matches!(entry.state, State::Waiting { .. }))
     }
 
+    /// No link is reserved or open.
+    pub fn is_empty(&self) -> bool {
+        self.connections.is_empty()
+    }
+
     pub fn receive(
         &mut self,
         datagram: &[u8],
