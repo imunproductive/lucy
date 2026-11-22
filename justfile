@@ -21,8 +21,15 @@ lint:
 test:
     cargo nextest run --workspace --locked -j $env:RUST_TEST_THREADS; $units = $LASTEXITCODE; cargo test --workspace --locked --doc; exit [Math]::Max($units, $LASTEXITCODE)
 
+# The dashboard (web/dashboard: Vite, Svelte, TypeScript) builds into its dist/, which is committed and
+# which the server embeds, so `cargo build` needs no Node. Run this after changing the dashboard's source.
+dashboard-build:
+    Set-Location web/dashboard; if (-not (Test-Path node_modules)) { npm ci; if ($LASTEXITCODE) { exit $LASTEXITCODE } }; npm run build; exit $LASTEXITCODE
+
+# The dashboard's API client tests, its type check, and a check that the committed dist/ is a fresh build
+# of the source.
 dashboard-test:
-    node --test web/tests/test_dashboard_client.mjs
+    Set-Location web/dashboard; if (-not (Test-Path node_modules)) { npm ci; if ($LASTEXITCODE) { exit $LASTEXITCODE } }; npm test; $tests = $LASTEXITCODE; npm run check; $check = $LASTEXITCODE; npm run verify-dist; exit [Math]::Max([Math]::Max($tests, $check), $LASTEXITCODE)
 
 build:
     cargo build --workspace --release --locked

@@ -5,7 +5,8 @@
     python tools/affected.py --cargo-args    # prints `-p a -p b ...` for cargo test / nextest
 
 A change to the workspace's own build files (Cargo.toml, Cargo.lock, .cargo/, .config/,
-rust-toolchain.toml) affects every crate; one to docs, tools or web/ affects none.
+rust-toolchain.toml) affects every crate; one to docs, tools or web/ affects none, except the
+dashboard's build (web/dashboard/dist/), which lucy-server embeds.
 Merges still run the whole suite; this is for an agent's own checks.
 """
 
@@ -21,6 +22,8 @@ REPO = Path(
     subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=True).stdout.strip()
 )
 EVERYTHING = ("Cargo.toml", "Cargo.lock", ".cargo/", ".config/", "rust-toolchain.toml")
+# Files outside a crate's folder that the crate embeds (its build.rs).
+EMBEDDED = {"web/dashboard/dist/": "lucy-server"}
 
 
 def run(*args: str) -> str:
@@ -62,6 +65,7 @@ def affected(files: set[str], folders: dict[str, str], dependents: dict[str, set
         for f in files
         if f == folder or f.startswith(folder + "/")
     }
+    touched |= {name for prefix, name in EMBEDDED.items() if any(f.startswith(prefix) for f in files)}
     result, queue = set(touched), list(touched)
     while queue:
         for dependent in dependents[queue.pop()]:

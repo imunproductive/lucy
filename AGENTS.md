@@ -39,7 +39,7 @@ Run these, and nothing more:
 
    While you work, `just test-named D:\Games\Overwatch lucy-sim body_script` runs the game-install tests of one crate whose names contain the filter (as in `cargo test`), for a quick loop. For the long match tests of `lucy-server`, add `gametest` at the end to run them optimised.
 
-   If you changed only `web/`, run `just dashboard-test` instead of steps 1-4.
+   If you changed only the dashboard (`web/dashboard`), run `just dashboard-build` (commit `web/dashboard/dist/` with the source), `just dashboard-test`, and `cargo nextest run -p lucy-server --locked dashboard` (the server embeds the build) instead of steps 1-4.
 
 Do not run `just test-game` or `just test-slow` while you work on a feature. They take many minutes and check areas you did not touch. The integrator (whoever merges) runs them once after a batch of merges.
 

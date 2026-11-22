@@ -12,6 +12,9 @@
 *.key binary
 crates/fixed/data/* linguist-generated=true
 crates/stu/data/types.txt linguist-generated=true
+# The dashboard's build (`just dashboard-build`) and npm's lockfile.
+web/dashboard/dist/** linguist-generated=true
+web/dashboard/package-lock.json linguist-generated=true
 # Every branch appends entries to these two notes, so plain merges conflicted on
 # nearly every integration. A union merge keeps both sides' lines; the integrator
 # checks the merged file for an entry that both sides rewrote (it then appears twice).
