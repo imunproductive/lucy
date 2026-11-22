@@ -1,18 +1,21 @@
 //! Tests: the game service on a virtual clock, with an in-memory network in
-//! place of its UDP socket. The loop is the real one ([`GameLoop::pass`]);
-//! only its clock and its socket are the test's.
+//! place of its UDP socket. The router and the rooms are the real ones
+//! ([`Router`], [`RoomLoop::pass`]), on one thread instead of a thread
+//! each; only their clock and their socket are the test's.
 //!
 //! The clock moves in lockstep with the test's clients: they send what they
-//! send for the next tick, the test steps the clock, and the loop takes the
-//! requests, datagrams and input that came since the last tick (at the last
-//! tick's time, as a server that keeps up with its clients does between two
-//! ticks), then runs the next tick exactly when it is due, so no tick is ever
-//! skipped; the clients then read what it sent. A step ends once nothing
-//! waits, the AI players' commands the tick gave included
-//! ([`GameLoop::pass`]). Between steps the loop answers the service's
-//! requests (`snapshot` and the like) at the last tick's time, so they see
-//! the same state whichever thread runs first. Nothing in a test's run
-//! depends on the PC's speed.
+//! send for the next tick, the test steps the clock, and the router routes
+//! the datagrams that came since the last tick to their rooms, which take
+//! them, the requests and the input (at the last tick's time, as a server
+//! that keeps up with its clients does between two ticks), then run the
+//! next tick exactly when it is due, so no tick is ever skipped; the
+//! clients then read what was sent. Every room ticks on the service's grid
+//! (`GameClock::opened`), so a step runs each room's next tick. A step ends
+//! once nothing waits, the AI players' commands the tick gave included
+//! ([`RoomLoop::pass`]). Between steps the router and the rooms answer the
+//! service's requests (`snapshot` and the like) at the last tick's time, so
+//! they see the same state whichever thread runs first. Nothing in a test's
+//! run depends on the PC's speed.
 //!
 //! A match's scene is still prepared on a thread of its own, in real time
 //! ([`GameService::open_world`]): [`Lockstep::await_scenes`] holds the clock
@@ -45,7 +48,8 @@ use lucy_wire::{
 use mio::{Events, Poll, Waker};
 
 use super::{
-    GameLoop, GameService, RECEIVE_BATCH, REQUESTS, Request, State, Transport, check_schemas,
+    GameService, RECEIVE_BATCH, REQUESTS, Request, Transport, check_schemas,
+    router::{NewRoom, Router},
     stopped,
 };
 
@@ -67,14 +71,14 @@ impl Lockstep {
         let (requests, receiver) = mpsc::sync_channel(RECEIVE_BATCH);
         let (controls, steps) = mpsc::channel();
         let wire = Wire::default();
-        // The first tick runs at once, as the real loop's first pass does,
-        // before any request.
-        let mut game = GameLoop::new(schemas);
-        settle(&mut game, &wire, &receiver, Duration::ZERO)?;
+        let service = Service {
+            router: Router::new(schemas, None),
+            rooms: Vec::new(),
+        };
         let stopping = Arc::new(AtomicBool::new(false));
         let worker = thread::Builder::new().name("lucy-game".into()).spawn({
             let (wire, stopping) = (wire.clone(), Arc::clone(&stopping));
-            move || run(game, &wire, poll, &receiver, &steps, &stopping)
+            move || run(service, &wire, poll, &receiver, &steps, &stopping)
         })?;
         Ok(Self {
             service: GameService {
@@ -283,6 +287,11 @@ impl Client {
         assert!(self.network.take(self.address).is_none());
     }
 
+    /// Drops the datagrams that came and weren't read.
+    pub(crate) fn discard(&self) {
+        while self.network.take(self.address).is_some() {}
+    }
+
     /// The time of the service's last tick.
     pub(crate) fn now(&self) -> Duration {
         self.network.now()
@@ -329,58 +338,104 @@ impl Transport for Wire {
         }
         Ok(datagram.len())
     }
+}
 
-    fn recv_from(&self, buffer: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
-        let (from, datagram) = self
-            .lock()
-            .server
-            .pop_front()
-            .ok_or(io::ErrorKind::WouldBlock)?;
-        let count = datagram.len().min(buffer.len());
-        buffer[..count].copy_from_slice(&datagram[..count]);
-        Ok((count, from))
+impl Wire {
+    /// The next datagram to the service, with its sender.
+    fn receive(&self) -> Option<(SocketAddr, Vec<u8>)> {
+        self.lock().server.pop_front()
     }
 }
 
-impl State {
+/// The router and the rooms on the test's one thread.
+struct Service {
+    router: Router,
+    /// The rooms in the order they opened, each with what it reads.
+    rooms: Vec<NewRoom>,
+}
+
+impl Service {
+    /// One pass at `now`: a batch of requests (the router answers or
+    /// passes them on), the datagrams that came if `deliver` (to their
+    /// rooms), then each room's pass, in the order the rooms opened. True
+    /// while something waits.
+    fn pass(
+        &mut self,
+        wire: &Wire,
+        requests: &mpsc::Receiver<Request>,
+        deliver: bool,
+        now: Duration,
+    ) -> bool {
+        let mut handled = 0;
+        for request in requests.try_iter().take(RECEIVE_BATCH) {
+            self.handle(request, now);
+            handled += 1;
+        }
+        if deliver {
+            while let Some((from, datagram)) = wire.receive() {
+                self.router.route(&datagram, from);
+            }
+        }
+        let mut busy = handled == RECEIVE_BATCH;
+        for room in &mut self.rooms {
+            busy |= room.game.pass(wire, room.inbox.try_iter(), || now).busy();
+        }
+        // A room whose last game left ends: what still comes for it is
+        // refused, as on its thread.
+        for room in self.rooms.extract_if(.., |room| room.game.finished()) {
+            self.router.end(room.id);
+            for inbound in room.inbox.try_iter() {
+                inbound.refuse();
+            }
+        }
+        self.router.take_events();
+        busy
+    }
+
+    fn handle(&mut self, request: Request, now: Duration) {
+        if let Some(room) = self.router.handle(request, now) {
+            self.rooms.push(room);
+        }
+    }
+
     /// A match waits for the scene its thread prepares.
     fn awaits_scene(&self) -> bool {
-        self.rooms
-            .values()
-            .any(|room| room.world.is_none() && !room.ended)
+        self.rooms.iter().any(|room| room.game.awaits_scene())
     }
 }
 
-/// The game thread on the virtual clock: `run` in `game_service.rs` with
-/// the test's clock and network.
+/// The game service's thread on the virtual clock: the router's and the
+/// rooms' (`router.rs`) with the test's clock and network.
 fn run(
-    mut game: GameLoop,
+    mut service: Service,
     wire: &Wire,
     mut poll: Poll,
     requests: &mpsc::Receiver<Request>,
     steps: &mpsc::Receiver<Control>,
     stopping: &AtomicBool,
 ) -> io::Result<()> {
-    // The last tick's time: the first ran before the thread started.
+    // The last tick's time: the service's grid starts at 0
+    // (`GameClock::opened`).
     let mut now = Duration::ZERO;
     let mut events = Events::with_capacity(2);
     while !stopping.load(Ordering::Acquire) {
-        // Between steps the loop answers requests; the datagrams wait for
-        // the next step, so they all arrive at a known time.
-        while game.pass(wire, requests, false, || now)?.busy() {}
+        // Between steps the service answers requests; the datagrams wait
+        // for the next step, so they all arrive at a known time.
+        while service.pass(wire, requests, false, now) {}
         match steps.try_recv() {
             Ok(Control::Step { reply }) => {
                 // What the clients sent since the last tick arrives before
                 // the next.
-                settle(&mut game, wire, requests, now)?;
-                now = game.due;
-                settle(&mut game, wire, requests, now)?;
+                settle(&mut service, wire, requests, now);
+                now += TICK_PERIOD;
+                settle(&mut service, wire, requests, now);
                 let _ = reply.send(now);
             }
             Ok(Control::AwaitScenes { reply }) => {
-                while game.state.awaits_scene() {
+                while service.awaits_scene() {
                     let request = requests.recv().map_err(|_| stopped())?;
-                    game.state.handle_request(request, now);
+                    service.handle(request, now);
+                    service.pass(wire, requests, false, now);
                 }
                 let _ = reply.send(());
             }
@@ -395,13 +450,7 @@ fn run(
     Ok(())
 }
 
-/// Passes of the loop at `now` until nothing waits.
-fn settle(
-    game: &mut GameLoop,
-    wire: &Wire,
-    requests: &mpsc::Receiver<Request>,
-    now: Duration,
-) -> io::Result<()> {
-    while game.pass(wire, requests, true, || now)?.busy() {}
-    Ok(())
+/// Passes of the service at `now` until nothing waits.
+fn settle(service: &mut Service, wire: &Wire, requests: &mpsc::Receiver<Request>, now: Duration) {
+    while service.pass(wire, requests, true, now) {}
 }
