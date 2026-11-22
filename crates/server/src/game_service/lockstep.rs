@@ -36,13 +36,13 @@ use std::{
     time::Duration,
 };
 
-use mio::{Events, Poll, Waker};
-use orpheus_core::tick::TICK_PERIOD;
-use orpheus_lobby::handoff::Handoff;
-use orpheus_wire::{
+use lucy_core::tick::TICK_PERIOD;
+use lucy_lobby::handoff::Handoff;
+use lucy_wire::{
     jam::codec::Schemas,
     link::{ACK, KIND_CONTROL, KIND_FRAME, LinkCipher, Packet, ReceiveWindow, SYN},
 };
+use mio::{Events, Poll, Waker};
 
 use super::{
     GameLoop, GameService, RECEIVE_BATCH, REQUESTS, Request, State, Transport, check_schemas,
@@ -72,7 +72,7 @@ impl Lockstep {
         let mut game = GameLoop::new(schemas);
         settle(&mut game, &wire, &receiver, Duration::ZERO)?;
         let stopping = Arc::new(AtomicBool::new(false));
-        let worker = thread::Builder::new().name("orpheus-game".into()).spawn({
+        let worker = thread::Builder::new().name("lucy-game".into()).spawn({
             let (wire, stopping) = (wire.clone(), Arc::clone(&stopping));
             move || run(game, &wire, poll, &receiver, &steps, &stopping)
         })?;

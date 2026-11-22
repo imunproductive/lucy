@@ -37,7 +37,7 @@ use crate::{
     ranked::{DAMAGE, SUPPORT, TANK},
     transport::LobbyMessage,
 };
-use orpheus_wire::jam::codec::{
+use lucy_wire::jam::codec::{
     Fields,
     Value::{self, Array, Bool, Float32, Struct, Unsigned},
 };
@@ -265,7 +265,7 @@ pub fn add_to_state(state: &mut LobbyMessage, queue: &QueueFields, members: &[Op
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orpheus_wire::jam::codec::Schemas;
+    use lucy_wire::jam::codec::Schemas;
 
     fn key() -> Fields {
         Fields::from([(

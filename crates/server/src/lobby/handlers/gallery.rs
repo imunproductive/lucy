@@ -2,8 +2,8 @@
 
 use std::io;
 
-use orpheus_lobby::gallery::{EQUIP, EquipRequest, GALLERY_OUT};
-use orpheus_wire::jam::codec::Fields;
+use lucy_lobby::gallery::{EQUIP, EquipRequest, GALLERY_OUT};
+use lucy_wire::jam::codec::Fields;
 
 use crate::lobby::{
     peer::Peer,

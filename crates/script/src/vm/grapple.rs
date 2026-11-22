@@ -1,6 +1,6 @@
 //! Widowmaker's Grappling Hook (graph `005A`): the cast `STU_4BBC5D09` and
 //! the kind-10 mover behaviour state `STU_1F5ED928`. The pull between them
-//! is a `MoveTo` (`orpheus_physics::mover::move_to`).
+//! is a `MoveTo` (`lucy_physics::mover::move_to`).
 //!
 //! The cast (registration #1708, the winner over the base #595; codec
 //! `start`, the milliseconds since it began):
@@ -59,7 +59,7 @@
 //! base `STU_1C2FB897`): its begin (`0x7FF789C407D0`) hands the mover a
 //! behaviour of kind 10 (slot 55; vtable `0x7FF78B56A568`) with the body's
 //! position, the point `m_03AD31B9` and the seconds `m_710CF237` (slot 56
-//! `0x7FF789C39370`): `orpheus_physics::mover::path_walk`, which asks the
+//! `0x7FF789C39370`): `lucy_physics::mover::path_walk`, which asks the
 //! client's path query for a way through the air from the feet to the point
 //! and walks the body along it in those seconds (a hook at a ledge's top
 //! walks her up onto it). The state finishes on the update that sees the

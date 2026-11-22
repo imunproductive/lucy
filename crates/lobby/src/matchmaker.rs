@@ -18,7 +18,7 @@ use std::{
 use serde_json::Value as Json;
 
 use crate::queue::{DAMAGE_ROLE, SUPPORT_ROLE, TANK_ROLE, role_number};
-use orpheus_content::maps::{GameMap, MapCatalog};
+use lucy_content::maps::{GameMap, MapCatalog};
 
 pub const QUICK_PLAY: u64 = 0x0630_0000_0000_00ed;
 /// What "All roles" picks: tank, damage, support.
@@ -690,7 +690,7 @@ pub fn pick_map<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orpheus_content::maps::{GameModes, PRACTICE_RANGE_MAP};
+    use lucy_content::maps::{GameModes, PRACTICE_RANGE_MAP};
 
     fn slots(tank: usize, damage: usize, support: usize) -> BTreeMap<u8, usize> {
         BTreeMap::from([
@@ -872,11 +872,11 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires an authorized 104319 runtime in ORPHEUS_RUNTIME_DIR"]
+    #[ignore = "requires an authorized 104319 runtime in LUCY_RUNTIME_DIR"]
     fn quick_play_rules_and_maps_from_the_runtime() {
         const ILIOS: u64 = 0x0800_0000_0000_066d;
         const CHATEAU_GUILLARD: u64 = 0x0800_0000_0000_07a4;
-        let data = orpheus_testkit::runtime_dir().join("data");
+        let data = lucy_testkit::runtime_dir().join("data");
         let rules = load_rules(&data.join("game_queues_174.json")).unwrap();
         let quick = &rules[&QUICK_PLAY];
         assert!(

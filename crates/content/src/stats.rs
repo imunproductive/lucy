@@ -40,8 +40,8 @@ use std::{collections::HashMap, fs, io, path::Path};
 use indexmap::IndexMap;
 use serde::Deserialize;
 
-use orpheus_core::guid::parse_guid;
-use orpheus_wire::entity::{Component, ComponentValue, GMP_STATS_FIELDS};
+use lucy_core::guid::parse_guid;
+use lucy_wire::entity::{Component, ComponentValue, GMP_STATS_FIELDS};
 
 pub const GMP_STATS: u8 = 64;
 pub const GOLD: u8 = 1;
@@ -97,7 +97,7 @@ impl PlayerStats {
 
 /// How the stat table keeps the stats whose value isn't the sum of what
 /// was counted, from the stats' own data (`data/game_stat_rules_174.json`,
-/// `orpheus_assets` `heroes::stats::derive_rules`): a "Best" stat keeps
+/// `lucy_assets` `heroes::stats::derive_rules`): a "Best" stat keeps
 /// the largest or the smallest single amount, a derived one is the ratio
 /// or the sum of two others.
 #[derive(Debug, Default)]
@@ -499,7 +499,7 @@ fn guid(text: &str) -> io::Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orpheus_wire::entity::{WorldError, update};
+    use lucy_wire::entity::{WorldError, update};
     use sha2::{Digest, Sha256};
 
     const ELIMINATIONS: u64 = 0x0860_0000_0000_0025;
@@ -738,7 +738,7 @@ mod tests {
         use crate::maps::PYTHON_PRACTICE_RANGE_MODE;
         use std::collections::BTreeSet;
 
-        let root = orpheus_testkit::runtime_dir();
+        let root = lucy_testkit::runtime_dir();
         let catalog = StatsCatalog::load(root.join("data/game_stats_174.json")).unwrap();
         let modes: BTreeSet<_> = std::iter::once(&catalog.player)
             .chain(catalog.heroes.values())
@@ -818,7 +818,7 @@ mod tests {
     #[test]
     #[ignore = "requires the derived 104319 stat catalog"]
     fn the_derived_board_stats_are_the_install_s() {
-        let root = orpheus_testkit::runtime_dir();
+        let root = lucy_testkit::runtime_dir();
         let catalog = StatsCatalog::load(root.join("data/game_stats_174.json")).unwrap();
         assert_eq!(
             catalog.board().unwrap(),

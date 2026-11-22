@@ -19,13 +19,13 @@
 
 use std::sync::Arc;
 
-use orpheus_core::bits::BitWriter;
-use orpheus_script::{
+use lucy_core::bits::BitWriter;
+use lucy_script::{
     snapshot::{ProjectedSnapshot, SnapshotEncoder, SnapshotError},
     stream::{BodyStream, DeltaKind, ScriptChunk, Stream},
     timeline::FRAME_MS,
 };
-use orpheus_wire::entity::GAME_MODE_ENTITY;
+use lucy_wire::entity::GAME_MODE_ENTITY;
 
 /// An unchanged graph frame whose delta the client hasn't acknowledged
 /// goes again after this many ticks (a lost delta isn't sent again by
@@ -183,8 +183,8 @@ impl ModeView {
 mod tests {
     use super::*;
     use crate::{mode_script::ModeRunner, scene_assets::SceneAssets};
-    use orpheus_content::maps::GameMap;
-    use orpheus_script::wire::Variables;
+    use lucy_content::maps::GameMap;
+    use lucy_script::wire::Variables;
 
     /// The Practice Range's `13C0` frame changes every tick (`0CBB` st58's
     /// timed ChaseVar #19530e toward 99999). A client gets it whole once
@@ -195,7 +195,7 @@ mod tests {
     #[test]
     #[ignore = "requires the derived 104319 data"]
     fn the_range_mode_frame_goes_whole_once_then_as_small_deltas() {
-        let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+        let assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
         let scene = assets.prepare(GameMap::practice_range()).unwrap();
         let mut mode = ModeRunner::start(&scene, 100, Vec::new());
         let mut view = ModeView::new();

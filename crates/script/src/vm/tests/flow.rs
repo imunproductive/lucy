@@ -555,7 +555,7 @@ fn authored_deadeye_window_runs_until_cancelled_or_six_seconds_pass() {
         }
     }
 
-    let data = orpheus_testkit::runtime_dir().join("data");
+    let data = lucy_testkit::runtime_dir().join("data");
     let graphs = Arc::new(GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap());
     let window = |component: &Component| {
         component.snapshot().unwrap().instances[&5]

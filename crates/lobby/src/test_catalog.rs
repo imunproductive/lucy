@@ -9,7 +9,7 @@ use serde_json::json;
 use crate::{
     collection::Collection, economy::Economy, templates::RetailTemplates, xp_table::XpTable,
 };
-use orpheus_content::catalog::{HERO_BASE, ItemDb, TEAM_SKIN_TEXT, UNLOCK_BASE};
+use lucy_content::catalog::{HERO_BASE, ItemDb, TEAM_SKIN_TEXT, UNLOCK_BASE};
 
 pub const HERO: u64 = HERO_BASE | 0x40;
 pub const COMMON: u64 = UNLOCK_BASE | 0x101;

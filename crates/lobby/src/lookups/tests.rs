@@ -1,6 +1,6 @@
 use super::*;
 use crate::accounts::account_id_for;
-use orpheus_wire::jam::codec::{Schemas, Value};
+use lucy_wire::jam::codec::{Schemas, Value};
 
 fn id(lo: u64) -> Value {
     Struct(Fields::from([(0, Unsigned(lo)), (8, Unsigned(1 << 56))]))

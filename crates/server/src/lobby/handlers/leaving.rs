@@ -17,11 +17,11 @@
 
 use std::io;
 
-use orpheus_lobby::{
+use lucy_lobby::{
     lineup::{LEAVE_MATCH_LOBBY, LEAVING_GAME, MATCH_LOBBY_OUT},
     login::OUT_CONNECT,
 };
-use orpheus_wire::jam::codec::{Fields, Value};
+use lucy_wire::jam::codec::{Fields, Value};
 
 use crate::lobby::{
     peer::Peer,

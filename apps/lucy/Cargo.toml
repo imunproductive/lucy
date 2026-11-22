@@ -1,6 +1,6 @@
 [package]
-name = "orpheus"
-description = "The ORPHEUS server for Overwatch 1.74.0.0.104319"
+name = "lucy"
+description = "The Lucy server for Overwatch 1.74.0.0.104319"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,24 +8,24 @@ publish.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "orpheus"
+name = "lucy"
 path = "src/main.rs"
 
 [dependencies]
 clap.workspace = true
 ctrlc.workspace = true
-orpheus-assets.workspace = true
-orpheus-fixed.workspace = true
+lucy-assets.workspace = true
+lucy-fixed.workspace = true
 directories.workspace = true
 flate2.workspace = true
 indexmap.workspace = true
-orpheus-bnet.workspace = true
-orpheus-content.workspace = true
-orpheus-launcher.workspace = true
-orpheus-lobby.workspace = true
-orpheus-server.workspace = true
-orpheus-wire.workspace = true
-orpheus-sim.workspace = true
+lucy-bnet.workspace = true
+lucy-content.workspace = true
+lucy-launcher.workspace = true
+lucy-lobby.workspace = true
+lucy-server.workspace = true
+lucy-wire.workspace = true
+lucy-sim.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
 tempfile.workspace = true
@@ -34,5 +34,5 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
-orpheus-testkit.workspace = true
+lucy-testkit.workspace = true
 

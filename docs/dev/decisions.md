@@ -31,7 +31,7 @@ These inputs are not game assets, so CASC cannot provide them. They are fixed fo
 | Event resource keys | `resource_keys.json` | The server sends them to the client (`lobby_celebrations`). Treated as server-side data; whether the install also contains them is unverified (D2). |
 | Server-set queue and Arcade card fields | Parts of `game_queues_174.json` and `arcade_cards_174.json` | The `game_queues` derivation reads the captured templates. Arcade card duration and permanence are set by the server, not the card asset. |
 | Rules from client code used by derivations | Constants in the derivations, for example the placeable type flag table in `crates/assets/src/game_maps.rs` | Facts about compiled code. |
-| Research names | `statescript_names.json` | Research-only naming catalog (class aliases, the STU fields that hold a variable, logical buttons, the hero select and HUD graphs, each mode's scripts, the server's variable names), used by `orpheus script query`. Upstream research (LizRollin's `statescript_names_174.json`), not read from the client. |
+| Research names | `statescript_names.json` | Research-only naming catalog (class aliases, the STU fields that hold a variable, logical buttons, the hero select and HUD graphs, each mode's scripts, the server's variable names), used by `lucy script query`. Upstream research (LizRollin's `statescript_names_174.json`), not read from the client. |
 
 The captured templates should become authored server content: TOML files a server owner can read and edit, generated once from `retail_templates.json`.
 
@@ -136,7 +136,7 @@ The last differing test, `TakeOutTests::test_a_player_taken_out_before_his_game_
 | `test_game_replay_manifest.py` | dropped | LOCAL_REPLAY_MANIFEST_V1 research format |
 | `test_game_script_faults.py` | ported | sim `body_script/fault_tests.rs::an_exhausted_weapon_stops_the_body_before_combat_consumes_its_shots` |
 | `test_game_script_replication.py` | dropped | Tests the `research_runtime` replication path (body.py diagnostic/experimental modes); the observer death is covered by server `a_player_kills_another...` |
-| `test_game_script_runtime.py` | dropped | Tests `ow174/game/script/research_runtime.py`; Rust uses `orpheus_script::vm` |
+| `test_game_script_runtime.py` | dropped | Tests `ow174/game/script/research_runtime.py`; Rust uses `lucy_script::vm` |
 | `test_game_server.py` | covered | server `game_service/tests.rs`: `worker_serves_a_match_seat...`, `players_join_a_running_match_in_the_next_slots`, `two_players_in_one_practice_range_see_each_other` (ignored) |
 | `test_game_simulation.py` | dropped | CommandTimeline/replay over `data/replays/basic.json`, which phase 8 deletes |
 | `test_game_statescript.py` | covered | script `wire.rs::full_owner_and_ack_match_python...`; content `parameters.rs` pick tests (cite this file); sim `scene.rs::mode_ui_preserves_its_shared_variable_state...` (ignored) |

@@ -43,7 +43,7 @@ pub const ATTACKER_LIST: ((u32, u16), u32) = ((0x01cf, 201), 0x1901);
 pub const HEALTH_PACKS: [u32; 3] = [0x0216, 0x0217, HEALTH_PACK];
 
 /// The health pack graph `0046`: its ModifyHealth st0 is the pack's heal
-/// (the Workshop's Event Was Health Pack, `orpheus_sim::combat`).
+/// (the Workshop's Event Was Health Pack, `lucy_sim::combat`).
 pub const HEALTH_PACK: u32 = 0x0046;
 
 /// Where a PlayScript action plays its graph ([`Vm::play_script`]).

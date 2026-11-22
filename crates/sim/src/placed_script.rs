@@ -3,7 +3,7 @@
 //!
 //! The room starts the scripts of the scene's server placeables
 //! ([`PreparedScene::server_placeables`]) at its first tick in the
-//! client's order (`orpheus_script::placed`), lets their target searches
+//! client's order (`lucy_script::placed`), lets their target searches
 //! find the players, and advances them every tick. A complete script's
 //! observer frame goes to each client once that client holds the
 //! placeable's create, and again whenever it changes, as a full frame on
@@ -12,7 +12,7 @@
 //! by assumption) or a fault sends no frames; its gaps are logged once.
 //! A script that hasn't faulted still sends its messages (the gap log
 //! names what it assumed); the spawn rooms' are what the bodies need, and
-//! their searches assume nothing (`orpheus_script` `vm/targets.rs`).
+//! their searches assume nothing (`lucy_script` `vm/targets.rs`).
 //!
 //! The spawn rooms (`0D62`) wait for the mode graph's `0724`; the server
 //! sends it in the mode graph's place to the rooms the mode holds now
@@ -33,8 +33,8 @@ use std::{
     sync::Arc,
 };
 
-use orpheus_core::bits::BitWriter;
-use orpheus_script::{
+use lucy_core::bits::BitWriter;
+use lucy_script::{
     codecs::CodecTable,
     graph::GraphStore,
     map_tags::MapTags,
@@ -48,7 +48,7 @@ use orpheus_script::{
     },
     wire::Variables,
 };
-use orpheus_wire::entity::GAME_MODE_ENTITY;
+use lucy_wire::entity::GAME_MODE_ENTITY;
 
 use crate::map_areas::{PlacedScript, ROOM_MESSAGE, room_message};
 
@@ -595,8 +595,8 @@ mod tests {
         mode_script::ModeRunner,
         scene_assets::{PreparedScene, SceneAssets},
     };
-    use orpheus_content::maps::{GameMap, SpawnChoice};
-    use orpheus_script::wire::Variables;
+    use lucy_content::maps::{GameMap, SpawnChoice};
+    use lucy_script::wire::Variables;
 
     /// The Practice Range as the room runs it (`game_service.rs` `tick`,
     /// `update_flows`, `route_messages`): `13C0` from the room's first
@@ -693,7 +693,7 @@ mod tests {
     #[test]
     #[ignore = "requires the derived 104319 data"]
     fn the_range_placeables_run_their_graphs_and_have_frames() {
-        let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+        let assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
         let mut range = Range::start(&assets, 100);
         assert_eq!(range.scene.server_placeables().len(), 26);
         for tick in 100..400 {
@@ -756,7 +756,7 @@ mod tests {
 
         const BODY: u32 = 0xa000_0101;
         const TOUCH: u64 = 0x0240_0000_0000_0643;
-        let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+        let assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
         let mut range = Range::start(&assets, 100);
         let mut tick = 100;
         while tick < 110 {
@@ -854,7 +854,7 @@ mod tests {
         }
         // The chase reaches 1 in the first frame that starts once #384 s
         // have run since the pickup (`FRAME_MS` 16 ms frames).
-        let frames = (seconds * 1000).div_ceil(orpheus_script::timeline::FRAME_MS as u32);
+        let frames = (seconds * 1000).div_ceil(lucy_script::timeline::FRAME_MS as u32);
         assert_eq!(tick - taken, frames);
         let second = visual(&range).unwrap();
         assert_ne!(second, first);
@@ -883,7 +883,7 @@ mod tests {
             player: 0xA000_0200,
             body: 0xA000_0201,
         };
-        let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+        let assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
         let mut range = Range::start(&assets, 100);
         range.scene.set_next_dummy(Some(next));
         range.advance(100);
@@ -917,7 +917,7 @@ mod tests {
             .find_map(|instance| instance.variables.get(&29454));
         assert_eq!(
             partner,
-            Some(&orpheus_script::wire::Value::Entity(next.player))
+            Some(&lucy_script::wire::Value::Entity(next.player))
         );
         // One bot a player and body: the next needs new ones.
         range.advance(101);
@@ -962,16 +962,16 @@ mod tests {
     #[test]
     #[ignore = "requires the derived 104319 data"]
     fn the_range_console_opens_its_scopes_and_a_pick_replaces_its_partner() {
-        use orpheus_content::{
+        use lucy_content::{
             heroes::{ANA, SOLDIER},
             maps::PRACTICE_RANGE_MODE,
         };
-        use orpheus_script::{
+        use lucy_script::{
             player::PlayerWorld,
             vm::{Component, Root, ScopeChange},
             wire::Value,
         };
-        use orpheus_wire::commands::Command;
+        use lucy_wire::commands::Command;
         const CONSOLE: u32 = 0x8000_010B;
         const BODY: u32 = 0xA000_0101;
         const CONTROLLER: u32 = 0xA000_0100;
@@ -981,7 +981,7 @@ mod tests {
             player: 0xA000_0300,
             body: 0xA000_0301,
         };
-        let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+        let assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
         let mut range = Range::start(&assets, 100);
         range.advance(100);
         let console = range
@@ -1061,7 +1061,7 @@ mod tests {
             Vec::<Root>::new(),
             112,
             &mut world,
-            orpheus_script::vm::MAX_INIT_WORK,
+            lucy_script::vm::MAX_INIT_WORK,
         )
         .unwrap();
         let id = body.change_scope(change, &mut world).unwrap().unwrap();
@@ -1191,7 +1191,7 @@ mod tests {
     fn the_range_spawn_room_holds_the_heroes_of_its_team_inside() {
         const ROOM: u32 = 0x8000_007E;
         const HELD: u64 = 0x0240_0000_0000_0723;
-        let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+        let assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
         let map = GameMap::practice_range();
         let (spawn, _) = map.spawn_point_in(0, 0, SpawnChoice::First).unwrap();
         let mut range = Range::start(&assets, 100);

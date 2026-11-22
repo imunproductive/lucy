@@ -47,13 +47,13 @@ use crate::{
     voice_lines::{VoiceLine, VoiceState, delay_ticks, is_death_cry},
     workshop::WorkshopView,
 };
-use orpheus_content::{
+use lucy_content::{
     hero_settings::{HeroSetting, HeroSettings, SENT_SETTINGS, SettingDefault, script_settings},
     heroes::{ANA, DOOMFIST, Hero, SOLDIER, WIDOWMAKER},
     parameters::{ClientGameMessage, HeroSelectRequest, OPEN_OR_CLOSE, PICK_HERO, ParameterValue},
 };
-use orpheus_core::tick::{MAX_LEASE_FRAME, TICK_PERIOD};
-use orpheus_physics::{
+use lucy_core::tick::{MAX_LEASE_FRAME, TICK_PERIOD};
+use lucy_physics::{
     contact::cache::CapsulePose,
     mover::correction::CorrectionHistory,
     mover::kinematics::{
@@ -62,10 +62,10 @@ use orpheus_physics::{
     mover::modifiers::{Modifier, ModifierKey},
     mover::{MoveEnd, MoveKey, Mover},
 };
-use orpheus_script::controller::{
+use lucy_script::controller::{
     ControllerScript, HeroSelectRequest as SelectRequest, HeroSelectState, HeroSwitch,
 };
-use orpheus_script::{
+use lucy_script::{
     ai_definitions::AiControl,
     graph::GraphStore,
     mode::EVERY_ENTITY,
@@ -82,7 +82,7 @@ use orpheus_script::{
     weapons::{DamageTags, ProjectileBallistics},
     wire::{Value as ScriptValue, Variables},
 };
-use orpheus_wire::{
+use lucy_wire::{
     combat_messages::CombatNotice,
     commands::{Command, CommandQueue, FRAME_HALF, SUBFRAME, frame_distance},
     entity::{
@@ -180,7 +180,7 @@ fn clock_flags(depth: usize) -> u8 {
 /// left from the wrong place. Widowmaker is corrected since her movement
 /// state carries her Grappling Hook's pull (`005A` st1, a `MoveTo`): flag
 /// 0x10 and the pull's record, with its air ticks as the lateral count
-/// (`orpheus_physics::mover::move_to`). Before (2026-11-19, `Grapple.md`
+/// (`lucy_physics::mover::move_to`). Before (2026-11-19, `Grapple.md`
 /// "DayGrapple6") each correction during a pull made her client's replay
 /// begin its mover behaviour again (`0x7FF789B53CC0`, about 30 times in
 /// one pull: checkpoint at the feet, lateral count 0) while the server's
@@ -234,8 +234,8 @@ pub(crate) fn server_shows_owner_movement(snapshot: &Snapshot, graphs: &GraphSto
     })
 }
 
-/// `0013.025`: the entity is revived (the bots' reset, [`orpheus_script::bot::RESET`]).
-const REVIVED: u64 = orpheus_script::bot::RESET;
+/// `0013.025`: the entity is revived (the bots' reset, [`lucy_script::bot::RESET`]).
+const REVIVED: u64 = lucy_script::bot::RESET;
 /// `0013.025`'s `00C6` (`01CA`'s #2227): on for a new life.
 const REVIVED_RESPAWN: u32 = 0x00c6;
 /// `0685.025`: the mode body script `0C8E` (rid2/rid78) tells the mode a
@@ -370,7 +370,7 @@ pub trait OwnerBodyRuntime: Send {
     }
 
     /// An aura comes on the body or goes off it (`vm/auras.rs` in
-    /// `orpheus_script`): a hit's, or an ApplyAura's.
+    /// `lucy_script`): a hit's, or an ApplyAura's.
     fn change_aura(&mut self, _change: &AuraChange) -> io::Result<()> {
         Ok(())
     }
@@ -382,7 +382,7 @@ pub trait OwnerBodyRuntime: Send {
     }
 
     /// A scope instance opened or closed on the body (`vm/scopes.rs` in
-    /// `orpheus_script`; the Training Partner console's scope 12): the
+    /// `lucy_script`; the Training Partner console's scope 12): the
     /// instance opened.
     fn change_scope(&mut self, _change: &ScopeChange) -> io::Result<Option<u16>> {
         Ok(None)
@@ -390,7 +390,7 @@ pub trait OwnerBodyRuntime: Send {
 
     /// Another graph set the cooldown of the body's ability on logical
     /// button `button` (the Workshop's Set Ability Cooldown,
-    /// `orpheus_script::vm::Component::set_ability_cooldown`).
+    /// `lucy_script::vm::Component::set_ability_cooldown`).
     fn set_ability_cooldown(&mut self, _button: i64, _value: f64) -> io::Result<()> {
         Ok(())
     }
@@ -433,7 +433,7 @@ pub trait OwnerBodyRuntime: Send {
     }
 
     /// The knockbacks the body's graphs reported since the last call
-    /// (`STU_AFBB59E9`, `orpheus_script::vm::Knockback`).
+    /// (`STU_AFBB59E9`, `lucy_script::vm::Knockback`).
     fn take_knockbacks(&mut self) -> Vec<Knockback> {
         Vec::new()
     }
@@ -469,7 +469,7 @@ pub trait OwnerBodyRuntime: Send {
     }
 
     /// The assist credits the body's states hold now, the lingering ones
-    /// included (`orpheus_script::vm` [`AssistLink`]).
+    /// included (`lucy_script::vm` [`AssistLink`]).
     fn assists(&self) -> Vec<AssistLink> {
         Vec::new()
     }
@@ -576,7 +576,7 @@ pub trait OwnerBodyRuntime: Send {
     fn set_target_candidates(&mut self, _candidates: &[TargetCandidate]) {}
 
     /// The pickups the map's placeables hold now (the health packs), for
-    /// the body's search (`0033` st11, `orpheus_script` `vm/pickups.rs`).
+    /// the body's search (`0033` st11, `lucy_script` `vm/pickups.rs`).
     fn set_pickups(&mut self, _pickups: &[Pickup]) {}
 
     /// The map placeables' entity variables now, which the body's graphs
@@ -638,10 +638,10 @@ struct BodyScript {
     /// The projectiles fired since the match last took them, for the other
     /// clients (projectiles.py `fired`: `_show_others`).
     fired: Vec<FiredProjectile>,
-    /// The buttons of the last command traced (`orpheus::owner` at debug).
+    /// The buttons of the last command traced (`lucy::owner` at debug).
     traced_buttons: u32,
     /// The active states (instance, graph, state, activation) at the last
-    /// frame traced (`orpheus::pose` at debug).
+    /// frame traced (`lucy::pose` at debug).
     traced_states: BTreeSet<(u16, u32, u16, u16)>,
     /// The last command the body ran with a pose: the frames of a gap
     /// repeat it ([`ScriptGap`]).
@@ -695,11 +695,11 @@ impl BodyScript {
         })
     }
 
-    /// `orpheus::pose` at debug: the body's movement after a command frame,
+    /// `lucy::pose` at debug: the body's movement after a command frame,
     /// and the states that began or ended in it (instance/graph/state#activation),
     /// to compare with the client's prediction frame by frame.
     fn trace_pose(&mut self, mover: &Mover, frame: u32) {
-        if !tracing::enabled!(target: "orpheus::pose", tracing::Level::DEBUG) {
+        if !tracing::enabled!(target: "lucy::pose", tracing::Level::DEBUG) {
             return;
         }
         let active: BTreeSet<_> = self
@@ -739,7 +739,7 @@ impl BodyScript {
             })
             .collect();
         tracing::debug!(
-            target: "orpheus::pose",
+            target: "lucy::pose",
             body = format_args!("{:08X}", self.id.entity),
             frame,
             position = ?pose.position,
@@ -776,7 +776,7 @@ impl BodyScript {
             if command.buttons != self.traced_buttons {
                 self.traced_buttons = command.buttons;
                 tracing::debug!(
-                    target: "orpheus::owner",
+                    target: "lucy::owner",
                     body = format_args!("{:08X}", self.id.entity),
                     frame = command.frame,
                     buttons = format_args!("{:#x}", command.buttons),
@@ -962,7 +962,7 @@ impl BodyScript {
                 .stream
                 .base()
                 .expect("owner delta requires the baseline");
-            tracing::debug!(target: "orpheus::owner", base = base_last, "owner delta base");
+            tracing::debug!(target: "lucy::owner", base = base_last, "owner delta base");
             let projected = encoder
                 .project_cached(snapshot, View::Owner, Some(base), &mut self.projection)
                 .map_err(invalid)?;
@@ -995,7 +995,7 @@ impl BodyScript {
             })
         });
         tracing::debug!(
-            target: "orpheus::owner",
+            target: "lucy::owner",
             body = format_args!("{:08X}", self.id.entity),
             chunk = last,
             kind = ?kind,
@@ -1017,7 +1017,7 @@ impl BodyScript {
         Ok(Some((record, replaced)))
     }
 
-    /// The body's weapon volleys for the `orpheus::owner` trace: each active
+    /// The body's weapon volleys for the `lucy::owner` trace: each active
     /// one as `instance/state #activation start=ms ammo0 var=value`.
     fn volleys(&self) -> String {
         use std::fmt::Write;
@@ -1028,7 +1028,7 @@ impl BodyScript {
         };
         for (id, instance) in &snapshot.instances {
             for (raw, state) in &instance.states {
-                let orpheus_script::vm::StateKind::WeaponVolley {
+                let lucy_script::vm::StateKind::WeaponVolley {
                     ammo0, ammo_var, ..
                 } = state.kind
                 else {
@@ -1327,7 +1327,7 @@ struct LateInput {
     /// Buttons released in the late commands.
     released: u32,
     /// The sub-frame click of the last late press.
-    click: Option<orpheus_wire::commands::Click>,
+    click: Option<lucy_wire::commands::Click>,
     /// The last one-shot action of the late commands.
     action: u8,
 }
@@ -1430,7 +1430,7 @@ impl InputQueue {
         // Late (newest at or before `admitted`) or with frames the client
         // skipped (fewer commands than frames) after a stall.
         tracing::debug!(
-            target: "orpheus::input",
+            target: "lucy::input",
             tick,
             oldest = commands[0].frame,
             newest = commands[commands.len() - 1].frame,
@@ -1488,7 +1488,7 @@ impl InputQueue {
                 self.late.action = late.action;
             }
             tracing::debug!(
-                target: "orpheus::input",
+                target: "lucy::input",
                 frame = late.frame,
                 buttons = format_args!("{:#x}", late.buttons),
                 pressed = format_args!("{pressed:#x}"),
@@ -1527,7 +1527,7 @@ impl InputQueue {
             if sending {
                 if self.dry == 0 {
                     tracing::debug!(
-                        target: "orpheus::input",
+                        target: "lucy::input",
                         frame = ?self.admitted.map(|frame| frame.wrapping_add(1)),
                         "input buffer dry: the body waits for the client's next command"
                     );
@@ -1540,7 +1540,7 @@ impl InputQueue {
         }
         if self.dry != 0 {
             tracing::debug!(
-                target: "orpheus::input",
+                target: "lucy::input",
                 ticks = self.dry,
                 depth,
                 "input buffer refilled after dry ticks"
@@ -1549,7 +1549,7 @@ impl InputQueue {
         }
         if depth <= BUFFER_TARGET && arrived && ticks == 1 {
             tracing::debug!(
-                target: "orpheus::input",
+                target: "lucy::input",
                 depth,
                 "input buffer grows: the command waits a tick"
             );
@@ -1568,7 +1568,7 @@ impl InputQueue {
         let count = count.min(depth);
         if count > 1 {
             tracing::debug!(
-                target: "orpheus::input",
+                target: "lucy::input",
                 depth,
                 count,
                 "input buffer catches up"
@@ -1610,7 +1610,7 @@ impl InputQueue {
                 self.repeats += 1;
                 let command = self.take_late(held(last, frame));
                 tracing::debug!(
-                    target: "orpheus::input",
+                    target: "lucy::input",
                     frame,
                     buttons = format_args!("{:#x}", command.buttons),
                     "input buffer dry: the last input repeated"
@@ -1618,7 +1618,7 @@ impl InputQueue {
                 command
             } else {
                 tracing::debug!(
-                    target: "orpheus::input",
+                    target: "lucy::input",
                     frame,
                     "input buffer dry: a neutral frame"
                 );
@@ -1951,7 +1951,7 @@ pub struct WorldDelivery {
     /// ([`Self::deliver_locally`]).
     headless: bool,
     /// An AI player's AI entity and the difficulty identifier it plays at
-    /// (`orpheus_script::ai_definitions`); none for a human's world. Each
+    /// (`lucy_script::ai_definitions`); none for a human's world. Each
     /// body he plays is possessed by the AI entity, made from that body's
     /// AI definition.
     ai: Option<(u32, u64)>,
@@ -2008,7 +2008,7 @@ pub struct WorldDelivery {
     controller_scopes: Vec<ScopeChange>,
     multikill_due: bool,
     /// The notices of the changes his body's modifiers made to the hits on
-    /// it (`orpheus_script::vm::MODIFIED`), and what the sources of his
+    /// it (`lucy_script::vm::MODIFIED`), and what the sources of his
     /// body's health changes dealt ([`Self::source_dealt`]), to go with its
     /// messages.
     modified: Vec<GameMessage>,
@@ -2021,7 +2021,7 @@ pub struct WorldDelivery {
 }
 
 /// The entity variables of a body's hero settings
-/// (`orpheus_content::hero_settings`): the setting identifier's index holds
+/// (`lucy_content::hero_settings`): the setting identifier's index holds
 /// the client's value, else the default. That covers the every-hero settings
 /// the client sends (null at DEFAULT, which it sends as no entry) and the
 /// settings the body's graphs read on the server (the data's default when
@@ -2200,7 +2200,7 @@ impl WorldDelivery {
     /// The world of an AI player, whose body the server plays without a
     /// client (`crate::ai`): his AI entity `ai_entity` possesses each body
     /// he plays, at `difficulty` (a difficulty identifier,
-    /// `orpheus_script::ai_definitions::EASY` and up).
+    /// `lucy_script::ai_definitions::EASY` and up).
     pub fn headless(owner: u32, ai_entity: u32, difficulty: u64) -> Self {
         let mut world = Self {
             headless: true,
@@ -2497,7 +2497,7 @@ impl WorldDelivery {
                 ]);
                 script
                     .runtime
-                    .receive_message(0, orpheus_script::controller::ELIMINATION, parameters)
+                    .receive_message(0, lucy_script::controller::ELIMINATION, parameters)
                     .err()
             });
         if let Some(error) = failure {
@@ -2705,7 +2705,7 @@ impl WorldDelivery {
     /// the graph's direction when it gave one, and corrects the owner's
     /// client with it; its raised discontinuity counter makes the client
     /// take it without replaying its commands
-    /// (`orpheus_physics::mover::correction`). A body that keeps a
+    /// (`lucy_physics::mover::correction`). A body that keeps a
     /// correction history sends the poses of the frames after it
     /// ([`CorrectionHistory::discontinue`]); another sends this pose
     /// ([`Self::send_frame`]). Either waits for the body's create and for
@@ -2883,7 +2883,7 @@ impl WorldDelivery {
             BotSight::Sent(sequence) => match delivery(sequence, ack, ack_bits) {
                 Some(true) => {
                     tracing::debug!(
-                        target: "orpheus::join",
+                        target: "lucy::join",
                         entity = format_args!("{entity:08X}"),
                         sequence,
                         "bot's first movement record arrived"
@@ -3253,7 +3253,7 @@ impl WorldDelivery {
             return;
         }
         let mut retry = Vec::new();
-        let traced = tracing::enabled!(target: "orpheus::join", tracing::Level::DEBUG);
+        let traced = tracing::enabled!(target: "lucy::join", tracing::Level::DEBUG);
         for packet in report.packets {
             for record in packet.records {
                 if !self.current(&record) {
@@ -3269,7 +3269,7 @@ impl WorldDelivery {
                 };
                 if let Some(kind) = traced.then(|| self.join_kind(&record)).flatten() {
                     tracing::debug!(
-                        target: "orpheus::join",
+                        target: "lucy::join",
                         sequence = packet.sequence,
                         arrived = packet.arrived,
                         entity = format_args!("{:08X}", record.update.entity),
@@ -3282,7 +3282,7 @@ impl WorldDelivery {
                     (arrived, Delivery::BodyScript { last, .. }) => {
                         let script = self.body_script.as_mut().expect("current body stream");
                         tracing::debug!(
-                            target: "orpheus::owner",
+                            target: "lucy::owner",
                             chunk = last,
                             arrived,
                             "owner frame acknowledged"
@@ -3446,7 +3446,7 @@ impl WorldDelivery {
     }
 
     /// The records a player's body, view and HUD depend on, named for the
-    /// `orpheus::join` trace.
+    /// `lucy::join` trace.
     fn join_kind(&self, record: &Record) -> Option<&'static str> {
         Some(match record.delivery {
             Delivery::Baseline if matches!(record.update.operation, Some(Operation::Create(_))) => {
@@ -3690,7 +3690,7 @@ impl WorldDelivery {
             send,
         )?;
         let indexes = Self::sent_indices(&queued, &sent.records);
-        let traced = tracing::enabled!(target: "orpheus::join", tracing::Level::DEBUG);
+        let traced = tracing::enabled!(target: "lucy::join", tracing::Level::DEBUG);
         for &index in &indexes {
             let record = &self.queued[index];
             // The client takes this datagram's frame as the body's command
@@ -3705,7 +3705,7 @@ impl WorldDelivery {
             }
             if let Some(kind) = traced.then(|| self.join_kind(record)).flatten() {
                 tracing::debug!(
-                    target: "orpheus::join",
+                    target: "lucy::join",
                     sequence = sent.sequence,
                     tick,
                     entity = format_args!("{:08X}", record.update.entity),
@@ -3737,7 +3737,7 @@ impl WorldDelivery {
                 && !self.bot_sights.contains_key(&entity)
             {
                 tracing::debug!(
-                    target: "orpheus::join",
+                    target: "lucy::join",
                     entity = format_args!("{entity:08X}"),
                     sequence = sent.sequence,
                     tick,
@@ -4081,7 +4081,7 @@ impl WorldDelivery {
         }
         let request = message.hero_select(scene.heroes());
         tracing::debug!(
-            target: "orpheus::join",
+            target: "lucy::join",
             tick,
             guid = format_args!("{:016X}", message.guid),
             request = ?request.map(|request| match request {
@@ -4175,7 +4175,7 @@ impl WorldDelivery {
     /// The ch3 ack: the last of the client's own command frames run (before
     /// the first, the frame before the first admitted, at most `tick`). The
     /// client keeps its commands from ack − 1 on
-    /// (`orpheus_physics::mover::correction` notes), so it resends those a
+    /// (`lucy_physics::mover::correction` notes), so it resends those a
     /// dry tick waits for. Repeats past the wait run beyond his newest; the
     /// ack stays at his newest, so he still sends the frames they stood in
     /// for (`InputQueue::reconcile`). It is never past the frame an owner
@@ -4407,7 +4407,7 @@ impl WorldDelivery {
 
     /// Tests: the targets of the active scope state `state` of the current
     /// body's instance of graph `graph`, each with the instance its frame
-    /// record names there (`orpheus_script` `vm/scopes.rs`).
+    /// record names there (`lucy_script` `vm/scopes.rs`).
     #[cfg(any(test, feature = "fixtures"))]
     pub fn body_scope_hits(&self, graph: u32, state: u16) -> Vec<(u32, Option<u16>)> {
         let Some(snapshot) = self
@@ -4983,7 +4983,7 @@ impl WorldDelivery {
     /// A scope instance a scope state elsewhere (the Training Partner
     /// console's `265F`: scope 12 on the player's body, scope 126 on his
     /// controller) opens or closes on this player's body or controller at
-    /// `tick` (`orpheus_script` `vm/scopes.rs`): the instance opened. A
+    /// `tick` (`lucy_script` `vm/scopes.rs`): the instance opened. A
     /// failure stops that script.
     pub fn change_scope(&mut self, tick: u32, change: &ScopeChange) -> Option<u16> {
         let target = change.target();
@@ -5041,11 +5041,11 @@ impl WorldDelivery {
                         snapshot
                             .variables
                             .get(&id)
-                            .map_or(0.0, orpheus_script::expr::to_float)
+                            .map_or(0.0, lucy_script::expr::to_float)
                     };
-                    let cost = read(orpheus_script::ultimate::ULT_COST);
+                    let cost = read(lucy_script::ultimate::ULT_COST);
                     if cost > 0.0 {
-                        100.0 * read(orpheus_script::ultimate::ULT_CHARGE) / cost
+                        100.0 * read(lucy_script::ultimate::ULT_CHARGE) / cost
                     } else {
                         0.0
                     }
@@ -5080,7 +5080,7 @@ impl WorldDelivery {
     }
 
     /// Workshop player variable `index` of this player: his controller's
-    /// entity variable (`orpheus_script::expr::workshop_variable`), a
+    /// entity variable (`lucy_script::expr::workshop_variable`), a
     /// chase's value included. None without a controller script.
     pub fn workshop_variable(&self, index: u8) -> Option<ScriptValue> {
         Some(
@@ -5193,7 +5193,7 @@ impl WorldDelivery {
     }
 
     /// Another body's ability graph played `request.graph` on this
-    /// player's current body (`orpheus_script` `vm/play.rs`
+    /// player's current body (`lucy_script` `vm/play.rs`
     /// `Plays::Others`): its body script plays it as the PlayScript would
     /// have, and its instance reaches every client in the body's frames,
     /// as the retail server's did (the client's own PlayScript on a
@@ -5238,7 +5238,7 @@ impl WorldDelivery {
         };
         let Some(rows) = message.parameters.rows() else {
             tracing::debug!(
-                target: "orpheus::join",
+                target: "lucy::join",
                 tick,
                 guid = format_args!("{:016X}", message.guid),
                 "game message with unread parameters"
@@ -5275,7 +5275,7 @@ impl WorldDelivery {
     /// `heal`) to `target`, a body of definition `target_body`, in a health
     /// change tagged `tags`: its body takes `0012.025` (or `0044.025`), as
     /// from the retail server, and its graph `0B8B` charges the ultimate
-    /// for it (`orpheus_script::ultimate`). The body learns the target's
+    /// for it (`lucy_script::ultimate`). The body learns the target's
     /// authored target tags first (`0B8B` rid45 tests `02ED`, rid50 `03C3`,
     /// rid85 `011E`).
     pub fn dealt(
@@ -5304,7 +5304,7 @@ impl WorldDelivery {
                     .unwrap_or_default();
                 script.runtime.set_victim_tags(target, target_tags);
                 let (message, parameters) =
-                    orpheus_script::ultimate::dealt_message(target, amount, tags, heal);
+                    lucy_script::ultimate::dealt_message(target, amount, tags, heal);
                 script
                     .runtime
                     .receive_message(body.id.entity, message, parameters)
@@ -5336,7 +5336,7 @@ impl WorldDelivery {
             return;
         }
         let (message, parameters) =
-            orpheus_script::ultimate::dealt_message(target, amount, tags, heal);
+            lucy_script::ultimate::dealt_message(target, amount, tags, heal);
         self.modified.push(GameMessage {
             sender: source,
             target: source,
@@ -5346,7 +5346,7 @@ impl WorldDelivery {
     }
 
     /// The hero the controller's graph forced on him
-    /// ([`orpheus_script::controller::ControllerScript::forced_hero`]):
+    /// ([`lucy_script::controller::ControllerScript::forced_hero`]):
     /// `0C90`'s StateHero plays #940e, and the server makes the body, as
     /// for a pick: a living body changes where it stands, a dead one's
     /// respawn plays it. The skin is his card's.
@@ -5454,11 +5454,9 @@ impl WorldDelivery {
             .filter(|script| guid == body.hero && script.id == body.id)
             .and_then(|script| script.runtime.snapshot())
             .and_then(|snapshot| {
-                let charge = snapshot
-                    .variables
-                    .get(&orpheus_script::ultimate::ULT_CHARGE)?;
+                let charge = snapshot.variables.get(&lucy_script::ultimate::ULT_CHARGE)?;
                 Some(Variables::from([(
-                    orpheus_script::ultimate::ULT_CHARGE,
+                    lucy_script::ultimate::ULT_CHARGE,
                     charge.clone(),
                 )]))
             });
@@ -5812,7 +5810,7 @@ impl WorldDelivery {
     }
 
     /// A persistent sender let its message go for the current body
-    /// (`orpheus_script` `World::end_message`): its receiving states that
+    /// (`lucy_script` `World::end_message`): its receiving states that
     /// held it go back to idle now; a failure stops the body's script.
     /// False when the end is not for this body.
     fn end_body_message(&mut self, end: &MessageEnd) -> bool {
@@ -6339,7 +6337,7 @@ impl WorldDelivery {
                 // them as it predicted the command.
                 scene.pose_idle_for(&command, quanta);
                 tracing::debug!(
-                    target: "orpheus::pose",
+                    target: "lucy::pose",
                     frame = command.frame,
                     forward = command.forward,
                     right = command.right,
@@ -6637,7 +6635,7 @@ impl WorldDelivery {
             self.queue_controller(scene, tick, None)?;
         }
         tracing::debug!(
-            target: "orpheus::join",
+            target: "lucy::join",
             tick,
             body = format_args!("{entity:08X}"),
             hero = format_args!("{:016X}", hero.guid),
@@ -6716,7 +6714,7 @@ impl WorldDelivery {
             }
         };
         tracing::debug!(
-            target: "orpheus::join",
+            target: "lucy::join",
             tick,
             last = chunk.last,
             open = shown.open,
@@ -6780,7 +6778,7 @@ fn hero_vitals(scene: &PreparedScene, hero: u64) -> Vitals {
 }
 
 /// Hand a body's new dashes, rewinds and velocity actions to its mover;
-/// they run from the next pose on (`orpheus_physics::mover::motion`,
+/// they run from the next pose on (`lucy_physics::mover::motion`,
 /// [`Mover::act_on_velocity`]). Players', AI heroes' and training bots'
 /// bodies alike ([`crate::bots::Bot::start_motions`]).
 pub(crate) fn start_motions(mover: &mut Mover, motions: Vec<Motion>, dt: f64) {

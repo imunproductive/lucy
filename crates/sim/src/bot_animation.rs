@@ -1,6 +1,6 @@
 //! The bots' animation at run time: each tick a bot body's hit shapes are
 //! posed by the clips its blend trees play in the branch its state picks
-//! (`game_bot_animation_174.json`, derived by `orpheus-assets`, whose
+//! (`game_bot_animation_174.json`, derived by `lucy-assets`, whose
 //! `bot_animation` module says how the branches and clips are found).
 //!
 //! New: the Python reference hit every body as one capsule. The rules
@@ -23,7 +23,7 @@
 //! state wins. The one `Anim` state the bots' scripts enter on today's
 //! server is `0E8C`'s knockback (st7, alias `0174`), which a splash hit
 //! (tag `078D`) starts and which ends 0.25 s later, once the bot's
-//! movement sample says it is on the ground (`orpheus_script::bot`); the
+//! movement sample says it is on the ground (`lucy_script::bot`); the
 //! hit flinch (st3) is client-only, `0BA8`'s needs the reset message
 //! `0013`, which only the firing behaviour gets, and `0BA3`'s reload names
 //! alias `0004`, which the bots' set doesn't bind. The `007F` push sits
@@ -58,9 +58,9 @@
 
 use std::{collections::HashMap, fs, io, path::Path, sync::Arc};
 
-use orpheus_core::{guid::parse_guid, tick::TICK_PERIOD};
-use orpheus_physics::static_ray::Vec3;
-use orpheus_script::{graph::GraphStore, vm::Snapshot};
+use lucy_core::{guid::parse_guid, tick::TICK_PERIOD};
+use lucy_physics::static_ray::Vec3;
+use lucy_script::{graph::GraphStore, vm::Snapshot};
 use serde::Deserialize;
 use serde_json::Value as Json;
 

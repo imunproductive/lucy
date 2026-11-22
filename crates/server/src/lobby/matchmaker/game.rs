@@ -8,16 +8,16 @@
 
 use std::{io, sync::Arc, time::SystemTime};
 
-use orpheus_content::maps::GameMap;
-use orpheus_lobby::{
+use lucy_content::maps::GameMap;
+use lucy_lobby::{
     accounts::{Account, battle_tag},
     handoff::Handoff,
     login::Identity,
     player_messages,
     ranked::LeaderboardPlaces,
 };
-use orpheus_sim::{ai::Difficulty, scene::PlayerCard};
-use orpheus_wire::jam::codec::Fields;
+use lucy_sim::{ai::Difficulty, scene::PlayerCard};
+use lucy_wire::jam::codec::Fields;
 
 use crate::{
     game_service::{GameService, MatchPlayer, WorldPlayer},
@@ -103,7 +103,7 @@ pub(super) fn world_player(
         .map_err(io::Error::other)?
         .as_secs();
     let record = player_messages::record(&profile, identity, frame, now);
-    let rank = match orpheus_lobby::queue::role_guid(role) {
+    let rank = match lucy_lobby::queue::role_guid(role) {
         _ if card == 0 => None,
         guid => lobby
             .ranked

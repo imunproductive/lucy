@@ -1,5 +1,5 @@
 [package]
-name = "orpheus-relay"
+name = "lucy-relay"
 description = "The DLL that pipes the Overwatch 1.74 client's Battle.net connection to the local server"
 version.workspace = true
 edition.workspace = true

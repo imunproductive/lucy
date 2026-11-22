@@ -1,13 +1,13 @@
 //! What `runtime_dir` needs to know at build time:
 //!
-//! - `ORPHEUS_DERIVATIONS_KEY`, a hash of the code the derived game data
+//! - `LUCY_DERIVATIONS_KEY`, a hash of the code the derived game data
 //!   depends on, so the tests derive again whenever that code changes. The
 //!   derivations' version alone would not do: two branches can bump it to the
 //!   same number with different code, and a derivation under work changes
 //!   before anyone bumps it.
-//! - `ORPHEUS_TEST_DATA_DEFAULT`, the folder the derived data goes to unless
-//!   `ORPHEUS_TEST_DATA` names another: the main checkout's
-//!   `target/orpheus-test-data`, which every worktree of the clone shares.
+//! - `LUCY_TEST_DATA_DEFAULT`, the folder the derived data goes to unless
+//!   `LUCY_TEST_DATA` names another: the main checkout's
+//!   `target/lucy-test-data`, which every worktree of the clone shares.
 
 use std::{
     env, fs,
@@ -18,7 +18,7 @@ use md5::{Digest, Md5};
 
 /// The crates whose code makes the derived files: the derivations and the
 /// crates they read the install and the fixed data with
-/// (`orpheus-assets`'s path dependencies).
+/// (`lucy-assets`'s path dependencies).
 const DERIVATION_CRATES: &[&str] = &["assets", "casc", "fixed", "stu"];
 /// The parts of a crate that go into its library (its tests don't).
 const LIBRARY_PARTS: &[&str] = &["Cargo.toml", "build.rs", "src", "data"];
@@ -58,12 +58,12 @@ fn main() {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect();
-    println!("cargo::rustc-env=ORPHEUS_DERIVATIONS_KEY={key}");
+    println!("cargo::rustc-env=LUCY_DERIVATIONS_KEY={key}");
 
     let checkout = main_checkout(workspace).unwrap_or_else(|| workspace.to_path_buf());
     println!(
-        "cargo::rustc-env=ORPHEUS_TEST_DATA_DEFAULT={}",
-        checkout.join("target").join("orpheus-test-data").display()
+        "cargo::rustc-env=LUCY_TEST_DATA_DEFAULT={}",
+        checkout.join("target").join("lucy-test-data").display()
     );
 }
 

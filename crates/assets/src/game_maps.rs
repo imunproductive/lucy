@@ -37,7 +37,7 @@ use std::{
     path::Path,
 };
 
-use orpheus_stu::Value as Stu;
+use lucy_stu::Value as Stu;
 use serde_json::{Map, Value, json};
 
 use crate::{
@@ -300,7 +300,7 @@ impl Components {
     }
 }
 
-fn definition_of(asset: &orpheus_stu::Asset) -> Definition {
+fn definition_of(asset: &lucy_stu::Asset) -> Definition {
     let Some(Stu::Map(entries)) = asset.root().and_then(|root| root.get("m_componentMap")) else {
         return Definition::default();
     };
@@ -999,7 +999,7 @@ const MAX_CONFIG_DEPTH: usize = 16;
 /// it and the fields after it are left out, so the evaluator refuses the
 /// config instead of reading a wrong value.
 fn stu_v1_json(stu: &StuV1<'_>, at: usize, depth: usize) -> Value {
-    use orpheus_stu::{Kind, Types};
+    use lucy_stu::{Kind, Types};
     let types = Types::get();
     let hash = stu.class(at).unwrap_or(0);
     let Some(class) = types.class(hash) else {

@@ -94,7 +94,7 @@
 //! `+154` (`m_1866524C`, `m_B769BC47`, `m_000B044B`, `m_5E3A7FC5`,
 //! `m_6D6BA94D`; with `+154` slot 10 sets the spring offset and speed to 0).
 
-use orpheus_wire::entity::{MOVE_TO, MoveToRecord};
+use lucy_wire::entity::{MOVE_TO, MoveToRecord};
 
 use crate::{
     contact::body::CharacterBody, contact::cache::CapsulePose, contact::hull::HullContactError,

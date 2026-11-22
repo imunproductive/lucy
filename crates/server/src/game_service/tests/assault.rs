@@ -2,9 +2,9 @@
 
 use std::collections::BTreeSet;
 
-use orpheus_content::maps::MapCatalog;
-use orpheus_lobby::matchmaker::{load_rules, map_choices};
-use orpheus_sim::{match_flow::ASSAULT, mode_script::ModeRunner, scene_assets::SceneAssets};
+use lucy_content::maps::MapCatalog;
+use lucy_lobby::matchmaker::{load_rules, map_choices};
+use lucy_sim::{match_flow::ASSAULT, mode_script::ModeRunner, scene_assets::SceneAssets};
 
 /// The room's start of a match (`Room::begin_mode`): the placeables' first
 /// tick, then the mode graph with their reports. `0F4A` starts whole and
@@ -16,14 +16,14 @@ use orpheus_sim::{match_flow::ASSAULT, mode_script::ModeRunner, scene_assets::Sc
 #[ignore = "requires the derived 104319 data"]
 fn assault_runs_on_its_mode_graph_on_every_map_a_queue_offers() {
     const FIRST_TICK: u32 = 1;
-    let runtime = orpheus_testkit::runtime_dir();
+    let runtime = lucy_testkit::runtime_dir();
     let data = runtime.join("data");
     let catalog = MapCatalog::load(&data).unwrap();
     let queues = load_rules(&data.join("game_queues_174.json")).unwrap();
     // The maps no other test plays have no collision in the pack yet: they
     // build it from the install, as the server does.
     let assets = SceneAssets::load(&runtime).unwrap().with_collision_build(
-        crate::game_service::collision_build(orpheus_testkit::game_dir()),
+        crate::game_service::collision_build(lucy_testkit::game_dir()),
     );
     let mut seen = BTreeSet::new();
     let mut played = Vec::new();

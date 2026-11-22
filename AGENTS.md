@@ -1,12 +1,12 @@
 # Rules for agents
 
-ORPHEUS is a Rust server for the Overwatch 1.74 client (build 104319). Read [README.md](README.md) and [docs/dev](docs/dev) first. [docs/dev/testing.md](docs/dev/testing.md) has the test tiers and the `just` recipes.
+Lucy is a Rust server for the Overwatch 1.74 client (build 104319). Read [README.md](README.md) and [docs/dev](docs/dev) first. [docs/dev/testing.md](docs/dev/testing.md) has the test tiers and the `just` recipes.
 
 ## Run the game's graphs, don't rewrite them
 
 The client and the retail server share the statescript graphs. When a graph does what you need, make the server run it (start the graph, send the messages it waits for, answer its natives from the client's code with the [client tools](docs/dev/client-tools.md)). Don't write the same behaviour again in Rust. A Rust copy the client never sees goes out of step with the client's prediction. Example: a native spawn-room rule refused the Helix push on the server, but the spawn room's `0C8E` states never ran, so the client still predicted the push and was snapped back.
 
-- Before you write game logic in Rust, search the graphs for it (`orpheus script query`, `tools/stu.py`). If a graph does it, run the graph.
+- Before you write game logic in Rust, search the graphs for it (`lucy script query`, `tools/stu.py`). If a graph does it, run the graph.
 - Rust is right only for what the retail server did natively: hit registration, movement, the network, damage and death messages, and the other items in `D:/Work/Coding/refs/reports/RustInsteadOfGraphs.md` §9. Check that list, and check it isn't wrong: it said no graph adds ultimate charge, but `0B8B` does.
 - When a graph is blocked (a native the VM can't answer, a message nobody sends), unblock it rather than work around it. If you must leave a Rust stand-in for now, add a `docs/dev/loose-ends.md` entry naming the graph and what blocks it, and remove the stand-in in the same change that makes the graph run, so nothing runs twice.
 
@@ -20,7 +20,7 @@ $env:CARGO_BUILD_JOBS = 4; $env:RUST_TEST_THREADS = 4
 
 (in bash: `export CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4`). Other agents and the user share the machine. Keep builds at below-normal priority: the integrator runs `tools/lowprio.ps1`, which lowers every cargo, rustc and test process.
 
-Debug builds and tests compile with Cranelift on a pinned nightly (`rust-toolchain.toml`, `Cargo.toml` `profile.dev`): a rebuild after a change to `orpheus-script` took 35 s instead of 314 s with LLVM. Each test runs in its own process, so a test-file `LazyLock`/`OnceLock` fixture is rebuilt by every test; keep expensive fixtures on disk (see [testing.md](docs/dev/testing.md#build-speed)). For your own worktree use `python tools/wt.py new <name>` and `python tools/wt.py remove <name>`.
+Debug builds and tests compile with Cranelift on a pinned nightly (`rust-toolchain.toml`, `Cargo.toml` `profile.dev`): a rebuild after a change to `lucy-script` took 35 s instead of 314 s with LLVM. Each test runs in its own process, so a test-file `LazyLock`/`OnceLock` fixture is rebuilt by every test; keep expensive fixtures on disk (see [testing.md](docs/dev/testing.md#build-speed)). For your own worktree use `python tools/wt.py new <name>` and `python tools/wt.py remove <name>`.
 
 ## Before you report
 
@@ -37,7 +37,7 @@ Run these, and nothing more:
 
    It runs the crates `tools/affected.py` names: the ones you changed since `main` and every crate that depends on them, without the `slow_` and `serial_` tests. A change to `script`, `sim` or `physics` reaches nearly every crate (about 4 minutes); a change to `lobby` or `assets`, far less. A name filter is not enough here: a bot change once passed its own `sim` filters and broke a `server` test that only the full run at merge found.
 
-   While you work, `just test-named D:\Games\Overwatch orpheus-sim body_script` runs the game-install tests of one crate whose names contain the filter (as in `cargo test`), for a quick loop. For the long match tests of `orpheus-server`, add `gametest` at the end to run them optimised.
+   While you work, `just test-named D:\Games\Overwatch lucy-sim body_script` runs the game-install tests of one crate whose names contain the filter (as in `cargo test`), for a quick loop. For the long match tests of `lucy-server`, add `gametest` at the end to run them optimised.
 
    If you changed only `web/`, run `just dashboard-test` instead of steps 1-4.
 
@@ -55,7 +55,7 @@ Research is expensive; never let it get lost, and never do it twice.
   - What our own server does (behaviour, assumptions) still goes in `docs/notes/behavior.md`; the report holds the research behind it.
   - If your tools can't write files, put the full report in your final answer, and the integrator saves it.
   - After you write a report or the index, read the file back to check the write landed: appends from a copied shell have failed silently before.
-- **Never run an `orpheus` binary with the user's state folder** (the default, `C:/Users/imunp/AppData/Roaming/orpheus`): give `--state <a temp folder of yours>` to `script query` and other commands. Two agents' queries once broke the user's game data cache there.
+- **Never run an `lucy` binary with the user's state folder** (the default, `C:/Users/imunp/AppData/Roaming/lucy`): give `--state <a temp folder of yours>` to `script query` and other commands. Two agents' queries once broke the user's game data cache there.
 
 ## Leftovers
 

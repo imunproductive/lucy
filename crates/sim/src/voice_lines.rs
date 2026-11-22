@@ -3,7 +3,7 @@
 //! play (ClientInVoice 27500, [`CombatNotice::Voice`]).
 //!
 //! Each hero and training bot body's voice set comes from the install
-//! (`game_voice_sets_174.json`, [`orpheus_content::voice_sets`]). The
+//! (`game_voice_sets_174.json`, [`lucy_content::voice_sets`]). The
 //! client looks a line up by its key in the set's `m_voiceLineGuids`
 //! (`076`), so the server picks the line. That 27500 makes a body say a line
 //! comes from leafall903/ORPHEUS (MIT), docs/MCCREE_COMBAT.txt (a Talon
@@ -11,7 +11,7 @@
 //! docs/VOICE_STIMULUS_STATE.txt (the Junkenstein mode lines).
 //!
 //! - Training bots: a hit the bot survives reaches its script as `0011.025`
-//!   ([`orpheus_script::bot::DAMAGED`]). Its graph `0C17` (rid 0 to 37) adds
+//!   ([`lucy_script::bot::DAMAGED`]). Its graph `0C17` (rid 0 to 37) adds
 //!   the damage up over a second and, 0.1 s after the hit, raises criteria
 //!   `0608` when the sum is under a tenth of the health left, else `0609`, on
 //!   the bot (server-only `STUStatescriptActionCriteria` nodes). The six
@@ -23,7 +23,7 @@
 //!   set answers them with its own lines. A hit the body survives reaches
 //!   its script as `0011.025` too ([`crate::combat::damage_message`]), and
 //!   its graph `01CA` (or `14B1`) raises `0608` or `0609` 0.15 s later
-//!   ([`orpheus_script::player::REACTION_GRAPHS`]), which every hero's set
+//!   ([`lucy_script::player::REACTION_GRAPHS`]), which every hero's set
 //!   answers with its "PnMnr" or "PnSvr" lines.
 //!
 //! Who hears a line: the clients whose bodies the criteria action's
@@ -46,10 +46,10 @@
 
 use std::collections::HashMap;
 
-use orpheus_content::voice_sets::{Stimulus, VoiceSet};
-use orpheus_core::tick::TICK_PERIOD;
-use orpheus_script::vm::RaisedCriteria;
-use orpheus_wire::combat_messages::CombatNotice;
+use lucy_content::voice_sets::{Stimulus, VoiceSet};
+use lucy_core::tick::TICK_PERIOD;
+use lucy_script::vm::RaisedCriteria;
+use lucy_wire::combat_messages::CombatNotice;
 
 /// A line a body says.
 #[derive(Clone, Debug, PartialEq)]
@@ -120,7 +120,7 @@ impl VoiceState {
 
     /// The line the body says at world tick `tick` for the voice stimulus
     /// `stimulus` a server-only `VoiceStimulus` state named
-    /// ([`orpheus_script::vm::VoiceRequest`]), if its set has it, it is not
+    /// ([`lucy_script::vm::VoiceRequest`]), if its set has it, it is not
     /// cooling down and it has a line that may play. The stimulus's own
     /// criteria (what raises it from a criteria action) don't apply.
     pub(crate) fn say(
@@ -206,7 +206,7 @@ pub(crate) fn is_death_cry(identifier: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orpheus_content::voice_sets::VoiceCatalog;
+    use lucy_content::voice_sets::VoiceCatalog;
 
     const BOT: u32 = 0xc000_1000;
     const BODY: u64 = 0x0400_0000_0000_1403;

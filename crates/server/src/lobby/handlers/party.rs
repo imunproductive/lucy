@@ -6,7 +6,7 @@
 
 use std::{io, sync::Arc};
 
-use orpheus_lobby::{
+use lucy_lobby::{
     accounts::Account,
     social::{
         MAX_PARTY_SIZE, PartyId, account_lo_of, id_of,
@@ -16,7 +16,7 @@ use orpheus_lobby::{
         },
     },
 };
-use orpheus_wire::jam::codec::Fields;
+use lucy_wire::jam::codec::Fields;
 
 use crate::lobby::{
     peer::Peer,
@@ -105,7 +105,7 @@ fn invite(peer: &mut Peer<'_, '_>, fields: Fields) -> io::Result<()> {
                 .expect("the bot's party")
                 .chat_channel();
             let greeting = messages::chat_message(
-                orpheus_wire::jam::codec::Value::Struct(channel),
+                lucy_wire::jam::codec::Value::Struct(channel),
                 turn.record(&target),
                 BOT_GREETING,
                 0,

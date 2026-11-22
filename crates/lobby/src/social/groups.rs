@@ -3,7 +3,7 @@
 
 use std::io;
 
-use orpheus_wire::jam::codec::Fields;
+use lucy_wire::jam::codec::Fields;
 
 use super::{
     ANY_SLOT, DAMAGE_SLOT, Party, SUPPORT_SLOT, TANK_SLOT, array, integer, structure, text,

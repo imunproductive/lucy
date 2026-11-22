@@ -5,7 +5,7 @@
 
 use std::{io, sync::Arc};
 
-use orpheus_lobby::{
+use lucy_lobby::{
     accounts::Account,
     presence::{STATUS_OFFLINE, STATUS_ONLINE},
     social::{
@@ -17,7 +17,7 @@ use orpheus_lobby::{
         remove_friend, request_friend, text, unsigned,
     },
 };
-use orpheus_wire::jam::codec::Fields;
+use lucy_wire::jam::codec::Fields;
 
 use crate::lobby::{
     Lobby,

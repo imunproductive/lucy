@@ -1,6 +1,6 @@
 //! Custom games: the lobby a host creates (24000 kind 1), its settings
 //! (24008-24013) and Start (24018). The protocol is in
-//! `orpheus_lobby::custom_game`; the research in
+//! `lucy_lobby::custom_game`; the research in
 //! `refs/reports/CustomGames.md`.
 
 use std::{
@@ -12,14 +12,14 @@ use std::{
     },
 };
 
-use orpheus_content::maps::GameMap;
-use orpheus_lobby::{
+use lucy_content::maps::GameMap;
+use lucy_lobby::{
     accounts::Account,
     custom_game::{self, CustomSettings, RulesetValue, Upload},
     transport::LobbyMessage,
 };
-use orpheus_script::graph::{BodyValues, ModeValue};
-use orpheus_wire::jam::codec::Fields;
+use lucy_script::graph::{BodyValues, ModeValue};
+use lucy_wire::jam::codec::Fields;
 
 use super::{Ctx, Lobby, Matchmaker, Parties, Party, Ticket, rules};
 
@@ -161,7 +161,7 @@ impl Ctx<'_> {
         }
         let workshop = settings.workshop();
         let logic = self.mm.catalog().and_then(|catalog| {
-            orpheus_workshop::decode(&workshop.block, &workshop.items, &catalog)
+            lucy_workshop::decode(&workshop.block, &workshop.items, &catalog)
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))
         });
         let logic = match logic {
@@ -193,7 +193,7 @@ impl Ctx<'_> {
         mut map: GameMap,
         values: BTreeMap<u32, ModeValue>,
         bodies: Vec<BodyValues>,
-        logic: Arc<orpheus_workshop::Logic>,
+        logic: Arc<lucy_workshop::Logic>,
     ) -> bool {
         if map.team_sizes.first().is_none_or(|&size| size == 0) {
             // The host plays in team 1.

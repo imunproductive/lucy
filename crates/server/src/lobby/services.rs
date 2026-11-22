@@ -14,7 +14,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use orpheus_lobby::{
+use lucy_lobby::{
     accounts::{Account, Accounts},
     celebrations::Celebrations,
     clock::server_time,
@@ -333,8 +333,8 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use orpheus_content::catalog::ItemDb;
-    use orpheus_lobby::templates::RetailTemplates;
+    use lucy_content::catalog::ItemDb;
+    use lucy_lobby::templates::RetailTemplates;
 
     fn services() -> Services {
         let templates = RetailTemplates::from_reader(

@@ -14,8 +14,8 @@ use crate::{
     presence::FRIENDS,
     ranked::{COMPETITIVE_CTF, Queue, RANKED},
 };
-use orpheus_content::catalog::ItemDb;
-use orpheus_wire::{
+use lucy_content::catalog::ItemDb;
+use lucy_wire::{
     jam::framing::{self, FrameReader},
     jam::handshake::client_handshake,
 };
@@ -184,7 +184,7 @@ fn negotiates_pings_and_accepts_practice_messages_after_login() {
 #[test]
 #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn prepared_subset_matches_the_python_login_in_wire_order() {
-    let runtime = orpheus_testkit::runtime_dir().join("data");
+    let runtime = lucy_testkit::runtime_dir().join("data");
     let schemas = Schemas::lobby();
     let templates = RetailTemplates::captured();
     let items = Arc::new(ItemDb::load(&runtime).unwrap());
@@ -382,7 +382,7 @@ fn prepared_subset_matches_the_python_login_in_wire_order() {
 #[test]
 #[ignore = "requires a derived 104319 runtime"]
 fn live_messages_follow_the_python_refresh_order() {
-    let runtime = orpheus_testkit::runtime_dir().join("data");
+    let runtime = lucy_testkit::runtime_dir().join("data");
     let schemas = Schemas::lobby();
     let templates = RetailTemplates::captured();
     let items = Arc::new(ItemDb::load(&runtime).unwrap());

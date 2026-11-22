@@ -29,11 +29,11 @@ use crate::{
     scene::target_tags_component,
     voice_lines::{VoiceLine, VoiceState, is_death_cry},
 };
-use orpheus_content::{
+use lucy_content::{
     maps::{GameMap, PRACTICE_RANGE_MAP, PRACTICE_RANGE_MODE},
     voice_sets::VoiceCatalog,
 };
-use orpheus_script::{
+use lucy_script::{
     bot::{BotBody, BotError, BotSpawn as ScriptSpawn, RANGE_BOT, practice_nameplate},
     codecs::CodecTable,
     graph::GraphStore,
@@ -48,7 +48,7 @@ use orpheus_script::{
     weapons::{DamageTags, HitDefinition, ProjectileBallistics, authored_number, ray_profile},
     wire::Value,
 };
-use orpheus_wire::entity::{Component, EntityUpdate};
+use lucy_wire::entity::{Component, EntityUpdate};
 
 /// How long a dead bot's death script runs: `int(BOT_RESPAWN / TICK)`
 /// frames, 3 s of 16 ms frames rounded down (combat.py `_advance_bot_death`).
@@ -118,7 +118,7 @@ pub enum BotShotKind {
         direction: [f64; 3],
         reach: f64,
         hit: HitDefinition,
-        /// The volley's ray profile (`orpheus_script::weapons::ray_profile`).
+        /// The volley's ray profile (`lucy_script::weapons::ray_profile`).
         ray_profile: Option<u64>,
         shot_frame: u32,
     },
@@ -799,7 +799,7 @@ impl BotScripts {
     }
 
     /// An aura comes on the live bot or goes off it (`vm/auras.rs` in
-    /// `orpheus_script`: Biotic Grenade's `0267`, an ApplyAura's) at world
+    /// `lucy_script`: Biotic Grenade's `0267`, an ApplyAura's) at world
     /// tick `tick`; its changed frame goes to the clients as a live frame.
     pub(crate) fn change_aura(&mut self, change: &AuraChange, tick: u32) {
         let entity = change.target();
@@ -1078,7 +1078,7 @@ impl BotScripts {
         self.script(entity)
             .and_then(|script| script.body.snapshot())
             .and_then(|snapshot| snapshot.variables.get(&RANGE_BOT))
-            .is_some_and(orpheus_script::expr::truthy)
+            .is_some_and(lucy_script::expr::truthy)
     }
 
     fn encoder(&self) -> Option<SnapshotEncoder<'_>> {

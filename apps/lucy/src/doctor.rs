@@ -1,4 +1,4 @@
-//! `orpheus doctor`: check everything `serve` needs and say how to fix each problem.
+//! `lucy doctor`: check everything `serve` needs and say how to fix each problem.
 
 use std::{
     fs,
@@ -6,12 +6,12 @@ use std::{
     path::Path,
 };
 
-use orpheus_content::maps::MapCatalog;
-use orpheus_lobby::accounts::saved_names;
-use orpheus_server::{game_data, server::local_account_name};
-use orpheus_sim::scene_assets::SceneAssets;
+use lucy_content::maps::MapCatalog;
+use lucy_lobby::accounts::saved_names;
+use lucy_server::{game_data, server::local_account_name};
+use lucy_sim::scene_assets::SceneAssets;
 
-use orpheus_launcher::game::TARGET_VERSION;
+use lucy_launcher::game::TARGET_VERSION;
 
 use crate::{
     play, serve,
@@ -150,7 +150,7 @@ fn account(settings: &Settings) -> Outcome {
         Ok((None, _)) => Outcome::Ok("a new profile from the template on first login".into()),
         Err(error) => problem(
             format!("cannot read the saved profiles: {error}"),
-            "repair or remove the broken file in the profiles folder, or import them with orpheus state import",
+            "repair or remove the broken file in the profiles folder, or import them with lucy state import",
         ),
     }
 }
@@ -217,7 +217,7 @@ fn relay() -> Outcome {
         Ok(path) => Outcome::Ok(path.display().to_string()),
         Err(error) => problem(
             error.to_string(),
-            "run cargo build --workspace (orpheus play loads it)",
+            "run cargo build --workspace (lucy play loads it)",
         ),
     }
 }

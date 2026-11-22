@@ -1,6 +1,6 @@
 use std::cell::Cell;
 
-use orpheus_content::{
+use lucy_content::{
     heroes::SOLDIER,
     maps::{MapCatalog, ObjectiveKind, SpawnChoice},
 };
@@ -17,7 +17,7 @@ const FLOOR: f32 = 0.35;
 const SPEED: f64 = 5.5;
 
 /// A volume of the given box with the listed cells walkable (the layout of
-/// `data/navigation`, see `orpheus_physics::nav`).
+/// `data/navigation`, see `lucy_physics::nav`).
 fn volume(
     origin: [i32; 3],
     size: [i32; 3],
@@ -111,7 +111,7 @@ fn senses<'a>(
 }
 
 /// Where a body goes in a tick with this command, on flat ground: the
-/// throttles turned by the yaw (`orpheus_wire::commands`), at a run.
+/// throttles turned by the yaw (`lucy_wire::commands`), at a run.
 fn walk(feet: [f64; 3], command: &Command) -> [f64; 3] {
     let yaw = f64::from(command.yaw) * TAU / 65536.0;
     let (sin, cos) = yaw.sin_cos();
@@ -141,7 +141,7 @@ fn difficulty_picks_its_profile_and_accuracy_as_the_rules_say() {
     assert_eq!(Difficulty::from_level(0), None);
     assert_eq!(Difficulty::from_level(4), None);
     // The card's levels play the profiles `195E`, `195F` and `1960`, which
-    // the client orders lowest to highest (`orpheus_script::ai_definitions`).
+    // the client orders lowest to highest (`lucy_script::ai_definitions`).
     let profiles: Vec<_> = levels.iter().map(|level| level.identifier()).collect();
     assert_eq!(
         profiles,
@@ -584,13 +584,13 @@ fn a_team_gets_each_roster_hero_once() {
 /// input held): it overshoots its waypoints and walks on rather than
 /// turning back to them.
 #[test]
-#[ignore = "requires an Overwatch 1.74 install (ORPHEUS_GAME_DIR); builds Anubis' collision once"]
+#[ignore = "requires an Overwatch 1.74 install (LUCY_GAME_DIR); builds Anubis' collision once"]
 fn an_attacker_walks_from_the_anubis_spawn_to_point_a() {
     const ANUBIS: u64 = 0x0800_0000_0000_005b;
-    let runtime = orpheus_testkit::runtime_dir();
+    let runtime = lucy_testkit::runtime_dir();
     let assets = SceneAssets::load(&runtime)
         .unwrap()
-        .with_collision_build(install_collision_build(orpheus_testkit::game_dir()));
+        .with_collision_build(install_collision_build(lucy_testkit::game_dir()));
     let catalog = MapCatalog::load(runtime.join("data")).unwrap();
     let map = catalog
         .game_map(ANUBIS, ASSAULT, "Assault", false, &[6, 6])
@@ -655,14 +655,14 @@ fn an_attacker_walks_from_the_anubis_spawn_to_point_a() {
 /// 15: the 75 m at a run, and a stuck sidestep where the volumes and the
 /// collision disagree).
 #[test]
-#[ignore = "requires an Overwatch 1.74 install (ORPHEUS_GAME_DIR); builds Gibraltar's collision once"]
+#[ignore = "requires an Overwatch 1.74 install (LUCY_GAME_DIR); builds Gibraltar's collision once"]
 fn an_ai_hero_walks_round_a_wall_to_the_point_behind_it() {
     use crate::match_flow::ESCORT;
     const GIBRALTAR: u64 = 0x0800_0000_0000_0184;
-    let runtime = orpheus_testkit::runtime_dir();
+    let runtime = lucy_testkit::runtime_dir();
     let assets = SceneAssets::load(&runtime)
         .unwrap()
-        .with_collision_build(install_collision_build(orpheus_testkit::game_dir()));
+        .with_collision_build(install_collision_build(lucy_testkit::game_dir()));
     let catalog = MapCatalog::load(runtime.join("data")).unwrap();
     let map = catalog
         .game_map(GIBRALTAR, ESCORT, "Escort", false, &[6, 6])

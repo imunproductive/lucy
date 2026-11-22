@@ -24,7 +24,7 @@ use crate::{
     vitals::PoolKind,
     wheel::{self, Cosmetic},
 };
-use orpheus_core::guid::parse_guid;
+use lucy_core::guid::parse_guid;
 
 mod compiled;
 
@@ -2169,7 +2169,7 @@ impl Evaluator<'_> {
             // fallback through the mode's `STUGameMode.m_3CE93B76`
             // (0x7FF789CAD640) writes a value but returns "not found", so
             // the evaluate fails either way without that row. The server
-            // sends field 2 unset (`orpheus_sim::scene::mode_create`): the
+            // sends field 2 unset (`lucy_sim::scene::mode_create`): the
             // client has no row, so no value here either.
             "STU_BEDA850F" if native_shape(config, class, None) => Value::Null,
             // A server-only bool of `m_entity` (no registration of its own,
@@ -3325,7 +3325,7 @@ impl Evaluator<'_> {
             // (`Eval_STU_B182C5C9` 0x7FF789BDDF50; ModeGraphGaps.md and
             // Payloads.md, "Client tools pass 2 (2026-11-16)"). The server
             // draws one per match in [0, 1) and sends it in the mode
-            // entity's create (`orpheus_sim::scene::mode_create`); every
+            // entity's create (`lucy_sim::scene::mode_create`); every
             // world answers that value. Its uses: `0F4A` uid 1299 keeps it
             // as #29093, `1225` uid 363 scales the payload's speed by
             // `1 - v + 2v·x` (v = 0.1), `0C8E` uid 136 takes `(x - 0.5)·2`.

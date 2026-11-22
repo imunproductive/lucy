@@ -24,18 +24,18 @@ use crate::{
     },
     wire::{Value, Variables},
 };
-use orpheus_wire::entity::GAME_MODE_ENTITY;
+use lucy_wire::entity::GAME_MODE_ENTITY;
 
 /// The target the worlds give a message a graph sent to every entity
 /// ([`World::broadcast_message`]); entity 0 is never one. The match hands
 /// it to every entity that runs graphs on the server but the sender, whose
-/// own instances took it when it was sent (`orpheus_sim::messages`).
+/// own instances took it when it was sent (`lucy_sim::messages`).
 pub const EVERY_ENTITY: u32 = 0;
 
 /// The ids of the entities the mode entity's graphs make
 /// ([`ModeScript::created`]): `CREATED_FIRST + n % CREATED_SPAN`, past the
 /// Biotic Fields' and the seen projectiles' spans
-/// (`orpheus_sim::projectiles`, `0xA008_0000` and `0xA00C_0000`). Retail's
+/// (`lucy_sim::projectiles`, `0xA008_0000` and `0xA00C_0000`). Retail's
 /// ids are the server's own choice.
 pub const CREATED_FIRST: u32 = 0xa010_0000;
 pub const CREATED_SPAN: u32 = 0x0004_0000;
@@ -107,7 +107,7 @@ pub struct ModeWorld {
     pub players: Vec<ModePlayer>,
     /// Each team's size as the server sends it in the 20300/20301 game
     /// struct (`#0.#0.#0.#4`: byte `+0x60` the team, 5 any team, `+0x61`
-    /// its size; `orpheus_sim::instance`).
+    /// its size; `lucy_sim::instance`).
     pub team_sizes: Vec<(u8, u8)>,
     /// The server's answer to `STU_81A9AB10`, which lets the match leave
     /// its waiting phase.
@@ -141,7 +141,7 @@ pub struct ModeWorld {
     placeable_tags: BTreeMap<u32, TargetTags>,
     /// Mode entity variables that hold before the root graph starts, over
     /// the mode's: what the map's placeables reported before it (the
-    /// objectives' `0813`, `orpheus_sim::mode_script`).
+    /// objectives' `0813`, `lucy_sim::mode_script`).
     pub start_variables: Variables,
     /// Other entities' variables as the mode entity's graphs know them:
     /// the server's ([`ModeScript::set_foreign_variable`]) and the graphs'
@@ -342,7 +342,7 @@ impl World for ModeWorld {
     }
 
     /// The mode entity has no team: the server gives it no component 25
-    /// (`orpheus_sim::scene::mode_create`), so its filter word is empty.
+    /// (`lucy_sim::scene::mode_create`), so its filter word is empty.
     /// A player's controller and body are on his team.
     fn entity_team(&self, _site: Site, entity: u32) -> Option<i64> {
         if entity == GAME_MODE_ENTITY {
@@ -379,7 +379,7 @@ impl World for ModeWorld {
     /// of: Workshop Chamber's capture point, whose `07CB` Skirmish's
     /// `0D76` rid33 asks for tag `041B`); a player's body's are its
     /// definition's (the bundle's `bodies`), as the victim's tags at a kill
-    /// (`orpheus_sim::replication`). Assumption: a body's states add or
+    /// (`lucy_sim::replication`). Assumption: a body's states add or
     /// remove none the mode graph asks about.
     fn has_target_tag(&self, site: Site, entity: u32, tag: u64) -> Option<bool> {
         if let Some(player) = self.player_of(entity)
@@ -530,7 +530,7 @@ impl World for ModeWorld {
     /// The Workshop's Start Game Mode (`2FD6`'s `STU_5E019216`): the match
     /// has left its waiting phase once it is ready (`STU_81A9AB10`); the
     /// server makes its Workshop matches ready as they open, as "Game Mode
-    /// Start: Immediately" (`orpheus_sim::mode_script`), so there is
+    /// Start: Immediately" (`lucy_sim::mode_script`), so there is
     /// nothing left to start. A match still waiting is not modelled.
     fn start_game_mode(&mut self, _site: Site) -> bool {
         self.ready
@@ -551,7 +551,7 @@ impl World for ModeWorld {
     /// The next free id of [`CREATED_FIRST`]'s span; [`ModeScript`] starts
     /// the entity after the run. With no position it stands where its
     /// maker does: the mode entity, which the server creates at the origin
-    /// (`orpheus_sim::scene::mode_create`) [assumption: the client's
+    /// (`lucy_sim::scene::mode_create`) [assumption: the client's
     /// `sub_7FF789809ED0` with no position was not traced]. None when the
     /// span is full.
     fn create_entity(&mut self, _site: Site, creation: EntityCreation) -> Option<u32> {
@@ -1089,7 +1089,7 @@ impl ModeScript {
     }
 
     /// The health changes the graphs made since the last call, for the
-    /// match's health code (`orpheus_sim::combat::Combat::modify_health`).
+    /// match's health code (`lucy_sim::combat::Combat::modify_health`).
     pub fn take_health_changes(&mut self) -> Vec<HealthChange> {
         std::mem::take(&mut self.world.health_changes)
     }
@@ -1443,7 +1443,7 @@ impl ModeScript {
 
     /// The messages the graph holds to every entity now, in the order its
     /// states began ([`World::hold_broadcast`]): the match gives each to
-    /// every entity that starts while it is held (`orpheus_sim::messages`).
+    /// every entity that starts while it is held (`lucy_sim::messages`).
     pub fn held(&self) -> &[GameMessage] {
         &self.world.held
     }
@@ -1490,7 +1490,7 @@ mod tests {
     const PHASE: u32 = 59;
 
     fn graphs() -> Arc<GraphStore> {
-        let data = orpheus_testkit::runtime_dir().join("data");
+        let data = lucy_testkit::runtime_dir().join("data");
         Arc::new(GraphStore::load_runtime(data, "game_graphs_174.json.gz").unwrap())
     }
 

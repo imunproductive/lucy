@@ -182,7 +182,7 @@ const CLIENT: [(u64, Graph, Vec3, [i32; 3], Option<(u64, u32, u32)>); 23] = [
 #[test]
 #[ignore = "requires derived 104319 AI cells"]
 fn lookups_find_what_the_clients_reader_finds() {
-    let runtime = orpheus_testkit::runtime_dir();
+    let runtime = lucy_testkit::runtime_dir();
     let range = AiCells::load(file(&runtime, RANGE)).unwrap();
     let rialto = AiCells::load(file(&runtime, RIALTO)).unwrap();
     assert_eq!((range.len(), rialto.len()), (208, 282));
@@ -326,7 +326,7 @@ const CLIENT_NEIGHBOURS: [(u64, Vec3, &[([i32; 3], u32)]); 8] = [
 #[test]
 #[ignore = "requires derived 104319 AI cells"]
 fn walk_links_lead_where_the_clients_neighbour_walk_does() {
-    let runtime = orpheus_testkit::runtime_dir();
+    let runtime = lucy_testkit::runtime_dir();
     let range = AiCells::load(file(&runtime, RANGE)).unwrap();
     let rialto = AiCells::load(file(&runtime, RIALTO)).unwrap();
     let mut next = Vec::new();
@@ -348,7 +348,7 @@ fn walk_links_lead_where_the_clients_neighbour_walk_does() {
 #[test]
 #[ignore = "requires derived 104319 AI cells"]
 fn a_walk_split_over_ticks_is_the_walk_of_the_whole_search() {
-    let cells = AiCells::load(file(&orpheus_testkit::runtime_dir(), RIALTO)).unwrap();
+    let cells = AiCells::load(file(&lucy_testkit::runtime_dir(), RIALTO)).unwrap();
     let (from, to) = ([-9.875, 0.17, -52.375], [66.875, 0.17, -53.375]);
     let short = |a: Vec3, b: Vec3| (a[0] - b[0]).hypot(a[2] - b[2]) <= 10.0;
     let mut whole = WalkSearch::new(from, to);
@@ -627,7 +627,7 @@ const CLIENT_PATHS: [(u64, Graph, [i32; 3], [i32; 3], Option<&[(u8, u64, u8)]>);
 #[test]
 #[ignore = "requires derived 104319 AI cells"]
 fn the_query_finds_the_clients_paths() {
-    let runtime = orpheus_testkit::runtime_dir();
+    let runtime = lucy_testkit::runtime_dir();
     let range = AiCells::load(file(&runtime, RANGE)).unwrap();
     let rialto = AiCells::load(file(&runtime, RIALTO)).unwrap();
     for (map, graph, [x, y, z], [gx, gy, gz], client) in CLIENT_PATHS {
@@ -908,7 +908,7 @@ const CLIENT_LEDGE_PATHS: [(u64, Vec3, Vec3, Vec3, Vec3, Result<&[Vec3], Refusal
 #[test]
 #[ignore = "requires derived 104319 AI cells"]
 fn the_ledge_pull_paths_where_the_clients_path_build_does() {
-    let runtime = orpheus_testkit::runtime_dir();
+    let runtime = lucy_testkit::runtime_dir();
     let range = AiCells::load(file(&runtime, RANGE)).unwrap();
     let rialto = AiCells::load(file(&runtime, RIALTO)).unwrap();
     for (map, feet, point, start, goal, path) in CLIENT_LEDGE_PATHS {
@@ -1063,7 +1063,7 @@ const CLIENT_LIFTS: [(u64, Vec3, Vec3, bool, Vec3); 18] = [
 #[test]
 #[ignore = "requires derived 104319 AI cells"]
 fn lifts_take_the_air_voxel_the_clients_lifts_take() {
-    let runtime = orpheus_testkit::runtime_dir();
+    let runtime = lucy_testkit::runtime_dir();
     let range = AiCells::load(file(&runtime, RANGE)).unwrap();
     let rialto = AiCells::load(file(&runtime, RIALTO)).unwrap();
     for (map, point, start, found, goal) in CLIENT_LIFTS {
@@ -1303,7 +1303,7 @@ const CLIENT_SEARCHES: [(u64, Vec3, Vec3, bool, bool, i32, usize); 24] = [
 #[ignore = "requires derived 104319 AI cells"]
 fn the_queries_start_refuses_what_the_clients_searches_refuse() {
     use super::ledge::{Level, reaches};
-    let runtime = orpheus_testkit::runtime_dir();
+    let runtime = lucy_testkit::runtime_dir();
     let range = AiCells::load(file(&runtime, RANGE)).unwrap();
     let rialto = AiCells::load(file(&runtime, RIALTO)).unwrap();
     for (map, start, goal, regions, units, code, steps) in CLIENT_SEARCHES {

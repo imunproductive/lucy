@@ -51,7 +51,7 @@ const SCAN_PERIOD: Duration = Duration::from_millis(8);
 const RECV_WAIT: Duration = Duration::from_millis(30);
 const SCAN_CHUNK: usize = 1 << 20;
 /// The launcher names the log file; without it the log goes next to the DLL.
-const LOG_VARIABLE: &str = "ORPHEUS_RELAY_LOG";
+const LOG_VARIABLE: &str = "LUCY_RELAY_LOG";
 
 static MODULE: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
 static RELAY: OnceLock<Relay> = OnceLock::new();

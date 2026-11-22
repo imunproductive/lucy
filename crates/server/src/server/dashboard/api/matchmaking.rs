@@ -10,7 +10,7 @@ use serde_json::{Map, Value as Json, json};
 
 use super::{Api, ApiError, ApiResult, parse_bool, parse_guid, parse_int};
 use crate::lobby::Lobby;
-use orpheus_lobby::matchmaker::{QUICK_PLAY, Ruleset};
+use lucy_lobby::matchmaker::{QUICK_PLAY, Ruleset};
 
 /// A queue ruleset's teams as the dashboard shows them: "6 v 6", "1 v 5",
 /// "FFA 8".

@@ -3,7 +3,7 @@
 //! unlocks (`DataModels/ProgressionUnlocks.cs`, `PlayerProgression.cs`,
 //! `Unlock.cs`, `TeamDefinition.cs`).
 
-use orpheus_stu::{Object, Value};
+use lucy_stu::{Object, Value};
 use serde_json::{Map, Value as Json, json};
 
 use super::{Data, array, enum_json, guid, guid_json, guid_label, guids, inline, instance, int};

@@ -5,8 +5,8 @@
 use std::io;
 
 use crate::{accounts::Accounts, templates::RetailTemplates, transport::LobbyMessage};
-use orpheus_content::catalog::localize_fields;
-use orpheus_wire::jam::codec::{
+use lucy_content::catalog::localize_fields;
+use lucy_wire::jam::codec::{
     Fields,
     Value::{Array, Bool, Signed, Struct, Unsigned},
 };
@@ -51,7 +51,7 @@ pub fn player_names(request: &Fields, accounts: &Accounts) -> io::Result<LobbyMe
         names.push(Struct(Fields::from([
             (0x00, id.clone()),
             (0x10, Unsigned(0)),
-            (0x18, orpheus_wire::jam::codec::Value::String(name)),
+            (0x18, lucy_wire::jam::codec::Value::String(name)),
         ])));
     }
     Ok((

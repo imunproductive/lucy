@@ -7,9 +7,9 @@ use std::{
     path::Path,
 };
 
-use orpheus_lobby::accounts::saved_names;
-use orpheus_server::server::Server;
-use orpheus_wire::jam::codec::Schemas;
+use lucy_lobby::accounts::saved_names;
+use lucy_server::server::Server;
+use lucy_wire::jam::codec::Schemas;
 use tracing::info;
 
 use crate::{logging::LOG_FILE, settings::Settings};
@@ -155,7 +155,7 @@ fn dialable(found: impl IntoIterator<Item = IpAddr>) -> Vec<Ipv4Addr> {
 
 #[cfg(windows)]
 fn host_name() -> Option<String> {
-    orpheus_launcher::network::host_name()
+    lucy_launcher::network::host_name()
 }
 
 #[cfg(not(windows))]
@@ -197,7 +197,7 @@ mod tests {
             accounts: &[],
             template: "profile.json",
             schemas: (707, 87),
-            log_file: Path::new("orpheus.log"),
+            log_file: Path::new("lucy.log"),
         };
         let shown = lines(&banner);
         assert!(shown.contains(&" [*] Your network:   192.168.1.5:3724".to_owned()));

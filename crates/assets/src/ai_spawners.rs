@@ -28,7 +28,7 @@
 
 use std::{collections::BTreeSet, fs, path::Path};
 
-use orpheus_stu::{Asset, Object, Value as Stu};
+use lucy_stu::{Asset, Object, Value as Stu};
 use serde_json::{Map, Value, json};
 
 use crate::{

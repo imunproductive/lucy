@@ -79,13 +79,13 @@ use crate::{
     wheel,
     wire::{Value, Variables},
 };
-use orpheus_physics::mover::{
+use lucy_physics::mover::{
     Behaviour, MoveTo, PathWalk, Rise, Speed,
     modifiers::{
         MOVE_HEADING, Modifier, ModifierKey, Operation, VectorOperation, VelocityElement, heading,
     },
 };
-use orpheus_wire::{commands::Command, entity::MAX_MOVEMENT_AXIS};
+use lucy_wire::{commands::Command, entity::MAX_MOVEMENT_AXIS};
 
 pub const MAX_INIT_WORK: usize = 100_000;
 const MAX_PLUG_DEPTH: usize = 64;
@@ -305,7 +305,7 @@ pub struct TargetCandidate {
 }
 
 /// A body's model hardpoints: each `0DC` GUID's point in the body's frame
-/// (`orpheus_assets` `hitboxes`: the bots' idle pose, the heroes' rest).
+/// (`lucy_assets` `hitboxes`: the bots' idle pose, the heroes' rest).
 pub type Hardpoints = BTreeMap<u64, [f64; 3]>;
 
 /// A spawned entity a listed body's controller owns
@@ -843,7 +843,7 @@ pub trait World {
 
     /// The rate (radians a second, movement state `+0xD0`) of the turn
     /// `entity`'s mover runs for a `STU_C168636D` state
-    /// ([`orpheus_physics::mover::turn`]) after its last move; None: no turn
+    /// ([`lucy_physics::mover::turn`]) after its last move; None: no turn
     /// runs, or unknown here.
     fn turn_rate(&self, _site: Site, _entity: u32) -> Option<f32> {
         None
@@ -852,27 +852,27 @@ pub trait World {
     /// How far the walls turn a move of `entity`'s body along the flat
     /// unit `direction` for `distance`, as the cosine (1: free, 0: stopped)
     /// a wall check's trial in `form` finds (`STU_FBFF5DE7`,
-    /// [`orpheus_physics::mover::trial`]). None: unknown here.
+    /// [`lucy_physics::mover::trial`]). None: unknown here.
     fn trial_turn(
         &mut self,
         _site: Site,
         _entity: u32,
         _direction: [f64; 3],
         _distance: f64,
-        _form: orpheus_physics::mover::trial::TrialForm,
+        _form: lucy_physics::mover::trial::TrialForm,
     ) -> Option<f64> {
         None
     }
 
     /// Where a placement selector's landing search from `entity`'s eye
     /// lands, its casts meeting the map as ray profile `profile` does
-    /// (`STU_4C96470A`, [`orpheus_physics::mover::landing`]): Some(None)
+    /// (`STU_4C96470A`, [`lucy_physics::mover::landing`]): Some(None)
     /// when it finds no ground. None: unknown here.
     fn landing_point(
         &mut self,
         _site: Site,
         _entity: u32,
-        _search: &orpheus_physics::mover::landing::LandingSearch,
+        _search: &lucy_physics::mover::landing::LandingSearch,
         _profile: Option<u64>,
     ) -> Option<Option<[f64; 3]>> {
         None
@@ -881,11 +881,11 @@ pub trait World {
     /// Whether the ground walk of a shockwave on `site` reaches a body, its
     /// first and last casts meeting the map as ray profile `sphere_profile`
     /// does and its sample rays as `ray_profile` does
-    /// ([`orpheus_physics::mover::ground_walk`]). None: unknown here.
+    /// ([`lucy_physics::mover::ground_walk`]). None: unknown here.
     fn ground_walk(
         &self,
         _site: Site,
-        _walk: &orpheus_physics::mover::ground_walk::GroundWalk,
+        _walk: &lucy_physics::mover::ground_walk::GroundWalk,
         _sphere_profile: Option<u64>,
         _ray_profile: Option<u64>,
     ) -> Option<bool> {
@@ -894,7 +894,7 @@ pub trait World {
 
     /// Whether a ray from `start` down to `end`, stopped by the map, enters
     /// a zone that kills (the kill height, a lethal damage area:
-    /// [`orpheus_physics::mover::rise::fatal_drop`], `STU_88687E54`). None:
+    /// [`lucy_physics::mover::rise::fatal_drop`], `STU_88687E54`). None:
     /// unknown here.
     fn fatal_drop(&self, _site: Site, _start: [f64; 3], _end: [f64; 3]) -> Option<bool> {
         None
@@ -1386,7 +1386,7 @@ pub struct MessageEnd {
 }
 
 /// A running mover behaviour state's request for the mover
-/// (`orpheus_physics::mover`: a `MoveTo`'s move or a `STU_1F5ED928` path
+/// (`lucy_physics::mover`: a `MoveTo`'s move or a `STU_1F5ED928` path
 /// walk): the state, its activation (a state begun again is a new
 /// behaviour) and the block it handed over at its begin.
 #[derive(Clone, Copy, Debug, PartialEq)]

@@ -32,8 +32,8 @@ use crate::{
     templates::RetailTemplates,
     transport::LobbyMessage,
 };
-use orpheus_core::guid::parse_guid;
-use orpheus_wire::jam::codec::{
+use lucy_core::guid::parse_guid;
+use lucy_wire::jam::codec::{
     Fields,
     Value::{Array, Bool, Float32, Signed, Struct, Unsigned},
 };
@@ -270,7 +270,7 @@ impl Arcade {
         Ok(lists)
     }
 
-    fn card(&self, index: u32) -> orpheus_wire::jam::codec::Value {
+    fn card(&self, index: u32) -> lucy_wire::jam::codec::Value {
         let card = &self.cards[&index];
         let daily = FIXED_DAILY.contains(&index) || ROTATING.contains(&index);
         let mut fields = Fields::from([
@@ -373,7 +373,7 @@ mod tests {
 
     use super::*;
     use crate::{passes, ranked::Ranked};
-    use orpheus_wire::jam::codec::Schemas;
+    use lucy_wire::jam::codec::Schemas;
 
     #[test]
     fn rotation_counts_groups_instead_of_cards_and_deduplicates_events() {
@@ -397,7 +397,7 @@ mod tests {
     #[test]
     #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn arcade_and_pass_wire_bytes_match_python_across_events_seasons_and_dates() {
-        let data = orpheus_testkit::runtime_dir().join("data");
+        let data = lucy_testkit::runtime_dir().join("data");
         let schemas = Schemas::lobby();
         let templates = RetailTemplates::captured();
         let ranked = Ranked::new(&templates).unwrap();

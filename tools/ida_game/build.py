@@ -1,5 +1,5 @@
 """Build the headless game IDB research/out/ida_game/ow_game.i64 from the research repo's image dump
-dumps/ingame_7FF788F10000.exe (locations: tools/paths.py). Run from the ORPHEUS root.
+dumps/ingame_7FF788F10000.exe (locations: tools/paths.py). Run from the Lucy root.
 
     python -m tools.ida_game.build                     # every phase not done yet, in order
     python -m tools.ida_game.build --phase create      # one phase (re-runs it)
@@ -474,7 +474,7 @@ def main():
         flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
         os.makedirs(paths.OUT_DIR, exist_ok=True)
         out = open(os.path.join(paths.OUT_DIR, "build.out"), "ab")
-        p = subprocess.Popen(cmd, cwd=paths.ORPHEUS, creationflags=flags, stdout=out, stderr=out,
+        p = subprocess.Popen(cmd, cwd=paths.LUCY, creationflags=flags, stdout=out, stderr=out,
                              stdin=subprocess.DEVNULL)
         print("started pid %d; follow %s" % (p.pid, paths.LOG))
         return

@@ -1,6 +1,6 @@
 //! The state folder, `config.toml` and the resolved settings.
 //!
-//! Precedence: command-line flag, then `ORPHEUS_*` environment variable (both
+//! Precedence: command-line flag, then `LUCY_*` environment variable (both
 //! handled by clap), then `config.toml`, then the built-in default.
 
 use std::{
@@ -11,7 +11,7 @@ use std::{
 };
 
 use clap::{Args, ValueEnum};
-use orpheus_sim::ai::Difficulty;
+use lucy_sim::ai::Difficulty;
 use serde::Deserialize;
 
 use crate::ask;
@@ -25,10 +25,10 @@ pub const DEFAULT_PORTS: Ports = Ports {
     dashboard: 3725,
 };
 
-/// The per-user state folder: `%APPDATA%\orpheus` on Windows.
+/// The per-user state folder: `%APPDATA%\lucy` on Windows.
 pub fn default_state_dir() -> io::Result<PathBuf> {
     directories::BaseDirs::new()
-        .map(|dirs| dirs.data_dir().join("orpheus"))
+        .map(|dirs| dirs.data_dir().join("lucy"))
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no home directory"))
 }
 
@@ -70,7 +70,7 @@ pub struct ServerArgs {
     pub account: Option<String>,
     /// Overwatch.exe, its installation folder or the official launcher. The
     /// server reads its game data from this install.
-    #[arg(long, env = "ORPHEUS_GAME", value_name = "PATH")]
+    #[arg(long, env = "LUCY_GAME", value_name = "PATH")]
     pub game: Option<PathBuf>,
     /// Game language for play: auto, none, or a code such as enUS.
     #[arg(long, value_name = "CODE")]
@@ -105,7 +105,7 @@ pub struct ServerArgs {
     pub save: Option<PathBuf>,
     /// Open the game's own engine console with Alt+backtick (developer
     /// features on). Commands run on the client only.
-    #[arg(long, env = "ORPHEUS_DEV_CONSOLE", value_parser = clap::builder::FalseyValueParser::new())]
+    #[arg(long, env = "LUCY_DEV_CONSOLE", value_parser = clap::builder::FalseyValueParser::new())]
     pub dev_console: bool,
     /// A Workshop script (its text, as Overwatch copies it): every player
     /// goes from the menu straight into the custom match its settings
@@ -114,7 +114,7 @@ pub struct ServerArgs {
     pub workshop: Option<PathBuf>,
 }
 
-/// What `orpheus` starts: the modes of `ow174/cli.py`, in its menu order.
+/// What `lucy` starts: the modes of `ow174/cli.py`, in its menu order.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum Mode {
     /// The full main menu: the lobby, a local Battle.net and the game with the relay.
@@ -178,11 +178,11 @@ pub struct ModeArgs {
         value_name = "PORT",
         num_args = 0..=1,
         default_missing_value = "21150",
-        env = "ORPHEUS_PROBE"
+        env = "LUCY_PROBE"
     )]
     pub probe: Option<u16>,
     /// Arguments passed to Overwatch.exe as they are, after `--` (for example
-    /// `-- --tank_Console`). They come after the ones orpheus passes itself.
+    /// `-- --tank_Console`). They come after the ones lucy passes itself.
     #[arg(last = true, value_name = "GAME ARGUMENTS")]
     pub game_args: Vec<String>,
 }

@@ -13,7 +13,7 @@ from . import win32 as w
 
 INDEX_DB = paths.INDEX
 IDA_BASE = 0x140000000
-ORPHEUS_BASE = 0x7FF788F10000
+LUCY_BASE = 0x7FF788F10000
 KJS_BASE = 0x7FF6D1220000
 
 
@@ -103,7 +103,7 @@ class Names:
 
     # ---- describing addresses
     def describe(self, va):
-        """{'va', 'module', 'rva', 'func_rva', 'name', 'text'} (+ 'orpheus' for the game).
+        """{'va', 'module', 'rva', 'func_rva', 'name', 'text'} (+ 'lucy' for the game).
         text: 'Name+0xOFF' / 'module!export+0xOFF' / 'module+0xRVA' / '0xVA'."""
         d = self._cache.get(va)
         if d is not None:
@@ -118,7 +118,7 @@ class Names:
             func = pe.function_start(rva) if pe else None
             d = {"va": hx(va), "module": mod.name, "rva": hx(rva)}
             if self.is_game(mod):
-                d["orpheus"] = hx(ORPHEUS_BASE + rva)
+                d["lucy"] = hx(LUCY_BASE + rva)
                 name = self.game_name(rva) if func is None or func != rva else None
                 if name:  # a named global/label exactly here
                     d.update(func_rva=hx(func), name=name, text=name)
@@ -161,7 +161,7 @@ class Names:
     def parse(self, spec):
         """Address spec -> ('rva', game_rva) | ('va', absolute) | ('export', module, name).
         Accepted: a game name (index/docs), 'module!export', a hex number: VA at the IDB base
-        0x140000000, the ORPHEUS base 0x7FF788F10000 or the kjs base 0x7FF6D1220000 (-> RVA), a
+        0x140000000, the Lucy base 0x7FF788F10000 or the kjs base 0x7FF6D1220000 (-> RVA), a
         value below the image size (RVA), anything else an absolute VA; 'va:0x...' forces absolute."""
         s = spec.strip()
         if s.lower().startswith("va:"):
@@ -172,7 +172,7 @@ class Names:
         if re.fullmatch(r"(0x)?[0-9A-Fa-f`]+", s) and (s.lower().startswith("0x") or not self.lookup(s)):
             v = int(s.replace("`", ""), 16)
             size = self.game_pe.size_of_image if self.game_pe else 0x4000000
-            for base in (IDA_BASE, ORPHEUS_BASE, KJS_BASE):
+            for base in (IDA_BASE, LUCY_BASE, KJS_BASE):
                 if base <= v < base + size:
                     return ("rva", v - base)
             if v < size:
@@ -199,7 +199,7 @@ class Names:
     def spec_text(self, parsed):
         if parsed[0] == "rva":
             name = self.game_name(parsed[1])
-            return f"{name or 'rva'} 0x{parsed[1]:X} (orpheus 0x{ORPHEUS_BASE + parsed[1]:X})"
+            return f"{name or 'rva'} 0x{parsed[1]:X} (lucy 0x{LUCY_BASE + parsed[1]:X})"
         if parsed[0] == "va":
             return f"0x{parsed[1]:X}"
         return f"{parsed[1]}!{parsed[2]}"

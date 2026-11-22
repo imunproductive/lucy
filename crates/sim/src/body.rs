@@ -6,8 +6,8 @@
 use std::f64::consts::PI;
 
 use crate::pools::PoolCatalog;
-use orpheus_content::heroes::Hero;
-use orpheus_wire::entity::{
+use lucy_content::heroes::Hero;
+use lucy_wire::entity::{
     Component, ComponentValue, Create, CreateFrame, EntityUpdate, FRAME_ZERO_BACK, LeaseBlock,
     Movement, NO_INPUT, Operation, SkinTheme,
 };
@@ -74,7 +74,7 @@ pub fn owner_pose(source: Movement) -> Movement {
 /// The spring steps and speed are the mover's. Python sent neither: steps 0,
 /// the bottom of their range, on which the other clients put the body's
 /// collision capsule a whole stance and pogo too low, under the floor
-/// (`Posture::spring_steps` in `orpheus-physics`; measured on remote NPC
+/// (`Posture::spring_steps` in `lucy-physics`; measured on remote NPC
 /// bodies, leafall903/ORPHEUS (MIT) `docs/MCCREE_ROLL.txt`). Not checked
 /// with two clients: that an enemy player now blocks the other's walk, and
 /// that the other's own shots now meet his body.
@@ -188,10 +188,10 @@ pub fn body_create(input: BodyCreate<'_>, view: BodyView<'_>, pools: &PoolCatalo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orpheus_content::heroes::SOLDIER;
-    use orpheus_core::bits::{BitReader, BitWriter};
-    use orpheus_script::vitals::{Death, Vitals};
-    use orpheus_wire::entity::{
+    use lucy_content::heroes::SOLDIER;
+    use lucy_core::bits::{BitReader, BitWriter};
+    use lucy_script::vitals::{Death, Vitals};
+    use lucy_wire::entity::{
         CREATE_BASE, WITH_MOVEMENT, WITH_SCALE, WITH_TRANSFORM, create, frame, write_movement,
     };
     use sha2::{Digest, Sha256};
@@ -523,7 +523,7 @@ mod tests {
             &mut BitReader::new(written.as_bytes()),
             written.bit_len(),
         );
-        let at = |origin| orpheus_wire::entity::update(origin, &definition.components).unwrap();
+        let at = |origin| lucy_wire::entity::update(origin, &definition.components).unwrap();
         let components = at(5 + bits.position());
         assert_eq!(bits.left(), components.bit_len());
         same(
@@ -550,10 +550,10 @@ mod tests {
     #[test]
     #[ignore = "requires the derived 104319 hero and graph catalogs"]
     fn all_heroes_match_python_owner_and_observer_create_bytes() {
-        use orpheus_content::heroes::HeroCatalog;
-        use orpheus_script::graph::GraphStore;
+        use lucy_content::heroes::HeroCatalog;
+        use lucy_script::graph::GraphStore;
 
-        let root = orpheus_testkit::runtime_dir();
+        let root = lucy_testkit::runtime_dir();
         let heroes = HeroCatalog::load(root.join("data/game_heroes_174.json")).unwrap();
         let graphs =
             GraphStore::load_runtime(root.join("data"), "game_graphs_174.json.gz").unwrap();

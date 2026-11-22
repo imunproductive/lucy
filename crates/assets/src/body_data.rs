@@ -35,7 +35,7 @@ use std::{
     path::Path,
 };
 
-use orpheus_stu::{Asset, Object, Types, Value};
+use lucy_stu::{Asset, Object, Types, Value};
 use serde_json::{Map, Value as Json, json};
 
 use crate::{

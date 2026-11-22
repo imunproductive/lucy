@@ -150,7 +150,7 @@ pub fn install_root(game: &Path) -> Option<PathBuf> {
 }
 
 fn parse_build_info(text: &str) -> Option<BuildInfo> {
-    let row = orpheus_casc::BuildInfo::parse(text)?;
+    let row = lucy_casc::BuildInfo::parse(text)?;
     Some(BuildInfo {
         version: row.get("Version").map(str::to_owned),
         locales: row

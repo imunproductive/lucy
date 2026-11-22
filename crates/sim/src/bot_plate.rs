@@ -9,7 +9,7 @@
 //! - Component 51, the health pools: three arrays (health, armour,
 //!   shields) of [`POOLS`] parts, then five more fields (`u32`, `u32`, an
 //!   entity, `u8`, `u8`; we never send them). A part is 20 bytes
-//!   ([`orpheus_wire::entity::pool`]): `u32` id (0 = none), `f32` maximum,
+//!   ([`lucy_wire::entity::pool`]): `u32` id (0 = none), `f32` maximum,
 //!   `f32` current, `u32` kind, then four flag bytes. Bytes 17 and 18
 //!   choose the colour: the client draws a part as health, armour or
 //!   shields only with byte 17 set and byte 18 clear, else as over-health
@@ -31,8 +31,8 @@
 
 use std::{collections::BTreeMap, fmt::Write as _};
 
-use orpheus_script::{vitals::Vitals, wire::Value};
-use orpheus_wire::entity::{Component, ComponentValue, POOLS, pool};
+use lucy_script::{vitals::Vitals, wire::Value};
+use lucy_wire::entity::{Component, ComponentValue, POOLS, pool};
 
 /// The three pool arrays of component 51, by their kind.
 pub const ARRAYS: [&str; 3] = ["health", "armour", "shields"];
@@ -873,7 +873,7 @@ impl PlateView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orpheus_wire::entity::{ARMOUR_POOL, HEALTH_POOL};
+    use lucy_wire::entity::{ARMOUR_POOL, HEALTH_POOL};
 
     fn blob(pools: &Component, field: usize) -> Option<[u8; 20]> {
         match pools.fields.get(field) {
@@ -905,7 +905,7 @@ mod tests {
     #[test]
     fn the_tool_changes_each_attribute_of_a_part_on_its_own() {
         let mut vitals = Vitals::new(200.0, 0.0, 0.0);
-        let death = orpheus_script::vitals::Death {
+        let death = lucy_script::vitals::Death {
             time: 0.0,
             frame: 0,
             killer: 0,

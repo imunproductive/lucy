@@ -1,11 +1,11 @@
 //! The map derivations (`game_maps`, `ai_spawners`, the collision caches)
 //! against the runtime pack.
 
-use orpheus_assets::{DERIVATIONS, Difference, Install, diff};
+use lucy_assets::{DERIVATIONS, Difference, Install, diff};
 
 fn check(name: &str) {
-    let install = Install::open(&orpheus_testkit::game_dir(), "enUS").unwrap();
-    let pack = orpheus_testkit::oracle_pack();
+    let install = Install::open(&lucy_testkit::game_dir(), "enUS").unwrap();
+    let pack = lucy_testkit::oracle_pack();
     let derivation = DERIVATIONS
         .iter()
         .find(|derivation| derivation.name == name)
@@ -26,11 +26,11 @@ fn check(name: &str) {
 #[test]
 #[ignore = "requires an Overwatch 1.74 install and a runtime pack (just test-assets <install> <pack>)"]
 fn game_maps_matches_the_pack() {
-    use orpheus_assets::Output;
+    use lucy_assets::Output;
     use serde_json::{Value, json};
 
-    let install = Install::open(&orpheus_testkit::game_dir(), "enUS").unwrap();
-    let pack = orpheus_testkit::oracle_pack();
+    let install = Install::open(&lucy_testkit::game_dir(), "enUS").unwrap();
+    let pack = lucy_testkit::oracle_pack();
     let derivation = DERIVATIONS
         .iter()
         .find(|derivation| derivation.name == "game_maps")
@@ -61,7 +61,7 @@ fn game_maps_matches_the_pack() {
     for map in oracle.as_object_mut().unwrap().values_mut() {
         map.as_object_mut().unwrap().remove("mirrored");
     }
-    let stripped = std::env::temp_dir().join(format!("orpheus-game-maps-{}", std::process::id()));
+    let stripped = std::env::temp_dir().join(format!("lucy-game-maps-{}", std::process::id()));
     let file = stripped.join(&output.path);
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
     std::fs::write(&file, serde_json::to_vec(&oracle).unwrap()).unwrap();
@@ -88,10 +88,10 @@ fn ai_spawners_matches_the_pack() {
 #[test]
 #[ignore = "requires an Overwatch 1.74 install and a runtime pack (just test-assets <install> <pack>)"]
 fn collision_matches_the_pack() {
-    use orpheus_physics::collision::cache::read_cache;
+    use lucy_physics::collision::cache::read_cache;
 
-    let install = Install::open(&orpheus_testkit::game_dir(), "enUS").unwrap();
-    let pack = orpheus_testkit::oracle_pack();
+    let install = Install::open(&lucy_testkit::game_dir(), "enUS").unwrap();
+    let pack = lucy_testkit::oracle_pack();
     let derivation = DERIVATIONS
         .iter()
         .find(|derivation| derivation.name == "collision")
@@ -146,8 +146,8 @@ fn collision_matches_the_pack() {
 #[test]
 #[ignore = "requires an Overwatch 1.74 install and a runtime pack (just test-assets <install> <pack>)"]
 fn collision_props_matches_the_pack() {
-    let install = Install::open(&orpheus_testkit::game_dir(), "enUS").unwrap();
-    let pack = orpheus_testkit::oracle_pack();
+    let install = Install::open(&lucy_testkit::game_dir(), "enUS").unwrap();
+    let pack = lucy_testkit::oracle_pack();
     let derivation = DERIVATIONS
         .iter()
         .find(|derivation| derivation.name == "collision_props")

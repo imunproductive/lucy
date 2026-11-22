@@ -43,9 +43,9 @@ use crate::{
     templates::{IN_CONNECT, RetailTemplates},
     transport::LobbyMessage,
 };
-use orpheus_content::catalog::{ItemDb, UNLOCK_BASE};
-use orpheus_core::guid::parse_guid;
-use orpheus_wire::jam::codec::{
+use lucy_content::catalog::{ItemDb, UNLOCK_BASE};
+use lucy_core::guid::parse_guid;
+use lucy_wire::jam::codec::{
     Fields,
     Value::{self, Array, Float64, Signed, Struct, Unsigned},
 };
@@ -267,7 +267,7 @@ impl Celebrations {
         economy: Arc<Economy>,
     ) -> io::Result<Self> {
         Self::from_readers(
-            orpheus_fixed::RESOURCE_KEYS.as_bytes(),
+            lucy_fixed::RESOURCE_KEYS.as_bytes(),
             BufReader::new(File::open(data_dir.join("extracted_maps.json"))?),
             templates,
             economy,
@@ -646,8 +646,8 @@ mod tests {
 
     use super::*;
     use crate::clock::server_time;
-    use orpheus_content::catalog::Unlock;
-    use orpheus_wire::jam::codec::Schemas;
+    use lucy_content::catalog::Unlock;
+    use lucy_wire::jam::codec::Schemas;
 
     const TRACER: &str = "Tracer's Comic Challenge";
     const TRACER_REWARDS: [u64; 3] = [
@@ -958,7 +958,7 @@ mod tests {
     #[test]
     #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn the_installs_event_boxes_are_pythons() {
-        let data = orpheus_testkit::runtime_dir().join("data");
+        let data = lucy_testkit::runtime_dir().join("data");
         let economy = Arc::new(Economy::load(&data).unwrap());
         let celebrations =
             Celebrations::load(&data, &RetailTemplates::captured(), economy).unwrap();
@@ -1010,7 +1010,7 @@ mod tests {
     #[test]
     #[ignore = "requires the derived 104319 resource catalog and lobby templates"]
     fn login_messages_match_python_for_events_challenges_and_content_key_order() {
-        let data = orpheus_testkit::runtime_dir().join("data");
+        let data = lucy_testkit::runtime_dir().join("data");
         let templates = RetailTemplates::captured();
         let economy = Arc::new(Economy::load(&data).unwrap());
         let celebrations = Celebrations::load(&data, &templates, economy).unwrap();

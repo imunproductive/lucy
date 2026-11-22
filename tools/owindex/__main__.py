@@ -88,7 +88,7 @@ def print_component(idx, c):
 
 
 def print_addr(idx, a):
-    print(f"rva {a['rva']:#x}  orpheus {a['orpheus']:#x}  ida {a['ida']:#x}  kjs {a['kjs']:#x}  name {a['name']}")
+    print(f"rva {a['rva']:#x}  lucy {a['lucy']:#x}  ida {a['ida']:#x}  kjs {a['kjs']:#x}  name {a['name']}")
     if a.get("function"):
         f = a["function"]
         print(f"  function {_va(idx, f['root'])} {f['name'] or ''}  (.pdata {f['begin']:#x}-{f['end']:#x})")

@@ -1,5 +1,5 @@
-"""Starting the game the same way for every owdbg CLI: ORPHEUS `serve` on a temp copy of the user's
-state folder, then Overwatch.debug.exe (windowed) under the debugger with ORPHEUS's relay DLL loaded
+"""Starting the game the same way for every owdbg CLI: Lucy `serve` on a temp copy of the user's
+state folder, then Overwatch.debug.exe (windowed) under the debugger with Lucy's relay DLL loaded
 at the system breakpoint. Everything is terminated on exit (also on Ctrl+C).
 
     parser = argparse.ArgumentParser(); add_session_args(parser)
@@ -21,19 +21,19 @@ from tools import paths
 
 from . import win32 as w
 from .core import Debugger
-from .names import Names, ORPHEUS_BASE
+from .names import Names, LUCY_BASE
 from .pe import open_pe
 
 GAME_DIR = paths.GAME_DIR
 GAME_EXE = paths.GAME_EXE
 SERVER_GAME = GAME_DIR / "Overwatch.exe"  # the server reads its game data from this install
-ORPHEUS_EXE = paths.ORPHEUS_EXE
+LUCY_EXE = paths.LUCY_EXE
 RELAY_DLL = paths.RELAY_DLL
 PROBE_DLL = paths.PROBE_DLL
 RELAY_LOG = RELAY_DLL.parent / "log" / "wfd.log"
 # The state folder each session copies (cache, profiles); OWDBG_STATE_SOURCE names another one, e.g.
 # a folder whose cache this checkout's build derived, so the session doesn't derive it again.
-USER_STATE = Path(os.environ.get("OWDBG_STATE_SOURCE") or Path(os.environ.get("APPDATA", "")) / "orpheus")
+USER_STATE = Path(os.environ.get("OWDBG_STATE_SOURCE") or Path(os.environ.get("APPDATA", "")) / "lucy")
 STATE_ITEMS = ("cache", "profiles", "profile.json")
 GAME_ARGS = ["--BNetServer=127.0.0.1:1119", "--tank_Locale=enUS", "--tank_NoFullScreen=1"]
 LOBBY_PORT = 3724
@@ -52,13 +52,13 @@ def add_session_args(p, duration=None):
     g = p.add_argument_group("session")
     g.add_argument("--exe", help="debug another program instead of the game (no server, no relay)")
     g.add_argument("--exe-args", nargs="*", default=[], help="arguments for --exe")
-    g.add_argument("--no-server", action="store_true", help="do not start ORPHEUS serve (use a running one)")
+    g.add_argument("--no-server", action="store_true", help="do not start Lucy serve (use a running one)")
     g.add_argument("--no-relay", action="store_true", help="do not load owwfd_relay.dll")
     g.add_argument("--probe", type=int, nargs="?", const=21150, metavar="PORT",
                    help="also load owprobe.dll (tools/owprobe), listening on 127.0.0.1:PORT (default 21150)")
-    g.add_argument("--account", default="Researcher", help="ORPHEUS account (default Researcher)")
+    g.add_argument("--account", default="Researcher", help="Lucy account (default Researcher)")
     g.add_argument("--game-arg", action="append", default=[], help="extra game argument (repeatable)")
-    g.add_argument("--keep-state", action="store_true", help="keep the temp ORPHEUS state folder (logs)")
+    g.add_argument("--keep-state", action="store_true", help="keep the temp Lucy state folder (logs)")
     g.add_argument("--duration", type=float, default=duration,
                    help="seconds to run before terminating everything" + (f" (default {duration})" if duration else ""))
     g.add_argument("--no-login", action="store_true",
@@ -76,10 +76,10 @@ def port_open(port, host="127.0.0.1"):
 
 
 class Server:
-    """ORPHEUS `serve` with a temp copy of the user's state folder (never the user's own)."""
+    """Lucy `serve` with a temp copy of the user's state folder (never the user's own)."""
 
     def __init__(self, account="Researcher", log=print, keep_state=False, env=None):
-        """env: the server's environment (None: ours), e.g. dict(os.environ, ORPHEUS_DEBUG_SEND="1")
+        """env: the server's environment (None: ours), e.g. dict(os.environ, LUCY_DEBUG_SEND="1")
         for the marker endpoint (owdbg.msg)."""
         self.account, self.log, self.keep_state, self.env = account, log, keep_state, env
         self.proc = None
@@ -90,20 +90,20 @@ class Server:
         # A derivation version bump makes the first start re-derive the copied cache (minutes).
         timeout = timeout or float(os.environ.get("OWDBG_SERVER_TIMEOUT", "600"))
         if port_open(LOBBY_PORT):
-            raise RuntimeError(f"TCP {LOBBY_PORT} is already listening (another ORPHEUS server?); "
+            raise RuntimeError(f"TCP {LOBBY_PORT} is already listening (another Lucy server?); "
                                "stop it or pass --no-server")
-        self.state = Path(tempfile.mkdtemp(prefix="owdbg-orpheus-"))
+        self.state = Path(tempfile.mkdtemp(prefix="owdbg-lucy-"))
         for item in STATE_ITEMS:
             src = USER_STATE / item
             if src.is_dir():
                 shutil.copytree(src, self.state / item)
             elif src.is_file():
                 shutil.copy2(src, self.state / item)
-        cmd = [str(ORPHEUS_EXE), "serve", "--state", str(self.state), "--game", str(SERVER_GAME),
+        cmd = [str(LUCY_EXE), "serve", "--state", str(self.state), "--game", str(SERVER_GAME),
                "--account", self.account]
         self.log(f"[owdbg] server: {' '.join(cmd)}")
         self.out = open(self.state / "serve.log", "wb")
-        self.proc = subprocess.Popen(cmd, cwd=str(ORPHEUS_EXE.parent), stdout=self.out, stderr=subprocess.STDOUT,
+        self.proc = subprocess.Popen(cmd, cwd=str(LUCY_EXE.parent), stdout=self.out, stderr=subprocess.STDOUT,
                                      stdin=subprocess.DEVNULL, env=self.env,
                                      creationflags=w.CREATE_NEW_PROCESS_GROUP | w.CREATE_NO_WINDOW)
         # Kill the server with us even if Python dies.
@@ -111,12 +111,12 @@ class Server:
         end = time.monotonic() + timeout
         while time.monotonic() < end:
             if self.proc.poll() is not None:
-                raise RuntimeError(f"orpheus serve exited with {self.proc.returncode}; log {self.state / 'serve.log'}")
+                raise RuntimeError(f"lucy serve exited with {self.proc.returncode}; log {self.state / 'serve.log'}")
             if port_open(LOBBY_PORT):
                 self.log(f"[owdbg] server ready (TCP {LOBBY_PORT}), state {self.state}")
                 return
             time.sleep(0.25)
-        raise RuntimeError(f"orpheus serve did not listen on {LOBBY_PORT} within {timeout} s")
+        raise RuntimeError(f"lucy serve did not listen on {LOBBY_PORT} within {timeout} s")
 
     def stop(self):
         if self.proc is not None and self.proc.poll() is None:
@@ -257,12 +257,12 @@ class Session:
                 dbg.main.base + dbg.main.pe.entry_rva, lambda hit: dbg.hw_active() and dbg.apply_hw(), oneshot=True))
         env = None
         if self.is_game and getattr(self.args, "probe", None):
-            env = dict(os.environ, ORPHEUS_PROBE_PORT=str(self.args.probe),
-                       ORPHEUS_PROBE_LOG=str(PROBE_DLL.parent / "log" / "probe.log"))
+            env = dict(os.environ, LUCY_PROBE_PORT=str(self.args.probe),
+                       LUCY_PROBE_LOG=str(PROBE_DLL.parent / "log" / "probe.log"))
         pid = dbg.create(str(self.exe), args, cwd, env=env)
         self.log(f"[owdbg] started {self.exe.name} pid {pid}: {' '.join(args)}")
         dbg.on("create_process", lambda: self.log(
-            f"[owdbg] image base 0x{dbg.main.base:X} (ORPHEUS base 0x{ORPHEUS_BASE:X})"))
+            f"[owdbg] image base 0x{dbg.main.base:X} (Lucy base 0x{LUCY_BASE:X})"))
         return pid
 
     def run(self, duration=None, status_every=15.0):
@@ -349,13 +349,13 @@ class Session:
 
     @property
     def logged_in(self):
-        """The relay piped a Battle.net stream to ORPHEUS (set by the auto-login timer)."""
+        """The relay piped a Battle.net stream to Lucy (set by the auto-login timer)."""
         return self._login["done"]
 
     def _auto_login(self):
         """The client's first Battle.net stream usually fails ("SORRY, WE WERE UNABLE TO LOG YOU
         IN. DISCONNECTED"): the relay swaps it but the client never sends on it. Clicking LOGIN
-        makes a new stream that the relay pipes to ORPHEUS. Click whenever the yellow LOGIN button
+        makes a new stream that the relay pipes to Lucy. Click whenever the yellow LOGIN button
         shows until the relay reports `relay CONNECTED` (every 10 s, at most 8 clicks; clicks in the
         first ~30 s after the failed attempt are ignored by the client)."""
         st = self._login
@@ -364,7 +364,7 @@ class Session:
         text = self.relay_log()
         if "relay CONNECTED" in text:
             st["done"] = True
-            self.log(f"[owdbg] relay connected to ORPHEUS (t={self.dbg.elapsed:.1f}s, {st['clicks']} LOGIN clicks)")
+            self.log(f"[owdbg] relay connected to Lucy (t={self.dbg.elapsed:.1f}s, {st['clicks']} LOGIN clicks)")
             return
         first = next((line for line in text.splitlines() if "BYTE-STREAM" in line), None)
         if first and "port=1119" not in first and not st.get("warned"):
@@ -372,7 +372,7 @@ class Session:
             # Battle.net stream, no later stream is swapped and the login cannot work.
             st["warned"] = True
             self.log(f"[owdbg] WARNING: the relay swapped a non-Battle.net stream first ({first.strip()}); "
-                     "the login will fail in this run (ORPHEUS relay race): restart")
+                     "the login will fail in this run (Lucy relay race): restart")
         if st["clicks"] >= 8 or self.dbg.elapsed < st["next"]:
             return
         hwnd = self.window()

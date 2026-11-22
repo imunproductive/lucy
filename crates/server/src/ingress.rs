@@ -2,10 +2,10 @@
 
 use std::{collections::HashMap, error::Error, fmt, time::Duration};
 
-use orpheus_core::bits::BitReader;
-use orpheus_wire::commands::{InputError, InputRecord, read_input};
-use orpheus_wire::jam::codec::{Fields, Schemas, Value};
-use orpheus_wire::messages::{ChannelError, Message, read_channel};
+use lucy_core::bits::BitReader;
+use lucy_wire::commands::{InputError, InputRecord, read_input};
+use lucy_wire::jam::codec::{Fields, Schemas, Value};
+use lucy_wire::messages::{ChannelError, Message, read_channel};
 
 const PONG: u32 = 20306;
 const PING_INDEX: u32 = 0x78;
@@ -16,9 +16,9 @@ pub enum MessageKind {
     Ping,
     MapLoaded,
     GameMessage,
-    /// A communication wheel choice (`orpheus_sim::wheel`).
+    /// A communication wheel choice (`lucy_sim::wheel`).
     CommunicationAction,
-    /// The client's hero settings (`orpheus_content::hero_settings`).
+    /// The client's hero settings (`lucy_content::hero_settings`).
     HeroSettings,
     Other,
 }
@@ -29,8 +29,8 @@ impl From<u32> for MessageKind {
             21610 => Self::Ping,
             21601 | 21602 => Self::MapLoaded,
             21616 => Self::GameMessage,
-            orpheus_sim::wheel::COMMUNICATION_ACTION => Self::CommunicationAction,
-            orpheus_content::hero_settings::HERO_SETTINGS => Self::HeroSettings,
+            lucy_sim::wheel::COMMUNICATION_ACTION => Self::CommunicationAction,
+            lucy_content::hero_settings::HERO_SETTINGS => Self::HeroSettings,
             _ => Self::Other,
         }
     }
@@ -224,8 +224,8 @@ impl MapReadiness {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orpheus_core::bits::BitWriter;
-    use orpheus_wire::messages::{encode, write_channel};
+    use lucy_core::bits::BitWriter;
+    use lucy_wire::messages::{encode, write_channel};
 
     fn schemas() -> Schemas {
         Schemas::from_json(

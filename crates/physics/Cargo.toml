@@ -1,5 +1,5 @@
 [package]
-name = "orpheus-physics"
+name = "lucy-physics"
 description = "Collision, character movement and AI navigation for retail build 104319"
 version.workspace = true
 edition.workspace = true
@@ -11,8 +11,8 @@ license.workspace = true
 flate2.workspace = true
 indexmap.workspace = true
 lzma-rust2.workspace = true
-orpheus-core.workspace = true
-orpheus-wire.workspace = true
+lucy-core.workspace = true
+lucy-wire.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
@@ -22,7 +22,7 @@ fixtures = []
 
 [dev-dependencies]
 # The integration tests use the fixture defaults (`MoverSettings::default`).
-orpheus-physics = { path = ".", features = ["fixtures"] }
-orpheus-testkit.workspace = true
+lucy-physics = { path = ".", features = ["fixtures"] }
+lucy-testkit.workspace = true
 sha2.workspace = true
 tempfile.workspace = true

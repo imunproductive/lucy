@@ -3,8 +3,8 @@
 //! what `0C90` rid220 kept.
 
 use super::*;
-use orpheus_content::{heroes::ANA, maps::SpawnChoice};
-use orpheus_script::controller::HeroSwitch;
+use lucy_content::{heroes::ANA, maps::SpawnChoice};
+use lucy_script::controller::HeroSwitch;
 
 const PLAYER: u32 = 0xa000_0100;
 
@@ -17,7 +17,7 @@ const PLAYER: u32 = 0xa000_0100;
 #[test]
 #[ignore = "requires a derived 104319 pack"]
 fn a_hero_switch_takes_its_notice_from_the_controller_graph() {
-    let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
     let scene = assets.prepare(GameMap::practice_range()).unwrap();
     assert!(scene.switch_notices());
     let card = PlayerCard::default();

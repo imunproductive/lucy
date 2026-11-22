@@ -9,7 +9,7 @@ use serde_json::{Map, Value as Json, json};
 
 use super::api::{Api, ApiError, ApiResult};
 use crate::lobby::{Lobby, social::Turn};
-use orpheus_lobby::social::{DAMAGE_SLOT, PartyId, SUPPORT_SLOT, TANK_SLOT, messages};
+use lucy_lobby::social::{DAMAGE_SLOT, PartyId, SUPPORT_SLOT, TANK_SLOT, messages};
 
 const BOT_GROUP_NAME: &str = "Bot's group";
 const QUICK_PLAY_ROLE_QUEUE: u64 = 0x0630_0000_0000_00ed;

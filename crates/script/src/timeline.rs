@@ -23,7 +23,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
-pub const FRAME_MS: u64 = orpheus_core::tick::TICK_PERIOD.as_millis() as u64;
+pub const FRAME_MS: u64 = lucy_core::tick::TICK_PERIOD.as_millis() as u64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ButtonEdge {

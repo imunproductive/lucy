@@ -81,7 +81,7 @@ use std::{
     path::Path,
 };
 
-use orpheus_stu::{Asset, Object, Value};
+use lucy_stu::{Asset, Object, Value};
 use serde_json::{Map, json};
 
 use crate::{

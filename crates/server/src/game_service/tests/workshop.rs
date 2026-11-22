@@ -6,12 +6,12 @@
 
 use super::*;
 use crate::workshop_match::{ScriptMatch, SettingNames};
-use orpheus_content::{
+use lucy_content::{
     maps::{GameModes, MODES_FILE, MapCatalog},
     parameters::PICK_HERO,
 };
-use orpheus_script::wire::read_full_head;
-use orpheus_sim::scene_assets::SceneAssets;
+use lucy_script::wire::read_full_head;
+use lucy_sim::scene_assets::SceneAssets;
 
 const DOOMFIST: u64 = 0x02e0_0000_0000_012f;
 const CREATE_HUD_TEXT: u16 = 0x1d8a;
@@ -27,11 +27,10 @@ const RULESET: u64 = 0x0fd0_8000_0000_0001;
 #[test]
 #[ignore = "requires an Overwatch 1.74 install and the DPK archive (just test-dpk <install> <archive>)"]
 fn dpk_archive_c32s2_hosted_match_shows_a_hud_text_on_the_mode_entity() {
-    let runtime = orpheus_testkit::runtime_dir();
+    let runtime = lucy_testkit::runtime_dir();
     let data = runtime.join("data");
-    let catalog = Arc::new(orpheus_workshop::Catalog::load(&data).unwrap());
-    let path =
-        orpheus_testkit::dpk_archive().join("workshop.codes/C32S2_OG_doom_parkur_hanamura.txt");
+    let catalog = Arc::new(lucy_workshop::Catalog::load(&data).unwrap());
+    let path = lucy_testkit::dpk_archive().join("workshop.codes/C32S2_OG_doom_parkur_hanamura.txt");
     let script = ScriptMatch::parse(
         &std::fs::read_to_string(path).unwrap(),
         &catalog,
@@ -53,7 +52,7 @@ fn dpk_archive_c32s2_hosted_match_shows_a_hud_text_on_the_mode_entity() {
     let assets = Arc::new(
         SceneAssets::load(&runtime)
             .unwrap()
-            .with_collision_build(collision_build(orpheus_testkit::game_dir())),
+            .with_collision_build(collision_build(lucy_testkit::game_dir())),
     );
     assets.graphs().add_match_ruleset(
         RULESET,
@@ -160,7 +159,7 @@ fn dpk_archive_c32s2_hosted_match_shows_a_hud_text_on_the_mode_entity() {
     });
     // "Player HUD" waits at most 2 + 2 s before its texts. The mode
     // entity's frame (the rules' global arrays and actions, about 10 KB)
-    // comes in parts the client joins (`orpheus_sim::mode_view`).
+    // comes in parts the client joins (`lucy_sim::mode_view`).
     let graphs = assets.graphs();
     let mode_chunks = |watcher: &Watcher| {
         joined_chunks(
@@ -288,16 +287,12 @@ rule("Team 1 goes to point A")
 /// rule teleports him to point A, out of his room: the room's search
 /// drops him and lets its `0723` go, so the heal stops.
 #[test]
-#[ignore = "requires an Overwatch 1.74 install (ORPHEUS_GAME_DIR)"]
+#[ignore = "requires an Overwatch 1.74 install (LUCY_GAME_DIR)"]
 fn a_workshop_match_keeps_each_team_in_its_own_spawn_room() {
-    let runtime = orpheus_testkit::runtime_dir();
+    let runtime = lucy_testkit::runtime_dir();
     let data = runtime.join("data");
-    let catalog = Arc::new(orpheus_workshop::Catalog::load(&data).unwrap());
-    let logic = Arc::new(
-        orpheus_workshop::parse(ROOM_TELEPORT, &catalog)
-            .unwrap()
-            .logic,
-    );
+    let catalog = Arc::new(lucy_workshop::Catalog::load(&data).unwrap());
+    let logic = Arc::new(lucy_workshop::parse(ROOM_TELEPORT, &catalog).unwrap().logic);
     let maps = MapCatalog::load(&data)
         .unwrap()
         .with_modes(GameModes::load(data.join(MODES_FILE)).unwrap());
@@ -309,7 +304,7 @@ fn a_workshop_match_keeps_each_team_in_its_own_spawn_room() {
     let map = maps
         .game_map(
             hanamura.guid,
-            orpheus_sim::match_flow::ASSAULT,
+            lucy_sim::match_flow::ASSAULT,
             "Assault",
             false,
             &[1, 1],
@@ -318,7 +313,7 @@ fn a_workshop_match_keeps_each_team_in_its_own_spawn_room() {
     let assets = Arc::new(
         SceneAssets::load(&runtime)
             .unwrap()
-            .with_collision_build(collision_build(orpheus_testkit::game_dir())),
+            .with_collision_build(collision_build(lucy_testkit::game_dir())),
     );
     let schemas = Arc::new(Schemas::game());
     let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
@@ -761,15 +756,11 @@ rule("Received healing")
 #[test]
 #[ignore = "requires an Overwatch 1.74 install (just test-game <install>)"]
 fn a_workshop_rule_runs_on_each_player_event() {
-    use orpheus_wire::commands::SECONDARY;
-    let runtime = orpheus_testkit::runtime_dir();
+    use lucy_wire::commands::SECONDARY;
+    let runtime = lucy_testkit::runtime_dir();
     let data = runtime.join("data");
-    let catalog = Arc::new(orpheus_workshop::Catalog::load(&data).unwrap());
-    let logic = Arc::new(
-        orpheus_workshop::parse(PLAYER_EVENTS, &catalog)
-            .unwrap()
-            .logic,
-    );
+    let catalog = Arc::new(lucy_workshop::Catalog::load(&data).unwrap());
+    let logic = Arc::new(lucy_workshop::parse(PLAYER_EVENTS, &catalog).unwrap().logic);
     let maps = MapCatalog::load(&data)
         .unwrap()
         .with_modes(GameModes::load(data.join(MODES_FILE)).unwrap());
@@ -781,7 +772,7 @@ fn a_workshop_rule_runs_on_each_player_event() {
     let map = maps
         .game_map(
             hanamura.guid,
-            orpheus_sim::match_flow::SKIRMISH,
+            lucy_sim::match_flow::SKIRMISH,
             "Assault",
             false,
             &[1, 1],
@@ -791,8 +782,8 @@ fn a_workshop_rule_runs_on_each_player_event() {
     // (`refs/reports/Doomfist.md` §1).
     let mut assets = SceneAssets::load(&runtime)
         .unwrap()
-        .with_collision_build(collision_build(orpheus_testkit::game_dir()));
-    assets.set_player_unknowns(orpheus_script::vm::Unknowns::Tolerate);
+        .with_collision_build(collision_build(lucy_testkit::game_dir()));
+    assets.set_player_unknowns(lucy_script::vm::Unknowns::Tolerate);
     let assets = Arc::new(assets);
     let schemas = Arc::new(Schemas::game());
     let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
@@ -888,7 +879,7 @@ fn a_workshop_rule_runs_on_each_player_event() {
                 body.workshop
                     .iter()
                     .map(|value| {
-                        use orpheus_script::wire::Value as ScriptValue;
+                        use lucy_script::wire::Value as ScriptValue;
                         match value {
                             ScriptValue::Float(value) => *value,
                             ScriptValue::Integer(value) => *value as f64,
@@ -998,10 +989,10 @@ fn a_workshop_rule_runs_on_each_player_event() {
 fn a_workshop_dummy_bot_joins_and_leaves() {
     const ANA: u64 = 0x02e0_0000_0000_013b;
     const RULES: &str = "rule(\"bot\")\n{\n\tevent\n\t{\n\t\tOngoing - Global;\n\t}\n\n\tactions\n\t{\n\t\tWait(1, Ignore Condition);\n\t\tCreate Dummy Bot(Hero(Ana), Team 2, 0, Vector(-4.265, 1.156, 3.078), Vector(0, 0, 1));\n\t\tWait(2, Ignore Condition);\n\t\tDestroy Dummy Bot(Team 2, 0);\n\t}\n}\n";
-    let runtime = orpheus_testkit::runtime_dir();
+    let runtime = lucy_testkit::runtime_dir();
     let data = runtime.join("data");
-    let catalog = Arc::new(orpheus_workshop::Catalog::load(&data).unwrap());
-    let logic = Arc::new(orpheus_workshop::parse(RULES, &catalog).unwrap().logic);
+    let catalog = Arc::new(lucy_workshop::Catalog::load(&data).unwrap());
+    let logic = Arc::new(lucy_workshop::parse(RULES, &catalog).unwrap().logic);
     let maps = MapCatalog::load(&data)
         .unwrap()
         .with_modes(GameModes::load(data.join(MODES_FILE)).unwrap());
@@ -1013,7 +1004,7 @@ fn a_workshop_dummy_bot_joins_and_leaves() {
     let map = maps
         .game_map(
             hanamura.guid,
-            orpheus_sim::match_flow::SKIRMISH,
+            lucy_sim::match_flow::SKIRMISH,
             "Assault",
             false,
             &[1, 1],
@@ -1021,8 +1012,8 @@ fn a_workshop_dummy_bot_joins_and_leaves() {
         .expect("Hanamura in Assault");
     let mut assets = SceneAssets::load(&runtime)
         .unwrap()
-        .with_collision_build(collision_build(orpheus_testkit::game_dir()));
-    assets.set_player_unknowns(orpheus_script::vm::Unknowns::Tolerate);
+        .with_collision_build(collision_build(lucy_testkit::game_dir()));
+    assets.set_player_unknowns(lucy_script::vm::Unknowns::Tolerate);
     let assets = Arc::new(assets);
     let schemas = Arc::new(Schemas::game());
     let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
@@ -1102,9 +1093,9 @@ fn a_workshop_dummy_bot_joins_and_leaves() {
 /// plays here, or its rules didn't run, its hero didn't spawn, or a value
 /// was unsupported or the engine faulted.
 fn survey_script(path: &std::path::Path) -> Result<String, String> {
-    let runtime = orpheus_testkit::runtime_dir();
+    let runtime = lucy_testkit::runtime_dir();
     let data = runtime.join("data");
-    let catalog = Arc::new(orpheus_workshop::Catalog::load(&data).unwrap());
+    let catalog = Arc::new(lucy_workshop::Catalog::load(&data).unwrap());
     let script = ScriptMatch::parse(
         &std::fs::read_to_string(path).unwrap(),
         &catalog,
@@ -1161,8 +1152,8 @@ fn survey_script(path: &std::path::Path) -> Result<String, String> {
     // Workshop's.
     let mut assets = SceneAssets::load(&runtime)
         .unwrap()
-        .with_collision_build(collision_build(orpheus_testkit::game_dir()));
-    assets.set_player_unknowns(orpheus_script::vm::Unknowns::Tolerate);
+        .with_collision_build(collision_build(lucy_testkit::game_dir()));
+    assets.set_player_unknowns(lucy_script::vm::Unknowns::Tolerate);
     let assets = Arc::new(assets);
     assets.graphs().add_match_ruleset(
         RULESET,
@@ -1261,7 +1252,7 @@ fn survey_script(path: &std::path::Path) -> Result<String, String> {
 #[test]
 #[ignore = "slow: requires an Overwatch 1.74 install and the DPK archive (just test-dpk <install> <archive>)"]
 fn slow_dpk_archive_scripts_run_in_a_hosted_match() {
-    let archive = orpheus_testkit::dpk_archive();
+    let archive = lucy_testkit::dpk_archive();
     let scripts = [
         "workshop.codes/C32S2_OG_doom_parkur_hanamura.txt",
         "workshop.codes/7E6PK_Doomfist_Parkour_map_generator_Beta_by_nanofanes_2272.txt",

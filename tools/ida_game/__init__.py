@@ -2,7 +2,7 @@
 
     from tools.ida_game import open_game_idb
     with open_game_idb(timeout=1800) as idb:
-        print(idb.decompile(0x7FF789BE27C0))      # RVA, ORPHEUS VA (0x7FF788F10000) or IDB VA (0x140000000)
+        print(idb.decompile(0x7FF789BE27C0))      # RVA, Lucy VA (0x7FF788F10000) or IDB VA (0x140000000)
         idb.func(0xCD27C0); idb.xrefs_to(...); idb.callees(...); idb.disasm(..., 20)
         idb.decompile(0x7FF7893EC2A1, define=True)  # no function there yet: define one (in memory)
         idb.define(x)                              # the same without decompiling: start VA or None
@@ -12,7 +12,7 @@
 Batch from the shell: `python -m tools.ida_game.decompile <addr> [<addr> ...] [--define] [--out F]`.
 
 Addresses: every method accepts an RVA (< 0x140000000), a VA at the database base 0x7FF788F10000
-(= ORPHEUS / IDA-questions.md addresses) or a VA of the user's IDB at 0x140000000. Results give `rva`
+(= Lucy / IDA-questions.md addresses) or a VA of the user's IDB at 0x140000000. Results give `rva`
 and `va` (database base) for each address.
 
 define(): the code holding x becomes a function: from its .pdata entry, else from the nearest

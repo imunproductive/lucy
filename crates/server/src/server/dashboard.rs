@@ -20,7 +20,7 @@ use serde_json::{Map, Value as Json, json};
 use tiny_http::{Header, Method, Request, Response, Server as HttpServer};
 
 use api::{Api, ApiError, ApiResult};
-use orpheus_lobby::{
+use lucy_lobby::{
     accounts::{Account, Accounts},
     clock::Clock,
     collection::Collection,
@@ -78,7 +78,7 @@ pub struct DashboardParts {
     pub(crate) lobby: Option<Arc<crate::lobby::Lobby>>,
     /// The lobby's clock: the uptime is its time.
     pub clock: Clock,
-    /// The marker message routes (`ORPHEUS_DEBUG_SEND=1`, `debug.rs`).
+    /// The marker message routes (`LUCY_DEBUG_SEND=1`, `debug.rs`).
     pub debug_send: bool,
 }
 
@@ -94,7 +94,7 @@ impl Dashboard {
         let requests = Arc::clone(&http);
         let port = addr.port();
         let worker = thread::Builder::new()
-            .name("orpheus-dashboard".into())
+            .name("lucy-dashboard".into())
             .spawn(move || {
                 for request in requests.incoming_requests() {
                     let api = Api {
@@ -369,8 +369,8 @@ fn percent_decode(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orpheus_content::catalog::ItemDb;
-    use orpheus_lobby::templates::RetailTemplates;
+    use lucy_content::catalog::ItemDb;
+    use lucy_lobby::templates::RetailTemplates;
     use std::{io::Write, net::TcpStream};
 
     fn request(addr: SocketAddr, method: &str, path: &str, body: &str) -> (u16, String) {

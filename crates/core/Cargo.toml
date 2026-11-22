@@ -1,5 +1,5 @@
 [package]
-name = "orpheus-core"
+name = "lucy-core"
 description = "Shared primitives for retail build 104319: GUID text, bit streams and the game tick"
 version.workspace = true
 edition.workspace = true

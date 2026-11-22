@@ -1,19 +1,19 @@
 use super::*;
 use crate::instance::TOURNAMENT_QUANTA;
-use orpheus_physics::mover::sample_movement_flags;
-use orpheus_physics::{
+use lucy_physics::mover::sample_movement_flags;
+use lucy_physics::{
     collision::index::TriangleIndex, contact::world::ContactWorld, mover::settings::MoverSettings,
 };
-use orpheus_script::{
+use lucy_script::{
     target_tags::TargetTagLists,
     vm::{Site, TargetTagEffect, World},
     wire::Value,
 };
-use orpheus_wire::entity::ComponentValue::U32Array;
+use lucy_wire::entity::ComponentValue::U32Array;
 
 #[test]
 fn player_natives_follow_the_verified_owner_and_override_shapes() {
-    use orpheus_script::expr::EvalError;
+    use lucy_script::expr::EvalError;
     use serde_json::json;
 
     let spawn = fixture_body_factory().1;
@@ -75,7 +75,7 @@ fn player_natives_follow_the_verified_owner_and_override_shapes() {
     // (leafall903/ORPHEUS, commit c239a84; Python answered null).
     let branch = json!({"$":"STU_A77AC2AC","m_EE729DCB":0});
     assert_eq!(evaluate(&mut runtime, &branch), Ok(Value::Bool(false)));
-    runtime.world.mode = orpheus_content::maps::TUTORIAL_MODE;
+    runtime.world.mode = lucy_content::maps::TUTORIAL_MODE;
     assert_eq!(evaluate(&mut runtime, &branch), Ok(Value::Bool(true)));
 }
 
@@ -199,7 +199,7 @@ fn target_tag_effects_keep_unknown_tags_and_replacement_independent() {
 
 #[test]
 fn health_queries_read_the_authoritative_vitals() {
-    use orpheus_script::expr::EvalError;
+    use lucy_script::expr::EvalError;
     use serde_json::json;
 
     let spawn = fixture_body_factory().1;
@@ -215,7 +215,7 @@ fn health_queries_read_the_authoritative_vitals() {
     assert_eq!(evaluate(&mut runtime, &maximum), Ok(Value::Float(200.0)));
     runtime.world.vitals.damage(
         75.0,
-        orpheus_script::vitals::Death {
+        lucy_script::vitals::Death {
             time: 0.0,
             frame: spawn.frame,
             killer: spawn.entity + 1,
@@ -245,7 +245,7 @@ fn health_queries_read_the_authoritative_vitals() {
 
 #[test]
 fn typed_health_queries_read_the_live_distribution_after_damage() {
-    use orpheus_script::expr::EvalError;
+    use lucy_script::expr::EvalError;
     use serde_json::json;
 
     let (_, spawn) = fixture_body_factory();
@@ -276,7 +276,7 @@ fn typed_health_queries_read_the_live_distribution_after_damage() {
     );
     factory.pools = Some(FALLBACK_POOLS);
     let mut single = factory.start(spawn).unwrap();
-    let hit = orpheus_script::vitals::Death {
+    let hit = lucy_script::vitals::Death {
         time: 0.0,
         frame: spawn.frame,
         killer: spawn.entity + 1,
@@ -336,7 +336,7 @@ fn typed_health_queries_read_the_live_distribution_after_damage() {
 
 #[test]
 fn entity_relations_resolve_only_the_active_player_pair() {
-    use orpheus_script::expr::EvalError;
+    use lucy_script::expr::EvalError;
     use serde_json::json;
 
     let (_, mut spawn) = fixture_body_factory();
@@ -574,7 +574,7 @@ fn posed_volley_keeps_the_authored_shot_frame_and_drains_unposed_reports() {
     .unwrap();
     let fire = Command {
         frame: 101,
-        buttons: orpheus_wire::commands::FIRE,
+        buttons: lucy_wire::commands::FIRE,
         ..Command::default()
     };
     runtime.advance(fire, &mover, BodyStep::Posed).unwrap();
@@ -605,7 +605,7 @@ fn posed_volley_keeps_the_authored_shot_frame_and_drains_unposed_reports() {
         .unwrap();
     assert_eq!(
         runtime.snapshot().unwrap().instances[&1].states[&0].kind,
-        orpheus_script::vm::StateKind::LogicalButton { down: false }
+        lucy_script::vm::StateKind::LogicalButton { down: false }
     );
     let timer = Command {
         frame: 107,
@@ -633,7 +633,7 @@ fn secondary_volley_uses_authored_projectile_and_owner_lease() {
     .unwrap();
     let fire = Command {
         frame: spawn.frame + 1,
-        buttons: orpheus_wire::commands::SECONDARY,
+        buttons: lucy_wire::commands::SECONDARY,
         yaw: 16384,
         ..Command::default()
     };
@@ -689,7 +689,7 @@ fn secondary_volley_uses_authored_projectile_and_owner_lease() {
 /// frame when predicted (up to 7 a shot), else for its damage alone.
 #[test]
 fn projectile_volleys_fly_leased_for_damage_alone_or_not_at_all() {
-    use orpheus_script::weapons::STICK_FUSE;
+    use lucy_script::weapons::STICK_FUSE;
     use serde_json::json;
 
     let (_, spawn) = fixture_body_factory();
@@ -703,7 +703,7 @@ fn projectile_volleys_fly_leased_for_damage_alone_or_not_at_all() {
     .unwrap();
     let fire = Command {
         frame: spawn.frame + 1,
-        buttons: orpheus_wire::commands::SECONDARY,
+        buttons: lucy_wire::commands::SECONDARY,
         ..Command::default()
     };
     let shoot = |fields: Json| {
@@ -850,7 +850,7 @@ fn a_growing_spread_turns_each_shot_inside_its_cone() {
     .unwrap();
     let fire = Command {
         frame: 101,
-        buttons: orpheus_wire::commands::FIRE,
+        buttons: lucy_wire::commands::FIRE,
         yaw: 12,
         pitch: 30,
         ..Command::default()
@@ -893,7 +893,7 @@ fn a_spawning_canister_flies_its_arc_and_names_its_field() {
     .unwrap();
     let fire = Command {
         frame: spawn.frame + 1,
-        buttons: orpheus_wire::commands::SECONDARY,
+        buttons: lucy_wire::commands::SECONDARY,
         ..Command::default()
     };
     let mut fields = fixture_projectile_fields(0.0);
@@ -918,11 +918,11 @@ fn a_spawning_canister_flies_its_arc_and_names_its_field() {
 #[test]
 #[ignore = "requires the derived 104319 statescript catalog"]
 fn prepared_soldier_starts_the_reference_body_and_weapon_tree() {
-    use orpheus_content::maps::GameMap;
-    use orpheus_core::tick::FIRST_TICK;
-    use orpheus_script::{codecs::PayloadMode, vm::StateKind};
+    use lucy_content::maps::GameMap;
+    use lucy_core::tick::FIRST_TICK;
+    use lucy_script::{codecs::PayloadMode, vm::StateKind};
 
-    let root = orpheus_testkit::runtime_dir();
+    let root = lucy_testkit::runtime_dir();
     let graphs =
         Arc::new(GraphStore::load_runtime(root.join("data"), "game_graphs_174.json.gz").unwrap());
     let pools = crate::pools::PoolCatalog::from_graphs(&graphs)
@@ -930,9 +930,9 @@ fn prepared_soldier_starts_the_reference_body_and_weapon_tree() {
         .hero_pools(SOLDIER)
         .unwrap();
     let body = &graphs.bodies()[&0x0400_0000_0000_03cf];
-    let roots = orpheus_script::vm::player_roots(body, &graphs).unwrap();
+    let roots = lucy_script::vm::player_roots(body, &graphs).unwrap();
     let health = pools.total();
-    let variables = orpheus_script::vm::player_entity_variables(body, health, health);
+    let variables = lucy_script::vm::player_entity_variables(body, health, health);
     let mut world = {
         let mut world = PlayerWorld::new(
             Arc::clone(&graphs),
@@ -1072,7 +1072,7 @@ fn prepared_soldier_starts_the_reference_body_and_weapon_tree() {
     );
     let watch = &snapshot.instances[&13].states[&21];
     assert!(watch.active);
-    assert_eq!(watch.kind, orpheus_script::vm::StateKind::Watch);
+    assert_eq!(watch.kind, lucy_script::vm::StateKind::Watch);
     assert!(
         !snapshot
             .diagnostics
@@ -1083,7 +1083,7 @@ fn prepared_soldier_starts_the_reference_body_and_weapon_tree() {
     for (instance, state) in [(10, 42), (10, 43), (11, 83), (13, 138), (13, 139), (14, 30)] {
         let controller = &snapshot.instances[&instance].states[&state];
         assert!(controller.active);
-        assert_eq!(controller.kind, orpheus_script::vm::StateKind::Plain);
+        assert_eq!(controller.kind, lucy_script::vm::StateKind::Plain);
     }
     let tips = &snapshot.instances[&4].states[&0];
     assert!(tips.active);
@@ -1213,7 +1213,7 @@ fn prepared_soldier_starts_the_reference_body_and_weapon_tree() {
     if let Some(original_tags) = world.target_tags.clone() {
         let filter = authored_field(0x004b, 21, "m_condition");
         let tag_query = authored_field(0x0043, 45, "m_condition");
-        let required = orpheus_script::graph::target_tag_guid(&tag_query["m_88B0050A"]).unwrap();
+        let required = lucy_script::graph::target_tag_guid(&tag_query["m_88B0050A"]).unwrap();
         assert!(!original_tags.contains(&required));
         for present in [false, true] {
             if present {
@@ -1270,7 +1270,7 @@ fn prepared_soldier_starts_the_reference_body_and_weapon_tree() {
     }
     world.vitals.damage(
         75.0,
-        orpheus_script::vitals::Death {
+        lucy_script::vitals::Death {
             time: 0.0,
             frame: FIRST_TICK + 1,
             killer: world.entity + 1,
@@ -1291,18 +1291,18 @@ fn prepared_soldier_starts_the_reference_body_and_weapon_tree() {
 #[test]
 #[ignore = "requires the derived 104319 hero and graph catalogs"]
 fn authored_armour_and_shield_roots_reproduce_the_reference_body_pools() {
-    use orpheus_core::tick::FIRST_TICK;
+    use lucy_core::tick::FIRST_TICK;
 
-    let root = orpheus_testkit::runtime_dir();
+    let root = lucy_testkit::runtime_dir();
     let heroes =
-        orpheus_content::heroes::HeroCatalog::load(root.join("data/game_heroes_174.json")).unwrap();
+        lucy_content::heroes::HeroCatalog::load(root.join("data/game_heroes_174.json")).unwrap();
     let graphs =
         Arc::new(GraphStore::load_runtime(root.join("data"), "game_graphs_174.json.gz").unwrap());
     let catalog = crate::pools::PoolCatalog::from_graphs(&graphs).unwrap();
     for (hero, secondary_state) in [(0x02e0_0000_0000_0007, 3), (0x02e0_0000_0000_0068, 1)] {
         let body = &graphs.bodies()[&heroes.get(hero).unwrap().body];
         let pools = catalog.hero_pools(hero).unwrap();
-        let roots = orpheus_script::vm::player_roots(body, &graphs)
+        let roots = lucy_script::vm::player_roots(body, &graphs)
             .unwrap()
             .into_iter()
             .filter(|root| root.graph == BODY_GRAPH)
@@ -1321,7 +1321,7 @@ fn authored_armour_and_shield_roots_reproduce_the_reference_body_pools() {
         let component = Component::start(
             Arc::clone(&graphs),
             world.entity,
-            orpheus_script::vm::player_entity_variables(body, health, health),
+            lucy_script::vm::player_entity_variables(body, health, health),
             roots,
             FIRST_TICK,
             &mut world,
@@ -1330,16 +1330,16 @@ fn authored_armour_and_shield_roots_reproduce_the_reference_body_pools() {
         .unwrap();
         let snapshot = component.snapshot().unwrap();
         assert!(!snapshot.diagnostics.iter().any(|item| {
-                matches!(item.issue, orpheus_script::vm::Issue::UnsupportedField(field) if field.starts_with("health pool"))
+                matches!(item.issue, lucy_script::vm::Issue::UnsupportedField(field) if field.starts_with("health pool"))
             }));
         let states = &snapshot.instances[&1].states;
         assert_eq!(
             states[&secondary_state].kind,
-            orpheus_script::vm::StateKind::HealthPool { pool: Some(1) }
+            lucy_script::vm::StateKind::HealthPool { pool: Some(1) }
         );
         assert_eq!(
             states[&0].kind,
-            orpheus_script::vm::StateKind::HealthPool { pool: Some(2) }
+            lucy_script::vm::StateKind::HealthPool { pool: Some(2) }
         );
         assert_eq!(world.vitals.component(), pools.vitals().component());
     }
@@ -1349,7 +1349,7 @@ fn authored_armour_and_shield_roots_reproduce_the_reference_body_pools() {
 /// graphs that show it to others read; while it lives the flag isn't set.
 #[test]
 fn a_body_that_dies_raises_its_dead_flag() {
-    use orpheus_script::vitals::Death;
+    use lucy_script::vitals::Death;
 
     let spawn = fixture_body_factory().1;
     let mut runtime = fixture_hitscan_factory(20.0).start(spawn).unwrap();
@@ -1394,15 +1394,15 @@ fn a_body_that_dies_raises_its_dead_flag() {
 #[test]
 #[ignore = "requires the derived 104319 statescript catalog"]
 fn wheel_choices_run_the_callout_graph() {
-    use orpheus_content::maps::GameMap;
-    use orpheus_core::tick::FIRST_TICK;
-    use orpheus_script::vm::StateKind;
-    use orpheus_wire::{
+    use lucy_content::maps::GameMap;
+    use lucy_core::tick::FIRST_TICK;
+    use lucy_script::vm::StateKind;
+    use lucy_wire::{
         jam::codec::{Fields, Value as Field},
         messages::Message,
     };
 
-    let root = orpheus_testkit::runtime_dir();
+    let root = lucy_testkit::runtime_dir();
     let graphs =
         Arc::new(GraphStore::load_runtime(root.join("data"), "game_graphs_174.json.gz").unwrap());
     let pools = crate::pools::PoolCatalog::from_graphs(&graphs)
@@ -1421,9 +1421,9 @@ fn wheel_choices_run_the_callout_graph() {
         (0x1ec, Some(59), Some((0x0d80_0000_0000_0721, None))),
         (0x16f, None, None),
     ] {
-        let roots = orpheus_script::vm::player_roots(body, &graphs).unwrap();
+        let roots = lucy_script::vm::player_roots(body, &graphs).unwrap();
         let health = pools.total();
-        let variables = orpheus_script::vm::player_entity_variables(body, health, health);
+        let variables = lucy_script::vm::player_entity_variables(body, health, health);
         let mut world = PlayerWorld::new(
             Arc::clone(&graphs),
             0xa000_0100,
@@ -1485,7 +1485,7 @@ fn wheel_choices_run_the_callout_graph() {
                     .take_messages()
                     .iter()
                     .any(|message| message.message == NEED_HEALING
-                        && message.target == orpheus_script::mode::EVERY_ENTITY),
+                        && message.target == lucy_script::mode::EVERY_ENTITY),
                 "0307 to every entity"
             );
             let wheel = snapshot
@@ -1495,7 +1495,7 @@ fn wheel_choices_run_the_callout_graph() {
                 .expect("05AD runs");
             assert_eq!(
                 wheel.variables.get(&40),
-                Some(&orpheus_script::wire::Value::Entity(world.entity)),
+                Some(&lucy_script::wire::Value::Entity(world.entity)),
                 "05AD rid15's sender"
             );
         }
@@ -1536,15 +1536,15 @@ fn wheel_choices_run_the_callout_graph() {
 #[test]
 #[ignore = "requires the derived 104319 statescript catalog"]
 fn the_wheel_refuses_a_fourth_choice_until_a_count_expires() {
-    use orpheus_content::maps::GameMap;
-    use orpheus_core::tick::FIRST_TICK;
-    use orpheus_wire::{
+    use lucy_content::maps::GameMap;
+    use lucy_core::tick::FIRST_TICK;
+    use lucy_wire::{
         jam::codec::{Fields, Value as Field},
         messages::Message,
     };
 
     const HELLO: u64 = 0x0d80_0000_0000_0aeb;
-    let root = orpheus_testkit::runtime_dir();
+    let root = lucy_testkit::runtime_dir();
     let graphs =
         Arc::new(GraphStore::load_runtime(root.join("data"), "game_graphs_174.json.gz").unwrap());
     let health = crate::pools::PoolCatalog::from_graphs(&graphs)
@@ -1568,8 +1568,8 @@ fn the_wheel_refuses_a_fourth_choice_until_a_count_expires() {
     let mut component = Component::start(
         Arc::clone(&graphs),
         world.entity,
-        orpheus_script::vm::player_entity_variables(body, health, health),
-        orpheus_script::vm::player_roots(body, &graphs).unwrap(),
+        lucy_script::vm::player_entity_variables(body, health, health),
+        lucy_script::vm::player_roots(body, &graphs).unwrap(),
         FIRST_TICK,
         &mut world,
         MAX_INIT_WORK,
@@ -1632,13 +1632,13 @@ fn the_wheel_refuses_a_fourth_choice_until_a_count_expires() {
 #[test]
 #[ignore = "requires the derived 104319 statescript catalog"]
 fn a_dead_body_counts_its_respawn_down_in_the_mode_body_script() {
-    use orpheus_content::{heroes::HeroCatalog, maps::GameMap};
-    use orpheus_core::tick::FIRST_TICK;
-    use orpheus_script::vitals::Death;
-    use orpheus_wire::entity::GAME_MODE_ENTITY;
+    use lucy_content::{heroes::HeroCatalog, maps::GameMap};
+    use lucy_core::tick::FIRST_TICK;
+    use lucy_script::vitals::Death;
+    use lucy_wire::entity::GAME_MODE_ENTITY;
 
     const MODE_BODY: u32 = 0x0c8e;
-    let root = orpheus_testkit::runtime_dir();
+    let root = lucy_testkit::runtime_dir();
     let graphs =
         Arc::new(GraphStore::load_runtime(root.join("data"), "game_graphs_174.json.gz").unwrap());
     let pools = crate::pools::PoolCatalog::from_graphs(&graphs)
@@ -1665,12 +1665,12 @@ fn a_dead_body_counts_its_respawn_down_in_the_mode_body_script() {
         Arc::clone(&graphs),
         Arc::new(CodecTable::client()),
         PRACTICE_RANGE_MODE,
-        orpheus_content::maps::PRACTICE_RANGE_RULESET,
+        lucy_content::maps::PRACTICE_RANGE_RULESET,
         heroes.get(SOLDIER).unwrap(),
         Some(pools),
         false,
         BodyCombat {
-            eyes: orpheus_content::heroes::Eyes {
+            eyes: lucy_content::heroes::Eyes {
                 standing: 1.55,
                 crouched: 1.085,
             },
@@ -1883,10 +1883,10 @@ fn hero_body(
     generation: Option<Variables>,
     difficulty: Option<u64>,
 ) -> (PlayerBodyRuntime, OwnerBodySpawn) {
-    use orpheus_content::{heroes::HeroCatalog, maps::GameMap};
-    use orpheus_core::tick::FIRST_TICK;
+    use lucy_content::{heroes::HeroCatalog, maps::GameMap};
+    use lucy_core::tick::FIRST_TICK;
 
-    let root = orpheus_testkit::runtime_dir();
+    let root = lucy_testkit::runtime_dir();
     let graphs =
         Arc::new(GraphStore::load_runtime(root.join("data"), "game_graphs_174.json.gz").unwrap());
     let heroes = HeroCatalog::load(root.join("data/game_heroes_174.json")).unwrap();
@@ -1918,12 +1918,12 @@ fn hero_body(
         graphs,
         Arc::new(CodecTable::client()),
         PRACTICE_RANGE_MODE,
-        orpheus_content::maps::PRACTICE_RANGE_RULESET,
+        lucy_content::maps::PRACTICE_RANGE_RULESET,
         heroes.get(hero).unwrap(),
         Some(pools),
         false,
         BodyCombat {
-            eyes: orpheus_content::heroes::Eyes {
+            eyes: lucy_content::heroes::Eyes {
                 standing: 1.55,
                 crouched: 1.085,
             },
@@ -1946,7 +1946,7 @@ fn hero_body(
 }
 
 fn charge_of(runtime: &PlayerBodyRuntime) -> f64 {
-    use orpheus_script::ultimate::ULT_CHARGE;
+    use lucy_script::ultimate::ULT_CHARGE;
     match runtime.snapshot().unwrap().variables.get(&ULT_CHARGE) {
         Some(Value::Float(charge)) => *charge,
         other => panic!("charge {other:?}"),
@@ -1987,7 +1987,7 @@ fn run_frames(runtime: &mut PlayerBodyRuntime, spawn: OwnerBodySpawn, frames: u3
 #[test]
 #[ignore = "requires the derived 104319 statescript catalog"]
 fn the_charge_graph_charges_soldier_s_ultimate() {
-    use orpheus_script::{ultimate::dealt_message, weapons::DamageTags};
+    use lucy_script::{ultimate::dealt_message, weapons::DamageTags};
 
     const ENEMY: u32 = 0xa000_0301;
     const ALLY: u32 = 0xa000_0401;
@@ -2060,12 +2060,12 @@ fn the_charge_graph_charges_soldier_s_ultimate() {
 #[test]
 #[ignore = "requires the derived 104319 statescript catalog"]
 fn doomfists_passive_grants_temporary_shields_that_drain() {
-    use orpheus_script::{
+    use lucy_script::{
         ultimate::dealt_message,
         vitals::{Death, PoolKind},
         weapons::DamageTags,
     };
-    use orpheus_wire::entity::{ComponentValue, POOLS, SHIELDS_POOL};
+    use lucy_wire::entity::{ComponentValue, POOLS, SHIELDS_POOL};
 
     const DOOMFIST: u64 = 0x02e0_0000_0000_012f;
     const ENEMY: u32 = 0xa000_0301;
@@ -2210,7 +2210,7 @@ fn the_charge_graph_charges_d_va_and_fills_on_its_ruleset_key() {
 /// with a full meter (the ruleset key `32E0`), ABILITY_3 (command bit 0x20,
 /// logical button 37) begins st0's ability; st6 searches a 10° cone
 /// (`10 × #9602e`, the hero setting NANO BOOST SENSITIVITY at its default
-/// 1, which her body starts with: `orpheus_content::hero_settings`) 40 m
+/// 1, which her body starts with: `lucy_content::hero_settings`) 40 m
 /// along her aim from her eye for the ally nearest her crosshair; rid80
 /// takes him into `#8070`, and after st11's 0.13 s st12 puts the aura
 /// `0269` on him (its graph `0B9F` is
@@ -2224,8 +2224,8 @@ fn the_charge_graph_charges_d_va_and_fills_on_its_ruleset_key() {
 #[test]
 #[ignore = "requires the derived 104319 statescript catalog"]
 fn anas_ultimate_puts_nano_boost_on_the_ally_in_her_sights() {
-    use orpheus_content::heroes::ANA;
-    use orpheus_script::vm::AuraChange;
+    use lucy_content::heroes::ANA;
+    use lucy_script::vm::AuraChange;
 
     const NANO_BOOST: u64 = 0x04a0_0000_0000_0269;
     const ABILITY_3: u32 = 0x20;
@@ -2385,7 +2385,7 @@ fn zenyattas_harmony_orb_goes_to_the_ally_in_his_sights() {
 #[test]
 #[ignore = "requires the derived 104319 statescript catalog"]
 fn mercys_guardian_angel_toggles_or_holds_by_her_setting() {
-    use orpheus_content::hero_settings::HeroSetting;
+    use lucy_content::hero_settings::HeroSetting;
 
     const MERCY: u64 = 0x02e0_0000_0000_0004;
     const TOGGLE_GUARDIAN_ANGEL: u64 = 0x0d80_0000_0000_1e64;
@@ -2409,7 +2409,7 @@ fn mercys_guardian_angel_toggles_or_holds_by_her_setting() {
     assert_eq!(
         guardian_angel(&runtime),
         (
-            Some(orpheus_script::vm::StateKind::BooleanSwitch(true)),
+            Some(lucy_script::vm::StateKind::BooleanSwitch(true)),
             true,
             false
         )
@@ -2429,7 +2429,7 @@ fn mercys_guardian_angel_toggles_or_holds_by_her_setting() {
     assert_eq!(
         guardian_angel(&runtime),
         (
-            Some(orpheus_script::vm::StateKind::BooleanSwitch(false)),
+            Some(lucy_script::vm::StateKind::BooleanSwitch(false)),
             false,
             true
         )
@@ -2447,7 +2447,7 @@ fn mercys_guardian_angel_toggles_or_holds_by_her_setting() {
 #[test]
 #[ignore = "requires the derived 104319 statescript catalog"]
 fn the_biotic_field_aura_heals_the_body_through_its_own_graph() {
-    use orpheus_script::vm::{AuraChange, AuraSource};
+    use lucy_script::vm::{AuraChange, AuraSource};
 
     const FIELD: u32 = 0xa008_0000;
     let (mut runtime, spawn) = charge_body(SOLDIER, None);
@@ -2466,7 +2466,7 @@ fn the_biotic_field_aura_heals_the_body_through_its_own_graph() {
         tags: None,
         health: None,
         hardpoints: None,
-        spawned: vec![orpheus_script::vm::OwnedEntity {
+        spawned: vec![lucy_script::vm::OwnedEntity {
             entity: FIELD,
             projectile: false,
         }],
@@ -2522,7 +2522,7 @@ fn the_biotic_field_aura_heals_the_body_through_its_own_graph() {
 #[test]
 #[ignore = "requires the derived 104319 statescript catalog"]
 fn the_healing_orbs_aura_heals_an_ally_for_its_thrower() {
-    use orpheus_script::vm::{AuraChange, AuraSource, OwnedEntity};
+    use lucy_script::vm::{AuraChange, AuraSource, OwnedEntity};
 
     const MOIRA: u32 = 0xa000_0201;
     const ORB: u32 = 0xa00f_0000;
@@ -2604,7 +2604,7 @@ fn the_healing_orbs_aura_heals_an_ally_for_its_thrower() {
 #[test]
 #[ignore = "requires the derived 104319 statescript catalog"]
 fn an_ai_hero_deals_his_difficulty_profile_s_damage() {
-    use orpheus_script::{
+    use lucy_script::{
         ai_definitions::{EASY, HARD, MEDIUM},
         expr::EntityRelation,
     };
@@ -2674,14 +2674,14 @@ fn an_ai_hero_deals_his_difficulty_profile_s_damage() {
 
 /// Every hero's `0033` asks a health pack for its heal: while the body is
 /// alive and hurt (st10), st11 (`STU_87621906`) finds the pickup whose
-/// sphere touches it (`orpheus_script` `vm/pickups.rs`) and rid23 sends it
+/// sphere touches it (`lucy_script` `vm/pickups.rs`) and rid23 sends it
 /// `0643.025`, again every 0.5 s (st12) while it still touches one. A body
 /// at full health, or one the sphere doesn't reach, asks nothing.
 #[test]
 #[ignore = "requires the derived 104319 statescript catalog"]
 fn a_hurt_body_on_a_health_pack_asks_it_for_its_heal() {
-    use orpheus_content::heroes::SOLDIER;
-    use orpheus_script::{vitals::Death, vm::Pickup};
+    use lucy_content::heroes::SOLDIER;
+    use lucy_script::{vitals::Death, vm::Pickup};
 
     const PACK: u32 = 0x8000_00b9;
     const TOUCH: u64 = 0x0240_0000_0000_0643;
@@ -2780,7 +2780,7 @@ fn tactical_visor_shots_leave_toward_the_target_s_chest() {
     const TRAINING_BOT: u64 = 0x0400_0000_0000_1403;
     const CHEST: u64 = 0x0dc0_0000_0000_0001;
     let hitboxes = crate::hitboxes::HitboxCatalog::load(
-        orpheus_testkit::runtime_dir().join("data/game_hitboxes_174.json"),
+        lucy_testkit::runtime_dir().join("data/game_hitboxes_174.json"),
     )
     .unwrap();
     let hardpoints = hitboxes.hardpoints(TRAINING_BOT).unwrap();
@@ -2813,7 +2813,7 @@ fn tactical_visor_shots_leave_toward_the_target_s_chest() {
         let buttons = if frame == spawn.frame + 30 {
             ABILITY_3
         } else if frame > spawn.frame + 90 {
-            orpheus_wire::commands::FIRE
+            lucy_wire::commands::FIRE
         } else {
             0
         };

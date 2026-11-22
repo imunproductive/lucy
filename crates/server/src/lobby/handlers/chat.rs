@@ -6,12 +6,12 @@
 
 use std::{io, sync::Arc};
 
-use orpheus_lobby::social::{
+use lucy_lobby::social::{
     account_lo_of,
     messages::{self, CHAT, CHAT_OUT, FRIENDS_OUT, WHISPER, WHO},
     structure, text, unsigned,
 };
-use orpheus_wire::jam::codec::{Fields, Value};
+use lucy_wire::jam::codec::{Fields, Value};
 
 use crate::lobby::{
     peer::Peer,
@@ -101,8 +101,8 @@ fn chat(peer: &mut Peer<'_, '_>, fields: Fields) -> io::Result<()> {
 
 fn deliver(
     turn: &mut Turn<'_>,
-    members: &[Arc<orpheus_lobby::accounts::Account>],
-    message: &orpheus_lobby::transport::LobbyMessage,
+    members: &[Arc<lucy_lobby::accounts::Account>],
+    message: &lucy_lobby::transport::LobbyMessage,
 ) {
     for member in members {
         if turn.has_session(member.account_lo) {
@@ -151,14 +151,14 @@ fn match_command(peer: &mut Peer<'_, '_>, said: &str) -> io::Result<Option<Strin
                 "You are not in a match.".to_owned()
             }
         }
-        // The live nameplate tool (`orpheus_sim::bot_plate`): `.plate`
+        // The live nameplate tool (`lucy_sim::bot_plate`): `.plate`
         // shows it, `.plate <change>` changes every match's training bots.
         "plate" => {
             let rest = rest.trim();
             let change = if rest.is_empty() || rest.eq_ignore_ascii_case("show") {
                 Ok(None)
             } else {
-                orpheus_sim::bot_plate::PlateChange::parse(rest).map(Some)
+                lucy_sim::bot_plate::PlateChange::parse(rest).map(Some)
             };
             match change
                 .and_then(|change| game.bot_plate(change).map_err(|error| error.to_string())?)
@@ -167,7 +167,7 @@ fn match_command(peer: &mut Peer<'_, '_>, said: &str) -> io::Result<Option<Strin
                 Err(reason) => reason,
             }
         }
-        // The live hurt feedback switch (`orpheus_sim::hurt_feedback`):
+        // The live hurt feedback switch (`lucy_sim::hurt_feedback`):
         // `.hurt` shows it, `.hurt on|off`, `.hurt flinch on|off` and
         // `.hurt pain on|off` change it for every match's players.
         "hurt" => match game.hurt_feedback(rest)? {

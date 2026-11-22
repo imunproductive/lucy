@@ -1,5 +1,5 @@
 //! `data/workshop_catalog_174.json`: the Workshop catalog the rule engine
-//! (`orpheus-workshop`) reads, from the three "generic settings" assets the
+//! (`lucy-workshop`) reads, from the three "generic settings" assets the
 //! client's editor, validator and normaliser load (`sub_7FF789C9F450`,
 //! `sub_7FF7893589F0`; `D:/Work/Coding/refs/reports/Workshop.md` §1):
 //!
@@ -26,7 +26,7 @@
 
 use std::{collections::BTreeMap, path::Path};
 
-use orpheus_stu::Value;
+use lucy_stu::Value;
 use serde_json::{Map, Value as Json, json};
 
 use crate::{

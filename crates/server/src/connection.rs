@@ -13,8 +13,8 @@
 
 use std::{collections::HashMap, net::SocketAddr, time::Duration};
 
-use orpheus_lobby::handoff::Handoff;
-use orpheus_wire::link::{
+use lucy_lobby::handoff::Handoff;
+use lucy_wire::link::{
     ACK, FIN, HEADER_SIZE, KIND_CONTROL, KIND_FRAME, LinkCipher, MAX_DATAGRAM, Packet,
     ReceiveWindow, SYN, peek_connection,
 };
@@ -354,7 +354,7 @@ impl Peer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orpheus_wire::jam::codec::{Fields, Schemas, Value};
+    use lucy_wire::jam::codec::{Fields, Schemas, Value};
     use std::net::UdpSocket;
 
     const CONN: u32 = 27;
@@ -552,7 +552,7 @@ mod tests {
 
     #[test]
     fn encoded_lobby_ticket_authenticates_a_loopback_udp_peer() {
-        use orpheus_lobby::handoff::{HANDOFF, HANDOFF_MESSAGE};
+        use lucy_lobby::handoff::{HANDOFF, HANDOFF_MESSAGE};
 
         let schemas = Schemas::lobby();
         let server_socket = UdpSocket::bind("127.0.0.1:0").unwrap();

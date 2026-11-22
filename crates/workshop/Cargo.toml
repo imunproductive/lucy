@@ -1,5 +1,5 @@
 [package]
-name = "orpheus-workshop"
+name = "lucy-workshop"
 description = "The Workshop for retail build 104319: the catalog, the rules (text and binary forms) and the rule engine"
 version.workspace = true
 edition.workspace = true
@@ -8,10 +8,10 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
-orpheus-wire.workspace = true
+lucy-wire.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-orpheus-testkit.workspace = true
+lucy-testkit.workspace = true

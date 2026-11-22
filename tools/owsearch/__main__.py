@@ -1,9 +1,9 @@
-"""python -m tools.owsearch <command> ... (from the ORPHEUS root; build first: python -m tools.owsearch.build)
+"""python -m tools.owsearch <command> ... (from the Lucy root; build first: python -m tools.owsearch.build)
 
   const <value|GUID|short id> [--limit N] [--json]
       code that uses a constant: 0x1C6EC712, 0x0D800000000004AA (a GUID), 068A.025 / 000000000307.025 /
-      097:0001 (a GUID by ORPHEUS's name), 04AA (a GUID index of any type: 1-6 hex digits without 0x).
-  guid <value|short id> ...        decode GUIDs the way ORPHEUS writes them (0307.025, game message)
+      097:0001 (a GUID by Lucy's name), 04AA (a GUID index of any type: 1-6 hex digits without 0x).
+  guid <value|short id> ...        decode GUIDs the way Lucy writes them (0307.025, game message)
   cvar <hash|#index> ... | --all [--type T] [--json]
       console variables: value and default in the in-game dump, type, object address
   read <address> [--qword|--dword|--float|--double|--string|--bytes N] [--count N]

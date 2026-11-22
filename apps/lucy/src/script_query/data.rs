@@ -528,7 +528,7 @@ pub struct Names {
 
 impl Names {
     pub fn embedded() -> Self {
-        Self::parse(orpheus_fixed::STATESCRIPT_NAMES.as_bytes()).expect("the names catalog parses")
+        Self::parse(lucy_fixed::STATESCRIPT_NAMES.as_bytes()).expect("the names catalog parses")
     }
 
     pub fn parse(bytes: &[u8]) -> io::Result<Self> {

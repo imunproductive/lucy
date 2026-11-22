@@ -574,6 +574,265 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 
 [[package]]
+name = "lucy"
+version = "0.0.0"
+dependencies = [
+ "clap",
+ "ctrlc",
+ "directories",
+ "flate2",
+ "indexmap",
+ "lucy-assets",
+ "lucy-bnet",
+ "lucy-content",
+ "lucy-fixed",
+ "lucy-launcher",
+ "lucy-lobby",
+ "lucy-server",
+ "lucy-sim",
+ "lucy-testkit",
+ "lucy-wire",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "lucy-assets"
+version = "0.0.0"
+dependencies = [
+ "flate2",
+ "lucy-casc",
+ "lucy-fixed",
+ "lucy-physics",
+ "lucy-stu",
+ "lucy-testkit",
+ "lucy-wire",
+ "serde_json",
+]
+
+[[package]]
+name = "lucy-bnet"
+version = "0.0.0"
+dependencies = [
+ "lucy-fixed",
+ "lucy-testkit",
+ "lucy-wire",
+ "prost",
+ "prost-reflect",
+ "sha2 0.10.9",
+ "tungstenite",
+]
+
+[[package]]
+name = "lucy-casc"
+version = "0.0.0"
+dependencies = [
+ "aes",
+ "flate2",
+ "lucy-testkit",
+ "md-5",
+ "sha1",
+ "tempfile",
+]
+
+[[package]]
+name = "lucy-content"
+version = "0.0.0"
+dependencies = [
+ "indexmap",
+ "lucy-core",
+ "lucy-testkit",
+ "lucy-wire",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+]
+
+[[package]]
+name = "lucy-core"
+version = "0.0.0"
+
+[[package]]
+name = "lucy-fixed"
+version = "0.0.0"
+
+[[package]]
+name = "lucy-launcher"
+version = "0.0.0"
+dependencies = [
+ "lucy-casc",
+ "tempfile",
+ "windows-sys",
+]
+
+[[package]]
+name = "lucy-lobby"
+version = "0.0.0"
+dependencies = [
+ "crc32fast",
+ "getrandom",
+ "indexmap",
+ "lucy-bnet",
+ "lucy-content",
+ "lucy-core",
+ "lucy-fixed",
+ "lucy-testkit",
+ "lucy-wire",
+ "prost",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
+name = "lucy-physics"
+version = "0.0.0"
+dependencies = [
+ "flate2",
+ "indexmap",
+ "lucy-core",
+ "lucy-physics",
+ "lucy-testkit",
+ "lucy-wire",
+ "lzma-rust2",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+]
+
+[[package]]
+name = "lucy-probe"
+version = "0.0.0"
+dependencies = [
+ "iced-x86",
+ "serde_json",
+ "windows-sys",
+]
+
+[[package]]
+name = "lucy-relay"
+version = "0.0.0"
+dependencies = [
+ "windows-sys",
+]
+
+[[package]]
+name = "lucy-script"
+version = "0.0.0"
+dependencies = [
+ "flate2",
+ "indexmap",
+ "lucy-content",
+ "lucy-core",
+ "lucy-fixed",
+ "lucy-physics",
+ "lucy-testkit",
+ "lucy-wire",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tracing",
+]
+
+[[package]]
+name = "lucy-server"
+version = "0.0.0"
+dependencies = [
+ "flate2",
+ "getrandom",
+ "indexmap",
+ "lucy-assets",
+ "lucy-bnet",
+ "lucy-content",
+ "lucy-core",
+ "lucy-fixed",
+ "lucy-lobby",
+ "lucy-script",
+ "lucy-sim",
+ "lucy-testkit",
+ "lucy-wire",
+ "lucy-workshop",
+ "mio",
+ "serde_json",
+ "tempfile",
+ "tiny_http",
+ "tracing",
+]
+
+[[package]]
+name = "lucy-sim"
+version = "0.0.0"
+dependencies = [
+ "indexmap",
+ "lucy-assets",
+ "lucy-content",
+ "lucy-core",
+ "lucy-physics",
+ "lucy-script",
+ "lucy-stu",
+ "lucy-testkit",
+ "lucy-wire",
+ "lucy-workshop",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
+name = "lucy-stu"
+version = "0.0.0"
+dependencies = [
+ "lucy-casc",
+ "lucy-testkit",
+ "roxmltree",
+]
+
+[[package]]
+name = "lucy-testkit"
+version = "0.0.0"
+dependencies = [
+ "lucy-assets",
+ "md-5",
+ "serde_json",
+]
+
+[[package]]
+name = "lucy-wire"
+version = "0.0.0"
+dependencies = [
+ "aes-gcm",
+ "getrandom",
+ "hmac",
+ "lucy-core",
+ "lucy-fixed",
+ "lucy-testkit",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
+name = "lucy-workshop"
+version = "0.0.0"
+dependencies = [
+ "lucy-testkit",
+ "lucy-wire",
+ "serde",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
 name = "lzma-rust2"
 version = "0.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -688,265 +947,6 @@ name = "option-ext"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
-
-[[package]]
-name = "orpheus"
-version = "0.0.0"
-dependencies = [
- "clap",
- "ctrlc",
- "directories",
- "flate2",
- "indexmap",
- "orpheus-assets",
- "orpheus-bnet",
- "orpheus-content",
- "orpheus-fixed",
- "orpheus-launcher",
- "orpheus-lobby",
- "orpheus-server",
- "orpheus-sim",
- "orpheus-testkit",
- "orpheus-wire",
- "serde",
- "serde_json",
- "tempfile",
- "toml",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "orpheus-assets"
-version = "0.0.0"
-dependencies = [
- "flate2",
- "orpheus-casc",
- "orpheus-fixed",
- "orpheus-physics",
- "orpheus-stu",
- "orpheus-testkit",
- "orpheus-wire",
- "serde_json",
-]
-
-[[package]]
-name = "orpheus-bnet"
-version = "0.0.0"
-dependencies = [
- "orpheus-fixed",
- "orpheus-testkit",
- "orpheus-wire",
- "prost",
- "prost-reflect",
- "sha2 0.10.9",
- "tungstenite",
-]
-
-[[package]]
-name = "orpheus-casc"
-version = "0.0.0"
-dependencies = [
- "aes",
- "flate2",
- "md-5",
- "orpheus-testkit",
- "sha1",
- "tempfile",
-]
-
-[[package]]
-name = "orpheus-content"
-version = "0.0.0"
-dependencies = [
- "indexmap",
- "orpheus-core",
- "orpheus-testkit",
- "orpheus-wire",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
-]
-
-[[package]]
-name = "orpheus-core"
-version = "0.0.0"
-
-[[package]]
-name = "orpheus-fixed"
-version = "0.0.0"
-
-[[package]]
-name = "orpheus-launcher"
-version = "0.0.0"
-dependencies = [
- "orpheus-casc",
- "tempfile",
- "windows-sys",
-]
-
-[[package]]
-name = "orpheus-lobby"
-version = "0.0.0"
-dependencies = [
- "crc32fast",
- "getrandom",
- "indexmap",
- "orpheus-bnet",
- "orpheus-content",
- "orpheus-core",
- "orpheus-fixed",
- "orpheus-testkit",
- "orpheus-wire",
- "prost",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "tracing",
-]
-
-[[package]]
-name = "orpheus-physics"
-version = "0.0.0"
-dependencies = [
- "flate2",
- "indexmap",
- "lzma-rust2",
- "orpheus-core",
- "orpheus-physics",
- "orpheus-testkit",
- "orpheus-wire",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
-]
-
-[[package]]
-name = "orpheus-probe"
-version = "0.0.0"
-dependencies = [
- "iced-x86",
- "serde_json",
- "windows-sys",
-]
-
-[[package]]
-name = "orpheus-relay"
-version = "0.0.0"
-dependencies = [
- "windows-sys",
-]
-
-[[package]]
-name = "orpheus-script"
-version = "0.0.0"
-dependencies = [
- "flate2",
- "indexmap",
- "orpheus-content",
- "orpheus-core",
- "orpheus-fixed",
- "orpheus-physics",
- "orpheus-testkit",
- "orpheus-wire",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tracing",
-]
-
-[[package]]
-name = "orpheus-server"
-version = "0.0.0"
-dependencies = [
- "flate2",
- "getrandom",
- "indexmap",
- "mio",
- "orpheus-assets",
- "orpheus-bnet",
- "orpheus-content",
- "orpheus-core",
- "orpheus-fixed",
- "orpheus-lobby",
- "orpheus-script",
- "orpheus-sim",
- "orpheus-testkit",
- "orpheus-wire",
- "orpheus-workshop",
- "serde_json",
- "tempfile",
- "tiny_http",
- "tracing",
-]
-
-[[package]]
-name = "orpheus-sim"
-version = "0.0.0"
-dependencies = [
- "indexmap",
- "orpheus-assets",
- "orpheus-content",
- "orpheus-core",
- "orpheus-physics",
- "orpheus-script",
- "orpheus-stu",
- "orpheus-testkit",
- "orpheus-wire",
- "orpheus-workshop",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "tracing",
-]
-
-[[package]]
-name = "orpheus-stu"
-version = "0.0.0"
-dependencies = [
- "orpheus-casc",
- "orpheus-testkit",
- "roxmltree",
-]
-
-[[package]]
-name = "orpheus-testkit"
-version = "0.0.0"
-dependencies = [
- "md-5",
- "orpheus-assets",
- "serde_json",
-]
-
-[[package]]
-name = "orpheus-wire"
-version = "0.0.0"
-dependencies = [
- "aes-gcm",
- "getrandom",
- "hmac",
- "orpheus-core",
- "orpheus-fixed",
- "orpheus-testkit",
- "serde",
- "serde_json",
- "sha2 0.10.9",
-]
-
-[[package]]
-name = "orpheus-workshop"
-version = "0.0.0"
-dependencies = [
- "orpheus-testkit",
- "orpheus-wire",
- "serde",
- "serde_json",
- "tracing",
-]
 
 [[package]]
 name = "pin-project-lite"

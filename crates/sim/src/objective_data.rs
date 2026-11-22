@@ -1,5 +1,5 @@
 //! Each map's objective data from the install (`game_objectives_174.json`
-//! `maps`, the `orpheus-assets` derivation `game_objectives`): its capture
+//! `maps`, the `lucy-assets` derivation `game_objectives`): its capture
 //! points' areas and times, the time each objective adds, and its payload's
 //! speed factor, waits and track. The match flow builds a map's objectives
 //! from it (`match_flow.rs`, `objectives.rs`).
@@ -10,7 +10,7 @@
 
 use std::{collections::HashMap, fs, io, path::Path, sync::Arc};
 
-use orpheus_content::maps::GameMap;
+use lucy_content::maps::GameMap;
 use serde::Deserialize;
 
 use crate::{
@@ -242,8 +242,8 @@ fn invalid(error: impl std::fmt::Display) -> io::Error {
 
 #[cfg(test)]
 mod tests {
-    use orpheus_content::maps::{MapCatalog, ObjectiveKind};
-    use orpheus_script::graph::GraphStore;
+    use lucy_content::maps::{MapCatalog, ObjectiveKind};
+    use lucy_script::graph::GraphStore;
 
     use super::*;
     use crate::{
@@ -267,7 +267,7 @@ mod tests {
     }
 
     fn data() -> Data {
-        let data = orpheus_testkit::runtime_dir().join("data");
+        let data = lucy_testkit::runtime_dir().join("data");
         Data {
             objectives: ObjectiveData::load(&data).unwrap(),
             catalog: MapCatalog::load(&data).unwrap(),
@@ -305,7 +305,7 @@ mod tests {
     /// last four boxes turned in 45° steps), and every point holds its
     /// objective's position.
     #[test]
-    #[ignore = "requires the 1.74 game data (ORPHEUS_GAME_DIR)"]
+    #[ignore = "requires the 1.74 game data (LUCY_GAME_DIR)"]
     fn the_capture_areas_have_the_reported_footprints() {
         let data = data();
         for (map, mode, order, expected) in [
@@ -343,7 +343,7 @@ mod tests {
     /// (191.6 m, 1.0355 times longer: `Payloads.md` §2), from the payload's
     /// place through the checkpoints' entities.
     #[test]
-    #[ignore = "requires the 1.74 game data (ORPHEUS_GAME_DIR)"]
+    #[ignore = "requires the 1.74 game data (LUCY_GAME_DIR)"]
     fn the_payload_follows_its_track_through_its_checkpoints() {
         let data = data();
         let game = data.game_map(KINGS_ROW, HYBRID);
@@ -383,10 +383,10 @@ mod tests {
     /// them; Nepal's Control and Black Forest's Elimination find their
     /// points. (Assault's clock is `0F4A`'s, which the flow follows.)
     #[test]
-    #[ignore = "requires the 1.74 game data (ORPHEUS_GAME_DIR)"]
+    #[ignore = "requires the 1.74 game data (LUCY_GAME_DIR)"]
     fn the_install_maps_start_their_flows_with_their_times() {
         let data = data();
-        let path = orpheus_testkit::runtime_dir().join("data");
+        let path = lucy_testkit::runtime_dir().join("data");
         let graphs = GraphStore::load_runtime(&path, "game_graphs_174.json.gz").unwrap();
         let values = ModeGraphValues::read(&graphs).unwrap();
         let rules = ModeRulesData::load(&graphs, &path).unwrap();

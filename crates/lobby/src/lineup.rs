@@ -35,7 +35,7 @@
 //! and loses it again (53003) when it leaves the match.
 
 use crate::transport::LobbyMessage;
-use orpheus_wire::jam::codec::{
+use lucy_wire::jam::codec::{
     Fields,
     Value::{self, Array, Bool, Signed, Struct, Unsigned},
     id16,
@@ -184,7 +184,7 @@ pub fn no_roster() -> LobbyMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orpheus_wire::jam::codec::Schemas;
+    use lucy_wire::jam::codec::Schemas;
 
     fn player(team: u8) -> Player {
         Player {

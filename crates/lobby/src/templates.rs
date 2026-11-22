@@ -20,8 +20,8 @@ use crate::{
     passes::PASSES,
     transport::LobbyMessage,
 };
-use orpheus_content::catalog::localize_fields;
-use orpheus_wire::jam::codec::{Fields, Value};
+use lucy_content::catalog::localize_fields;
+use lucy_wire::jam::codec::{Fields, Value};
 
 pub const RETAIL_ACCOUNT: u64 = 0x0000_0001;
 pub const REDACTED_NAME: &str = "XXXXXXXXXXXXXXX";
@@ -103,7 +103,7 @@ struct TemplateFile {
 impl RetailTemplates {
     /// The templates captured from reference server traffic.
     pub fn captured() -> Self {
-        Self::from_reader(orpheus_fixed::RETAIL_TEMPLATES.as_bytes())
+        Self::from_reader(lucy_fixed::RETAIL_TEMPLATES.as_bytes())
             .expect("the embedded templates parse")
     }
 
@@ -404,7 +404,7 @@ fn refresh_config(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orpheus_wire::jam::codec::Schemas;
+    use lucy_wire::jam::codec::Schemas;
     use sha2::{Digest, Sha256};
 
     fn fixtures() -> RetailTemplates {

@@ -4,7 +4,7 @@
 use serde_json::{Value, json};
 
 fn derived() -> Value {
-    orpheus_testkit::runtime_json("data/game_voice_sets_174.json")
+    lucy_testkit::runtime_json("data/game_voice_sets_174.json")
 }
 
 /// The Practice Range bots share voice set `011D`, whose stimulus `0004`

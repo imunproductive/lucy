@@ -1,6 +1,6 @@
 //! The entities the players' shots make during the match, each run on its
 //! own graphs in the server's spawned-entity world
-//! (`orpheus_script::placed`): the Biotic Fields their canisters leave,
+//! (`lucy_script::placed`): the Biotic Fields their canisters leave,
 //! and the server projectiles whose entity starts graphs (Moira's Biotic
 //! Orbs).
 //!
@@ -39,7 +39,7 @@
 
 use std::{collections::BTreeMap, sync::Arc};
 
-use orpheus_script::{
+use lucy_script::{
     codecs::CodecTable,
     graph::GraphStore,
     mode::EVERY_ENTITY,
@@ -449,7 +449,7 @@ impl SpawnedEntities {
 }
 
 /// What kept a spawned entity's graph from completing.
-fn gaps(placed: &orpheus_script::placed::PlacedEntity) -> BTreeMap<String, usize> {
+fn gaps(placed: &lucy_script::placed::PlacedEntity) -> BTreeMap<String, usize> {
     let mut gaps = BTreeMap::new();
     if let Some(fault) = placed.fault() {
         *gaps.entry(fault.to_owned()).or_default() += 1;
@@ -467,7 +467,7 @@ fn gaps(placed: &orpheus_script::placed::PlacedEntity) -> BTreeMap<String, usize
 
 #[cfg(test)]
 mod tests {
-    use orpheus_script::{vm::AuraSource, wire::Value};
+    use lucy_script::{vm::AuraSource, wire::Value};
 
     use super::*;
     use crate::{
@@ -517,7 +517,7 @@ mod tests {
         const SOLDIER: u32 = 0x1000_0010;
         const ALLY: u32 = 0x1000_0110;
         const OPEN: u32 = 100;
-        let data = orpheus_testkit::runtime_dir().join("data");
+        let data = lucy_testkit::runtime_dir().join("data");
         let graphs = Arc::new(GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap());
         let mut fields = SpawnedEntities::new(
             Arc::clone(&graphs),
@@ -648,13 +648,13 @@ mod tests {
     /// its shooter `STU_2B2E2F6D`), and once it is spent it removes itself,
     /// which ends its flight, and tells its shooter (`060E.025`).
     fn orb_spends_its_pool(orb: Orb) {
-        use orpheus_content::maps::{PRACTICE_RANGE_MODE, PRACTICE_RANGE_RULESET};
+        use lucy_content::maps::{PRACTICE_RANGE_MODE, PRACTICE_RANGE_RULESET};
         const MOIRA: u32 = 0x1000_0010;
         const MOIRA_HERO: u64 = 0x02e0_0000_0000_01a2;
         const OTHER: u32 = 0x1000_0210;
         const ORB: u32 = 0xa00f_0000;
         const ORB_DONE: u64 = 0x0240_0000_0000_060e;
-        let data = orpheus_testkit::runtime_dir().join("data");
+        let data = lucy_testkit::runtime_dir().join("data");
         let graphs = Arc::new(GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap());
         let spawn_graphs = Arc::new(SpawnGraphs::from([(orb.definition, vec![orb.graph])]));
         let mut spawned = SpawnedEntities::new(
@@ -718,10 +718,10 @@ mod tests {
         );
         let last = 100 + orb.pool as u32;
         for tick in 101..=last {
-            let (message, parameters) = orpheus_script::ultimate::dealt_message(
+            let (message, parameters) = lucy_script::ultimate::dealt_message(
                 OTHER,
                 50.0,
-                &orpheus_script::weapons::DamageTags::NONE,
+                &lucy_script::weapons::DamageTags::NONE,
                 orb.heal,
             );
             spawned.receive_message(&GameMessage {

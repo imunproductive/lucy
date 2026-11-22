@@ -3,8 +3,8 @@
 use std::io;
 
 use crate::accounts::Profile;
-use orpheus_content::catalog::{HERO_BASE, ItemDb, SKIN_THEME_BASE};
-use orpheus_core::guid::parse_guid;
+use lucy_content::catalog::{HERO_BASE, ItemDb, SKIN_THEME_BASE};
+use lucy_core::guid::parse_guid;
 
 /// Lobby NPCs by name, with their hero index.
 pub const PVE_NPCS: &[(&str, u64)] = &[

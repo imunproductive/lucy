@@ -3,13 +3,13 @@
 
 use std::{collections::BTreeSet, fs, sync::Arc};
 
-use orpheus_assets::{Install, collision_cache};
-use orpheus_physics::{
+use lucy_assets::{Install, collision_cache};
+use lucy_physics::{
     collision::{cache::read_movement_cache, scene::CollisionScene},
     contact::world::ContactWorld,
     mover::{Mover, settings::MoverSettings},
 };
-use orpheus_wire::commands::Command;
+use lucy_wire::commands::Command;
 
 const KINGS_ROW: u64 = 0x0800_0000_0000_00D4;
 /// The team proxy categories (`MOVER` in `ow174/game/collision.py`).
@@ -24,14 +24,14 @@ const STEP: f64 = 1.0 / 1024.0;
 #[test]
 #[ignore = "requires an Overwatch 1.74 install (just test-game <install>)"]
 fn the_spawn_rooms_of_kings_row_stand_on_the_floor() {
-    let install = Install::open(&orpheus_testkit::game_dir(), "enUS").unwrap();
+    let install = Install::open(&lucy_testkit::game_dir(), "enUS").unwrap();
     let output = collision_cache(&install, KINGS_ROW, "King's Row").unwrap();
     let cache = read_movement_cache(output.bytes.as_slice()).unwrap();
     let identifiers = BTreeSet::new();
     let scene = CollisionScene::movement_probe(&cache, &identifiers).unwrap();
     let world = Arc::new(ContactWorld::from_movement_cache(cache, &identifiers).unwrap());
     let maps: serde_json::Value = serde_json::from_slice(
-        &fs::read(orpheus_testkit::runtime_dir().join("data/game_maps_174.json")).unwrap(),
+        &fs::read(lucy_testkit::runtime_dir().join("data/game_maps_174.json")).unwrap(),
     )
     .unwrap();
     let spawns = maps["0x08000000000000D4"]["spawns"].as_array().unwrap();

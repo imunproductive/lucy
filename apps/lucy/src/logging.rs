@@ -1,6 +1,6 @@
 //! Console and file logging. `RUST_LOG` overrides the default `info` level.
 //!
-//! The file rotates like `ow174/log.py`: at 2 MB it becomes `orpheus.log.1`,
+//! The file rotates like `ow174/log.py`: at 2 MB it becomes `lucy.log.1`,
 //! and two older files are kept.
 
 use std::{
@@ -12,7 +12,7 @@ use std::{
 
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
-pub const LOG_FILE: &str = "orpheus.log";
+pub const LOG_FILE: &str = "lucy.log";
 const LOG_FILE_BYTES: u64 = 2_000_000;
 const LOG_FILE_BACKUPS: u32 = 2;
 

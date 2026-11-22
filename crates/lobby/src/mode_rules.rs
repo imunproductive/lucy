@@ -26,8 +26,8 @@ use crate::{
     templates::{LOBBY, RetailTemplates},
     transport::LobbyMessage,
 };
-use orpheus_content::catalog::ItemDb;
-use orpheus_wire::jam::codec::{
+use lucy_content::catalog::ItemDb;
+use lucy_wire::jam::codec::{
     Fields,
     Value::{self, Array, Blob, Bool, Float64, Signed, Struct, Unsigned},
 };
@@ -237,7 +237,7 @@ mod tests {
 
     use super::*;
     use crate::{collection::Collection, ranked::Ranked};
-    use orpheus_wire::jam::codec::Schemas;
+    use lucy_wire::jam::codec::Schemas;
 
     const SEASON: Season = Season {
         number: 32,
@@ -329,7 +329,7 @@ mod tests {
     #[test]
     #[ignore = "requires the derived 104319 retail templates and catalogs"]
     fn mode_rules_matches_three_python_104319_message_bodies() {
-        let data = orpheus_testkit::runtime_dir().join("data");
+        let data = lucy_testkit::runtime_dir().join("data");
         let templates = RetailTemplates::captured();
         let items = Arc::new(ItemDb::load(&data).unwrap());
         let collection = Collection::new(&templates, Arc::clone(&items)).unwrap();

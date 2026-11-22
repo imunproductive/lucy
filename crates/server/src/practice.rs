@@ -3,8 +3,8 @@
 use std::io;
 
 use crate::game_service::{GameService, MatchPlayer};
-use orpheus_content::maps::GameMap;
-use orpheus_lobby::{
+use lucy_content::maps::GameMap;
+use lucy_lobby::{
     accounts::battle_tag,
     collection::Collection,
     handoff::{Handoff, LobbySeat, enter_game, general_channel, is_request, match_channel},
@@ -12,11 +12,11 @@ use orpheus_lobby::{
     session::PreparedLogin,
     transport::LobbyMessage,
 };
-use orpheus_sim::{
+use lucy_sim::{
     scene::PlayerCard,
     scene_assets::{PreparedScene, SceneAssets},
 };
-use orpheus_wire::jam::codec::Fields;
+use lucy_wire::jam::codec::Fields;
 
 /// Chat and address data from the authenticated session's owner, and the
 /// Practice Range's map (`MapCatalog::practice_range`). The caller supplies
@@ -202,13 +202,13 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    use orpheus_content::maps::{PRACTICE_RANGE_MAP, PRACTICE_RANGE_MODE};
-    use orpheus_lobby::{
+    use lucy_content::maps::{PRACTICE_RANGE_MAP, PRACTICE_RANGE_MODE};
+    use lucy_lobby::{
         accounts::Accounts,
         handoff::{CREATE_GAME, GAME_REQUEST, HANDOFF, HANDOFF_MESSAGE, Handoff},
         login::Identity,
     };
-    use orpheus_wire::jam::codec::{Schemas, Value};
+    use lucy_wire::jam::codec::{Schemas, Value};
 
     use crate::game_service::lockstep::{Client, Lockstep};
 

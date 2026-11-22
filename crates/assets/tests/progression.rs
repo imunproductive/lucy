@@ -5,10 +5,10 @@ use serde_json::{Value, json};
 
 fn derived() -> Value {
     assert_eq!(
-        orpheus_testkit::derived_outputs("game_progression"),
+        lucy_testkit::derived_outputs("game_progression"),
         ["data/game_progression_174.json"]
     );
-    orpheus_testkit::runtime_json("data/game_progression_174.json")
+    lucy_testkit::runtime_json("data/game_progression_174.json")
 }
 
 #[test]

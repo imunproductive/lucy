@@ -4,12 +4,12 @@
 
 use std::io;
 
-use orpheus_lobby::{
+use lucy_lobby::{
     custom_game::{LOBBY_COMMAND, UPLOAD},
     handoff::GAME_REQUEST,
     player_messages,
 };
-use orpheus_wire::jam::codec::{Fields, Value};
+use lucy_wire::jam::codec::{Fields, Value};
 
 use crate::lobby::{
     peer::Peer,

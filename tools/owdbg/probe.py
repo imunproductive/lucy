@@ -12,7 +12,7 @@ others replace them. E.g. `--at A --read "[rdx]:16" --at B --no-ret` reads [rdx]
 keeps B's return breakpoint off.
 
 SITE: a game name (index or docs/analysis, e.g. Ingame_Watchdog), an RVA, a VA at the IDB base
-0x140000000 or the ORPHEUS base 0x7FF788F10000, 'module!export' or 'va:0x...'. Breakpoints are
+0x140000000 or the Lucy base 0x7FF788F10000, 'module!export' or 'va:0x...'. Breakpoints are
 armed at the system breakpoint (or --arm-delay seconds after start); a one-shot breakpoint on
 the return address records rax. --caller-in keeps only calls whose return address lies in the
 function containing SITE (e.g. --at kernel32!WaitForSingleObjectEx --caller-in Ingame_Watchdog:
@@ -26,7 +26,7 @@ the game down). Calls owdbg itself makes in the game (--actions' set-view) are n
 --msg ID adds the message's client handler (tools.owindex) as site "msg ID": each hit records
 "message": {reg, object, fields (decoded from the index layout), markers}; the message object is
 the argument register whose [reg] is the message class vtable (r8 for every dispatcher so far),
-hits of other ids sharing the handler are skipped. --send makes ORPHEUS send the message with
+hits of other ids sharing the handler are skipped. --send makes Lucy send the message with
 marker values (see tools/owdbg/msg.py) and logs the handler hits that carry them.
 """
 import argparse
@@ -320,7 +320,7 @@ def main(argv=None):
     if args.send and args.msg is None:
         p.error("--send needs --msg")
     if args.send:
-        args.server_env = dict(os.environ, ORPHEUS_DEBUG_SEND="1")
+        args.server_env = dict(os.environ, LUCY_DEBUG_SEND="1")
     for text in args.read + args.ret_read + [t for own in args.at for t in own.get("read", []) + own.get("ret_read", [])]:
         try:
             Expr(text)

@@ -1,6 +1,6 @@
 """Agent worktrees: create, list and remove them safely.
 
-    python tools/wt.py new <name> [--base main]   # ../orpheus-wt/<name> on branch day/<name>
+    python tools/wt.py new <name> [--base main]   # ../lucy-wt/<name> on branch day/<name>
     python tools/wt.py list
     python tools/wt.py remove <name> [--force]    # refuses unmerged branches and linked folders
 
@@ -22,7 +22,7 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-WORKTREES = REPO.parent / "orpheus-wt"
+WORKTREES = REPO.parent / "lucy-wt"
 
 
 def git(*args: str, cwd: Path = REPO, check: bool = True) -> str:
@@ -84,7 +84,7 @@ def merged(branch: str) -> bool:
 
 
 def worktrees() -> list[tuple[Path, str]]:
-    """(path, branch or detached head) of each worktree under orpheus-wt."""
+    """(path, branch or detached head) of each worktree under lucy-wt."""
     entries, path = [], None
     for line in git("worktree", "list", "--porcelain").splitlines():
         if line.startswith("worktree "):

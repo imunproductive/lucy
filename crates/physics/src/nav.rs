@@ -4,7 +4,7 @@
 //! standing cells around a goal.
 //!
 //! The data is `data/navigation/<map>.json.gz`, derived from the map's chunk
-//! 0x12 by `orpheus_assets` (format in `docs/dev/data-sources.md`). Each
+//! 0x12 by `lucy_assets` (format in `docs/dev/data-sources.md`). Each
 //! volume is a box of voxels, 1 × 1.4 × 1 m (y counts layers of [`LAYER`]
 //! metres), with a walkable mask, a floor point and the volumes it links
 //! to. Links are the client's: two volumes whose cells touch but aren't
@@ -18,7 +18,7 @@
 //! The client's own path query (`0x7FF78A626BC0`) searches the chunk's
 //! other document, the AI cell data ([`crate::ai_cells`]); a navigation
 //! with those cells attached ([`Navigation::with_ai_cells`]) leaves its
-//! walks to them (`orpheus_sim::navigate`). The volumes' heights are coarse
+//! walks to them (`lucy_sim::navigate`). The volumes' heights are coarse
 //! (a layer is 1.4 m), so [`Navigation::path_with`] lets the caller test the
 //! steps between layers and the straight lines against the map's collision.
 

@@ -34,7 +34,7 @@
 //! `atan2` of its own rotation, which was set from those units, agrees but
 //! for its last bits).
 //!
-//! [`TURNING`]: orpheus_wire::entity::TURNING
+//! [`TURNING`]: lucy_wire::entity::TURNING
 
 use crate::mover::MoveKey;
 

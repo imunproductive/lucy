@@ -1,7 +1,7 @@
 //! Records whose statescript chunk is too big for one datagram, in parts.
 //!
 //! A record must fit one datagram by itself
-//! (`orpheus_wire::entity::MAX_PAYLOAD`, 1230 bytes) beside the frame's
+//! (`lucy_wire::entity::MAX_PAYLOAD`, 1230 bytes) beside the frame's
 //! header, its own header and the tick's reliable messages, or nothing
 //! after it in the queue goes (`select_frame`'s "fragmentation required").
 //! The client's statescript host joins a chunk from parts for every entity
@@ -22,8 +22,8 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use orpheus_script::wire::{WireError, chunk_parts};
-use orpheus_wire::entity::EntityUpdate;
+use lucy_script::wire::{WireError, chunk_parts};
+use lucy_wire::entity::EntityUpdate;
 
 use super::Record;
 

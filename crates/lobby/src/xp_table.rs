@@ -1,7 +1,7 @@
 //! The experience a match gives and the experience each level costs, from
 //! the install (`data/game_progression_174.json`, derived from the XP gains
 //! settings `054/0008` and the player progression settings `054/0018` by
-//! `orpheus_assets`).
+//! `lucy_assets`).
 //!
 //! The XP gains name each gain by its display string. The lobby gives
 //! Time, Match Finish, Win, the three medals and First win of the day. It

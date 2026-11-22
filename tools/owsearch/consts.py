@@ -168,7 +168,7 @@ def parse(text):
     GUID, or None when the type is open)}.
     '0x...' or 7+ hex digits: a value (a GUID-shaped 64-bit value is searched as that GUID);
     '068A.025', '000000000307.025', '097:0001': a GUID; 1-6 hex digits without 0x ('04AA'): a GUID index
-    of any type (ORPHEUS's short ids)."""
+    of any type (Lucy's short ids)."""
     s = str(text).strip().replace("`", "").replace("_", "")
     sh = G.parse_short(s)
     if sh:

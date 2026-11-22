@@ -1,11 +1,11 @@
 # Building from source
 
-ORPHEUS has no ready-made download. You build it from the source code on your own PC. The build makes two files in `target\release`:
+Lucy has no ready-made download. You build it from the source code on your own PC. The build makes two files in `target\release`:
 
-- `orpheus.exe`, the program;
-- `owwfd_relay.dll`, the relay that `orpheus` loads into the game.
+- `lucy.exe`, the program;
+- `owwfd_relay.dll`, the relay that `lucy` loads into the game.
 
-They must stay in the same folder. `orpheus` only loads the relay that is next to it.
+They must stay in the same folder. `lucy` only loads the relay that is next to it.
 
 ## What you need
 
@@ -19,16 +19,16 @@ You do not need Node.js or `just` to play. Developers need them; see [testing](.
 ## Build
 
 ```powershell
-git clone <repository> ORPHEUS
-cd ORPHEUS
+git clone <repository> Lucy
+cd Lucy
 cargo build --release --locked --workspace
 ```
 
-`--workspace` is important: without it, Cargo builds `orpheus.exe` but not the relay DLL.
+`--workspace` is important: without it, Cargo builds `lucy.exe` but not the relay DLL.
 
-The first build downloads the Rust crates and takes some minutes. Later builds only compile what changed. The build is the only time anything is downloaded; `orpheus` itself never uses the internet.
+The first build downloads the Rust crates and takes some minutes. Later builds only compile what changed. The build is the only time anything is downloaded; `lucy` itself never uses the internet.
 
-`START.cmd` runs the same build and then starts `orpheus` (see [playing](playing.md)). If the build is current, it does nothing.
+`START.cmd` runs the same build and then starts `lucy` (see [playing](playing.md)). If the build is current, it does nothing.
 
 ## Update
 
@@ -46,6 +46,6 @@ Your profiles and settings are in the state folder, not in the checkout, so an u
 | `linker 'link.exe' not found` | Install the Build Tools with **Desktop development with C++**, then open a new terminal. |
 | `the lock file needs to be updated but --locked was passed` | Your checkout is not clean. Run `git status` and restore `Cargo.lock`. |
 | `package requires rustc 1.85 or newer` | Run `rustup update`. |
-| `orpheus.exe` cannot be written | `orpheus` is still running. Close it, then build again. |
+| `lucy.exe` cannot be written | `lucy` is still running. Close it, then build again. |
 
 Next: [first run](first-run.md).

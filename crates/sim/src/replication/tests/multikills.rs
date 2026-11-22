@@ -7,10 +7,10 @@ use crate::{
     combat::{CombatPlayer, ENVIRONMENT_DAMAGE, Shooter, apply_player_hits},
     scene_assets::install_collision_build,
 };
-use orpheus_content::maps::SpawnChoice;
-use orpheus_content::stats::PlayerStats;
-use orpheus_core::bits::BitWriter;
-use orpheus_wire::combat_messages::CombatNotice;
+use lucy_content::maps::SpawnChoice;
+use lucy_content::stats::PlayerStats;
+use lucy_core::bits::BitWriter;
+use lucy_wire::combat_messages::CombatNotice;
 
 const SHOOTER: u32 = 0xa000_0100;
 const VICTIMS: [u32; 2] = [0xa000_0200, 0xa000_0300];
@@ -87,12 +87,12 @@ fn controller_frames(world: &WorldDelivery) -> Vec<BitWriter> {
 #[ignore = "requires a derived 104319 pack and the install (Gibraltar's collision)"]
 fn a_second_kill_within_two_seconds_pulses_the_announcers_double_kill() {
     const GIBRALTAR: u64 = 0x0800_0000_0000_0184;
-    let runtime = orpheus_testkit::runtime_dir();
+    let runtime = lucy_testkit::runtime_dir();
     let mut assets = SceneAssets::load(&runtime)
         .unwrap()
-        .with_collision_build(install_collision_build(orpheus_testkit::game_dir()));
-    assets.set_player_unknowns(orpheus_script::vm::Unknowns::Tolerate);
-    let map = orpheus_content::maps::MapCatalog::load(runtime.join("data"))
+        .with_collision_build(install_collision_build(lucy_testkit::game_dir()));
+    assets.set_player_unknowns(lucy_script::vm::Unknowns::Tolerate);
+    let map = lucy_content::maps::MapCatalog::load(runtime.join("data"))
         .unwrap()
         .game_map(
             GIBRALTAR,
@@ -130,7 +130,7 @@ fn a_second_kill_within_two_seconds_pulses_the_announcers_double_kill() {
             frame: tick,
             world_tick: Some(tick),
             heal: false,
-            tags: orpheus_script::weapons::DamageTags::NONE,
+            tags: lucy_script::weapons::DamageTags::NONE,
             direction: None,
             environment: false,
             from: None,
@@ -188,7 +188,7 @@ fn a_second_kill_within_two_seconds_pulses_the_announcers_double_kill() {
 #[test]
 #[ignore = "requires a derived 104319 pack"]
 fn in_the_practice_range_a_second_training_bot_kill_pulses_the_double_kill() {
-    let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
     let scene = assets.prepare(GameMap::practice_range()).unwrap();
     let card = PlayerCard::default();
     let mut shooter = spawned(&scene, &card, SHOOTER, 0, 0);
@@ -229,8 +229,8 @@ fn a_third_kill_in_the_window_makes_the_hero_say_his_multikill_line() {
     const TRACER: u64 = 0x02e0_0000_0000_0003;
     // Tracer's graphs meet content debug builds refuse; the release
     // server tolerates it (as the spawn room tests do).
-    let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
-    assets.set_player_unknowns(orpheus_script::vm::Unknowns::Tolerate);
+    let mut assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
+    assets.set_player_unknowns(lucy_script::vm::Unknowns::Tolerate);
     let scene = assets.prepare(GameMap::practice_range()).unwrap();
     let card = PlayerCard::default();
     let mut shooter = spawned_as(&scene, &card, SHOOTER, 0, 0, TRACER);
@@ -284,7 +284,7 @@ fn assert_double_kill_sent(scene: &PreparedScene, shooter: &WorldDelivery, tick:
         .unwrap();
     let frames = controller_frames(shooter);
     let chunk = frames.last().unwrap();
-    assert!(orpheus_testkit::contains_bits(
+    assert!(lucy_testkit::contains_bits(
         chunk.as_bytes(),
         chunk.bit_len(),
         expected.as_bytes(),

@@ -1,5 +1,5 @@
 [package]
-name = "orpheus-fixed"
+name = "lucy-fixed"
 description = "Fixed build 104319 data the game install does not contain: message schemas, statescript codecs, Battle.net descriptors, the lobby signing input and captured server templates"
 version.workspace = true
 edition.workspace = true

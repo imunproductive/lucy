@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, sync::Arc};
 
-use orpheus_script::rulesets::Rulesets;
+use lucy_script::rulesets::Rulesets;
 use serde_json::json;
 
 use super::*;
@@ -431,7 +431,7 @@ fn data_that_no_longer_matches_is_an_error() {
 #[test]
 #[ignore = "requires the derived 104319 graph bundle and rulesets"]
 fn the_install_gives_the_104319_values() {
-    let data = orpheus_testkit::runtime_dir().join("data");
+    let data = lucy_testkit::runtime_dir().join("data");
     let graphs = GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap();
     assert_104319(&ModeGraphValues::read(&graphs).unwrap());
 }

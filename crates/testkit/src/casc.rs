@@ -3,7 +3,7 @@
 //!
 //! Every file is stored as one uncompressed BLTE block in `data.000`, so a
 //! test can find an asset's bytes in the archive and damage them. The content
-//! manifest is unencrypted; the encrypted form is tested in `orpheus-casc`.
+//! manifest is unencrypted; the encrypted form is tested in `lucy-casc`.
 
 use std::{fs, path::Path};
 

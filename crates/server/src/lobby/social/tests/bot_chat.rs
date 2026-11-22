@@ -2,7 +2,7 @@
 //! (`ow174/lobby/handlers/chat.py` chat and whisper, `BOT_REPLY`). Ports
 //! `tests/test_bot_chat.py`.
 
-use orpheus_lobby::accounts::Profile;
+use lucy_lobby::accounts::Profile;
 
 use super::*;
 
@@ -59,7 +59,7 @@ fn logged_in<'a>(schemas: &'a Schemas, server: &Server) -> Client<'a> {
 /// `tests/test_bot_chat.py::BotChatTests`: `test_the_bot_is_quiet_by_default`,
 /// then `test_the_bot_answers_when_the_switch_is_on`.
 #[test]
-#[ignore = "requires an authorized 104319 runtime in ORPHEUS_RUNTIME_DIR"]
+#[ignore = "requires an authorized 104319 runtime in LUCY_RUNTIME_DIR"]
 fn the_bot_answers_only_when_the_switch_is_on() {
     assert!(!Profile::default().bot_chat);
     let state = tempfile::tempdir().unwrap();

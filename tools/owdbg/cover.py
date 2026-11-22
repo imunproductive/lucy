@@ -9,13 +9,13 @@ run: arms an int3 on every primary .pdata function start of the game in the sele
 all game code, RVA 0xC0000-0x2400000, without the startup/in-game protector regions and the 396
 strong obfuscated functions of the research repo's docs/analysis/obfuscated_functions.json),
 --arm-delay seconds after start (default 0 = at the system breakpoint; with --after-login after the
-relay connected to ORPHEUS, ~10 s before the main menu shows). --max N spreads N functions evenly
+relay connected to Lucy, ~10 s before the main menu shows). --max N spreads N functions evenly
 over the selection (the same N gives the same set in every run). Each breakpoint removes itself on
 its first hit and records the current phase. Phases run back to back from arming; ACTION is sent to
 the game window every 0.5 s during the phase: key=VK (hex/decimal virtual-key code or a letter),
 click=X,Y (client coordinates), move (PostMessage, the user's desktop is not touched). Enter in the
 console ends the current phase early. After the last phase the game is terminated. Output JSON:
-phases with the functions first hit in each ({rva, orpheus, name, t, tid, thread}), counts,
+phases with the functions first hit in each ({rva, lucy, name, t, tid, thread}), counts,
 functions never hit.
 --range accepts RVAs or VAs (A-B), --list a file of RVAs/VAs/names (one per line).
 --enter-range and --actions (tools/owdbg/actions.py) play in the Practice Range meanwhile; time the
@@ -198,7 +198,7 @@ def run(args):
         for rva, (i, t, tid, thread) in sorted(hits.items(), key=lambda kv: kv[1][1]):
             if 0 <= i < len(phases):
                 d = names.describe(dbg.main.base + rva)
-                phases[i]["functions"].append({"rva": hx(rva), "orpheus": d.get("orpheus"), "name": d.get("name"),
+                phases[i]["functions"].append({"rva": hx(rva), "lucy": d.get("lucy"), "name": d.get("name"),
                                                "t": t, "tid": tid, "thread": thread})
         before = [rva for rva, v in hits.items() if v[0] < 0]
         result = {"exe": str(s.exe), "base": hx(dbg.main.base) if dbg.main else None,
@@ -259,7 +259,7 @@ def diff(args):
         out = []
         for rva in sorted(keys):
             f = src[rva]
-            out.append({"rva": f["rva"], "orpheus": f.get("orpheus"), "name": f.get("name") or names.game_name(rva),
+            out.append({"rva": f["rva"], "lucy": f.get("lucy"), "name": f.get("name") or names.game_name(rva),
                         "t": f.get("t")})
         return out
 
@@ -274,7 +274,7 @@ def diff(args):
     for label, lst in (("only A", result["only_a"]), ("only B", result["only_b"])):
         print(f"{label}:")
         for r in lst[:args.show]:
-            print(f"  {r['rva']:>10} {r['orpheus'] or '':>16} {r['name'] or ''}")
+            print(f"  {r['rva']:>10} {r['lucy'] or '':>16} {r['name'] or ''}")
         if len(lst) > args.show:
             print(f"  ... {len(lst) - args.show} more" + (f" (all in {args.out})" if args.out else ""))
 
@@ -290,7 +290,7 @@ def main(argv=None):
     r.add_argument("--max", type=int, help="at most N functions (evenly spread over the selection)")
     r.add_argument("--arm-delay", type=float, default=0, help="arm N seconds after start (or after the login)")
     r.add_argument("--after-login", action="store_true",
-                   help="count --arm-delay from the relay's connection to ORPHEUS (the main menu follows)")
+                   help="count --arm-delay from the relay's connection to Lucy (the main menu follows)")
     r.add_argument("--phase", type=parse_phase, action="append", required=True, help="NAME:SECONDS[:ACTION]")
     r.add_argument("--out", help="JSON output (default research/out/owdbg/cover-<time>.json)")
     r.add_argument("--screenshots", help="directory for a PNG of the game window at the end of each phase")

@@ -14,7 +14,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use orpheus_lobby::{
+use lucy_lobby::{
     accounts::Account,
     handoff::general_channel,
     queue::QueueFields,
@@ -130,7 +130,7 @@ impl<'a> Turn<'a> {
         &self.lobby.accounts.bot
     }
 
-    pub(crate) fn record(&self, account: &Account) -> orpheus_wire::jam::codec::Fields {
+    pub(crate) fn record(&self, account: &Account) -> lucy_wire::jam::codec::Fields {
         self.content.record(account)
     }
 

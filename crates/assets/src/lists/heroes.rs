@@ -36,9 +36,9 @@ pub(super) fn list(data: &Data) -> Json {
     Json::Object(heroes)
 }
 
-fn hero(data: &Data, key: u64, hero: &orpheus_stu::Object) -> Json {
+fn hero(data: &Data, key: u64, hero: &lucy_stu::Object) -> Json {
     let color = match hero.get("m_heroColor") {
-        Some(orpheus_stu::Value::Floats(rgba)) if rgba.len() == 4 => {
+        Some(lucy_stu::Value::Floats(rgba)) if rgba.len() == 4 => {
             [rgba[0], rgba[1], rgba[2], rgba[3]]
         }
         _ => [0.0; 4],
@@ -65,7 +65,7 @@ fn hero(data: &Data, key: u64, hero: &orpheus_stu::Object) -> Json {
         images
             .iter()
             .filter_map(|image| match image {
-                orpheus_stu::Value::Object(image) => Some(json!({
+                lucy_stu::Value::Object(image) => Some(json!({
                     "Id": guid_json(guid(image, "m_id")),
                     "TextureGUID": guid_json(guid(image, "m_texture")),
                 })),

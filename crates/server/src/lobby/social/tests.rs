@@ -8,7 +8,7 @@ use std::{
     net::{SocketAddr, TcpStream},
 };
 
-use orpheus_lobby::{
+use lucy_lobby::{
     accounts::{account_id_for, battle_tag},
     handoff::{CREATE_GAME, GAME_REQUEST, HANDOFF, HANDOFF_MESSAGE, Handoff, general_channel},
     login::OUT_CONNECT,
@@ -21,7 +21,7 @@ use orpheus_lobby::{
     },
     templates::{IN_CONNECT, LOBBY},
 };
-use orpheus_wire::jam::codec::{Fields, Schemas, Value, id16};
+use lucy_wire::jam::codec::{Fields, Schemas, Value, id16};
 
 use crate::{
     connection::LEAVE_GRACE,
@@ -87,7 +87,7 @@ fn post(dashboard: SocketAddr, path: &str, body: &str) -> String {
 }
 
 fn start(state: &tempfile::TempDir) -> (Server, VirtualTime) {
-    let runtime = orpheus_testkit::runtime_dir();
+    let runtime = lucy_testkit::runtime_dir();
     let mut config = ServerConfig::new(runtime, state.path().into());
     config.lobby_port = 0;
     config.game_port = Some(0);
@@ -98,7 +98,7 @@ fn start(state: &tempfile::TempDir) -> (Server, VirtualTime) {
 }
 
 #[test]
-#[ignore = "requires an authorized 104319 runtime in ORPHEUS_RUNTIME_DIR"]
+#[ignore = "requires an authorized 104319 runtime in LUCY_RUNTIME_DIR"]
 fn two_players_befriend_party_chat_and_find_the_bot_group() {
     let state = tempfile::tempdir().unwrap();
     let (mut server, _) = start(&state);
@@ -256,7 +256,7 @@ fn say(client: &mut Client<'_>, channel: &Fields, text: &str) {
 }
 
 #[test]
-#[ignore = "requires an authorized 104319 runtime in ORPHEUS_RUNTIME_DIR"]
+#[ignore = "requires an authorized 104319 runtime in LUCY_RUNTIME_DIR"]
 fn match_commands_and_general_again_after_the_match() {
     let state = tempfile::tempdir().unwrap();
     let (mut server, time) = start(&state);

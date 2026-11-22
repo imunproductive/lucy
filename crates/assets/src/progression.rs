@@ -18,7 +18,7 @@
 
 use std::path::Path;
 
-use orpheus_stu::{Types, Value};
+use lucy_stu::{Types, Value};
 use serde_json::{Map, Value as Json, json};
 
 use crate::{
@@ -62,7 +62,7 @@ pub(crate) fn derive(install: &Install, _out: &Path) -> Result<Vec<Output>> {
     Ok(vec![Output::json(PATH, &table)])
 }
 
-fn xp_gains(install: &Install, asset: &orpheus_stu::Asset) -> Result<(Json, Json)> {
+fn xp_gains(install: &Install, asset: &lucy_stu::Asset) -> Result<(Json, Json)> {
     let root = Node::root(asset)?;
     if root.class_name() != Some("STUGenericSettings_XPGains") {
         return Err(asset_error("054/0008 is not the XP gains settings"));

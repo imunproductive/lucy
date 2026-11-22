@@ -1,5 +1,5 @@
 //! A match that runs a Workshop script: the rule engine
-//! ([`orpheus_workshop::Engine`], the retail server's native part) over
+//! ([`lucy_workshop::Engine`], the retail server's native part) over
 //! the match, and the actions it starts as their graphs on the mode entity
 //! (`refs/reports/Workshop.md` §2, §5, "WorkshopRuntime").
 //!
@@ -46,14 +46,14 @@ use std::{
     sync::Arc,
 };
 
-use orpheus_core::tick::TICK_PERIOD;
-use orpheus_script::{
+use lucy_core::tick::TICK_PERIOD;
+use lucy_script::{
     expr::{workshop_tree, workshop_variable},
     mode::{ActionStatus, ModeScript, WorkshopAction},
     vm::ScopeChange,
     wire::Value as Wire,
 };
-use orpheus_workshop::{
+use lucy_workshop::{
     Catalog, Engine, Logic,
     catalog::{Id, ParamKind},
     eval::ids,
@@ -99,7 +99,7 @@ const TEXT_COUNT: u32 = 20988;
 const CREATED_ENTITIES: u32 = 20554;
 
 /// The Workshop buttons (`4A39`), the command bits the client sends for
-/// their logical buttons (`orpheus_script::timeline::button_edges`: the
+/// their logical buttons (`lucy_script::timeline::button_edges`: the
 /// Workshop's button table `0x7FF78B585348` gives the same logical
 /// numbers, Workshop.md "WorkshopModel") and those logical buttons, as
 /// Set Ability Cooldown `2735` rid6 maps them (#465).
@@ -233,7 +233,7 @@ impl WorkshopRun {
     ///   there, so taking it from the loadout is an assumption. Null for a
     ///   hit without one (an environment kill, a health pack's heal).
     /// - Knockback: an explosion's push between players, a ModifyHealth's
-    ///   push vector (Soundwave's, `orpheus_script::vm::HealthChange::knockback`)
+    ///   push vector (Soundwave's, `lucy_script::vm::HealthChange::knockback`)
     ///   and the knockbacks the bodies' graphs report (`STU_AFBB59E9`:
     ///   Rocket Punch's victim graph `0D07`). A ModifyHealth's knockback
     ///   rings (uppercut, slam, quick melee) push nobody yet.

@@ -14,7 +14,7 @@ use std::{
     },
 };
 
-use orpheus_lobby::transport::LobbyMessage;
+use lucy_lobby::transport::LobbyMessage;
 
 /// Messages waiting for one session's thread.
 #[derive(Default)]
@@ -92,7 +92,7 @@ impl Hub {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orpheus_wire::jam::codec::Fields;
+    use lucy_wire::jam::codec::Fields;
 
     #[test]
     fn mail_reaches_the_current_session_only() {

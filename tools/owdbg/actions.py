@@ -13,7 +13,7 @@ camera, prediction and command agree. Positions come from component 4 (+0x160, a
 the feet): a background scan of the heap for component 4's vtable, the owner entity decoded from
 +0x8 and its id at entity+0xB0; bots are entities 0x80008800.. (aim-at-bot skips those on a
 team-0 spawn point of the server's ai_spawners_174.json), our body is the `body=` of the server's
-`orpheus::owner` trace (RUST_LOG is set for it).
+`lucy::owner` trace (RUST_LOG is set for it).
 
 The script starts when the match is entered: with --enter-range when the hero select closed, else
 at the first input sample after the server's '[MM] Match found', then after a first position scan
@@ -48,8 +48,8 @@ at the first input sample after the server's '[MM] Match found', then after a fi
                                with --foreground-input sent with SendInput
     type TEXT                  type TEXT (the rest of the step, spaces kept; no ';'): WM_CHAR per
                                character (SendInput Unicode events with --foreground-input)
-    die                        ORPHEUS kills our hero (POST /api/debug/kill: the server runs
-                               with ORPHEUS_DEBUG_SEND=1); the respawn follows after the mode's
+    die                        Lucy kills our hero (POST /api/debug/kill: the server runs
+                               with LUCY_DEBUG_SEND=1); the respawn follows after the mode's
                                time. Refused in the spawn room (invulnerable there): in the
                                Practice Range walk out first (`move forward 4`)
     screenshot [NAME]          PNG of the window into research/out/owdbg/
@@ -60,7 +60,7 @@ at the first input sample after the server's '[MM] Match found', then after a fi
                                sample the newest command frame in component 59's ring and our
                                body's component 4 position: the client's prediction, frame by frame
     poke ADDRESS TYPE VALUE    write memory: TYPE u8/i8/u16/i16/u32/i32/u64/i64/f32/f64; an address
-                               in the game image is an ORPHEUS VA (base 0x7FF788F10000), others as is
+                               in the game image is a Lucy VA (base 0x7FF788F10000), others as is
 
 BUTTON: fire, fire2 (secondary), ability1, ability2, ultimate, jump, crouch, melee, reload,
 interact, or a hex bit mask.
@@ -78,9 +78,9 @@ import threading
 import time
 
 from . import win32 as w
-from .names import ORPHEUS_BASE
+from .names import LUCY_BASE
 
-# ORPHEUS VAs (base 0x7FF788F10000), see ClientInput.md
+# Lucy VAs (base 0x7FF788F10000), see ClientInput.md
 SAMPLE_SITE = 0x7FF78961C7FC  # in the input sampler 0x7FF78961B350, before the merge 0x7FF789B3D650
 SET_VIEW = 0x7FF7894E00A0  # set-view(component 59, float quaternion[4])
 POINTER_KEY = 0x7FF78BDF47FC  # component +0x8 = entity ^ rol64([key], 2) ^ POINTER_SALT
@@ -96,10 +96,10 @@ COMMAND_RING, COMMAND_RECORD, COMMAND_SLOTS = 0xB60, 36, 32  # {u32 frame; 28 by
 
 ENTITY_ID = 0xB0
 COMP4_POSITION = 0x160
-BOT_ENTITY = 0x80008800  # orpheus_sim::bots::BOT_ENTITY + slot
+BOT_ENTITY = 0x80008800  # lucy_sim::bots::BOT_ENTITY + slot
 UNITS = 65536.0 / (2 * math.pi)
 
-# command bit -> logical button (client 0x7FF78961DDA0, server orpheus_script::timeline)
+# command bit -> logical button (client 0x7FF78961DDA0, server lucy_script::timeline)
 BUTTONS = {
     "fire": 0x1,  # 20 primary fire
     "fire2": 0x2,  # 29 secondary fire
@@ -271,10 +271,10 @@ def prepare(args):
     steps = parse(args.actions)
     env = dict(getattr(args, "server_env", None) or os.environ)
     level = env.get("RUST_LOG", "info")
-    if "orpheus::owner" not in level:
-        env["RUST_LOG"] = level + ",orpheus::owner=debug"
+    if "lucy::owner" not in level:
+        env["RUST_LOG"] = level + ",lucy::owner=debug"
     if any(step[0] == "die" for step in steps):
-        env["ORPHEUS_DEBUG_SEND"] = "1"  # /api/debug/kill
+        env["LUCY_DEBUG_SEND"] = "1"  # /api/debug/kill
     args.server_env = env
 
 
@@ -441,7 +441,7 @@ def quaternion(yaw, pitch):
 
 
 def aim_angles(eye, point):
-    """(yaw, pitch) in command units looking from eye at point (orpheus_sim::ai::aim_at)."""
+    """(yaw, pitch) in command units looking from eye at point (lucy_sim::ai::aim_at)."""
     dx, dy, dz = (point[i] - eye[i] for i in range(3))
     return wrap16(math.atan2(dx, dz) * UNITS), wrap16(math.atan2(-dy, math.hypot(dx, dz)) * UNITS)
 
@@ -567,7 +567,7 @@ class Positions:
         try:
             base = dbg.main.base
             vt = struct.pack("<Q", base + COMP4_VTABLE_RVA)
-            key = dbg.read_u64(base + POINTER_KEY - ORPHEUS_BASE)
+            key = dbg.read_u64(base + POINTER_KEY - LUCY_BASE)
             self.mask = (((key << 2) | (key >> 62)) & 0xFFFFFFFFFFFFFFFF) ^ POINTER_SALT
             found = {}
             t = time.monotonic()
@@ -705,7 +705,7 @@ class Actions:
     # ---- arming and the script start
     def _poll(self):
         if not self.armed and self.s.logged_in:
-            va = self.dbg.main.base + SAMPLE_SITE - ORPHEUS_BASE
+            va = self.dbg.main.base + SAMPLE_SITE - LUCY_BASE
             self.dbg.add_bp(va, self._on_sample)
             self.armed = True
             self.log(f"input sampler breakpoint at 0x{va:X}")
@@ -838,7 +838,7 @@ class Actions:
         hit.set("rsp", rsp)
         hit.set("rcx", c)
         hit.set("rdx", self.scratch + 0x100)
-        hit.set("rip", dbg.main.base + SET_VIEW - ORPHEUS_BASE)
+        hit.set("rip", dbg.main.base + SET_VIEW - LUCY_BASE)
         self.call = {"saved": saved, "input": (yaw, pitch), "target": target, "comp59": c}
         dbg.add_bp(self.scratch, self._set_view_done, oneshot=True)
 
@@ -1012,10 +1012,10 @@ class Actions:
             self.until = now
 
     def game_va(self, addr):
-        """An ORPHEUS VA (base 0x7FF788F10000) inside the game image -> this run's VA; else as is."""
+        """A Lucy VA (base 0x7FF788F10000) inside the game image -> this run's VA; else as is."""
         main = self.dbg.main
-        if ORPHEUS_BASE <= addr < ORPHEUS_BASE + main.size:
-            return main.base + addr - ORPHEUS_BASE
+        if LUCY_BASE <= addr < LUCY_BASE + main.size:
+            return main.base + addr - LUCY_BASE
         return addr
 
     # ---- aiming

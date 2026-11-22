@@ -4,7 +4,7 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
-use orpheus_wire::tcp::PeerStream;
+use lucy_wire::tcp::PeerStream;
 
 const QUERY: &[u8] = b"OW174 BATTLETAG ";
 const TIMEOUT: Duration = Duration::from_secs(5);

@@ -1,7 +1,7 @@
 //! Where a map's spawn rooms are and where its bodies die of the
 //! environment.
 //!
-//! Spawn rooms (`game_map_areas_174.json`, the `orpheus-assets` derivation
+//! Spawn rooms (`game_map_areas_174.json`, the `lucy-assets` derivation
 //! `game_map_areas`): each room is a map entity running graph `0D62` with
 //! the boxes of the area it names. The mode graph sends each room game
 //! message `0724` with three flags; the Practice Range's `13C0` sets all
@@ -56,7 +56,7 @@
 //!   a lethal area of the mode dies. The areas of damage 0 are left out
 //!   (assumption: off unless a graph turns them on; no graph does here).
 //! - Kill volumes (`game_map_areas` `kill_volumes`): the boxes of the map's
-//!   collision that only query category 0x02 meets (`orpheus_assets`'
+//!   collision that only query category 0x02 meets (`lucy_assets`'
 //!   `map_areas` notes), nearly all 4 m thick slabs under a map's drops; 73
 //!   of the 95 map records with a header have them, Watchpoint: Gibraltar,
 //!   Dorado and Route 66 among the maps without damage areas. Strong guess:
@@ -103,7 +103,7 @@
 //! creates it, as it builds a client-made prop's, so they stop his mover
 //! (and his shots) though the movement cache, which holds the client-made
 //! props only, leaves them out. The server puts them in the movers' world
-//! as switched groups (`orpheus_physics` `ContactWorld::with_switched`),
+//! as switched groups (`lucy_physics` `ContactWorld::with_switched`),
 //! on while the placeable stands (until a script or the mode removes it).
 //! Where the client puts each shape (game checks 2026-11-22, the client's
 //! physics world on the Practice Range and Hanamura, refs `MapEntities.md`
@@ -125,7 +125,7 @@
 //!   Hanamura's cars `03B6` and `03B7` stand 0.35 m off their bind pose
 //!   and bob by centimetres, its truck `03B4` holds another pose. The
 //!   server poses them as the client does each tick
-//!   ([`crate::idle_animation`]; moving shapes, `orpheus_physics`
+//!   ([`crate::idle_animation`]; moving shapes, `lucy_physics`
 //!   `ContactWorld::place`). The Range's platforms `0516` circle at y 6.5
 //!   along their path (component 98, `STU_66A032BC`), which the server
 //!   doesn't play, so their animated parts stay out (loose end).
@@ -138,7 +138,7 @@
 //! Team walls (placeable bodies running `0FA8`): the server placeables
 //! running graph `0FA8` (definitions `1C90`, `1C91`) stand in pairs in the
 //! PvP spawn doorways, and their models' meshes stop one team's mover each
-//! (masks 0x88, 0x90; `orpheus_assets` `map_areas`). `0FA8` turns a wall on
+//! (masks 0x88, 0x90; `lucy_assets` `map_areas`). `0FA8` turns a wall on
 //! for the team in its v1777 (the same team as the mask, in every wall's
 //! data) with state 3 (remote 1), which begins on game message `0845`
 //! when its entry condition `#10768 == (attacking team != #1777)` holds;
@@ -149,7 +149,7 @@
 //! match, or no one would leave that spawn room. The server's mover takes
 //! a wall while its placed script runs state 3 and is complete, so that
 //! the clients get the same state in its frames ([`team_wall_on`];
-//! `orpheus_physics` `ContactWorld::switch`); the wall's mask leaves the
+//! `lucy_physics` `ContactWorld::switch`); the wall's mask leaves the
 //! other team out. Assumption: `m_7E42F868`'s flags (component 1, scene
 //! node `0x8000` and `0x200000000000`, refs `OwnerPrediction.md` §12.4)
 //! take the model's physics out with its drawing; not read in the client.
@@ -170,8 +170,8 @@ use std::{
     sync::Arc,
 };
 
-use orpheus_content::maps::{GameMap, SpawnChoice};
-use orpheus_physics::{
+use lucy_content::maps::{GameMap, SpawnChoice};
+use lucy_physics::{
     collision::{
         cache::{HalfEdge, Hull, Mesh, Placement as CachePlacement, Shape, Triangle},
         index::SceneTriangle,
@@ -183,7 +183,7 @@ use orpheus_physics::{
         world::{ContactWorldError, StaticGeometry, StaticShape, scaled_solid},
     },
 };
-use orpheus_script::{
+use lucy_script::{
     graph::{GraphBinding, GraphStore},
     map_tags::{MapTags, TaggedEntity},
     placed::{EntityVolumes, PlacedEntity, Placement},
@@ -215,7 +215,7 @@ pub const FALL_LIMIT: f64 = 20.0;
 /// health (see the module notes).
 pub const LETHAL_DAMAGE: f64 = 100.0;
 /// A ground triangle whose surface has this bit is not ground
-/// (`orpheus_physics::mover::ground::NOT_GROUND`).
+/// (`lucy_physics::mover::ground::NOT_GROUND`).
 const NOT_GROUND: u16 = 1;
 /// The team walls' graph and its state that turns a wall on (see the module
 /// notes).
@@ -245,7 +245,7 @@ impl SpawnRoom {
 /// The areas of the map's entities that have one (`STU_73E1C5F0`,
 /// `STU_96F571ED`): the spawn rooms', as their `0D62` asks for its own, and
 /// the capture points', as the capture area aura's `0F00` asks for its
-/// point (`orpheus_script` `vm/residency.rs`): each point's boxes where
+/// point (`lucy_script` `vm/residency.rs`): each point's boxes where
 /// its objective stands ([`Area::of_point`]).
 pub struct MapVolumes {
     rooms: Arc<[SpawnRoom]>,
@@ -383,7 +383,7 @@ impl MapPlaceable {
 }
 
 /// A server placeable's script data: its definition, where the map puts it
-/// and its statescript instance data (`orpheus_script::placed`).
+/// and its statescript instance data (`lucy_script::placed`).
 #[derive(Debug)]
 pub struct PlacedScript {
     pub placeable: u32,
@@ -1257,7 +1257,7 @@ impl MapAreaData {
     }
 
     /// The map's tagged entities that exist in a mode that lists
-    /// `identifiers`, for the scene tag queries (`orpheus_script::map_tags`;
+    /// `identifiers`, for the scene tag queries (`lucy_script::map_tags`;
     /// `graphs` tells which tags bodies may carry).
     pub fn map_tags(
         &self,
@@ -1329,7 +1329,7 @@ pub fn caught(height: f64, y: f64, above_feet: f64) -> bool {
 }
 
 /// The zones the client's `0x7FF789B2F280` tests a falling ray against
-/// (Meteor Strike's floor, `orpheus_physics::mover::rise`): the world's
+/// (Meteor Strike's floor, `lucy_physics::mover::rise`): the world's
 /// kill height (the client's world `+276`; here the catch floor,
 /// [`kill_height`], an assumption) and the damage areas (the client keeps
 /// those with `m_1BB427AE` set; here the lethal ones, an assumption).
@@ -1339,7 +1339,7 @@ pub struct DeathZones {
     pub areas: std::sync::Arc<[DamageArea]>,
 }
 
-impl orpheus_physics::mover::DeathZones for DeathZones {
+impl lucy_physics::mover::DeathZones for DeathZones {
     /// Below the kill height: the start when it is below, else where the
     /// segment crosses it (the start when it is level within 0.004); then
     /// the highest entry into an area's box over that.

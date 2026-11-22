@@ -2,7 +2,7 @@
 
 - the verified config-var facts (STU_CD7F3617 / STU_3832D36C fields, records, evaluators);
 - addr()/name() on known addresses;
-- every state record against ORPHEUS crates/fixed/data/statescript_codecs.json `records` (list index, record,
+- every state record against Lucy crates/fixed/data/statescript_codecs.json `records` (list index, record,
   construct, destroy, typeinfo, priority, hash, winner, vtable, reader, block, writer);
 - query times after open.
 Exit code 1 when a check fails.

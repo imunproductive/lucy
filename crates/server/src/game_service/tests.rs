@@ -1,9 +1,9 @@
 use super::*;
 use lockstep::{Client, Lockstep};
-use orpheus_content::maps::PRACTICE_RANGE_MAP;
-use orpheus_core::bits::{BitReader, BitWriter};
-use orpheus_core::tick::FIRST_TICK;
-use orpheus_wire::{
+use lucy_content::maps::PRACTICE_RANGE_MAP;
+use lucy_core::bits::{BitReader, BitWriter};
+use lucy_core::tick::FIRST_TICK;
+use lucy_wire::{
     link::{FIN, KIND_CONTROL, SYN},
     messages::{read_channel, write_channel},
 };
@@ -54,7 +54,7 @@ fn tick_at(time: Duration) -> u32 {
     FIRST_TICK + 1 + lockstep::ticks(time)
 }
 
-fn messages(schemas: &Schemas, packet: &Packet) -> Vec<orpheus_wire::messages::ReliableMessage> {
+fn messages(schemas: &Schemas, packet: &Packet) -> Vec<lucy_wire::messages::ReliableMessage> {
     assert_eq!(packet.kind, KIND_FRAME);
     let mut reader = BitReader::new(&packet.payload);
     reader.var_a().unwrap();
@@ -292,7 +292,7 @@ enum DecodedField {
     U32s(Vec<u32>),
 }
 
-/// The components of a create or update (`orpheus_wire::entity`
+/// The components of a create or update (`lucy_wire::entity`
 /// `write_components`) when each is a 26, 29 (id and BattleTag), 44, 51
 /// (the pools), 75, 76 or 123, the components of an observed or a bot's
 /// body; `None` for any other (a player's or a bot's stand-in controller,
@@ -307,7 +307,7 @@ fn decode_components(mut reader: BitReader<'_>) -> Option<Vec<DecodedComponent>>
         Bytes(usize),
         U32s,
     }
-    /// `orpheus_wire::entity` HEALTH: 48 pools, then two u32, the killer
+    /// `lucy_wire::entity` HEALTH: 48 pools, then two u32, the killer
     /// and two u8.
     const HEALTH: [Kind; 53] = {
         let mut fields = [Kind::Bytes(20); 53];
@@ -467,8 +467,8 @@ fn joined_chunks<'a>(chunks: impl IntoIterator<Item = &'a ReceivedChunk>) -> Vec
 
 /// The graphs of the instances a mode entity's frame lists: a whole
 /// frame's, or the new ones of a delta.
-fn listed_graphs(graphs: &orpheus_script::graph::GraphStore, chunk: &ReceivedChunk) -> Vec<u16> {
-    use orpheus_script::wire::{DeltaInstance, read_delta_instances, read_full_head};
+fn listed_graphs(graphs: &lucy_script::graph::GraphStore, chunk: &ReceivedChunk) -> Vec<u16> {
+    use lucy_script::wire::{DeltaInstance, read_delta_instances, read_full_head};
     if chunk.first == 0 {
         let head = read_full_head(&chunk.data, |graph| {
             graphs
@@ -497,11 +497,11 @@ fn listed_graphs(graphs: &orpheus_script::graph::GraphStore, chunk: &ReceivedChu
 type ControllerShows = (bool, Option<u64>, Option<u64>);
 
 /// What a full owner controller frame shows (its head: the controller
-/// script's projection, `orpheus_sim::controller`): [`ControllerShows`].
+/// script's projection, `lucy_sim::controller`): [`ControllerShows`].
 /// None for another chunk. `graphs` give the states of the variables' Stack
 /// links (`0C90`'s mode ruleset switch st47 binds #8430e or #8431e).
 fn controller_shows(
-    graphs: &orpheus_script::graph::GraphStore,
+    graphs: &lucy_script::graph::GraphStore,
     chunk: &ReceivedChunk,
 ) -> Option<ControllerShows> {
     let (shown, instances) = controller_head(graphs, chunk)?;
@@ -518,10 +518,10 @@ fn controller_shows(
 /// [`controller_shows`]'s reading of a full owner controller frame, with
 /// the graphs of the instances it lists.
 fn controller_head(
-    graphs: &orpheus_script::graph::GraphStore,
+    graphs: &lucy_script::graph::GraphStore,
     chunk: &ReceivedChunk,
 ) -> Option<(ControllerShows, Vec<u16>)> {
-    use orpheus_script::wire::{Value as ScriptValue, read_full_head};
+    use lucy_script::wire::{Value as ScriptValue, read_full_head};
     if chunk.first != 0 {
         return None;
     }
@@ -555,9 +555,9 @@ fn controller_head(
 /// (`scene::BOARD_POSTERS` before 2026-11-18: `13C0` with remote slot 4,
 /// the `06DF.025` poster st6, on and `0CB6` under st21, the frame upstream
 /// kjs saw open the board, `254fa913`), and the rest of the graph's tree.
-/// The layouts are `orpheus script query show 13C0` and `0CBB`.
-fn assert_range_mode_frame(graphs: &orpheus_script::graph::GraphStore, chunk: &ReceivedChunk) {
-    use orpheus_script::wire::{Value as ScriptValue, read_full_head, read_value};
+/// The layouts are `lucy script query show 13C0` and `0CBB`.
+fn assert_range_mode_frame(graphs: &lucy_script::graph::GraphStore, chunk: &ReceivedChunk) {
+    use lucy_script::wire::{Value as ScriptValue, read_full_head, read_value};
     let head = read_full_head(&chunk.data, |graph| {
         graphs
             .graph(u32::from(graph))
@@ -722,12 +722,12 @@ fn world_records(schemas: &Schemas, packet: &Packet) -> Vec<WorldRecord> {
                     if operation == 1 && !reader.bit().unwrap() {
                         record.definition = Some(reader.guid_index().unwrap());
                         let flags = reader.bits(8).unwrap() as u8;
-                        if flags & orpheus_wire::entity::SKIN_THEME != 0 {
-                            assert_ne!(flags & orpheus_wire::entity::WITH_SKIN, 0);
+                        if flags & lucy_wire::entity::SKIN_THEME != 0 {
+                            assert_ne!(flags & lucy_wire::entity::WITH_SKIN, 0);
                             record.skin =
                                 Some((reader.bits(32).unwrap() as u32, reader.bit().unwrap()));
                         }
-                        use orpheus_wire::entity::{WITH_MOVEMENT, WITH_SCALE, WITH_TRANSFORM};
+                        use lucy_wire::entity::{WITH_MOVEMENT, WITH_SCALE, WITH_TRANSFORM};
                         let mut components = reader;
                         if flags & WITH_TRANSFORM != 0 {
                             components.advance(7 * 32).unwrap();
@@ -768,7 +768,7 @@ fn world_records(schemas: &Schemas, packet: &Packet) -> Vec<WorldRecord> {
         .collect()
 }
 
-/// A create's movement state as `orpheus_wire::entity::write_movement`
+/// A create's movement state as `lucy_wire::entity::write_movement`
 /// writes it, read past; its frame, counted back from the create's base.
 fn movement_state(reader: &mut BitReader<'_>) -> u32 {
     fn selector(reader: &mut BitReader<'_>, width: usize) {
@@ -828,11 +828,11 @@ fn movement_state(reader: &mut BitReader<'_>) -> u32 {
     selector(reader, 16); // Yaw.
     assert_eq!(reader.bits(2).unwrap(), 0, "Euler pitch or roll");
     for _ in 0..3 {
-        selector(reader, orpheus_wire::entity::MOVEMENT_AXIS_BITS);
+        selector(reader, lucy_wire::entity::MOVEMENT_AXIS_BITS);
     }
     if reader.bit().unwrap() {
         for _ in 0..3 {
-            selector(reader, orpheus_wire::entity::MOVEMENT_AXIS_BITS);
+            selector(reader, lucy_wire::entity::MOVEMENT_AXIS_BITS);
         }
     }
     assert_eq!(reader.bits(9).unwrap(), 0);
@@ -847,7 +847,7 @@ fn movement_state(reader: &mut BitReader<'_>) -> u32 {
         assert_eq!(reader.bits(2).unwrap(), 0b10);
         reader.advance(33).unwrap(); // The fall, then a clear bit.
     }
-    orpheus_wire::entity::CREATE_BASE.wrapping_sub(frame_back)
+    lucy_wire::entity::CREATE_BASE.wrapping_sub(frame_back)
 }
 
 /// The shot records after channel 2's events bit (projectiles.py
@@ -982,7 +982,7 @@ fn send_input(
     if *next > newest {
         return;
     }
-    let count = (newest - *next + 1).min(u32::from(orpheus_wire::commands::MAX_COMMANDS));
+    let count = (newest - *next + 1).min(u32::from(lucy_wire::commands::MAX_COMMANDS));
     watcher.client.send(
         ACK,
         aimed_batch(*next, count as u8, yaw, pitch, buttons, forward),
@@ -1000,10 +1000,10 @@ fn input_ack(schemas: &Schemas, packet: &Packet) -> u32 {
 #[test]
 #[ignore = "requires a derived 104319 Practice Range scene"]
 fn busy_peers_resume_in_round_robin_order_after_the_global_input_budget() {
-    use orpheus_sim::scene_assets::SceneAssets;
-    use orpheus_wire::commands::Command;
+    use lucy_sim::scene_assets::SceneAssets;
+    use lucy_wire::commands::Command;
 
-    let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
     let scene = assets.prepare(GameMap::practice_range()).unwrap();
     let mut state = State::new(Arc::new(fixture()));
     // Five synthetic peers share a prepared fixture solely to test the
@@ -1086,8 +1086,8 @@ enum PreparedFixture {
 
 fn exercise_prepared_world(fixture: PreparedFixture) {
     use crate::practice::{SoloPracticeHandoff, dispatch_scene};
-    use orpheus_content::catalog::ItemDb;
-    use orpheus_lobby::{
+    use lucy_content::catalog::ItemDb;
+    use lucy_lobby::{
         accounts::Accounts,
         collection::Collection,
         handoff::{CREATE_GAME, GAME_REQUEST},
@@ -1096,13 +1096,13 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
         session::PreparedLogin,
         templates::RetailTemplates,
     };
-    use orpheus_sim::{
+    use lucy_sim::{
         body_script::fixture_projectile_factory, bots::BOT_ENTITY, scene_assets::SceneAssets,
     };
-    use orpheus_wire::jam::codec::id16;
+    use lucy_wire::jam::codec::id16;
 
     const CONTROLLER: u32 = 0xa000_0100;
-    let runtime = orpheus_testkit::runtime_dir();
+    let runtime = lucy_testkit::runtime_dir();
     let data = runtime.join("data");
     let schemas = Arc::new(Schemas::game());
     let lobby = Schemas::lobby();
@@ -1166,7 +1166,7 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
                 bots[2].position = [x - 5.0, y, z + 0.8];
                 let factory = fixture_projectile_factory(40.0);
                 scene.owner_body_factory = Some(Arc::new(move |hero, spawn, _| {
-                    if hero.guid != orpheus_content::heroes::SOLDIER {
+                    if hero.guid != lucy_content::heroes::SOLDIER {
                         return Ok(None);
                     }
                     Ok(Some(Box::new(factory.start(spawn)?)))
@@ -1280,8 +1280,8 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
             return;
         };
         let placeable = record.entity & 0xFFFF_F000 == 0x8000_0000;
-        let made = (orpheus_script::placed::MADE_FIRST
-            ..orpheus_script::placed::MADE_FIRST + orpheus_script::placed::MADE_SPAN)
+        let made = (lucy_script::placed::MADE_FIRST
+            ..lucy_script::placed::MADE_FIRST + lucy_script::placed::MADE_SPAN)
             .contains(&record.entity);
         if record.entity & !0xFF == player_entity(1) || placeable || made {
             return;
@@ -1289,7 +1289,7 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
         if record.entity == GAME_MODE_ENTITY {
             // The whole frame first, then the graph's changes as deltas
             // from the frame the client acknowledged
-            // (`orpheus_sim::mode_view`).
+            // (`lucy_sim::mode_view`).
             if *mode {
                 assert_ne!(script.first, 0, "a delta after the whole frame");
             } else {
@@ -1309,7 +1309,7 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
             }
             let mut bits = script.bits();
             assert_eq!(bits.bits(3).unwrap(), 2);
-            assert!(bits.w_var().unwrap() >= orpheus_core::tick::FIRST_TICK);
+            assert!(bits.w_var().unwrap() >= lucy_core::tick::FIRST_TICK);
             *controller = true;
         }
     };
@@ -1422,7 +1422,7 @@ fn send_instance_message(
     ]);
     let message = encode(
         schemas,
-        orpheus_content::parameters::CLIENT_GAME_MESSAGE,
+        lucy_content::parameters::CLIENT_GAME_MESSAGE,
         &fields,
     )
     .unwrap();
@@ -1432,7 +1432,7 @@ fn send_instance_message(
 }
 
 fn pick_soldier_for_weapon(client: &mut Client, schemas: &Schemas) -> u32 {
-    use orpheus_content::{heroes::SOLDIER, parameters::PICK_HERO};
+    use lucy_content::{heroes::SOLDIER, parameters::PICK_HERO};
     let body = player_entity(0) | 1;
     send_game_message(
         client,
@@ -1457,10 +1457,10 @@ fn pick_soldier_for_weapon(client: &mut Client, schemas: &Schemas) -> u32 {
 }
 
 fn exercise_projectile(client: &mut Client, schemas: &Schemas) {
-    use orpheus_sim::{
+    use lucy_sim::{
         body_script::FIXTURE_PROJECTILE_DEFINITION, bots::BOT_ENTITY, projectiles::ProjectileLeases,
     };
-    use orpheus_wire::commands::SECONDARY;
+    use lucy_wire::commands::SECONDARY;
 
     let frame = pick_soldier_for_weapon(client, schemas);
     let definition = FIXTURE_PROJECTILE_DEFINITION;
@@ -1558,11 +1558,11 @@ fn exercise_projectile(client: &mut Client, schemas: &Schemas) {
 fn exercise_hero_selection(
     client: &mut Client,
     schemas: &Schemas,
-    assets: &orpheus_sim::scene_assets::SceneAssets,
+    assets: &lucy_sim::scene_assets::SceneAssets,
     server: &GameService,
     ticket: &Handoff,
 ) {
-    use orpheus_content::{
+    use lucy_content::{
         heroes::SOLDIER,
         parameters::{OPEN_OR_CLOSE, PICK_HERO},
     };
@@ -1830,7 +1830,7 @@ struct Watcher {
     owner: u32,
     tick: u32,
     sequences: HashSet<u32>,
-    datagrams: Vec<(Vec<orpheus_wire::messages::Message>, Vec<WorldRecord>)>,
+    datagrams: Vec<(Vec<lucy_wire::messages::Message>, Vec<WorldRecord>)>,
     /// The server tick of each datagram.
     ticks: Vec<u32>,
 }
@@ -1921,11 +1921,11 @@ fn pump_within(
 #[test]
 #[ignore = "requires a prepared 104319 Practice Range scene without bot VM graphs"]
 fn two_players_in_one_practice_range_see_each_other() {
-    use orpheus_content::{heroes::SOLDIER, parameters::PICK_HERO};
-    use orpheus_sim::scene_assets::SceneAssets;
-    use orpheus_wire::commands::FIRE;
+    use lucy_content::{heroes::SOLDIER, parameters::PICK_HERO};
+    use lucy_sim::scene_assets::SceneAssets;
+    use lucy_wire::commands::FIRE;
 
-    let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
     let scene = assets.prepare(GameMap::practice_range()).unwrap();
     assert!(scene.movement_ready());
     let tracer = assets.heroes().find_hero("Tracer").unwrap().guid;
@@ -2235,15 +2235,15 @@ fn two_players_in_one_practice_range_see_each_other() {
 #[test]
 #[ignore = "requires a prepared 104319 Practice Range scene without bot VM graphs"]
 fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
-    use orpheus_content::{
+    use lucy_content::{
         heroes::{ANA, SOLDIER},
         parameters::PICK_HERO,
         stats::GMP_STATS,
     };
-    use orpheus_sim::scene_assets::SceneAssets;
-    use orpheus_wire::commands::FIRE;
+    use lucy_sim::scene_assets::SceneAssets;
+    use lucy_wire::commands::FIRE;
 
-    let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
     let scene = assets.prepare(two_team_range()).unwrap();
     let facing = scene.map().spawn_point(0, 0).unwrap().1;
     let schemas = Arc::new(Schemas::game());
@@ -2409,7 +2409,7 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
         )]))
     );
     // Each hit the target survives reaches his body's script as the damage
-    // message (`orpheus_sim::combat::damage_message`), and 0.15 s after
+    // message (`lucy_sim::combat::damage_message`), and 0.15 s after
     // the first his graph 01CA raises his pain criteria, whose audience
     // (#1839) is his body and the shooter's: before he dies, his client
     // hears his body's pain line (ClientInVoice 27500), said to his body,
@@ -2459,7 +2459,7 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
     );
     assert!(hits.iter().all(|(index, _)| *index <= eliminated));
     // The target's body is a hero that can be hit on team 1 (its filter
-    // bits at its create, `orpheus_sim::scene` module notes), and each
+    // bits at its create, `lucy_sim::scene` module notes), and each
     // client gets its pools of 0 with its dead bit.
     let filter = |components: &[DecodedComponent]| {
         components.iter().find(|(index, _)| *index == 26).cloned()
@@ -2483,7 +2483,7 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
     // history of it (`0x7FF789B80F70`) appends them; the target's own
     // create puts it 18 frames past its datagram's frame, ahead of his
     // client's command frames and below the records that follow
-    // (`orpheus_sim::body::body_create`).
+    // (`lucy_sim::body::body_create`).
     assert_eq!(create.create_frame, Some(0));
     let own_index = target
         .find(0, |record| {
@@ -2497,7 +2497,7 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
         .unwrap();
     assert_eq!(
         own.create_frame,
-        Some(target.ticks[own_index] + orpheus_sim::body::OWN_CREATE_LEAD)
+        Some(target.ticks[own_index] + lucy_sim::body::OWN_CREATE_LEAD)
     );
     let dead = |watcher: &Watcher| {
         watcher
@@ -2546,8 +2546,7 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
     // node 68, the aim speed `STU_3716E1D4`), which debug builds refuse
     // and release builds run as a plain state as Python does; so this part
     // runs in release builds.
-    let tolerant =
-        orpheus_script::vm::Unknowns::for_build() == orpheus_script::vm::Unknowns::Tolerate;
+    let tolerant = lucy_script::vm::Unknowns::for_build() == lucy_script::vm::Unknowns::Tolerate;
     let owner_frames = |watcher: &Watcher| {
         watcher
             .find(died, |record| {
@@ -2584,18 +2583,18 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
     // #17549 reads `!#478e`); the shooter's observer frames carry it.
     if tolerant {
         let mut dead_flag = BitWriter::new();
-        dead_flag.w_var(orpheus_script::bot::DEAD_FLAG);
-        orpheus_script::wire::write_value(
+        dead_flag.w_var(lucy_script::bot::DEAD_FLAG);
+        lucy_script::wire::write_value(
             &mut dead_flag,
-            &orpheus_script::wire::Value::Bool(true),
-            orpheus_script::wire::ValueEncoding::Compact,
+            &lucy_script::wire::Value::Bool(true),
+            lucy_script::wire::ValueEncoding::Compact,
         )
         .unwrap();
         dead_flag.bit(false); // no stack binding
         let raised = shooter.find(0, |record| {
             record.entity == target_body
                 && record.script.as_ref().is_some_and(|chunk| {
-                    orpheus_testkit::contains_bits(
+                    lucy_testkit::contains_bits(
                         &chunk.data,
                         chunk.width,
                         dead_flag.as_bytes(),
@@ -2684,17 +2683,17 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
     server.stop().unwrap();
 }
 
-/// The Practice Range's spawn room (`orpheus_sim::map_areas`): a player
+/// The Practice Range's spawn room (`lucy_sim::map_areas`): a player
 /// who walks out of it toward the bots gets his player entity's component
 /// 74 (field 6, the spawn room flag the client checks before H opens hero
 /// select) updated once, and no more while he stays out.
 #[test]
 #[ignore = "requires a prepared 104319 Practice Range scene without bot VM graphs"]
 fn walking_out_of_the_spawn_room_clears_the_hero_select_flag() {
-    use orpheus_content::{heroes::SOLDIER, parameters::PICK_HERO};
-    use orpheus_sim::scene_assets::SceneAssets;
+    use lucy_content::{heroes::SOLDIER, parameters::PICK_HERO};
+    use lucy_sim::scene_assets::SceneAssets;
 
-    let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
     let scene = assets.prepare(GameMap::practice_range()).unwrap();
     let facing = scene.map().spawn_point(0, 0).unwrap().1;
     let schemas = Arc::new(Schemas::game());
@@ -2808,7 +2807,7 @@ fn walking_out_of_the_spawn_room_clears_the_hero_select_flag() {
 /// 0.5785), square to its facing).
 fn two_team_range() -> GameMap {
     GameMap {
-        spawns: vec![orpheus_content::maps::Spawn {
+        spawns: vec![lucy_content::maps::Spawn {
             team: None,
             position: [35.46356, 1.991726, 23.83998],
             yaw: 144.6566,
@@ -2823,8 +2822,7 @@ fn two_team_range() -> GameMap {
 fn practice_players<const N: usize>(
     players: [(&str, u8, &str); N],
 ) -> (Lockstep, Arc<Schemas>, [Watcher; N], [[f64; 3]; N]) {
-    let assets =
-        orpheus_sim::scene_assets::SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let assets = lucy_sim::scene_assets::SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
     practice_world(players, &assets, |_| {})
 }
 
@@ -2832,10 +2830,10 @@ fn practice_players<const N: usize>(
 /// prepared scene first.
 fn practice_world<const N: usize>(
     players: [(&str, u8, &str); N],
-    assets: &orpheus_sim::scene_assets::SceneAssets,
-    arrange: impl FnOnce(&mut orpheus_sim::scene_assets::PreparedScene),
+    assets: &lucy_sim::scene_assets::SceneAssets,
+    arrange: impl FnOnce(&mut lucy_sim::scene_assets::PreparedScene),
 ) -> (Lockstep, Arc<Schemas>, [Watcher; N], [[f64; 3]; N]) {
-    use orpheus_content::{heroes::SOLDIER, parameters::PICK_HERO};
+    use lucy_content::{heroes::SOLDIER, parameters::PICK_HERO};
 
     let map = if players.iter().any(|&(_, team, _)| team != 0) {
         two_team_range()
@@ -2977,12 +2975,11 @@ fn practice_world<const N: usize>(
 #[test]
 #[ignore = "requires the derived 104319 data"]
 fn practice_range_hero_switch_and_back() {
-    use orpheus_content::{
+    use lucy_content::{
         heroes::SOLDIER,
         parameters::{OPEN_OR_CLOSE, PICK_HERO},
     };
-    let assets =
-        orpheus_sim::scene_assets::SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let assets = lucy_sim::scene_assets::SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
     let tracer = assets.heroes().find_hero("Tracer").unwrap().guid;
     let (mut server, schemas, [mut player], _) =
         practice_world([("player#1111", 0, "Soldier: 76")], &assets, |_| {});
@@ -3075,7 +3072,7 @@ fn practice_range_hero_switch_and_back() {
 }
 
 /// The Practice Range's Training Partner console `265F` makes its default
-/// partner at its start (`STU_FC3921B1`, `orpheus_sim::placed_script`): a
+/// partner at its start (`STU_FC3921B1`, `lucy_sim::placed_script`): a
 /// Tracer (`0003.075`) on the red team, an AI player in the room's next
 /// slot (`ai.rs`), whose body stands still on the console's pad `3992`
 /// (34.24, 1.99, 22.97) facing the pad's way, and whose body the player's
@@ -3095,7 +3092,7 @@ fn practice_range_hero_switch_and_back() {
 #[test]
 #[ignore = "requires the derived 104319 data"]
 fn the_range_console_puts_a_training_partner_on_its_pad_and_a_pick_replaces_it() {
-    use orpheus_content::heroes::ANA;
+    use lucy_content::heroes::ANA;
     let PartnerPick {
         server,
         schemas,
@@ -3104,7 +3101,7 @@ fn the_range_console_puts_a_training_partner_on_its_pad_and_a_pick_replaces_it()
         yaw,
         ..
     } = pick_training_partner(
-        &orpheus_sim::scene_assets::SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap(),
+        &lucy_sim::scene_assets::SceneAssets::load(lucy_testkit::runtime_dir()).unwrap(),
         ANA,
     );
     let tracer = player_entity(1) | 1;
@@ -3203,9 +3200,8 @@ fn the_range_console_puts_a_training_partner_on_its_pad_and_a_pick_replaces_it()
 #[test]
 #[ignore = "requires the derived 104319 data"]
 fn a_reinhardt_training_partner_comes_once_with_the_consoles_spawn_effect() {
-    use orpheus_core::tick::TICK_PERIOD;
-    let assets =
-        orpheus_sim::scene_assets::SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    use lucy_core::tick::TICK_PERIOD;
+    let assets = lucy_sim::scene_assets::SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
     let reinhardt = assets.heroes().find_hero("Reinhardt").unwrap().clone();
     let PartnerPick {
         server,
@@ -3274,7 +3270,7 @@ fn a_reinhardt_training_partner_comes_once_with_the_consoles_spawn_effect() {
     let [full] = fulls[..] else {
         panic!("{} full frames", fulls.len());
     };
-    let head = orpheus_script::wire::read_full_head(&full.data, |graph| {
+    let head = lucy_script::wire::read_full_head(&full.data, |graph| {
         assets
             .graphs()
             .graph(u32::from(graph))
@@ -3322,27 +3318,24 @@ struct PartnerPick {
 /// stands on the pad; he walks to the console, presses H and picks `hero`
 /// as the picker does, until the Tracer's body is gone and the new
 /// partner's body (room slot 2) arrived.
-fn pick_training_partner(
-    assets: &orpheus_sim::scene_assets::SceneAssets,
-    hero: u64,
-) -> PartnerPick {
+fn pick_training_partner(assets: &lucy_sim::scene_assets::SceneAssets, hero: u64) -> PartnerPick {
     const TRACER: u64 = 0x02E0_0000_0000_0003;
     const CONSOLE_AT: [f32; 3] = [34.62, 1.99, 17.86];
     const PICK: u64 = 0x0240_0000_0000_1213;
     let spawn = GameMap::practice_range().spawn_point(0, 0).unwrap().0;
     // The walk to the console: the server's own path query, its legs
     // checked with Soldier: 76's standing capsule on the map's collision
-    // (`orpheus_sim::navigate`), as an AI hero's are.
+    // (`lucy_sim::navigate`), as an AI hero's are.
     let mut walk = None;
     let (server, schemas, [mut watcher], _) =
         practice_world([("player#1111", 0, "Soldier: 76")], assets, |scene| {
             let body = scene
                 .heroes()
-                .get(orpheus_content::heroes::SOLDIER)
+                .get(lucy_content::heroes::SOLDIER)
                 .unwrap()
                 .body;
             let to = CONSOLE_AT.map(f64::from);
-            let path = orpheus_sim::navigate::path(
+            let path = lucy_sim::navigate::path(
                 scene.navigation(),
                 spawn,
                 to,
@@ -3427,7 +3420,7 @@ fn pick_training_partner(
     assert!(server.bodies(MATCH).unwrap()[0].picker_hides_hud);
     // The pick, from his controller's scope 126 instance: `08E6` an array
     // of the hero, `08E7` an array of true, then two entities
-    // (`orpheus_content::parameters` `parameter_rows_read_as_the_client_writes_them`).
+    // (`lucy_content::parameters` `parameter_rows_read_as_the_client_writes_them`).
     let picker = server.bodies(MATCH).unwrap()[0].picker.unwrap();
     let owner = watcher.owner;
     let mut blob = vec![0x00, 0x00, 0x00, 0x00, 0x02];
@@ -3473,7 +3466,7 @@ fn pick_training_partner(
 
 /// Team 0's first player (slot 0 of the room) runs out of his spawn room
 /// the way the first spawn point faces, as a player leaves it: retail
-/// spawn rooms keep him invulnerable (`orpheus_sim::map_areas`). He runs
+/// spawn rooms keep him invulnerable (`lucy_sim::map_areas`). He runs
 /// until the server's spawn room flag cleared and his feet are `there`,
 /// then `beyond` more frames, then stands still for a second. Returns his
 /// next command frame.
@@ -3539,7 +3532,7 @@ fn pump_commanding(
 
 /// The client's hero settings (21604) reach his body in the world and his
 /// owner frames. The client sends its list in parts of at most 4 entries
-/// (`+0x90` the first, `+0x91` the last; `orpheus_content::hero_settings`),
+/// (`+0x90` the first, `+0x91` the last; `lucy_content::hero_settings`),
 /// here 5: ALLIED HEALTH BARS at ALWAYS and three other heroes' settings,
 /// then Soldier: 76's HOLD TO SPRINT on. The whole list counts: with ALLIED
 /// HEALTH BARS at ALWAYS, Soldier: 76's body graph `01CF` gives him the
@@ -3553,11 +3546,11 @@ fn pump_commanding(
 #[test]
 #[ignore = "requires a prepared 104319 Practice Range scene without bot VM graphs"]
 fn a_clients_hero_settings_list_reaches_his_body() {
-    use orpheus_content::hero_settings::{
+    use lucy_content::hero_settings::{
         ALLIED_HEALTH_BARS, ALLIED_HEALTH_BARS_ALWAYS, HERO_SETTINGS,
     };
-    use orpheus_content::heroes::{ANA, SOLDIER};
-    use orpheus_script::wire::Value as ScriptValue;
+    use lucy_content::heroes::{ANA, SOLDIER};
+    use lucy_script::wire::Value as ScriptValue;
 
     const HOLD_TO_SPRINT: u64 = 0x0d80_0000_0000_1ddc;
     let (mut server, schemas, [mut soldier], _) =
@@ -3688,12 +3681,12 @@ fn ends_with_frame_action(chunk: &ReceivedChunk, node: u16, bits: u8) -> bool {
 /// body as `02A3`; `05AD` plays `0686`, whose effect 40 goes to his teammate
 /// in his body's observer frames (remote index 8) and to his own client in
 /// its owner frames (raw index 36), each as the frame's remote message
-/// (`orpheus_sim::wheel`).
+/// (`lucy_sim::wheel`).
 #[test]
 #[ignore = "requires a prepared 104319 Practice Range scene without bot VM graphs"]
 fn a_need_healing_callout_reaches_a_teammate() {
-    let graphs = orpheus_script::graph::GraphStore::load_runtime(
-        orpheus_testkit::runtime_dir().join("data"),
+    let graphs = lucy_script::graph::GraphStore::load_runtime(
+        lucy_testkit::runtime_dir().join("data"),
         "game_graphs_174.json.gz",
     )
     .unwrap();
@@ -3713,7 +3706,7 @@ fn a_need_healing_callout_reaches_a_teammate() {
         (0x80, Value::Bool(false)),
         (0x84, Value::Struct(Fields::from([(0, Value::Unsigned(0))]))),
     ]);
-    let message = encode(&schemas, orpheus_sim::wheel::COMMUNICATION_ACTION, &choice).unwrap();
+    let message = encode(&schemas, lucy_sim::wheel::COMMUNICATION_ACTION, &choice).unwrap();
     let mut payload = BitWriter::new();
     write_channel(&mut payload, &[(2, message)], &[]).unwrap();
     speaker.client.send(ACK, payload.into_bytes());
@@ -3753,8 +3746,8 @@ fn a_need_healing_callout_reaches_a_teammate() {
 #[test]
 #[ignore = "requires a prepared 104319 Practice Range scene without bot VM graphs"]
 fn another_client_sees_a_players_helix_rocket() {
-    use orpheus_sim::projectiles::{SEEN_FIRST, SEEN_SPAN};
-    use orpheus_wire::commands::SECONDARY;
+    use lucy_sim::projectiles::{SEEN_FIRST, SEEN_SPAN};
+    use lucy_wire::commands::SECONDARY;
     const HELIX: u32 = 0x072c;
 
     // Teammates, side by side: the rocket harms nobody.
@@ -3851,7 +3844,7 @@ fn another_client_sees_a_players_helix_rocket() {
 #[test]
 #[ignore = "requires a prepared 104319 Practice Range scene without bot VM graphs"]
 fn a_helix_at_soldiers_feet_hurts_him_and_lifts_him() {
-    use orpheus_wire::commands::SECONDARY;
+    use lucy_wire::commands::SECONDARY;
     /// 70° down (1/65536 turns, positive down).
     const DOWN: i16 = 12743;
 
@@ -3914,8 +3907,8 @@ fn a_helix_at_soldiers_feet_hurts_him_and_lifts_him() {
 #[test]
 #[ignore = "requires a prepared 104319 Practice Range scene"]
 fn a_pulse_bomb_sticks_to_a_bot_kills_it_after_its_fuse_and_another_client_sees_it() {
-    use orpheus_script::vm::Unknowns;
-    use orpheus_sim::{
+    use lucy_script::vm::Unknowns;
+    use lucy_sim::{
         projectiles::{SEEN_FIRST, SEEN_SPAN},
         scene_assets::SceneAssets,
     };
@@ -3924,13 +3917,13 @@ fn a_pulse_bomb_sticks_to_a_bot_kills_it_after_its_fuse_and_another_client_sees_
     const ULTIMATE: u32 = 0x20;
     const AHEAD: f64 = 3.3;
 
-    let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let mut assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
     assets.set_player_unknowns(Unknowns::Tolerate);
     // Her 1,260-point ultimate fills in a second: `0B8B`'s passive loop
     // adds 5 points times "Ultimate Generation - Passive" after its 1 s Wait.
-    assets.set_ult_generation(orpheus_script::wire::Variables::from([(
-        orpheus_script::ultimate::PASSIVE_GENERATION,
-        orpheus_script::wire::Value::Float(252.0),
+    assets.set_ult_generation(lucy_script::wire::Variables::from([(
+        lucy_script::ultimate::PASSIVE_GENERATION,
+        lucy_script::wire::Value::Float(252.0),
     )]));
     let mut aim = None;
     let (mut server, schemas, [mut tracer, mut viewer], _) = practice_world(
@@ -4142,13 +4135,13 @@ fn a_pulse_bomb_sticks_to_a_bot_kills_it_after_its_fuse_and_another_client_sees_
 #[test]
 #[ignore = "requires a prepared 104319 Practice Range scene"]
 fn the_owners_helix_release_follows_its_impact_with_a_leading_client() {
-    use orpheus_sim::scene_assets::SceneAssets;
-    use orpheus_wire::commands::SECONDARY;
+    use lucy_sim::scene_assets::SceneAssets;
+    use lucy_wire::commands::SECONDARY;
     const HELIX: u32 = 0x072c;
     const AHEAD: f64 = 8.0;
     const APART: f64 = 30.0;
 
-    let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
     // Confirmation, its resend and release after the shot's tick T; the
     // derivations are in the notes above.
     let (confirm_at, resend_at, release_at) = (2, 4, 11);
@@ -4299,16 +4292,16 @@ fn the_owners_helix_release_follows_its_impact_with_a_leading_client() {
 #[test]
 #[ignore = "requires a prepared 104319 Practice Range scene"]
 fn genjis_fan_hits_a_bot_once_a_shot_for_its_damage_alone_unseen() {
-    use orpheus_script::vm::Unknowns;
-    use orpheus_sim::{
+    use lucy_script::vm::Unknowns;
+    use lucy_sim::{
         projectiles::{SEEN_FIRST, SEEN_SPAN},
         scene_assets::SceneAssets,
     };
-    use orpheus_wire::commands::SECONDARY;
+    use lucy_wire::commands::SECONDARY;
     const SHURIKEN: u32 = 0x07ca;
     const AHEAD: f64 = 3.3;
 
-    let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let mut assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
     assets.set_player_unknowns(Unknowns::Tolerate);
     let mut aim = None;
     let (mut server, schemas, [mut genji, mut viewer], _) = practice_world(
@@ -4434,15 +4427,15 @@ fn reapers_shotgun_hits_with_every_hitscan_pellet() {
 }
 
 fn every_pellet_hits(hero: &str, pellets: usize, damage: u64) {
-    use orpheus_script::vm::Unknowns;
-    use orpheus_sim::{
+    use lucy_script::vm::Unknowns;
+    use lucy_sim::{
         projectiles::{SEEN_FIRST, SEEN_SPAN},
         scene_assets::SceneAssets,
     };
-    use orpheus_wire::commands::FIRE;
+    use lucy_wire::commands::FIRE;
     const AHEAD: f64 = 2.0;
 
-    let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let mut assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
     assets.set_player_unknowns(Unknowns::Tolerate);
     let mut aim = None;
     let (mut server, schemas, [mut doomfist, mut viewer], _) = practice_world(
@@ -4553,16 +4546,16 @@ fn every_pellet_hits(hero: &str, pellets: usize, damage: u64) {
 #[test]
 #[ignore = "requires a prepared 104319 Practice Range scene"]
 fn echos_tri_shot_confirms_and_releases_each_bolt_under_the_lease() {
-    use orpheus_script::vm::Unknowns;
-    use orpheus_sim::{
+    use lucy_script::vm::Unknowns;
+    use lucy_sim::{
         projectiles::{SEEN_FIRST, SEEN_SPAN},
         scene_assets::SceneAssets,
     };
-    use orpheus_wire::commands::FIRE;
+    use lucy_wire::commands::FIRE;
     const BOLT: u32 = 0x2cbf;
     const AHEAD: f64 = 3.3;
 
-    let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let mut assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
     assets.set_player_unknowns(Unknowns::Tolerate);
     let mut aim = None;
     let (mut server, schemas, [mut echo, mut viewer], _) = practice_world(
@@ -4692,11 +4685,11 @@ fn echos_tri_shot_confirms_and_releases_each_bolt_under_the_lease() {
 #[test]
 #[ignore = "requires a prepared 104319 Practice Range scene"]
 fn anas_rifle_heals_a_hurt_friendly_bot_and_damages_an_enemy() {
-    use orpheus_sim::scene_assets::SceneAssets;
-    use orpheus_wire::commands::FIRE;
+    use lucy_sim::scene_assets::SceneAssets;
+    use lucy_wire::commands::FIRE;
     const AHEAD: f64 = 8.0;
 
-    let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
     let mut aim = None;
     let (mut server, schemas, [mut ana, mut soldier], _) = practice_world(
         [("ana#1111", 0, "Ana"), ("soldier#2222", 1, "Soldier: 76")],
@@ -4865,7 +4858,7 @@ fn anas_rifle_heals_a_hurt_friendly_bot_and_damages_an_enemy() {
 /// script, which starts whole in debug builds (`STU_D1BF5FA6`). Her client
 /// doesn't shoot the volley itself (`m_45271E8C` 0), so the server flies it
 /// and shows it to her own client as to the others
-/// (`orpheus_sim::projectiles::ServerCopies`): the copy's create
+/// (`lucy_sim::projectiles::ServerCopies`): the copy's create
 /// (`1426.003`), then the shot record naming it on her body, then its
 /// destroy when the server's flight bursts. She throws it at the enemy
 /// Soldier: 76 beside her once he has wounded her, so its 4 m ring takes
@@ -4873,12 +4866,12 @@ fn anas_rifle_heals_a_hurt_friendly_bot_and_damages_an_enemy() {
 /// `0C72` on his body (60 from Ana) and the ally aura `0B99` on hers
 /// (a heal of 100), each on its body's own graphs. His world answers
 /// `0C72` rid21's `STU_F7262B36(#40)` (Ana's body's possessor: her
-/// controller, `orpheus_script::vm::listed_relation`); unanswered, it
+/// controller, `lucy_script::vm::listed_relation`); unanswered, it
 /// stopped his whole script.
 #[test]
 #[ignore = "requires a prepared 104319 Practice Range scene"]
 fn anas_biotic_grenade_shows_to_her_own_client_and_its_aura_hurts_an_enemy_and_heals_her() {
-    use orpheus_wire::commands::FIRE;
+    use lucy_wire::commands::FIRE;
     /// `0B97` st4's button (36).
     const ABILITY_2: u32 = 0x10;
     const GRENADE: u32 = 0x1426;
@@ -4985,16 +4978,16 @@ fn anas_biotic_grenade_shows_to_her_own_client_and_its_aura_hurts_an_enemy_and_h
 /// Soldier: 76's Biotic Field (ABILITY_2: 0257) heals a wounded teammate
 /// standing in it, the healer's Tab board counts the healing, and every
 /// client gets the field entity (03DC.003), its frame (graph `0258`'s, run
-/// on the server, `orpheus_sim::spawned`) once the create arrived, and its
+/// on the server, `lucy_sim::spawned`) once the create arrived, and its
 /// destroy when the field removes itself. The heal is the aura `025F`'s
 /// graph `0B3C` on the patient's own body, so the patient is a hero whose
 /// body script runs: another Soldier: 76.
 #[test]
 #[ignore = "requires a prepared 104319 Practice Range scene without bot VM graphs"]
 fn a_biotic_field_heals_a_wounded_teammate_and_every_client_sees_it() {
-    use orpheus_content::stats::GMP_STATS;
-    use orpheus_sim::projectiles::{FIELD_FIRST, FIELD_SPAN};
-    use orpheus_wire::commands::FIRE;
+    use lucy_content::stats::GMP_STATS;
+    use lucy_sim::projectiles::{FIELD_FIRST, FIELD_SPAN};
+    use lucy_wire::commands::FIRE;
     /// tests/test_game_projectiles.py `ABILITY_2`: 0257 st0's button.
     const ABILITY_2: u32 = 0x10;
     const FIELD: u32 = 0x03dc;
@@ -5222,7 +5215,7 @@ fn throw_biotic_orb(
 }
 
 /// The copy of Moira's orb on her client: its create, then its frame (the
-/// orb's graph on the server, `orpheus_sim::spawned`, whose remote speed
+/// orb's graph on the server, `lucy_sim::spawned`, whose remote speed
 /// state `STU_D3F71FCF` the client begins only from it), then its destroy.
 fn assert_orb_copy_framed(moira: &Watcher, thrown: usize, copy: u32) {
     let created = moira
@@ -5247,7 +5240,7 @@ fn assert_orb_copy_framed(moira: &Watcher, thrown: usize, copy: u32) {
 /// Moira's damaging Biotic Orb (E, then the secondary fire: `10E4` rid19,
 /// `1E61.003`), thrown straight up in the Practice Range's spawn room
 /// between two enemy Training Bots 1.5 m to either side of her. The
-/// server flies it (`orpheus_sim::spawned`) between the room's ceiling,
+/// server flies it (`lucy_sim::spawned`) between the room's ceiling,
 /// about 10 m up, and its floor (99 mirror bounces), slowed to 0.275 while
 /// it has targets; its graph `1100` puts its aura `02D5` on both bots
 /// while they are within 4 m of it, and their own scripts run the aura's
@@ -5256,21 +5249,21 @@ fn assert_orb_copy_framed(moira: &Watcher, thrown: usize, copy: u32) {
 /// once its pool of 200 is spent it removes itself, and its copy on her
 /// client goes. Each bot loses 0.8 a tick while it is a target. The two
 /// shares of the tick that fills the pool (250 shares, 125 a bot) reach
-/// the orb as messages the next tick (`orpheus_sim::messages` routes them
+/// the orb as messages the next tick (`lucy_sim::messages` routes them
 /// once a tick), when the bots take one more share each before the orb's
 /// removal takes its auras off: 126 shares, 100.8 a bot.
 #[test]
 #[ignore = "requires the derived 104319 data with its bot graph bundle"]
 fn moiras_damaging_orb_hurts_two_bots_at_its_rate_until_its_pool_is_spent() {
-    use orpheus_script::vm::Unknowns;
-    use orpheus_sim::scene_assets::SceneAssets;
-    use orpheus_wire::commands::SECONDARY;
+    use lucy_script::vm::Unknowns;
+    use lucy_sim::scene_assets::SceneAssets;
+    use lucy_wire::commands::SECONDARY;
     /// Straight up; the mover holds the view at 89°.
     const UP: i16 = -16384;
     /// 50 a second over a 16 ms tick.
     const TICK_DAMAGE: f32 = 0.8;
 
-    let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let mut assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
     assets.set_bot_unknowns(Unknowns::Tolerate);
     let mut targets = Vec::new();
     let (mut server, schemas, [mut moira], _) =
@@ -5328,16 +5321,16 @@ fn moiras_damaging_orb_hurts_two_bots_at_its_rate_until_its_pool_is_spent() {
 #[test]
 #[ignore = "requires a prepared 104319 Practice Range scene"]
 fn moiras_healing_orb_heals_a_wounded_teammate_at_its_rate() {
-    use orpheus_script::vm::Unknowns;
-    use orpheus_sim::scene_assets::SceneAssets;
-    use orpheus_wire::commands::FIRE;
+    use lucy_script::vm::Unknowns;
+    use lucy_sim::scene_assets::SceneAssets;
+    use lucy_wire::commands::FIRE;
     /// Straight down; the mover holds the view at 89°.
     const DOWN: i16 = 16384;
     /// 65 a second over a 16 ms tick.
     const TICK_HEAL: f32 = 1.04;
     const FULL: f32 = 200.0;
 
-    let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let mut assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
     assets.set_player_unknowns(Unknowns::Tolerate);
     let (mut server, schemas, [mut moira, mut ally, mut enemy], _) = practice_world(
         [
@@ -5415,22 +5408,22 @@ fn moiras_healing_orb_heals_a_wounded_teammate_at_its_rate() {
 /// pick's body is there, not after 30 s. A third player then joins the
 /// running match and sees the others.
 #[test]
-#[ignore = "builds Workshop Chamber's collision; requires an Overwatch 1.74 install (ORPHEUS_GAME_DIR)"]
+#[ignore = "builds Workshop Chamber's collision; requires an Overwatch 1.74 install (LUCY_GAME_DIR)"]
 fn a_skirmish_match_on_another_map_plays_at_once_and_takes_a_third_player() {
-    use orpheus_content::{heroes::SOLDIER, maps::MapCatalog, parameters::PICK_HERO};
-    use orpheus_script::wire::read_full_head;
-    use orpheus_sim::scene_assets::SceneAssets;
+    use lucy_content::{heroes::SOLDIER, maps::MapCatalog, parameters::PICK_HERO};
+    use lucy_script::wire::read_full_head;
+    use lucy_sim::scene_assets::SceneAssets;
 
     const WORKSHOP_CHAMBER: u64 = 0x0800_0000_0000_0c48;
     const SKIRMISH: u64 = 0x0230_0000_0000_0010;
 
-    let runtime = orpheus_testkit::runtime_dir();
+    let runtime = lucy_testkit::runtime_dir();
     let collision = tempfile::tempdir().unwrap();
     let assets = Arc::new(
         SceneAssets::load(&runtime)
             .unwrap()
             .with_collision_folder(collision.path())
-            .with_collision_build(collision_build(orpheus_testkit::game_dir())),
+            .with_collision_build(collision_build(lucy_testkit::game_dir())),
     );
     let catalog = MapCatalog::load(runtime.join("data")).unwrap();
     let map = catalog
@@ -5615,8 +5608,8 @@ fn a_skirmish_match_on_another_map_plays_at_once_and_takes_a_third_player() {
             assert_eq!(root, 0x0d76);
             let clock = head
                 .variables
-                .get(&orpheus_sim::match_flow::CLOCK)
-                .map(orpheus_script::expr::to_float);
+                .get(&lucy_sim::match_flow::CLOCK)
+                .map(lucy_script::expr::to_float);
             assert!(
                 clock.is_some_and(|clock| clock > 1700.0 && clock <= 1800.0),
                 "{clock:?}"
@@ -5693,24 +5686,24 @@ fn a_skirmish_match_on_another_map_plays_at_once_and_takes_a_third_player() {
 /// attacker captures them standing where he spawns: walking 125 m to A
 /// needs the movement the test client doesn't play.
 #[test]
-#[ignore = "slow: plays a whole Assault match in the mode graph's time on Anubis' collision (built once), about 90 s optimised; requires an Overwatch 1.74 install (ORPHEUS_GAME_DIR)"]
+#[ignore = "slow: plays a whole Assault match in the mode graph's time on Anubis' collision (built once), about 90 s optimised; requires an Overwatch 1.74 install (LUCY_GAME_DIR)"]
 fn slow_an_assault_match_on_anubis_captures_a_and_b_and_sends_the_players_home() {
-    use orpheus_content::{
+    use lucy_content::{
         heroes::SOLDIER,
         maps::{MapCatalog, ObjectiveKind},
         parameters::PICK_HERO,
     };
-    use orpheus_script::wire::read_full_head;
-    use orpheus_sim::{match_flow::ASSAULT, scene_assets::SceneAssets};
+    use lucy_script::wire::read_full_head;
+    use lucy_sim::{match_flow::ASSAULT, scene_assets::SceneAssets};
 
     const ANUBIS: u64 = 0x0800_0000_0000_005b;
     const SCALE: f64 = 0.1;
 
-    let runtime = orpheus_testkit::runtime_dir();
+    let runtime = lucy_testkit::runtime_dir();
     let assets = Arc::new(
         SceneAssets::load(&runtime)
             .unwrap()
-            .with_collision_build(collision_build(orpheus_testkit::game_dir())),
+            .with_collision_build(collision_build(lucy_testkit::game_dir())),
     );
     let catalog = MapCatalog::load(runtime.join("data")).unwrap();
     let mut map = catalog
@@ -5732,7 +5725,7 @@ fn slow_an_assault_match_on_anubis_captures_a_and_b_and_sends_the_players_home()
     let schemas = Arc::new(Schemas::game());
     let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     server
-        .set_match_timers(orpheus_sim::match_flow::Timers { scale: SCALE })
+        .set_match_timers(lucy_sim::match_flow::Timers { scale: SCALE })
         .unwrap();
     let player = |tag: &str, team, account| WorldPlayer {
         player: MatchPlayer {
@@ -5919,7 +5912,7 @@ fn slow_an_assault_match_on_anubis_captures_a_and_b_and_sends_the_players_home()
     server.stop().unwrap();
 }
 
-/// Practice vs AI, Easy, on Temple of Anubis (orpheus_sim::ai), the mode
+/// Practice vs AI, Easy, on Temple of Anubis (lucy_sim::ai), the mode
 /// graph `0F4A` running the match on its own clocks: one player on the
 /// blue team (the defenders) and eleven AI heroes, five with him and six
 /// attacking. His game gets them as other players (their cards with their
@@ -5932,15 +5925,15 @@ fn slow_an_assault_match_on_anubis_captures_a_and_b_and_sends_the_players_home()
 /// the match: the result has the player only, his game gets the match
 /// end's cards (`180A`) and goes home once they end the game.
 #[test]
-#[ignore = "slow: simulates a whole match on the mode graph's clocks with twelve bodies, about 8 min optimised; requires an Overwatch 1.74 install (ORPHEUS_GAME_DIR)"]
+#[ignore = "slow: simulates a whole match on the mode graph's clocks with twelve bodies, about 8 min optimised; requires an Overwatch 1.74 install (LUCY_GAME_DIR)"]
 fn slow_a_practice_vs_ai_match_plays_its_ai_heroes_to_the_end() {
-    use orpheus_content::{
+    use lucy_content::{
         heroes::SOLDIER,
         maps::{MapCatalog, ObjectiveKind},
         parameters::PICK_HERO,
     };
-    use orpheus_script::vm::Unknowns;
-    use orpheus_sim::{
+    use lucy_script::vm::Unknowns;
+    use lucy_sim::{
         ai::{Difficulty, ROSTER},
         match_flow::ASSAULT,
         scene_assets::SceneAssets,
@@ -5949,10 +5942,10 @@ fn slow_a_practice_vs_ai_match_plays_its_ai_heroes_to_the_end() {
     const ANUBIS: u64 = 0x0800_0000_0000_005b;
     const SCALE: f64 = 0.25;
 
-    let runtime = orpheus_testkit::runtime_dir();
+    let runtime = lucy_testkit::runtime_dir();
     let mut assets = SceneAssets::load(&runtime)
         .unwrap()
-        .with_collision_build(collision_build(orpheus_testkit::game_dir()));
+        .with_collision_build(collision_build(lucy_testkit::game_dir()));
     // The roster heroes' graphs still have gaps, and every body's graph
     // `0B8B` reaches TrackStatTime (`STU_441B50E4`) on the ultimate's
     // charge (`ULT_CHARGE` against `ULT_COST`): the bodies run them as a
@@ -5973,7 +5966,7 @@ fn slow_a_practice_vs_ai_match_plays_its_ai_heroes_to_the_end() {
     let schemas = Arc::new(Schemas::game());
     let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     server
-        .set_match_timers(orpheus_sim::match_flow::Timers { scale: SCALE })
+        .set_match_timers(lucy_sim::match_flow::Timers { scale: SCALE })
         .unwrap();
     let player = WorldPlayer {
         player: MatchPlayer {
@@ -6171,7 +6164,7 @@ fn slow_a_practice_vs_ai_match_plays_its_ai_heroes_to_the_end() {
 
     // The result phase: `0F4A`'s `180A` shows the match end's cards, each
     // a list of graphs it plays on the mode entity, and the player's game
-    // gets them in the mode entity's frames (the graphs the orpheus-sim
+    // gets them in the mode entity's frames (the graphs the lucy-sim
     // test `the_match_end_plays_its_cards_and_then_ends_the_game` lists).
     // He goes home only when the last card ends the game: 56368 ms after
     // `0F4A` began the match's end at a frame's end, the first card's
@@ -6222,21 +6215,21 @@ fn slow_a_practice_vs_ai_match_plays_its_ai_heroes_to_the_end() {
 /// in their new side's spawn room (team 0 now in the attackers' room, team
 /// 1 in the defenders'), where team 0 takes A too. Equal progress with no
 /// time left: a draw for both. The server's wait after the match's end is
-/// 1/50 of it (orpheus_sim::match_flow `Timers`).
+/// 1/50 of it (lucy_sim::match_flow `Timers`).
 ///
 /// A stands in the attackers' first room and B in the defenders' room, so
 /// each attacker captures A where he spawns and no one can reach B: the
 /// test client plays no movement. Team 0 can only take A if the side swap
 /// moved him.
 #[test]
-#[ignore = "slow: plays both sides of a whole Competitive Assault match in the mode graph's time on Anubis' collision (built once); requires an Overwatch 1.74 install (ORPHEUS_GAME_DIR)"]
+#[ignore = "slow: plays both sides of a whole Competitive Assault match in the mode graph's time on Anubis' collision (built once); requires an Overwatch 1.74 install (LUCY_GAME_DIR)"]
 fn slow_a_competitive_assault_on_anubis_swaps_sides_and_spawn_rooms() {
-    use orpheus_content::{
+    use lucy_content::{
         heroes::SOLDIER,
         maps::{MapCatalog, ObjectiveKind, SpawnChoice},
         parameters::PICK_HERO,
     };
-    use orpheus_sim::{match_flow::ASSAULT, scene_assets::SceneAssets};
+    use lucy_sim::{match_flow::ASSAULT, scene_assets::SceneAssets};
 
     const ANUBIS: u64 = 0x0800_0000_0000_005b;
     const SCALE: f64 = 0.02;
@@ -6244,11 +6237,11 @@ fn slow_a_competitive_assault_on_anubis_swaps_sides_and_spawn_rooms() {
     /// (`game_queues_174.json`), as the matchmaker gives the map.
     const COMPETITIVE: u64 = 0x0fd0_0000_0000_002b;
 
-    let runtime = orpheus_testkit::runtime_dir();
+    let runtime = lucy_testkit::runtime_dir();
     let assets = Arc::new(
         SceneAssets::load(&runtime)
             .unwrap()
-            .with_collision_build(collision_build(orpheus_testkit::game_dir())),
+            .with_collision_build(collision_build(lucy_testkit::game_dir())),
     );
     let catalog = MapCatalog::load(runtime.join("data")).unwrap();
     let mut map = catalog
@@ -6281,7 +6274,7 @@ fn slow_a_competitive_assault_on_anubis_swaps_sides_and_spawn_rooms() {
     let schemas = Arc::new(Schemas::game());
     let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     server
-        .set_match_timers(orpheus_sim::match_flow::Timers { scale: SCALE })
+        .set_match_timers(lucy_sim::match_flow::Timers { scale: SCALE })
         .unwrap();
     let player = |tag: &str, team, account| WorldPlayer {
         player: MatchPlayer {
@@ -6421,7 +6414,7 @@ fn slow_a_competitive_assault_on_anubis_swaps_sides_and_spawn_rooms() {
 /// every player, with the lobby's hero until his pick (match.py `snapshot`).
 #[test]
 fn players_join_a_running_match_in_the_next_slots() {
-    use orpheus_content::heroes::SOLDIER;
+    use lucy_content::heroes::SOLDIER;
 
     let mut server = Lockstep::new(Arc::new(fixture())).unwrap();
     let opened = server
@@ -6464,14 +6457,14 @@ fn players_join_a_running_match_in_the_next_slots() {
 #[test]
 #[ignore = "requires the derived 104319 data with its bot graph bundle"]
 fn practice_bots_run_their_scripts_for_a_client() {
-    use orpheus_content::{heroes::SOLDIER, parameters::PICK_HERO};
-    use orpheus_script::vm::Unknowns;
-    use orpheus_sim::{
+    use lucy_content::{heroes::SOLDIER, parameters::PICK_HERO};
+    use lucy_script::vm::Unknowns;
+    use lucy_sim::{
         body_script::fixture_hitscan_factory, bots::BOT_ENTITY, scene_assets::SceneAssets,
     };
-    use orpheus_wire::commands::FIRE;
+    use lucy_wire::commands::FIRE;
 
-    let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let mut assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
     // The stock bot graphs hold content the VM doesn't know yet; the Python
     // reference ran them anyway.
     assets.set_bot_unknowns(Unknowns::Tolerate);
@@ -6755,7 +6748,7 @@ fn practice_bots_run_their_scripts_for_a_client() {
 }
 
 /// The Practice Range's mode frames leave room for the movement records
-/// (`orpheus_sim::mode_view`): the first is whole (about 920 bytes), and
+/// (`lucy_sim::mode_view`): the first is whole (about 920 bytes), and
 /// once the bots stand in the world, every datagram for 5 s carries a
 /// movement record of every body that has one in the datagrams around it,
 /// and the mode frame's change of the tick as a delta of a few bytes.
@@ -6764,11 +6757,11 @@ fn practice_bots_run_their_scripts_for_a_client() {
 #[test]
 #[ignore = "requires the derived 104319 data with its bot graph bundle"]
 fn the_range_mode_frames_leave_room_for_every_movement_record() {
-    use orpheus_content::{heroes::SOLDIER, parameters::PICK_HERO};
-    use orpheus_script::vm::Unknowns;
-    use orpheus_sim::scene_assets::SceneAssets;
+    use lucy_content::{heroes::SOLDIER, parameters::PICK_HERO};
+    use lucy_script::vm::Unknowns;
+    use lucy_sim::scene_assets::SceneAssets;
 
-    let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let mut assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
     assets.set_bot_unknowns(Unknowns::Tolerate);
     let scene = assets.prepare(GameMap::practice_range()).unwrap();
     let schemas = Arc::new(Schemas::game());
@@ -6902,14 +6895,14 @@ fn the_range_mode_frames_leave_room_for_every_movement_record() {
 #[test]
 #[ignore = "requires the derived 104319 data with its bot graph bundle"]
 fn a_firing_practice_bot_shoots_the_player() {
-    use orpheus_content::{heroes::SOLDIER, parameters::PICK_HERO};
-    use orpheus_script::vm::Unknowns;
-    use orpheus_sim::{
+    use lucy_content::{heroes::SOLDIER, parameters::PICK_HERO};
+    use lucy_script::vm::Unknowns;
+    use lucy_sim::{
         projectiles::{SEEN_FIRST, SEEN_SPAN},
         scene_assets::SceneAssets,
     };
 
-    let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let mut assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
     assets.set_bot_unknowns(Unknowns::Tolerate);
     let mut scene = assets.prepare(GameMap::practice_range()).unwrap();
     let ([x, y, z], facing) = scene.map().spawn_point(0, 0).unwrap();
@@ -6921,7 +6914,7 @@ fn a_firing_practice_bot_shoots_the_player() {
         .map(|step| f64::from(step) * 0.25)
         .find(|&reach| {
             let point = [x + reach * sin, y, z + reach * cos];
-            scene.in_spawn_room(0, orpheus_content::maps::SpawnChoice::First, point) == Some(false)
+            scene.in_spawn_room(0, lucy_content::maps::SpawnChoice::First, point) == Some(false)
         })
         .unwrap();
     let reach = exit + 3.0;
@@ -7136,7 +7129,7 @@ mod victims;
 mod workshop;
 
 /// A living enemy training bot blocks Soldier: 76's body on the server
-/// (`orpheus_sim::replication::blocks`), as the client's own mover stops at
+/// (`lucy_sim::replication::blocks`), as the client's own mover stops at
 /// the bot's capsule: he runs out of his spawn room at a Training Bot
 /// standing 3 m past its end, turning toward the bot every 4 frames, and
 /// stops against it, their axes the sum of their radii apart (0.5 + 0.5,
@@ -7146,8 +7139,7 @@ mod workshop;
 #[test]
 #[ignore = "requires a prepared 104319 Practice Range scene without bot VM graphs"]
 fn soldier_runs_into_an_enemy_bot_and_stops_short_of_it() {
-    let assets =
-        orpheus_sim::scene_assets::SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let assets = lucy_sim::scene_assets::SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
     let mut placed = None;
     let (server, schemas, [mut soldier], _) =
         practice_world([("soldier#1111", 0, "Soldier: 76")], &assets, |scene| {
@@ -7160,7 +7152,7 @@ fn soldier_runs_into_an_enemy_bot_and_stops_short_of_it() {
                 .map(|step| f64::from(step) * 0.25)
                 .find(|&reach| {
                     let point = [x + reach * sin, y, z + reach * cos];
-                    scene.in_spawn_room(0, orpheus_content::maps::SpawnChoice::First, point)
+                    scene.in_spawn_room(0, lucy_content::maps::SpawnChoice::First, point)
                         == Some(false)
                 })
                 .unwrap();

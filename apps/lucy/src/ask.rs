@@ -1,4 +1,4 @@
-//! The questions `orpheus` asks in the console, and the answers it
+//! The questions `lucy` asks in the console, and the answers it
 //! remembers in the state folder for next time (`ask_*` in `ow174/cli.py`).
 
 use std::{
@@ -7,7 +7,7 @@ use std::{
     path::Path,
 };
 
-use orpheus_bnet::session_key::MAX_NAME_BYTES;
+use lucy_bnet::session_key::MAX_NAME_BYTES;
 
 use crate::settings::Mode;
 
@@ -27,8 +27,7 @@ Which mode?
   5  Join a server in retail mode (default Overwatch mode)
   6  Join a server in tournament mode (used on LANs by pros)
 ";
-const NO_ANSWER: &str =
-    "No answer to the question. Give it as an option instead, see orpheus --help.";
+const NO_ANSWER: &str = "No answer to the question. Give it as an option instead, see lucy --help.";
 
 /// Ask for the mode. Enter picks retail.
 pub fn mode(input: &mut impl BufRead, output: &mut impl Write) -> io::Result<Mode> {

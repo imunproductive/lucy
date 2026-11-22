@@ -44,14 +44,14 @@ use crate::{
     scene::{PlayerAppearance, initial_world, mode_ui, placeable_components},
     spawned::SpawnGraphs,
 };
-use orpheus_content::{
+use lucy_content::{
     heroes::{EyeCatalog, Hero, HeroCatalog, SOLDIER},
     maps::{GameMap, GameModes, MODES_FILE, SpawnChoice},
     stats::{BoardStats, PlayerStats, StatRules, StatsCatalog, initial_on_fire},
     voice_sets::VoiceCatalog,
 };
-use orpheus_core::{bits::BitWriter, guid::parse_guid, tick::TICK_PERIOD};
-use orpheus_physics::{
+use lucy_core::{bits::BitWriter, guid::parse_guid, tick::TICK_PERIOD};
+use lucy_physics::{
     ai_cells::{self, AiCells},
     collision::cache::{
         MAGIC, RayCacheIdentity, VERSION, chunk_guid, read_movement_cache, read_ray_cache,
@@ -65,7 +65,7 @@ use orpheus_physics::{
     mover::settings::{MoverCatalog, MoverSettings},
     nav::{self, Navigation},
 };
-use orpheus_script::{
+use lucy_script::{
     codecs::CodecTable,
     graph::GraphStore,
     map_tags::MapTags,
@@ -77,7 +77,7 @@ use orpheus_script::{
     },
     wire::Variables,
 };
-use orpheus_wire::{
+use lucy_wire::{
     commands::Command,
     entity::{Component, EntityUpdate, Operation},
 };
@@ -128,8 +128,8 @@ type OwnerBodyFactory = dyn Fn(&Hero, OwnerBodySpawn, BodyMap) -> io::Result<Opt
     + Sync;
 
 /// A map's two collision cache files: the movement cache
-/// (`orpheus_assets::collision_cache`) and the ray cache the shots meet
-/// (`orpheus_assets::ray_cache`).
+/// (`lucy_assets::collision_cache`) and the ray cache the shots meet
+/// (`lucy_assets::ray_cache`).
 pub struct CollisionFiles {
     pub movement: Vec<u8>,
     pub rays: Vec<u8>,
@@ -142,7 +142,7 @@ pub type CollisionBuild = dyn Fn(u64, &str) -> io::Result<CollisionFiles> + Send
 pub struct SceneAssets {
     collision: PathBuf,
     /// The runtime folder, whose `data/navigation` has each map's AI
-    /// navigation (`orpheus_physics::nav::file`).
+    /// navigation (`lucy_physics::nav::file`).
     runtime: PathBuf,
     build_collision: Option<Arc<CollisionBuild>>,
     mode_props: BTreeMap<u64, BTreeSet<u64>>,
@@ -157,8 +157,8 @@ pub struct SceneAssets {
     bot_unknowns: Unknowns,
     player_unknowns: Unknowns,
     /// Players' bodies' ultimate generation variables; None: the rulesets'
-    /// (`orpheus_script::ultimate::generation_variables`).
-    ult_generation: Option<orpheus_script::wire::Variables>,
+    /// (`lucy_script::ultimate::generation_variables`).
+    ult_generation: Option<lucy_script::wire::Variables>,
     bots: BotCatalog,
     movers: Arc<MoverCatalog>,
     eyes: Arc<EyeCatalog>,
@@ -466,7 +466,7 @@ impl SceneAssets {
     /// The ultimate generation variables of players' bodies, which `0B8B`
     /// scales its charge by: by default each hero's and mode's ruleset
     /// settings; tests of an ultimate fill it sooner.
-    pub fn set_ult_generation(&mut self, variables: orpheus_script::wire::Variables) {
+    pub fn set_ult_generation(&mut self, variables: lucy_script::wire::Variables) {
         self.ult_generation = Some(variables);
     }
 
@@ -783,7 +783,7 @@ impl SceneAssets {
 
     /// The map's AI navigation, its AI cells attached (walks are searched
     /// over them); none when the data has no file for it, as derivations
-    /// before version 7 (`orpheus_physics::nav`).
+    /// before version 7 (`lucy_physics::nav`).
     fn navigation(&self, map: &GameMap) -> Option<Arc<Navigation>> {
         match Navigation::load(nav::file(&self.runtime, map.map_guid)) {
             Ok(navigation) => Some(Arc::new(
@@ -1297,19 +1297,19 @@ impl PreparedScene {
 
     /// The pickups the server placeables hold now (the health packs), for
     /// the bodies' searches ([`PlacedScripts::pickups`]).
-    pub fn pickups(&self) -> Vec<orpheus_script::vm::Pickup> {
+    pub fn pickups(&self) -> Vec<lucy_script::vm::Pickup> {
         self.placed_scripts.pickups()
     }
 
     /// The health changes the server placeables made since the last call
     /// (a health pack's heal), for the match's health code.
-    pub fn take_placed_health_changes(&mut self) -> Vec<orpheus_script::vm::HealthChange> {
+    pub fn take_placed_health_changes(&mut self) -> Vec<lucy_script::vm::HealthChange> {
         self.placed_scripts.take_health_changes()
     }
 
     /// The auras the server placeables put on bodies or took off since the
     /// last call (a capture point's area aura), for the bodies' scripts.
-    pub fn take_placed_aura_changes(&mut self) -> Vec<orpheus_script::vm::AuraChange> {
+    pub fn take_placed_aura_changes(&mut self) -> Vec<lucy_script::vm::AuraChange> {
         self.placed_scripts.take_auras()
     }
 
@@ -1432,7 +1432,7 @@ impl PreparedScene {
         direction: [f64; 3],
         reach: f64,
         profile: Option<u64>,
-    ) -> Result<Option<f64>, orpheus_physics::collision::index::IndexError> {
+    ) -> Result<Option<f64>, lucy_physics::collision::index::IndexError> {
         self.projectile_wall(origin, direction, reach, profile)
             .map(|hit| hit.map(|hit| hit.distance))
     }
@@ -1445,7 +1445,7 @@ impl PreparedScene {
         direction: [f64; 3],
         reach: f64,
         profile: Option<u64>,
-    ) -> Result<Option<WallHit>, orpheus_physics::collision::index::IndexError> {
+    ) -> Result<Option<WallHit>, lucy_physics::collision::index::IndexError> {
         self.placeable_rays
             .cast_ray(
                 &self.rays,
@@ -1629,29 +1629,29 @@ impl PreparedScene {
 
     /// An aura comes on the live bot at world tick `tick` or goes off it
     /// (Biotic Grenade's explosion, an ApplyAura).
-    pub fn change_bot_aura(&mut self, change: &orpheus_script::vm::AuraChange, tick: u32) {
+    pub fn change_bot_aura(&mut self, change: &lucy_script::vm::AuraChange, tick: u32) {
         self.bot_scripts.change_aura(change, tick);
     }
 
     /// Another body's ability graph played `request.graph` on a live bot
     /// at world tick `tick` (Rocket Punch's `0D07`). Whether a bot took it.
-    pub fn play_on_bot(&mut self, request: &orpheus_script::vm::PlayRequest, tick: u32) -> bool {
+    pub fn play_on_bot(&mut self, request: &lucy_script::vm::PlayRequest, tick: u32) -> bool {
         self.bot_scripts.play_script(request, tick)
     }
 
     /// The knockbacks the bots' graphs reported since the last call
     /// (`STU_AFBB59E9`).
-    pub fn take_bot_knockbacks(&mut self) -> Vec<orpheus_script::vm::Knockback> {
+    pub fn take_bot_knockbacks(&mut self) -> Vec<lucy_script::vm::Knockback> {
         self.bot_scripts.take_knockbacks()
     }
 
     /// The aura changes the bots' graphs made since the last call.
-    pub fn take_bot_aura_changes(&mut self) -> Vec<orpheus_script::vm::AuraChange> {
+    pub fn take_bot_aura_changes(&mut self) -> Vec<lucy_script::vm::AuraChange> {
         self.bot_scripts.take_aura_changes()
     }
 
     /// The health changes the bots' graphs made since the last call.
-    pub fn take_bot_health_changes(&mut self) -> Vec<orpheus_script::vm::HealthChange> {
+    pub fn take_bot_health_changes(&mut self) -> Vec<lucy_script::vm::HealthChange> {
         self.bot_scripts.take_health_changes()
     }
 
@@ -1916,12 +1916,12 @@ fn lock(path: &Path) -> io::Result<File> {
 #[cfg(test)]
 pub(crate) fn install_collision_build(install: PathBuf) -> Arc<CollisionBuild> {
     Arc::new(move |map, name| {
-        let opened = orpheus_assets::Install::open(&install, "enUS").map_err(io::Error::other)?;
+        let opened = lucy_assets::Install::open(&install, "enUS").map_err(io::Error::other)?;
         Ok(CollisionFiles {
-            movement: orpheus_assets::collision_cache(&opened, map, name)
+            movement: lucy_assets::collision_cache(&opened, map, name)
                 .map_err(io::Error::other)?
                 .bytes,
-            rays: orpheus_assets::ray_cache(&opened, map, name)
+            rays: lucy_assets::ray_cache(&opened, map, name)
                 .map_err(io::Error::other)?
                 .bytes,
         })
@@ -1935,8 +1935,8 @@ mod ported_tests;
 mod tests {
     use super::*;
     use crate::{bots::BOT_ENTITY, instance::RETAIL_QUANTA, scene::team_bit};
-    use orpheus_content::heroes::SOLDIER;
-    use orpheus_core::tick::FIRST_TICK;
+    use lucy_content::heroes::SOLDIER;
+    use lucy_core::tick::FIRST_TICK;
 
     /// The mode graph's tag queries find the map's tagged placeables: on
     /// Hanamura's Assault, `0F4A`'s child `0C8F` lists each team's spawn
@@ -1949,12 +1949,12 @@ mod tests {
     #[test]
     #[ignore = "requires a derived 104319 pack (just test-game <install>)"]
     fn the_mode_graph_lists_hanamuras_spawn_points() {
-        use orpheus_content::maps::MapCatalog;
-        use orpheus_script::{
+        use lucy_content::maps::MapCatalog;
+        use lucy_script::{
             mode::{ModePlayer, ModeScript, ModeWorld},
             wire::Value,
         };
-        let runtime = orpheus_testkit::runtime_dir();
+        let runtime = lucy_testkit::runtime_dir();
         let data = runtime.join("data");
         let assets = SceneAssets::load(&runtime).unwrap();
         let catalog = MapCatalog::load(&data)
@@ -2021,7 +2021,7 @@ mod tests {
     #[test]
     #[ignore = "requires a derived 104319 Practice Range pack without bot VM graphs"]
     fn stock_heroes_attach_their_authored_owner_scripts() {
-        let runtime = orpheus_testkit::runtime_dir();
+        let runtime = lucy_testkit::runtime_dir();
         let assets = SceneAssets::load(runtime).unwrap();
         let scene = assets.prepare(GameMap::practice_range()).unwrap();
         assert!(scene.movement_ready());
@@ -2056,7 +2056,7 @@ mod tests {
     #[test]
     #[ignore = "requires a derived 104319 Practice Range pack without bot VM graphs"]
     fn the_weapon_scripts_name_the_guns_to_preload() {
-        let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+        let assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
         let graphs = assets.graphs();
         let guns = graphs.weapon_cosmetics();
         assert!(guns.contains(&0x0400_0000_0000_04bf), "Soldier: 76's rifle");
@@ -2080,8 +2080,8 @@ mod tests {
     #[ignore = "requires a derived 104319 Practice Range pack without bot VM graphs"]
     fn stock_soldier_plays_a_scripted_session() {
         use crate::replication::BodyStep;
-        use orpheus_script::snapshot::View;
-        use orpheus_wire::commands::Command;
+        use lucy_script::snapshot::View;
+        use lucy_wire::commands::Command;
 
         const PRIMARY: u32 = 0x1;
         const SECONDARY: u32 = 0x2;
@@ -2089,7 +2089,7 @@ mod tests {
         const CROUCH: u32 = 0x80;
         const MELEE: u32 = 0x800;
 
-        let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+        let assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
         let scene = assets.prepare(GameMap::practice_range()).unwrap();
         let hero = scene.heroes().get(SOLDIER).unwrap();
         let mover = scene
@@ -2223,8 +2223,7 @@ mod tests {
                     .filter(|(_, value)| {
                         matches!(
                             value,
-                            orpheus_script::wire::Value::Map(_)
-                                | orpheus_script::wire::Value::Pairs(_)
+                            lucy_script::wire::Value::Map(_) | lucy_script::wire::Value::Pairs(_)
                         )
                     })
                     .map(|(&variable, _)| (instance.graph, variable))
@@ -2244,17 +2243,17 @@ mod tests {
     #[ignore = "requires a derived 104319 Practice Range pack without bot VM graphs"]
     fn the_biotic_field_counts_the_allies_near_its_caster() {
         use crate::replication::BodyStep;
-        use orpheus_script::{
+        use lucy_script::{
             snapshot::View,
             vm::{StateKind, TargetCandidate},
             wire::Value,
         };
-        use orpheus_wire::commands::Command;
+        use lucy_wire::commands::Command;
 
         /// tests/test_game_projectiles.py `ABILITY_2`: 0257 st0's button.
         const ABILITY_2: u32 = 0x10;
         const FIELD_COUNT: u32 = 1192;
-        let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+        let assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
         let scene = assets.prepare(GameMap::practice_range()).unwrap();
         let hero = scene.heroes().get(SOLDIER).unwrap();
         let mover = scene
@@ -2355,13 +2354,13 @@ mod tests {
     #[ignore = "requires a derived 104319 Practice Range pack without bot VM graphs"]
     fn quick_melee_strikes_the_enemy_in_front_never_the_swinger() {
         use crate::{combat::PosedShot, replication::BodyStep};
-        use orpheus_script::vm::TargetCandidate;
-        use orpheus_wire::commands::Command;
+        use lucy_script::vm::TargetCandidate;
+        use lucy_wire::commands::Command;
 
         const MELEE: u32 = 0x800;
         /// An eighth of a turn down.
         const PITCH: i32 = 8192;
-        let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+        let assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
         let scene = assets.prepare(GameMap::practice_range()).unwrap();
         let hero = scene.heroes().get(SOLDIER).unwrap();
         let mover = scene
@@ -2473,14 +2472,14 @@ mod tests {
             combat::{Combat, PlayerTarget, PosedShot},
             replication::BodyStep,
         };
-        use orpheus_wire::commands::Command;
+        use lucy_wire::commands::Command;
 
         const MELEE: u32 = 0x800;
         /// An eighth of a turn down.
         const PITCH: i32 = 8192;
         /// The client's view delay, in ms.
         const VIEW_DELAY: u16 = 200;
-        let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+        let assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
         let scene = assets.prepare(GameMap::practice_range()).unwrap();
         let hero = scene.heroes().get(SOLDIER).unwrap();
         let mover = scene
@@ -2568,7 +2567,7 @@ mod tests {
     #[test]
     #[ignore = "requires a derived 104319 Practice Range pack"]
     fn elevated_practice_patrols_reach_their_hints_without_crossing_walls() {
-        let runtime = orpheus_testkit::runtime_dir();
+        let runtime = lucy_testkit::runtime_dir();
         let mut assets = SceneAssets::load(runtime).unwrap();
         assets.set_bot_unknowns(Unknowns::Tolerate);
         let mut scene = assets.prepare(GameMap::practice_range()).unwrap();
@@ -2634,7 +2633,7 @@ mod tests {
     #[test]
     #[ignore = "requires a derived 104319 Practice Range scene"]
     fn a_shot_meets_range_detail_the_movement_geometry_lacks() {
-        let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+        let assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
         let scene = assets.prepare(GameMap::practice_range()).unwrap();
         let centre = [55.025_806_427, 11.672_472_954, 41.542_596_181];
         let normal = [-0.985_830_895, 0.0, 0.167_742_206];
@@ -2664,7 +2663,7 @@ mod tests {
     #[test]
     #[ignore = "requires a derived 104319 Practice Range scene"]
     fn a_standing_hero_is_hit_by_his_own_shapes() {
-        let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+        let assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
         let scene = assets.prepare(GameMap::practice_range()).unwrap();
         let hero = |name| scene.heroes().find_hero(name).unwrap();
         let feet = [0.0, 0.0, 10.0];
@@ -2706,7 +2705,7 @@ mod tests {
     fn the_grappling_hook_and_profileless_shots_pass_the_range_spawns_player_clip() {
         const HOOK_PROFILE: u64 = 0x0690_0000_0000_0018;
         const SHOT_PROFILE: u64 = 0x0690_0000_0000_0001;
-        let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+        let assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
         assert_eq!(
             assets.ray_profiles.map_mask(Some(SHOT_PROFILE)),
             crate::hitscan::DEFAULT_MAP_MASK
@@ -2755,10 +2754,10 @@ mod tests {
             combat::{Combat, PlayerTarget},
             replication::BodyStep,
         };
-        use orpheus_script::wire::{Value as ScriptValue, Variables};
-        use orpheus_wire::commands::Command;
+        use lucy_script::wire::{Value as ScriptValue, Variables};
+        use lucy_wire::commands::Command;
         const ABILITY_3: u32 = 0x20;
-        let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+        let mut assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
         assets.set_bot_unknowns(Unknowns::Tolerate);
         let mut scene = assets.prepare(GameMap::practice_range()).unwrap();
         let hero = scene.heroes().get(SOLDIER).unwrap();

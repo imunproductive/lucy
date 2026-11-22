@@ -14,9 +14,9 @@ use std::{
     time::Duration,
 };
 
-use orpheus_content::{catalog::ItemDb, maps::GameMap};
-use orpheus_core::bits::BitReader;
-use orpheus_lobby::{
+use lucy_content::{catalog::ItemDb, maps::GameMap};
+use lucy_core::bits::BitReader;
+use lucy_lobby::{
     accounts::{Account, Accounts},
     arcade::Arcade,
     celebrations::Celebrations,
@@ -30,8 +30,8 @@ use orpheus_lobby::{
     templates::RetailTemplates,
     transport::LobbyMessage,
 };
-use orpheus_sim::scene_assets::SceneAssets;
-use orpheus_wire::{
+use lucy_sim::scene_assets::SceneAssets;
+use lucy_wire::{
     jam::codec::{
         Fields, Schemas,
         Value::{self, Array, Bool, Signed, Struct, Unsigned},
@@ -67,7 +67,7 @@ const LEAVE_GAME: u32 = 20304;
 /// The scene assets and the collection, loaded once for every test. The
 /// graph bundles load only when a test opens a world (one of them).
 static SHARED: LazyLock<(Arc<SceneAssets>, Arc<Collection>)> = LazyLock::new(|| {
-    let runtime = orpheus_testkit::runtime_dir();
+    let runtime = lucy_testkit::runtime_dir();
     let data = runtime.join("data");
     let items = Arc::new(ItemDb::load(&data).unwrap());
     let collection = Collection::new(&RetailTemplates::captured(), items).unwrap();
@@ -107,7 +107,7 @@ impl Fixture {
     }
 
     fn build(with_game: bool) -> Self {
-        let runtime = orpheus_testkit::runtime_dir();
+        let runtime = lucy_testkit::runtime_dir();
         let data = runtime.join("data");
         let state = tempfile::tempdir().unwrap();
         let templates = RetailTemplates::captured();
@@ -127,15 +127,15 @@ impl Fixture {
             (None, None)
         };
         let clock = VirtualClock::default();
-        let economy = Arc::new(orpheus_lobby::economy::Economy::load(&data).unwrap());
+        let economy = Arc::new(lucy_lobby::economy::Economy::load(&data).unwrap());
         let lobby = Arc::new(Lobby {
-            signing_key: *orpheus_fixed::LOBBY_STATE_BLOB_KEY,
+            signing_key: *lucy_fixed::LOBBY_STATE_BLOB_KEY,
             schemas: Schemas::lobby(),
             presence: Presence::new(&templates).unwrap(),
             ranked: Ranked::new(&templates).unwrap(),
             arcade: Arcade::load(data.join("arcade_cards_174.json"), &templates).unwrap(),
             celebrations: Celebrations::load(&data, &templates, Arc::clone(&economy)).unwrap(),
-            xp: orpheus_lobby::xp_table::XpTable::load(&data).unwrap(),
+            xp: lucy_lobby::xp_table::XpTable::load(&data).unwrap(),
             templates,
             services: Arc::new(Services::new(&collection, economy)),
             collection,
@@ -504,7 +504,7 @@ fn plain(value: &Value) -> Value {
 }
 
 mod queue {
-    use orpheus_lobby::{
+    use lucy_lobby::{
         passes::{PASSES, Pool},
         queue::{PICKING, QUEUE, QUEUE_WAITS, SEARCHING},
         ranked::{DAMAGE, SUPPORT, TANK},
@@ -839,7 +839,7 @@ mod queue {
 }
 
 mod leaving {
-    use orpheus_lobby::{
+    use lucy_lobby::{
         lineup::{LEAVE_MATCH_LOBBY, LEAVING_GAME, MATCH_LOBBY, MATCH_LOBBY_OUT},
         login::OUT_CONNECT,
         party::PARTY,
@@ -1265,7 +1265,7 @@ mod leaving {
 }
 
 mod game_server_off {
-    use orpheus_lobby::lineup::MATCH_LOBBY;
+    use lucy_lobby::lineup::MATCH_LOBBY;
 
     use super::*;
 

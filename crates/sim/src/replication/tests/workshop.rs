@@ -12,12 +12,12 @@ use crate::{
     scene_assets::install_collision_build,
     workshop::{WorkshopPlayer, WorkshopRun},
 };
-use orpheus_content::maps::{GameModes, MODES_FILE, MapCatalog, SpawnChoice};
-use orpheus_script::{
+use lucy_content::maps::{GameModes, MODES_FILE, MapCatalog, SpawnChoice};
+use lucy_script::{
     mode::ModePlayer,
     wire::{Value as ScriptValue, Variables},
 };
-use orpheus_workshop::{Catalog, Logic, parse};
+use lucy_workshop::{Catalog, Logic, parse};
 
 const DOOMFIST: u64 = 0x02e0_0000_0000_012f;
 const CREATE_HUD_TEXT: u32 = 0x1d8a;
@@ -48,14 +48,14 @@ impl Parkour {
     /// C32S2 on Hanamura Assault, its player's Doomfist at his spawn.
     fn start() -> Self {
         let path =
-            orpheus_testkit::dpk_archive().join("workshop.codes/C32S2_OG_doom_parkur_hanamura.txt");
+            lucy_testkit::dpk_archive().join("workshop.codes/C32S2_OG_doom_parkur_hanamura.txt");
         Self::with_rules(&std::fs::read_to_string(path).unwrap())
     }
 
     /// The Workshop script `text` on Hanamura Assault, its player's
     /// Doomfist at his spawn.
     fn with_rules(text: &str) -> Self {
-        let runtime = orpheus_testkit::runtime_dir();
+        let runtime = lucy_testkit::runtime_dir();
         let data = runtime.join("data");
         let catalog = Arc::new(Catalog::load(&data).unwrap());
         let logic = parse(text, &catalog).unwrap().logic;
@@ -72,8 +72,8 @@ impl Parkour {
             .unwrap();
         let mut assets = SceneAssets::load(&runtime)
             .unwrap()
-            .with_collision_build(install_collision_build(orpheus_testkit::game_dir()));
-        assets.set_player_unknowns(orpheus_script::vm::Unknowns::Tolerate);
+            .with_collision_build(install_collision_build(lucy_testkit::game_dir()));
+        assets.set_player_unknowns(lucy_script::vm::Unknowns::Tolerate);
         let scene = assets.prepare(map).unwrap();
         let card = PlayerCard::default();
         let mut world = WorldDelivery::new(OWNER).unbuffered();
@@ -206,7 +206,7 @@ impl Parkour {
             frame: self.frame,
             world_tick: Some(self.frame),
             heal: false,
-            tags: orpheus_script::weapons::DamageTags::NONE,
+            tags: lucy_script::weapons::DamageTags::NONE,
             direction: None,
             environment: true,
             from: None,
@@ -327,8 +327,8 @@ fn ultimate(world: &WorldDelivery) -> (f64, f64) {
     let snapshot = script.runtime.snapshot().unwrap();
     let read = |id| number(snapshot.variables.get(&id).unwrap_or(&ScriptValue::Null));
     (
-        read(orpheus_script::ultimate::ULT_CHARGE),
-        read(orpheus_script::ultimate::ULT_COST),
+        read(lucy_script::ultimate::ULT_CHARGE),
+        read(lucy_script::ultimate::ULT_COST),
     )
 }
 
@@ -760,7 +760,7 @@ fn dpk_archive_c32s2_shows_only_the_current_checkpoints_rings_and_icons() {
     // Number as the engine sends a filtered player array, and whose radius
     // is a number.
     let rings_visible_to = |parkour: &mut Parkour, visible: Vec<ScriptValue>| -> usize {
-        let copy = orpheus_script::expr::workshop_tree(NUMBER, vec![ScriptValue::Array(visible)]);
+        let copy = lucy_script::expr::workshop_tree(NUMBER, vec![ScriptValue::Array(visible)]);
         let effects = made(parkour, EFFECT_ENTITY);
         let script = parkour.mode.script_mut().unwrap();
         effects

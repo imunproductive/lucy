@@ -17,7 +17,7 @@
 
 use std::{fs, io, path::Path};
 
-use orpheus_script::{
+use lucy_script::{
     expr::{Context, Variable, evaluate, to_float},
     graph::{GraphStore, Node},
     rulesets::Rulesets,
@@ -32,7 +32,7 @@ use crate::match_flow::{
 };
 
 /// The derived file of the objectives' component data, in the runtime
-/// `data` folder (the `orpheus-assets` derivation `game_objectives`).
+/// `data` folder (the `lucy-assets` derivation `game_objectives`).
 pub const FILE: &str = "game_objectives_174.json";
 
 /// The modes the server runs a flow for; their rules are checked at load.

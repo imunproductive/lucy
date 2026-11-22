@@ -1,5 +1,5 @@
 //! The loot box economy of the install (`data/economy_174.json`, derived
-//! from the player progression settings `054/0018` by `orpheus_assets`): the
+//! from the player progression settings `054/0018` by `lucy_assets`): the
 //! values `ow174/services/lootbox.py` (`DUPLICATE_CREDITS`, `CREDIT_DROPS`)
 //! and `ow174/catalog/events.py` (each event's box) hold, read from the game
 //! data instead.
@@ -13,7 +13,7 @@ use std::{
 
 use serde::Deserialize;
 
-use orpheus_core::guid::parse_guid;
+use lucy_core::guid::parse_guid;
 
 pub const FILE: &str = "economy_174.json";
 

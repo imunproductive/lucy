@@ -271,7 +271,7 @@ class StuTables:
     # --- node classes ---
     def _find_node_vtables(self):
         """node typeinfo -> node vtable: vtables whose slot 1 is a stub returning the typeinfo and slot 5 a stub
-        returning the class's descriptor (ORPHEUS extract_statescript_codecs.py node_typeinfos)."""
+        returning the class's descriptor (Lucy extract_statescript_codecs.py node_typeinfos)."""
         img = self.img
         stubs = img.text_stubs()
         self.node_vtables = {}

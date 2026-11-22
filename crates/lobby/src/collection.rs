@@ -36,9 +36,9 @@ use crate::{
     templates::RetailTemplates,
     transport::LobbyMessage,
 };
-use orpheus_content::catalog::ItemDb;
-use orpheus_core::guid::parse_guid;
-use orpheus_wire::{
+use lucy_content::catalog::ItemDb;
+use lucy_core::guid::parse_guid;
+use lucy_wire::{
     entity::SkinTheme,
     jam::codec::{
         Fields, MAX_ARRAY_COUNT,
@@ -622,7 +622,7 @@ mod tests {
     use serde_json::json;
     use sha2::{Digest, Sha256};
 
-    use orpheus_wire::jam::codec::Schemas;
+    use lucy_wire::jam::codec::Schemas;
 
     const HERO: u64 = 0x10;
     const DEFAULT_SKIN: u64 = 0x20;
@@ -662,7 +662,7 @@ mod tests {
         ] {
             items.unlocks.insert(
                 guid,
-                orpheus_content::catalog::Unlock {
+                lucy_content::catalog::Unlock {
                     guid,
                     name: guid_text(guid),
                     item_type: item_type.into(),
@@ -813,7 +813,7 @@ mod tests {
     #[test]
     #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn progression_and_gallery_wire_bytes_match_python_for_three_profiles() {
-        let runtime = orpheus_testkit::runtime_dir().join("data");
+        let runtime = lucy_testkit::runtime_dir().join("data");
         let schemas = Schemas::lobby();
         let templates = RetailTemplates::captured();
         let items = Arc::new(ItemDb::load(&runtime).unwrap());

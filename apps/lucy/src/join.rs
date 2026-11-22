@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 
-use orpheus_lobby::battle_tag_query;
+use lucy_lobby::battle_tag_query;
 
 use crate::{ask, settings::ModeArgs};
 
@@ -103,9 +103,9 @@ pub use client::{run, run_tournament};
 mod client {
     use std::{io, net::SocketAddrV4, sync::Arc};
 
-    use orpheus_bnet::{protocol::Protocol, rpc::Player, service::BnetService};
-    use orpheus_launcher::retail::{GameSetup, RetailGames};
-    use orpheus_lobby::{accounts::account_id_for, presence::PRO_ACCOUNT_BITS};
+    use lucy_bnet::{protocol::Protocol, rpc::Player, service::BnetService};
+    use lucy_launcher::retail::{GameSetup, RetailGames};
+    use lucy_lobby::{accounts::account_id_for, presence::PRO_ACCOUNT_BITS};
     use std::net::Ipv4Addr;
     use tracing::info;
 

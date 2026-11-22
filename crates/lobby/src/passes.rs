@@ -18,7 +18,7 @@ use crate::{
     accounts::{Profile, saved_integer},
     transport::LobbyMessage,
 };
-use orpheus_wire::jam::codec::{
+use lucy_wire::jam::codec::{
     Fields,
     Value::{Array, Signed, Struct, Unsigned},
 };

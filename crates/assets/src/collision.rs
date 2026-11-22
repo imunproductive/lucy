@@ -2,7 +2,7 @@
 //! collision as the character mover sees it (`tools/build_collision.py`,
 //! `ow174/game/collision.py`), and `collision/<map>.rays.col`, the same
 //! with every category, as the shots see it (`--ray-geometry`). The
-//! server's reader is `orpheus_physics::collision::cache`.
+//! server's reader is `lucy_physics::collision::cache`.
 //!
 //! Where it comes from (the client's map chunk 0x11): each map has one chunk
 //! of kind 0x11 (see [`crate::map_chunk`]). It holds the game's own physics

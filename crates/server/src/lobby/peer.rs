@@ -2,7 +2,7 @@
 
 use std::io;
 
-use orpheus_lobby::{
+use lucy_lobby::{
     handoff::LobbySeat,
     session::{LobbySession, PreparedLogin},
     transport::LobbyMessage,

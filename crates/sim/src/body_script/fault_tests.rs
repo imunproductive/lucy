@@ -11,12 +11,12 @@ use crate::{
     scene::{PlayerAppearance, PlayerCard},
     scene_assets::{PreparedScene, SceneAssets},
 };
-use orpheus_content::{
+use lucy_content::{
     maps::GameMap,
     parameters::{CLIENT_GAME_MESSAGE, PICK_HERO},
 };
-use orpheus_core::tick::FIRST_TICK;
-use orpheus_wire::{
+use lucy_core::tick::FIRST_TICK;
+use lucy_wire::{
     commands::FIRE,
     jam::codec::{Fields, Value as Field},
     messages::Message,
@@ -216,7 +216,7 @@ fn appearance(owner: u32, slot: i8, team: u8, card: &PlayerCard) -> PlayerAppear
         slot,
         team,
         spawn: 0,
-        room: orpheus_content::maps::SpawnChoice::First,
+        room: lucy_content::maps::SpawnChoice::First,
         card,
     }
 }
@@ -284,7 +284,7 @@ impl Player {
 #[test]
 #[ignore = "requires a derived 104319 Practice Range scene"]
 fn an_exhausted_weapon_stops_the_body_before_combat_consumes_its_shots() {
-    let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
     let mut scene = assets.prepare(GameMap::practice_range()).unwrap();
     let probes: Probes = Arc::default();
     let factory = rifle();

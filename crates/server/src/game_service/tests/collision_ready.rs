@@ -200,10 +200,10 @@ fn a_failed_collision_sends_connected_games_home_once_and_drops_the_others() {
 #[test]
 #[ignore = "requires a prepared 104319 Practice Range scene without bot VM graphs"]
 fn seats_wait_for_their_scene_while_another_match_plays() {
-    use orpheus_content::{heroes::SOLDIER, parameters::PICK_HERO};
-    use orpheus_sim::scene_assets::SceneAssets;
+    use lucy_content::{heroes::SOLDIER, parameters::PICK_HERO};
+    use lucy_sim::scene_assets::SceneAssets;
 
-    let assets = Arc::new(SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap());
+    let assets = Arc::new(SceneAssets::load(lucy_testkit::runtime_dir()).unwrap());
     let schemas = Arc::new(Schemas::game());
     let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     let (release, wait) = mpsc::channel::<()>();
@@ -297,9 +297,9 @@ fn seats_wait_for_their_scene_while_another_match_plays() {
 #[test]
 #[ignore = "requires a prepared 104319 Practice Range scene without bot VM graphs"]
 fn a_cache_only_server_fails_a_missing_map_and_a_builder_still_builds_it() {
-    use orpheus_sim::scene_assets::SceneAssets;
+    use lucy_sim::scene_assets::SceneAssets;
 
-    let runtime = orpheus_testkit::runtime_dir();
+    let runtime = lucy_testkit::runtime_dir();
     let folder = tempfile::tempdir().unwrap();
     let cache = folder.path().join("0688.col");
     let deployed = SceneAssets::load(&runtime)

@@ -7,7 +7,7 @@ use std::{collections::HashMap, fs, io, path::Path};
 use indexmap::IndexMap;
 use serde::Deserialize;
 
-use orpheus_core::guid::parse_guid;
+use lucy_core::guid::parse_guid;
 
 pub const SOLDIER: u64 = 0x02e0_0000_0000_006e;
 pub const ANA: u64 = 0x02e0_0000_0000_013b;
@@ -295,7 +295,7 @@ mod tests {
     fn actual_hero_catalog_matches_the_ordered_python_reference() {
         use sha2::{Digest, Sha256};
 
-        let root = orpheus_testkit::runtime_dir();
+        let root = lucy_testkit::runtime_dir();
         let catalog = HeroCatalog::load(root.join("data/game_heroes_174.json")).unwrap();
         let mut digest = Sha256::new();
         let mut roles = [0; 3];

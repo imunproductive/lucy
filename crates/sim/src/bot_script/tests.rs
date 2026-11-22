@@ -10,9 +10,9 @@ use crate::{
     scene::{PlayerAppearance, PlayerCard, bot_create},
     scene_assets::{PreparedScene, SceneAssets},
 };
-use orpheus_core::tick::FIRST_TICK;
-use orpheus_script::bot::{DEAD_FLAG, NAMEPLATE_TEXT};
-use orpheus_wire::entity::{ComponentValue, EntityUpdate, Operation};
+use lucy_core::tick::FIRST_TICK;
+use lucy_script::bot::{DEAD_FLAG, NAMEPLATE_TEXT};
+use lucy_wire::entity::{ComponentValue, EntityUpdate, Operation};
 
 const OWNER: u32 = 0xa000_0100;
 
@@ -54,7 +54,7 @@ fn script_chunks(updates: &[EntityUpdate]) -> Vec<u32> {
 }
 
 fn practice_scene() -> PreparedScene {
-    let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let mut assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
     // The stock bot graphs hold content the VM doesn't know yet; the Python
     // reference ran them anyway.
     assets.set_bot_unknowns(Unknowns::Tolerate);
@@ -148,7 +148,7 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
         slot: 0,
         team: 0,
         spawn: 0,
-        room: orpheus_content::maps::SpawnChoice::First,
+        room: lucy_content::maps::SpawnChoice::First,
         card: &card,
     };
     let mut world = WorldDelivery::new(OWNER);
@@ -247,7 +247,7 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
     let victim = scene.bots()[slot].entity;
     tick += 1;
     scene.bot_health(victim, 150.0);
-    let rifle: orpheus_script::weapons::DamageTags = [0x03bf, 0x09a2, 0x1e1e, 0x2d2f, 0x4d29]
+    let rifle: lucy_script::weapons::DamageTags = [0x03bf, 0x09a2, 0x1e1e, 0x2d2f, 0x4d29]
         .map(|tag| 0x0d80_0000_0000_0000 | tag)
         .into_iter()
         .collect();
@@ -273,7 +273,7 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
         killer: OWNER | 1,
         critical: true,
         loadout: None,
-        tags: orpheus_script::weapons::DamageTags::NONE,
+        tags: lucy_script::weapons::DamageTags::NONE,
         dealt: 100.0,
         tick,
     });
@@ -376,7 +376,7 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
         killer: OWNER | 1,
         critical: false,
         loadout: None,
-        tags: orpheus_script::weapons::DamageTags::NONE,
+        tags: lucy_script::weapons::DamageTags::NONE,
         dealt: 200.0,
         tick,
     });
@@ -606,7 +606,7 @@ fn a_bots_killing_hit_reaches_its_script_before_its_death() {
         .position(|bot| !bot.spawn.firing)
         .unwrap();
     let victim = scene.bots()[slot].entity;
-    let rifle: orpheus_script::weapons::DamageTags = [0x03bf, 0x09a2, 0x1e1e, 0x2d2f, 0x4d29]
+    let rifle: lucy_script::weapons::DamageTags = [0x03bf, 0x09a2, 0x1e1e, 0x2d2f, 0x4d29]
         .map(|tag| 0x0d80_0000_0000_0000 | tag)
         .into_iter()
         .collect();
@@ -742,7 +742,7 @@ fn a_firing_bots_rocket_hits_the_player_in_front_of_it() {
 /// Nano Boost's aura (`053:0269`) on a Practice Range bot runs `0B9F`,
 /// whose st18 (`0318` -0.5) and st19 (`0317` +0.5) the bot's world keeps:
 /// a hit on it is halved, its own hits deal half again, on a bot and on a
-/// player's body (`vm/statuses.rs` in `orpheus_script`).
+/// player's body (`vm/statuses.rs` in `lucy_script`).
 #[test]
 #[ignore = "requires the derived 104319 data with its bot graph bundle"]
 fn nano_boost_halves_the_damage_a_bot_takes_and_boosts_what_it_deals() {
@@ -751,7 +751,7 @@ fn nano_boost_halves_the_damage_a_bot_takes_and_boosts_what_it_deals() {
         hitscan::TargetPose,
         instance::RETAIL_QUANTA,
     };
-    use orpheus_script::{
+    use lucy_script::{
         vm::{AuraChange, HealthChange, Site},
         weapons::DamageTags,
     };
@@ -848,8 +848,8 @@ fn nano_boost_halves_the_damage_a_bot_takes_and_boosts_what_it_deals() {
 #[test]
 #[ignore = "requires the derived 104319 data with its bot graph bundle"]
 fn a_bots_target_tags_go_out_as_its_component_76() {
-    use orpheus_script::vm::{AuraChange, TargetCandidate};
-    use orpheus_wire::entity::Component;
+    use lucy_script::vm::{AuraChange, TargetCandidate};
+    use lucy_wire::entity::Component;
 
     const BIOTIC_GRENADE: u64 = 0x04a0_0000_0000_0267;
     const ANA: u32 = OWNER | 1;
@@ -865,7 +865,7 @@ fn a_bots_target_tags_go_out_as_its_component_76() {
         slot: 0,
         team: 0,
         spawn: 0,
-        room: orpheus_content::maps::SpawnChoice::First,
+        room: lucy_content::maps::SpawnChoice::First,
         card: &card,
     };
     let mut world = WorldDelivery::new(OWNER);
@@ -978,7 +978,7 @@ fn a_bots_target_tags_go_out_as_its_component_76() {
 #[test]
 #[ignore = "requires the derived 104319 data with its bot graph bundle"]
 fn the_damaging_orbs_aura_hurts_a_bot_for_its_thrower() {
-    use orpheus_script::{
+    use lucy_script::{
         vm::{AuraChange, AuraSource, OwnedEntity, TargetCandidate},
         wire::Value,
     };

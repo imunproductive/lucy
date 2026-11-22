@@ -2,7 +2,7 @@
 
     python -m tools.owindex.build [--dump DUMP] [--out research/out/index/ow_index.sqlite]
 
-Run from the ORPHEUS root. Reads only the dump (default: the research repo's
+Run from the Lucy root. Reads only the dump (default: the research repo's
 dumps/ingame_7FF788F10000.exe), OWLib's labels (crates/stu/data/types.txt) and the research repo's
 docs/analysis/*.json (locations: tools/paths.py); calls tools/owindex/net.py when present. See stu.py /
 registry.py for the layouts.

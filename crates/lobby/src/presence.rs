@@ -28,7 +28,7 @@ use crate::{
     templates::{RETAIL_ACCOUNT, RetailTemplates, personalize_fields},
     transport::LobbyMessage,
 };
-use orpheus_wire::jam::codec::{
+use lucy_wire::jam::codec::{
     Fields,
     Value::{self, Array, Blob, Signed, Struct, Unsigned},
 };
@@ -363,7 +363,7 @@ mod tests {
 
     use sha2::{Digest, Sha256};
 
-    use orpheus_wire::jam::codec::Schemas;
+    use lucy_wire::jam::codec::Schemas;
 
     const IDS: Ids = [(128, 2), (200, 3), (300, 4)];
 

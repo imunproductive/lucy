@@ -1,11 +1,11 @@
 //! The dashboard's Bot plate page: the live nameplate tool
-//! (`orpheus_sim::bot_plate`), which changes the training bots' health bar
+//! (`lucy_sim::bot_plate`), which changes the training bots' health bar
 //! and nameplate inputs in every match while it runs.
 
 use serde_json::{Map, Value as Json, json};
 
 use super::{Api, ApiError, ApiResult};
-use orpheus_sim::bot_plate::{ARRAYS, INPUTS, MESSAGES, PlateChange, PlateView, value_text};
+use lucy_sim::bot_plate::{ARRAYS, INPUTS, MESSAGES, PlateChange, PlateView, value_text};
 
 impl Api<'_> {
     /// What the tool shows; with `command` (the chat command's text after
@@ -42,7 +42,7 @@ fn view_json(view: &PlateView) -> Json {
             .map(|part| {
                 json!({
                     "name": part.name(),
-                    "array": ARRAYS[part.field / orpheus_wire::entity::POOLS],
+                    "array": ARRAYS[part.field / lucy_wire::entity::POOLS],
                     "id": part.id,
                     "max": part.max,
                     "now": part.now,

@@ -67,7 +67,7 @@
 
 use std::collections::HashMap;
 
-use orpheus_stu::{Asset, Value as Stu};
+use lucy_stu::{Asset, Value as Stu};
 
 use crate::{
     Install, Result, asset_error, guid_name,

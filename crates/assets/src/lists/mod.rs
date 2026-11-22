@@ -20,7 +20,7 @@ use std::{
     rc::Rc,
 };
 
-use orpheus_stu::{Asset, Object, Types, Value};
+use lucy_stu::{Asset, Object, Types, Value};
 use serde_json::Value as Json;
 
 use crate::{Install, Output, Result, guid_name, guid_type};

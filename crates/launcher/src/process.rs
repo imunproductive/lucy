@@ -115,11 +115,11 @@ pub fn close_running_copy(game: &Path, patience: Duration) -> io::Result<()> {
 
 /// The relay reads its log file and the server's RPC port from these
 /// variables in the game's environment.
-pub const RELAY_LOG_VARIABLE: &str = "ORPHEUS_RELAY_LOG";
-pub const RELAY_PORT_VARIABLE: &str = "ORPHEUS_RELAY_PORT";
+pub const RELAY_LOG_VARIABLE: &str = "LUCY_RELAY_LOG";
+pub const RELAY_PORT_VARIABLE: &str = "LUCY_RELAY_PORT";
 /// The probe reads its port and log file from these.
-pub const PROBE_PORT_VARIABLE: &str = "ORPHEUS_PROBE_PORT";
-pub const PROBE_LOG_VARIABLE: &str = "ORPHEUS_PROBE_LOG";
+pub const PROBE_PORT_VARIABLE: &str = "LUCY_PROBE_PORT";
+pub const PROBE_LOG_VARIABLE: &str = "LUCY_PROBE_LOG";
 
 /// Where the relay in a started game logs and sends the plaintext.
 pub struct RelaySetup<'a> {

@@ -30,8 +30,8 @@
 
 use std::{collections::VecDeque, sync::Arc};
 
-use orpheus_content::maps::{GameMap, MapObjective, ObjectiveKind, SpawnChoice};
-use orpheus_script::wire::{Value, Variables};
+use lucy_content::maps::{GameMap, MapObjective, ObjectiveKind, SpawnChoice};
+use lucy_script::wire::{Value, Variables};
 
 use crate::{
     mode_graph_values::ModeGraphValues,
@@ -996,7 +996,7 @@ impl MatchFlow {
 
     /// Rule 59: a Control stage per round. Assumption: the stages in their
     /// order (rule 59 says random; the order keeps rounds reproducible).
-    fn stage(&self, round: u8) -> &orpheus_content::maps::MapObjective {
+    fn stage(&self, round: u8) -> &lucy_content::maps::MapObjective {
         let stages: Vec<_> = self
             .map
             .objectives_of(ObjectiveKind::ControlPoint)

@@ -3,7 +3,7 @@
 
 use std::{collections::HashSet, io};
 
-use orpheus_lobby::{
+use lucy_lobby::{
     clock::server_time,
     leaderboard::{self, LEADERBOARD_OUT, PAGE_REQUEST, Player},
     login::Identity,
@@ -11,7 +11,7 @@ use orpheus_lobby::{
     mode_rules::{CareerContent, PROFILE_REQUEST, career_profile},
     saved_settings::SOCIAL_OUT,
 };
-use orpheus_wire::jam::codec::{Fields, Value};
+use lucy_wire::jam::codec::{Fields, Value};
 
 use crate::lobby::{
     peer::Peer,

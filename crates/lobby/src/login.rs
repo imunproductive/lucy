@@ -9,8 +9,8 @@
 
 use std::io;
 
-use orpheus_bnet::session_key::name_in_key;
-use orpheus_wire::jam::codec::{Fields, Value, id16};
+use lucy_bnet::session_key::name_in_key;
+use lucy_wire::jam::codec::{Fields, Value, id16};
 
 pub const OUT_CONNECT: u32 = 0x3c7e_3468;
 pub const LOGIN_MESSAGE: u32 = 21800;
@@ -128,7 +128,7 @@ impl Identity {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orpheus_bnet::session_key::session_key;
+    use lucy_bnet::session_key::session_key;
 
     #[test]
     fn login_uses_tournament_name_or_retail_session_key() {

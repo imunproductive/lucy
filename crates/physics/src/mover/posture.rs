@@ -16,7 +16,7 @@ use crate::{
     mover::modifiers::{ActiveModifiers, CROUCH_INTENT, JUMP_INTENT, LAND_LIMIT},
     mover::settings::MoverSettings,
 };
-use orpheus_wire::{
+use lucy_wire::{
     commands::{CROUCH, Command, JUMP, frame_distance},
     entity::POSITION_UNITS,
 };

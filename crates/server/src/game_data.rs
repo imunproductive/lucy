@@ -3,7 +3,7 @@
 use std::path::Path;
 
 /// Every file under `data/` that the lobby and the match worker read. The
-/// install derivation (`orpheus-assets`) writes them all.
+/// install derivation (`lucy-assets`) writes them all.
 pub const FILES: &[&str] = &[
     "extracted_items.json",
     "extracted_general_unlocks.json",

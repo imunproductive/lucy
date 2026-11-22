@@ -80,7 +80,7 @@ use std::{collections::BTreeMap, error::Error, fmt};
 use indexmap::IndexMap;
 
 use crate::graph::{Graph, ModeValue};
-use orpheus_core::bits::{BitError, BitReader, BitWriter};
+use lucy_core::bits::{BitError, BitReader, BitWriter};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {

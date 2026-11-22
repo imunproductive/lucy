@@ -13,12 +13,12 @@ numbers, + -, [deref]). The first N hits arm (default 1), then the breakpoint is
 --this-vtable X / --arm-if EXPR=VALUE (or EXPR!=VALUE; repeatable, all must hold): only hits that
 meet the condition arm (and count for --arm-count), e.g. --this-vtable 0x7FF78B531228 arms a
 shared begin only for that state class: [rcx] == X. EXPR as in --field (no size: its value, ':N'
-reads N bytes); VALUE a number (an ORPHEUS or IDB VA in the game image is moved to this run's
+reads N bytes); VALUE a number (a Lucy or IDB VA in the game image is moved to this run's
 base) or a game name. Hits that don't match are counted in the summary ("handler hits not armed").
 --msg ID --field FIELD: the same at the message's client handler (tools.owindex), with FIELD a
 message field (#index, +0xOFF, dotted for struct members, optional :SIZE; see tools/owdbg/msg.py)
 of the message object (found per hit by its class vtable: r8 for every dispatcher so far).
---send JSON: ORPHEUS (started with ORPHEUS_DEBUG_SEND=1) sends the message with these fields after
+--send JSON: Lucy (started with LUCY_DEBUG_SEND=1) sends the message with these fields after
 the login / in a match (msg.py); the handler breakpoint arms only after the first send and only
 for a message whose watched field holds the sent marker. Hits carry "phase" ("handler" until the
 handler returns, then "after"; the watch is removed --linger seconds after the return) and
@@ -45,7 +45,7 @@ from .disasm import access_insn
 from . import actions
 from .game import Session, add_session_args, out_path
 from .msg import Message, Sender, add_msg_args, message_reg
-from .names import IDA_BASE, ORPHEUS_BASE, Expr, field_spec, hx, split_ranges
+from .names import IDA_BASE, LUCY_BASE, Expr, field_spec, hx, split_ranges
 
 
 class Watch:
@@ -113,13 +113,13 @@ class Watch:
             self.s.log(f"[watch] arm breakpoint at {self.names.text(va)} (0x{va:X})")
 
     def condition_value(self, text):
-        """A number (an ORPHEUS/IDB VA in the game image -> this run's VA) or a game name."""
+        """A number (a Lucy/IDB VA in the game image -> this run's VA) or a game name."""
         try:
             v = int(text, 0)
         except ValueError:
             return self.names.resolve(self.names.parse(text))
         main = self.dbg.main
-        for base in (ORPHEUS_BASE, IDA_BASE):
+        for base in (LUCY_BASE, IDA_BASE):
             if base <= v < base + main.size:
                 return main.base + v - base
         return v
@@ -223,7 +223,7 @@ class Watch:
         key = insn_va if insn_va is not None else rip
         if key not in self.info:
             d = self.names.describe(key)
-            self.info[key] = {"insn_va": hx(key), "rva": d.get("rva"), "orpheus": d.get("orpheus"),
+            self.info[key] = {"insn_va": hx(key), "rva": d.get("rva"), "lucy": d.get("lucy"),
                               "where": d["text"], "function": d.get("name"), "func_rva": d.get("func_rva"),
                               "insn": text, "kind": kind, "verified": verified}
         self.counts[key] += 1
@@ -325,7 +325,7 @@ def main(argv=None):
     except ValueError as e:
         p.error(str(e))
     if args.send:
-        args.server_env = dict(os.environ, ORPHEUS_DEBUG_SEND="1")
+        args.server_env = dict(os.environ, LUCY_DEBUG_SEND="1")
     args.out = args.out or str(out_path("watch", ".jsonl"))
     actions.prepare(args)
 
@@ -358,7 +358,7 @@ def main(argv=None):
             seen = [r for r in summary["instructions"] if r.get("marker_hits")]
             s.log(f"[watch] instructions that saw the marker {wt.marker.hex()} in {wt.mfield['path']}: {len(seen)}")
             for r in seen:
-                s.log(f"    {r['rva']} (orpheus {r['orpheus']}) {r['where']}: {r['insn']}  [{r['kind']}]")
+                s.log(f"    {r['rva']} (lucy {r['lucy']}) {r['where']}: {r['insn']}  [{r['kind']}]")
             if wt.sender is not None and not wt.sender.sent:
                 s.log("[watch] nothing was sent (see [send] lines)")
 

@@ -4,7 +4,7 @@
 //! queue's counts (`matches`, `wins`, `draws`: `ranked.rs` `matches_of`,
 //! `wins_of`, `draws_of`), experience (with his medals'), levels and boxes, his competitive
 //! rating and points, and the match in his leave record, by the public
-//! rules (`orpheus_lobby::progression`). A player who left before the end
+//! rules (`lucy_lobby::progression`). A player who left before the end
 //! gets the match as a loss and a leave (rules 87, 88), unless the server
 //! took him out (the dashboard, a queue match found). Each profile saved
 //! goes to its connected game through the dashboard's live push
@@ -12,7 +12,7 @@
 
 use std::{io, sync::Arc, time::Duration};
 
-use orpheus_lobby::{
+use lucy_lobby::{
     accounts::{Account, Profile},
     clock::server_time,
     progression::{self, Earned, MatchPlay},

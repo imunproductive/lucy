@@ -1,5 +1,5 @@
 [package]
-name = "orpheus-bnet"
+name = "lucy-bnet"
 description = "Local Battle.net emulation for retail build 104319"
 version.workspace = true
 edition.workspace = true
@@ -8,12 +8,12 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
-orpheus-fixed.workspace = true
-orpheus-wire.workspace = true
+lucy-fixed.workspace = true
+lucy-wire.workspace = true
 prost.workspace = true
 prost-reflect.workspace = true
 tungstenite.workspace = true
 
 [dev-dependencies]
-orpheus-testkit.workspace = true
+lucy-testkit.workspace = true
 sha2.workspace = true

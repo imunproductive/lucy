@@ -3,8 +3,8 @@
 //! `game_message`).
 
 use super::*;
-use orpheus_script::wire::Value as ScriptValue;
-use orpheus_wire::commands::FIRE;
+use lucy_script::wire::Value as ScriptValue;
+use lucy_wire::commands::FIRE;
 
 /// The body's runtime, whose commands fail while `fault` is set, as the
 /// Python test's one-unit `MAX_SCRIPT_WORK` makes them.
@@ -92,7 +92,7 @@ impl OwnerBodyRuntime for Faulting {
 }
 
 fn practice_range() -> PreparedScene {
-    let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
     assets.prepare(GameMap::practice_range()).unwrap()
 }
 
@@ -240,7 +240,7 @@ fn a_same_hero_pick_after_a_fault_replaces_the_body_and_waits_for_fresh_acks() {
         slot: 0,
         team: 0,
         spawn: 0,
-        room: orpheus_content::maps::SpawnChoice::First,
+        room: lucy_content::maps::SpawnChoice::First,
         card: &card,
     };
     let mut world = soldier(&scene, &viewer);
@@ -363,7 +363,7 @@ fn a_same_hero_pick_after_a_fault_replaces_the_body_and_waits_for_fresh_acks() {
 #[test]
 #[ignore = "requires a derived 104319 Practice Range pack without bot VM graphs"]
 fn healthy_and_scriptless_same_hero_picks_keep_the_body() {
-    let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
     for scripted in [true, false] {
         let mut scene = assets.prepare(GameMap::practice_range()).unwrap();
         if !scripted {
@@ -375,7 +375,7 @@ fn healthy_and_scriptless_same_hero_picks_keep_the_body() {
             slot: 0,
             team: 0,
             spawn: 0,
-            room: orpheus_content::maps::SpawnChoice::First,
+            room: lucy_content::maps::SpawnChoice::First,
             card: &card,
         };
         let mut world = soldier(&scene, &viewer);

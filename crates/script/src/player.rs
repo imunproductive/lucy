@@ -31,12 +31,12 @@ use crate::{
     wheel::{Cosmetic, Cosmetics},
     wire::{Value, Variables},
 };
-use orpheus_content::maps::TUTORIAL_MODE;
-use orpheus_physics::mover::{
+use lucy_content::maps::TUTORIAL_MODE;
+use lucy_physics::mover::{
     ground_walk::GroundWalk, landing::LandingSearch, movement_restarted, sample_movement_flags,
     trial::TrialMove,
 };
-use orpheus_wire::entity::{GAME_MODE_ENTITY, Movement};
+use lucy_wire::entity::{GAME_MODE_ENTITY, Movement};
 
 /// The hero body graphs that raise the body's voice reactions: `01CA` and
 /// `14B1`, the two subgraphs `004B` st27 chooses between by `06A3.025`
@@ -341,7 +341,7 @@ impl World for PlayerWorld {
     }
 
     /// The body's own health changes wait for the match, which applies
-    /// them as it applies a shot (`orpheus_sim` `Combat::modify_health`).
+    /// them as it applies a shot (`lucy_sim` `Combat::modify_health`).
     fn modify_health(&mut self, change: HealthChange) -> bool {
         if change.site.entity != self.entity {
             return false;
@@ -743,7 +743,7 @@ impl World for PlayerWorld {
         entity: u32,
         direction: [f64; 3],
         distance: f64,
-        form: orpheus_physics::mover::trial::TrialForm,
+        form: lucy_physics::mover::trial::TrialForm,
     ) -> Option<f64> {
         if !self.is_player_site(site) || entity != self.entity {
             return None;
@@ -1439,19 +1439,19 @@ mod tests {
         use crate::bot::{DAMAGE_AMOUNT, DAMAGE_DIRECTION, DAMAGE_SOURCE, DAMAGE_TAGS, DAMAGED};
         use crate::vitals::Death;
         use crate::vm::{Component, MAX_INIT_WORK};
-        use orpheus_content::{heroes::SOLDIER, maps::PRACTICE_RANGE_MODE};
+        use lucy_content::{heroes::SOLDIER, maps::PRACTICE_RANGE_MODE};
 
         const FIRST: u32 = 1000;
         const BOT: u32 = 0x8000_8800;
         const BOT_CONTROLLER: u32 = 0x8000_8000;
         // Another player's body, whose controller is its id less the low
-        // byte (`orpheus_sim::combat` `target_candidates`).
+        // byte (`lucy_sim::combat` `target_candidates`).
         const ENEMY: u32 = 0xa000_0201;
         const KNOCKBACK: u16 = 7;
         const MINOR: u64 = 0x0d80_0000_0000_0608;
         const SEVERE: u64 = 0x0d80_0000_0000_0609;
         const ABOVE_A_TENTH: u64 = 0x0d80_0000_0000_191d;
-        let data = orpheus_testkit::runtime_dir().join("data");
+        let data = lucy_testkit::runtime_dir().join("data");
         let graphs = Arc::new(GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap());
         let soldier = &graphs.bodies()[&0x0400_0000_0000_03cf];
         let tags = |ids: &[u64]| -> crate::weapons::DamageTags {
@@ -1601,7 +1601,7 @@ mod tests {
         assert!(criteria.is_empty(), "{criteria:?}");
         assert_eq!(strength, Some(Value::Float(f64::from(0.4_f32))));
         // The rocket's message without its tags (`.hurt flinch off`,
-        // `orpheus_sim::hurt_feedback`): `004B` rates the amount and `01CA`
+        // `lucy_sim::hurt_feedback`): `004B` rates the amount and `01CA`
         // leaves out only `191F`/`0262`, so the rating and the pain line
         // stay; `02C5` finds no gun tag and no `078D`: no flinch, no
         // knockback.
@@ -1638,12 +1638,12 @@ mod tests {
     #[ignore = "requires the derived 104319 statescript catalog"]
     fn the_idle_fidget_ends_at_once_on_a_body_without_its_animation() {
         use crate::vm::{Component, MAX_INIT_WORK};
-        use orpheus_content::{heroes::SOLDIER, maps::PRACTICE_RANGE_MODE};
+        use lucy_content::{heroes::SOLDIER, maps::PRACTICE_RANGE_MODE};
 
         const FIRST: u32 = 1000;
         const REAPER: u64 = 0x02e0_0000_0000_0002;
         const FIDGET: u16 = 19;
-        let data = orpheus_testkit::runtime_dir().join("data");
+        let data = lucy_testkit::runtime_dir().join("data");
         let graphs = Arc::new(GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap());
         // The frames (from the first) in which the fidget began, and the
         // frame ends that found it active.
@@ -1727,12 +1727,12 @@ mod tests {
         use crate::bot::RESET;
         use crate::controller::ELIMINATION;
         use crate::vm::{Component, MAX_INIT_WORK, RaisedCriteria, VoiceRequest};
-        use orpheus_content::{heroes::SOLDIER, maps::PRACTICE_RANGE_MODE};
+        use lucy_content::{heroes::SOLDIER, maps::PRACTICE_RANGE_MODE};
 
         const FIRST: u32 = 1000;
         const BOT: u32 = 0x8000_8800;
         const TRAINING_BOT_TAG: u64 = 0x0d60_0000_0000_02ed;
-        let data = orpheus_testkit::runtime_dir().join("data");
+        let data = lucy_testkit::runtime_dir().join("data");
         let graphs = Arc::new(GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap());
         let soldier = &graphs.bodies()[&0x0400_0000_0000_03cf];
         let tags = |ids: &[u64]| -> crate::weapons::DamageTags {

@@ -1,7 +1,7 @@
 //! Reinhardt's Charge's turn `STU_C168636D` (`007D` st6 under the charge's
 //! MovementMod st36: 240, 240 and #34534 = 30; st7 under the crash's st5:
 //! 0, 0, 0; codec none): a mover behaviour of kind 7
-//! ([`orpheus_physics::mover::turn`], which has the client's code). Its
+//! ([`lucy_physics::mover::turn`], which has the client's code). Its
 //! begin hands the mover its block (slot 56 `0x7FF789C40000`: the three
 //! fields in degrees, each 0 when unset or no number); the mover turns the
 //! body by the side keys while it runs, in place of the aim. With an output
@@ -11,7 +11,7 @@
 //! (st52, st74) and its lean (st96's data flow) read it.
 
 use super::*;
-use orpheus_physics::mover::Turn;
+use lucy_physics::mover::Turn;
 
 impl<W: World + ?Sized> Vm<'_, '_, '_, W> {
     pub(super) fn begin_turn(&mut self, key: StateKey, node: &Node) -> Result<(), InitFault> {

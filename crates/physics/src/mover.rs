@@ -97,11 +97,11 @@ use crate::{
     mover::settings::MoverSettings,
     nav::Navigation,
 };
-pub use move_to::{MoveEnd, MoveKey, MoveTo, Speed};
-use orpheus_wire::{
+use lucy_wire::{
     commands::Command,
     entity::{Movement, NO_INPUT, POSITION_UNITS, TURNING},
 };
+pub use move_to::{MoveEnd, MoveKey, MoveTo, Speed};
 pub use path_walk::PathWalk;
 pub use rise::{DeathZones, Rise};
 pub use turn::Turn;
@@ -849,7 +849,7 @@ mod tests {
         mover::modifiers::Operation,
         mover::settings::MoverCatalog,
     };
-    use orpheus_wire::{
+    use lucy_wire::{
         commands::{CROUCH, JUMP},
         entity::movement_record,
     };
@@ -1090,7 +1090,7 @@ mod tests {
     #[test]
     #[ignore = "requires a derived 104319 Practice Range movement cache"]
     fn practice_range_player_movement_records_match_python() {
-        let runtime = orpheus_testkit::runtime_dir();
+        let runtime = lucy_testkit::runtime_dir();
         let cache =
             read_movement_cache(File::open(runtime.join("collision/0688.col")).unwrap()).unwrap();
         let ids = BTreeSet::new();
@@ -1118,7 +1118,7 @@ mod tests {
         let released = BTreeMap::new();
         let mut combined = Sha256::new();
         for (i, guid) in records.keys().enumerate() {
-            let body = orpheus_core::guid::parse_guid(guid).unwrap();
+            let body = lucy_core::guid::parse_guid(guid).unwrap();
             let spawn = if i % 3 == 2 {
                 [45.5, 2.5, 34.75]
             } else {

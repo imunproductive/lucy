@@ -17,7 +17,7 @@
 use std::{error::Error, fmt};
 
 use crate::jam::codec::{CodecError, Fields, Schemas};
-use orpheus_core::bits::{BitError, BitReader, BitWriter};
+use lucy_core::bits::{BitError, BitReader, BitWriter};
 
 pub const MAX_PER_KIND: usize = 15;
 

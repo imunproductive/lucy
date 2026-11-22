@@ -1,4 +1,4 @@
-//! `orpheus script query`: the port of `tools/ssq.py`. Queries the 1.74
+//! `lucy script query`: the port of `tools/ssq.py`. Queries the 1.74
 //! statescript graphs the server has (the derived graph bundle): which graphs
 //! a hero or a mode runs, what a graph's nodes do, who reads and writes a
 //! variable, where a node class is used.
@@ -32,11 +32,11 @@ Query the 1.74 statescript graphs the server has (the graph bundle derived from 
 which graphs a hero or a mode runs, what a graph's nodes do, who reads and writes a variable,
 where a node class is used.
 
-    orpheus script query graphs --hero soldier
-    orpheus script query show 0255 --state-index 1 --depth 1
-    orpheus script query var 699 --graph 0255
-    orpheus script query class MovementMod
-    orpheus script query find \"hero select\"
+    lucy script query graphs --hero soldier
+    lucy script query show 0255 --state-index 1 --depth 1
+    lucy script query var 699 --graph 0255
+    lucy script query class MovementMod
+    lucy script query find \"hero select\"
 
 Notation: #699 is instance variable 699 and #7644e entity variable 7644 (as the VM writes them);
 rid is a node's m_nodes index (what owner frames name), st its m_states index, remote its

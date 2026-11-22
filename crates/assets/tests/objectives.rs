@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 /// The derivation's output, read once per test.
 static DERIVED: LazyLock<Value> =
-    LazyLock::new(|| orpheus_testkit::runtime_json("data/game_objectives_174.json"));
+    LazyLock::new(|| lucy_testkit::runtime_json("data/game_objectives_174.json"));
 
 fn derived() -> &'static Value {
     &DERIVED

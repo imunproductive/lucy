@@ -8,7 +8,7 @@
 //! points' areas and times, the payload's track. Each value is read from
 //! the install; the guesses are named where they are used.
 
-use orpheus_content::maps::MapObjective;
+use lucy_content::maps::MapObjective;
 use serde::Deserialize;
 
 use crate::{

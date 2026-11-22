@@ -2201,7 +2201,7 @@ fn initialized_waits_supply_owner_timers_and_remote_frame_targets() {
 fn actual_shared_ui_graph_baselines_match_python() {
     use sha2::{Digest, Sha256};
 
-    let root = orpheus_testkit::runtime_dir();
+    let root = lucy_testkit::runtime_dir();
     let graphs = GraphStore::load(root.join("data/game_graphs_174.json.gz")).unwrap();
     let codecs = CodecTable::client();
     let encoder = SnapshotEncoder::new(&graphs, &codecs);
@@ -2421,11 +2421,11 @@ fn the_kill_feed_pulsers_are_the_python_reference_table() {
             .collect::<Vec<_>>()
     };
     assert_eq!(
-        pulsers(orpheus_testkit::bot_graphs()),
+        pulsers(lucy_testkit::bot_graphs()),
         [(0x01cf, 108), (0x0c18, 8)]
     );
     assert_eq!(
-        pulsers(orpheus_testkit::runtime_dir().join("data/game_graphs_174.json.gz")),
+        pulsers(lucy_testkit::runtime_dir().join("data/game_graphs_174.json.gz")),
         [(0x01cf, 108)]
     );
 }

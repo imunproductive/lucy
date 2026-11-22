@@ -3,7 +3,7 @@ use std::{
     net::{SocketAddr, TcpStream},
 };
 
-use orpheus_lobby::{
+use lucy_lobby::{
     handoff::{FOUND_DELAY, HANDOFF, HANDOFF_MESSAGE},
     lineup::MATCH_LOBBY,
     login::{LOGIN_MESSAGE, OUT_CONNECT},
@@ -12,7 +12,7 @@ use orpheus_lobby::{
     queue::{ENTER_QUEUE, MATCHMAKE, QUEUE, QUEUE_WAITS, SET_ROLES, TANK_ROLE},
     templates::IN_CONNECT,
 };
-use orpheus_wire::jam::codec::{Fields, Schemas, Value};
+use lucy_wire::jam::codec::{Fields, Schemas, Value};
 
 use crate::{
     lobby::{
@@ -49,7 +49,7 @@ fn structure(value: &Value) -> &Fields {
 /// Practice Range forced: the queue pops, "Game Found!" shows, and the game
 /// gets its 20600 `FOUND_DELAY` after it.
 #[test]
-#[ignore = "requires an authorized 104319 runtime in ORPHEUS_RUNTIME_DIR"]
+#[ignore = "requires an authorized 104319 runtime in LUCY_RUNTIME_DIR"]
 fn one_player_to_start_pops_the_queue_and_hands_the_game_off() {
     const GROUPS: [u32; 9] = [
         IN_CONNECT,
@@ -62,7 +62,7 @@ fn one_player_to_start_pops_the_queue_and_hands_the_game_off() {
         HANDOFF,
         CHAT_IN,
     ];
-    let runtime = orpheus_testkit::runtime_dir();
+    let runtime = lucy_testkit::runtime_dir();
     let state = tempfile::tempdir().unwrap();
     let mut config = ServerConfig::new(runtime, state.path().into());
     config.lobby_port = 0;
@@ -221,9 +221,9 @@ fn one_player_to_start_pops_the_queue_and_hands_the_game_off() {
 /// back as 23312, and Start (24018 3) opens Hanamura, with the custom
 /// game's settings and Workshop, and hands the host's game off.
 #[test]
-#[ignore = "requires an authorized 104319 runtime in ORPHEUS_RUNTIME_DIR"]
+#[ignore = "requires an authorized 104319 runtime in LUCY_RUNTIME_DIR"]
 fn a_host_creates_a_custom_game_and_starts_it() {
-    use orpheus_lobby::{
+    use lucy_lobby::{
         custom_game::{LOBBY_COMMAND, START},
         handoff::{CREATE_GAME, GAME_REQUEST},
     };
@@ -239,7 +239,7 @@ fn a_host_creates_a_custom_game_and_starts_it() {
         HANDOFF,
         CHAT_IN,
     ];
-    let runtime = orpheus_testkit::runtime_dir();
+    let runtime = lucy_testkit::runtime_dir();
     let state = tempfile::tempdir().unwrap();
     let mut config = ServerConfig::new(runtime, state.path().into());
     config.lobby_port = 0;
@@ -391,8 +391,8 @@ mod results {
         time::Duration,
     };
 
-    use orpheus_content::maps::GameMap;
-    use orpheus_lobby::{
+    use lucy_content::maps::GameMap;
+    use lucy_lobby::{
         accounts::{Account, Accounts, Profile, load_or_create_profile},
         collection::PROGRESSION,
         handoff::Handoff,
@@ -407,7 +407,7 @@ mod results {
         templates::{IN_CONNECT, LOBBY},
         xp_table::XpTable,
     };
-    use orpheus_wire::jam::codec::{Fields, Value};
+    use lucy_wire::jam::codec::{Fields, Value};
     use serde_json::json;
 
     use super::super::{
@@ -887,7 +887,7 @@ mod results {
     /// its competitive points (24308), its level and experience (24313),
     /// the leave policy (20813) and its rating and tier (36302).
     #[test]
-    #[ignore = "requires an authorized 104319 runtime in ORPHEUS_RUNTIME_DIR"]
+    #[ignore = "requires an authorized 104319 runtime in LUCY_RUNTIME_DIR"]
     fn a_match_result_reaches_the_profile_and_the_players_game() {
         let fixture = Fixture::without_game();
         let lobby = &fixture.lobby;

@@ -1,9 +1,9 @@
-//! `orpheus assets diff`: derive the game data and compare it with a pack.
+//! `lucy assets diff`: derive the game data and compare it with a pack.
 
 use std::{fs, io, path::Path};
 
-use orpheus_assets::{Difference, Install, Output};
-use orpheus_launcher::game::install_root;
+use lucy_assets::{Difference, Install, Output};
+use lucy_launcher::game::install_root;
 
 use crate::{play, settings::Settings};
 
@@ -16,7 +16,7 @@ pub fn diff(settings: &Settings, pack: &Path) -> io::Result<bool> {
     let locale = play::locale(settings, &game).unwrap_or_else(|| "enUS".into());
     let opened = Install::open(&install, &locale).map_err(io::Error::other)?;
     let scratch = tempfile::tempdir()?;
-    let written = orpheus_assets::build(&opened, scratch.path()).map_err(io::Error::other)?;
+    let written = lucy_assets::build(&opened, scratch.path()).map_err(io::Error::other)?;
     let mut same = true;
     for path in written {
         let relative = path
@@ -28,7 +28,7 @@ pub fn diff(settings: &Settings, pack: &Path) -> io::Result<bool> {
             path: relative.clone(),
             bytes: fs::read(&path)?,
         };
-        let verdict = orpheus_assets::diff(&output, pack).map_err(io::Error::other)?;
+        let verdict = lucy_assets::diff(&output, pack).map_err(io::Error::other)?;
         match &verdict {
             Difference::Same => println!("same     {relative}"),
             Difference::Missing => println!("missing  {relative} (not in the pack)"),

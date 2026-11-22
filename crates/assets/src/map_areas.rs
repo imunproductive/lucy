@@ -78,7 +78,7 @@
 //! console `3963` (one mesh, category 0x80, at its placement), its pad
 //! `3992`, the moving platforms `0516` and the spawn doors `1793`/`230A`
 //! (category 0x1000, animated). The server's mover takes them
-//! (`orpheus_sim` `map_areas::PlaceableBody`).
+//! (`lucy_sim` `map_areas::PlaceableBody`).
 //!
 //! The team walls are among them: the server placeables that run graph
 //! `0FA8` (definitions `1C90` and `1C91`: 263 and 264 placeables on 24 map
@@ -92,7 +92,7 @@
 //! team too: 0 on `1C90`, 1 on `1C91`.
 //!
 //! The tagged entities are what the scene tag queries find
-//! (`orpheus_script::map_tags`): every entity placeable the server's world
+//! (`lucy_script::map_tags`): every entity placeable the server's world
 //! holds (on the loading list, or server-owned) with target tags of its
 //! own (`STUTargetTagInstanceData.m_targetTags`) or of its definition
 //! (`STUTargetTagComponent.m_targetTags`), both together. Spawn points,
@@ -100,7 +100,7 @@
 
 use std::{collections::HashMap, path::Path};
 
-use orpheus_stu::Value as Stu;
+use lucy_stu::Value as Stu;
 use serde_json::{Map, Value as Json, json};
 
 use crate::{
@@ -627,7 +627,7 @@ fn idle_animation(
 }
 
 /// One model-space physics shape (`crate::props`), as the server reads it
-/// (`orpheus_sim` `map_areas`): a mesh's holder mask, vertices and
+/// (`lucy_sim` `map_areas`): a mesh's holder mask, vertices and
 /// triangles `[corners, wings, mask, surface]`; a polytope's mask,
 /// centroid, vertices, planes, faces and half edges `[twin, origin, face,
 /// next]`; a capsule's and a sphere's mask and geometry. The caller adds

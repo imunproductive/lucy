@@ -36,8 +36,8 @@ use crate::{
     },
     transport::LobbyMessage,
 };
-use orpheus_content::catalog::game_region_number;
-use orpheus_wire::jam::codec::{
+use lucy_content::catalog::game_region_number;
+use lucy_wire::jam::codec::{
     Fields,
     Value::{self, Array, Bool, Float64, Signed, Struct, Unsigned},
 };

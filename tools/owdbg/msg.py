@@ -1,6 +1,6 @@
 """Network messages for `watch --msg` / `probe --msg`: the client handler and field layout of a
 message id (from tools.owindex), the message object at handler entry, and marker sends through
-ORPHEUS's debug endpoint.
+Lucy's debug endpoint.
 
 Message object at handler entry: every client dispatcher (lobby/JAM and game link) calls or
 tail-jumps to the handler as `handler(rcx = handler object, rdx = connection/context, r8 = message)`
@@ -12,10 +12,10 @@ several ids) are skipped. Field address = message + field offset (index `fields[
 struct members relative to their struct).
 
 Field specs (`--field`, `--send` keys): dotted paths of `#index` (schema position, the same as
-ORPHEUS's `index`) or `+0xOFF` (offset at that level), e.g. `#3`, `+0x128`, `#1.#0`,
+Lucy's `index`) or `+0xOFF` (offset at that level), e.g. `#3`, `+0x128`, `#1.#0`,
 `+0x80.+0x0`; an optional `:SIZE` overrides the size (needed for an offset that is no field).
 
-Marker sends (`--send`): ORPHEUS `serve` runs with ORPHEUS_DEBUG_SEND=1; after the login
+Marker sends (`--send`): Lucy `serve` runs with LUCY_DEBUG_SEND=1; after the login
 (lobby messages) or once the account is in a match (game-link messages: the endpoint answers an
 error until then; `--send-after-match` waits for the server's `[MM] Match found` line), the
 message is POSTed to http://127.0.0.1:3725/api/debug/send. The handler breakpoint arms only after
@@ -43,7 +43,7 @@ def add_msg_args(p):
     g = p.add_argument_group("messages")
     g.add_argument("--msg", type=int, help="message id: break at its client handler (tools.owindex)")
     g.add_argument("--msg-link", choices=("game", "jam"), help="link of --msg when the id exists on both")
-    g.add_argument("--send", help="JSON fields to send with --msg through ORPHEUS's debug endpoint, e.g. "
+    g.add_argument("--send", help="JSON fields to send with --msg through Lucy's debug endpoint, e.g. "
                                   "'{\"#3\": \"0x13572468\"}' (or a full /api/debug/send body)")
     g.add_argument("--send-every", type=float, default=0, help="send again every S seconds")
     g.add_argument("--send-count", type=int, default=0, help="stop after N sends (default 1, or unlimited "
@@ -244,7 +244,7 @@ def match_found(s):
 
 
 class Sender:
-    """Sends --send through ORPHEUS's debug endpoint on a worker thread; poll() runs in the debug
+    """Sends --send through Lucy's debug endpoint on a worker thread; poll() runs in the debug
     loop (timer) and decides when to send."""
 
     def __init__(self, s, args, msg, on_first_send=None):
@@ -309,8 +309,8 @@ class Sender:
             kind, res = self.results.get()
             if kind == "schema":
                 if "error" in res:
-                    self.log(f"[send] GET /api/debug/messages failed: {res['error']} (ORPHEUS without "
-                             f"the debug endpoint? cargo build --release, then rerun; {paths.ORPHEUS_EXE})")
+                    self.log(f"[send] GET /api/debug/messages failed: {res['error']} (Lucy without "
+                             f"the debug endpoint? cargo build --release, then rerun; {paths.LUCY_EXE})")
                 else:
                     self.log(f"[send] endpoint schema: {json.dumps(res)[:600]}")
                 continue

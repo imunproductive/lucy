@@ -1,6 +1,6 @@
 //! The client's two random tables of 16,384 entries, which it fills once
 //! at start-up and indexes with 14-bit masks: shot spread
-//! (`orpheus_sim::weapon_spread`) and the statescript's table picks
+//! (`lucy_sim::weapon_spread`) and the statescript's table picks
 //! (`STU_4EC41E8A`).
 //!
 //! The tables are made here, not read from the install. Ported from

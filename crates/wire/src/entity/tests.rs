@@ -1,5 +1,5 @@
 use super::*;
-use orpheus_core::bits::BitReader;
+use lucy_core::bits::BitReader;
 
 fn hex(encoded: &str) -> Vec<u8> {
     encoded

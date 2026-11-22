@@ -5,7 +5,7 @@
 mod common;
 
 use common::{ABILITY_2, INTERACT, Match, Player, catalog};
-use orpheus_workshop::{
+use lucy_workshop::{
     Engine, Logic,
     host::{Context, GameEvent},
     logic::events,

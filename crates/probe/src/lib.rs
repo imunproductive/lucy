@@ -1,7 +1,7 @@
 //! `owprobe.dll`: an in-process probe for the Overwatch 1.74 client.
 //!
-//! `orpheus play --probe` (or owdbg's `--probe`) loads it beside the relay.
-//! It listens on `127.0.0.1:ORPHEUS_PROBE_PORT` for the Python client
+//! `lucy play --probe` (or owdbg's `--probe`) loads it beside the relay.
+//! It listens on `127.0.0.1:LUCY_PROBE_PORT` for the Python client
 //! `tools/owprobe` and answers framed JSON requests: memory reads and writes,
 //! regions, modules, a per-frame sampler hooked into the client's input
 //! sampler, function hooks that log registers and reads into a ring buffer,
@@ -30,9 +30,9 @@ mod dll;
 use std::io::{self, Read, Write};
 
 /// The launcher passes the port in this variable.
-pub const PORT_VARIABLE: &str = "ORPHEUS_PROBE_PORT";
+pub const PORT_VARIABLE: &str = "LUCY_PROBE_PORT";
 /// The probe's log file; without it the log goes next to the DLL.
-pub const LOG_VARIABLE: &str = "ORPHEUS_PROBE_LOG";
+pub const LOG_VARIABLE: &str = "LUCY_PROBE_LOG";
 /// The port without the variable.
 pub const DEFAULT_PORT: u16 = 21150;
 
@@ -45,9 +45,9 @@ pub fn probe_port(value: Option<&str>) -> u16 {
 }
 
 /// The base the research's addresses use (the IDA list, owindex, owdbg).
-pub const ORPHEUS_BASE: u64 = 0x7FF7_88F1_0000;
+pub const LUCY_BASE: u64 = 0x7FF7_88F1_0000;
 
-/// Client addresses as ORPHEUS VAs (D:/Work/Coding/refs/reports/ClientInput.md).
+/// Client addresses as Lucy VAs (D:/Work/Coding/refs/reports/ClientInput.md).
 pub mod client {
     /// In the input sampler `0x7FF78961B350`: `rdi` = the local player's
     /// component 59, the sample at `+0x103C` complete and not yet merged.
@@ -193,9 +193,9 @@ pub fn write_frame(writer: &mut impl Write, body: &[u8]) -> io::Result<()> {
     writer.flush()
 }
 
-/// An ORPHEUS VA in the client image, at the image's base in this run.
-pub fn runtime(base: u64, orpheus_va: u64) -> u64 {
-    orpheus_va.wrapping_sub(ORPHEUS_BASE).wrapping_add(base)
+/// A Lucy VA in the client image, at the image's base in this run.
+pub fn runtime(base: u64, lucy_va: u64) -> u64 {
+    lucy_va.wrapping_sub(LUCY_BASE).wrapping_add(base)
 }
 
 /// `SizeOfImage` and the RVA range of the code section (`.text`, else the

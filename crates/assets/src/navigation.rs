@@ -1,6 +1,6 @@
 //! `data/navigation/<map>.json.gz`: each map's AI tactical volumes, the
 //! navigation graph the server's AI heroes path over. The server's reader is
-//! `orpheus_physics::nav`.
+//! `lucy_physics::nav`.
 //!
 //! Where it comes from: each map has one chunk of kind 0x12 (see
 //! [`crate::map_chunk`]), present for all 132 maps. Its header is `{u64

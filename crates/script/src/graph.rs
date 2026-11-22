@@ -15,7 +15,7 @@ use flate2::bufread::MultiGzDecoder;
 use serde::Deserialize;
 use serde_json::{Map, Value, value::RawValue};
 
-use orpheus_core::guid::parse_guid;
+use lucy_core::guid::parse_guid;
 
 use crate::{
     ai_definitions::{AI_DEFINITIONS_FILE, AiDefinitions},
@@ -1584,7 +1584,7 @@ mod tests {
     #[ignore = "requires a derived 104319 state graph bundle"]
     fn whole_retail_wire_index_matches_the_python_reference() {
         use sha2::{Digest, Sha256};
-        let root = orpheus_testkit::runtime_dir();
+        let root = lucy_testkit::runtime_dir();
         let store = GraphStore::load(root.join("data/game_graphs_174.json.gz")).unwrap();
         let mut digest = Sha256::new();
         fn sequence(digest: &mut Sha256, items: impl IntoIterator<Item = u64>) {

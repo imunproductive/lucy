@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use orpheus_physics::{
+use lucy_physics::{
     collision::{
         cache::{Mesh, Triangle},
         index::{SceneTriangle, TriangleIndex},
@@ -14,7 +14,7 @@ use orpheus_physics::{
     },
     mover::{Mover, settings::MoverSettings},
 };
-use orpheus_wire::commands::Command;
+use lucy_wire::commands::Command;
 
 /// The team proxy categories a movement triangle stops (collision.py
 /// `MOVER`); team 0 moves with the first.

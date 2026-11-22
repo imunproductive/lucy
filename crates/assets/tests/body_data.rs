@@ -4,7 +4,7 @@
 use serde_json::{Value, json};
 
 fn derived(path: &str) -> Value {
-    orpheus_testkit::runtime_json(path)
+    lucy_testkit::runtime_json(path)
 }
 
 /// combat.py `EYE` and `EYE_CROUCHED`: Soldier: 76's `03CF.003` eyes; every

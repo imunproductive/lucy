@@ -14,22 +14,22 @@ publish = false
 license = "MIT"
 
 [workspace.dependencies]
-orpheus-core = { path = "crates/core" }
-orpheus-assets = { path = "crates/assets" }
-orpheus-casc = { path = "crates/casc" }
-orpheus-fixed = { path = "crates/fixed" }
-orpheus-stu = { path = "crates/stu" }
-orpheus-wire = { path = "crates/wire" }
-orpheus-content = { path = "crates/content" }
-orpheus-bnet = { path = "crates/bnet" }
-orpheus-physics = { path = "crates/physics" }
-orpheus-script = { path = "crates/script" }
-orpheus-sim = { path = "crates/sim" }
-orpheus-lobby = { path = "crates/lobby" }
-orpheus-server = { path = "crates/server" }
-orpheus-launcher = { path = "crates/launcher" }
-orpheus-testkit = { path = "crates/testkit" }
-orpheus-workshop = { path = "crates/workshop" }
+lucy-core = { path = "crates/core" }
+lucy-assets = { path = "crates/assets" }
+lucy-casc = { path = "crates/casc" }
+lucy-fixed = { path = "crates/fixed" }
+lucy-stu = { path = "crates/stu" }
+lucy-wire = { path = "crates/wire" }
+lucy-content = { path = "crates/content" }
+lucy-bnet = { path = "crates/bnet" }
+lucy-physics = { path = "crates/physics" }
+lucy-script = { path = "crates/script" }
+lucy-sim = { path = "crates/sim" }
+lucy-lobby = { path = "crates/lobby" }
+lucy-server = { path = "crates/server" }
+lucy-launcher = { path = "crates/launcher" }
+lucy-testkit = { path = "crates/testkit" }
+lucy-workshop = { path = "crates/workshop" }
 aes = "0.8"
 aes-gcm = { version = "0.10.3", default-features = false, features = ["aes", "alloc"] }
 clap = { version = "4.6.7", features = ["derive", "env"] }
@@ -59,7 +59,7 @@ tungstenite = { version = "0.28", default-features = false, features = ["handsha
 windows-sys = "0.61.2"
 
 # Debug builds and tests (dev, and test, which inherits it) use Cranelift: after a
-# change to orpheus-script a test build took 314 s with LLVM and 35 s with Cranelift
+# change to lucy-script a test build took 314 s with LLVM and 35 s with Cranelift
 # (2026-11-20, docs/dev/testing.md "Build speed"). Its code runs about 1.5 times
 # slower than LLVM's. Release and gametest (which inherits release) keep LLVM.
 # Cranelift can't unwind on Windows, so a debug build aborts on a panic, and each
@@ -70,15 +70,15 @@ codegen-backend = "cranelift"
 # Deriving the game data from the install in a debug build (the first server
 # start, the game-tier tests) would take far longer without optimization, so
 # these three keep LLVM at full optimization.
-[profile.dev.package.orpheus-assets]
+[profile.dev.package.lucy-assets]
 opt-level = 3
 codegen-backend = "llvm"
 
-[profile.dev.package.orpheus-casc]
+[profile.dev.package.lucy-casc]
 opt-level = 3
 codegen-backend = "llvm"
 
-[profile.dev.package.orpheus-stu]
+[profile.dev.package.lucy-stu]
 opt-level = 3
 codegen-backend = "llvm"
 
@@ -90,13 +90,13 @@ codegen-backend = "llvm"
 # and its game-tier tests at real time; debug assertions stay on. These three
 # are the most edited crates, so they use Cranelift, whose code is slower; play
 # and the long test runs use release or gametest.
-[profile.dev.package.orpheus-script]
+[profile.dev.package.lucy-script]
 opt-level = 1
 
-[profile.dev.package.orpheus-physics]
+[profile.dev.package.lucy-physics]
 opt-level = 1
 
-[profile.dev.package.orpheus-sim]
+[profile.dev.package.lucy-sim]
 opt-level = 1
 
 # Dependencies are built once per target folder: LLVM at full optimization.
@@ -106,10 +106,10 @@ codegen-backend = "llvm"
 
 # The relay and probe DLLs run inside the game and catch panics at their hooks
 # (`catch_unwind`), which needs unwinding: LLVM.
-[profile.dev.package.orpheus-relay]
+[profile.dev.package.lucy-relay]
 codegen-backend = "llvm"
 
-[profile.dev.package.orpheus-probe]
+[profile.dev.package.lucy-probe]
 codegen-backend = "llvm"
 
 # The game-install tests (`just test-game`, `just test-slow`, `just test-named … gametest`)

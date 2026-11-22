@@ -4,8 +4,8 @@
 
 use std::fs;
 
-use orpheus_casc::{Game, guid_name};
-use orpheus_stu::{Asset, Object, Value, read};
+use lucy_casc::{Game, guid_name};
+use lucy_stu::{Asset, Object, Value, read};
 
 const GRAPH: u16 = 0x01B;
 const DEFINITION: u16 = 0x003;
@@ -13,7 +13,7 @@ const MODE: u16 = 0x0C5;
 const DRAGON: &str = "https://yretenai.com/dragonml/v1";
 
 fn game() -> Game {
-    Game::open(&orpheus_testkit::game_dir(), "enUS").unwrap()
+    Game::open(&lucy_testkit::game_dir(), "enUS").unwrap()
 }
 
 fn stored(game: &Game, kind: u16) -> Vec<u64> {
@@ -24,7 +24,7 @@ fn stored(game: &Game, kind: u16) -> Vec<u64> {
 }
 
 #[test]
-#[ignore = "reads an Overwatch 1.74 install in ORPHEUS_GAME_DIR"]
+#[ignore = "reads an Overwatch 1.74 install in LUCY_GAME_DIR"]
 fn every_stored_graph_definition_and_mode_decodes() {
     let game = game();
     // Instances of classes OWLib doesn't know: DataTool exports them as null.
@@ -44,10 +44,10 @@ fn every_stored_graph_definition_and_mode_decodes() {
 }
 
 #[test]
-#[ignore = "compares the install in ORPHEUS_GAME_DIR with the DataTool export in ORPHEUS_DATATOOL_DUMP"]
+#[ignore = "compares the install in LUCY_GAME_DIR with the DataTool export in LUCY_DATATOOL_DUMP"]
 fn datatool_graph_items_and_definition_roots_match() {
     let game = game();
-    let dump = orpheus_testkit::datatool_dump();
+    let dump = lucy_testkit::datatool_dump();
     let mut compared = 0;
     for (guid, bytes) in game.read_all(&stored(&game, GRAPH)) {
         let asset = read(&bytes.unwrap()).unwrap();
@@ -97,7 +97,7 @@ fn compare_scalars(
     element: roxmltree::Node<'_, '_>,
     asset: &str,
 ) -> usize {
-    let types = orpheus_stu::Types::get();
+    let types = lucy_stu::Types::get();
     let mut compared = 0;
     for attribute in element
         .attributes()
@@ -130,7 +130,7 @@ fn compare_scalars(
             (text, Value::Float(value)) => {
                 let text = text.replace(',', ".");
                 match field.ty.kind {
-                    orpheus_stu::Kind::F32 => text.parse::<f32>().ok() == Some(*value as f32),
+                    lucy_stu::Kind::F32 => text.parse::<f32>().ok() == Some(*value as f32),
                     _ => text.parse::<f64>().ok() == Some(*value),
                 }
             }
@@ -176,7 +176,7 @@ fn item_pairs<'a, 'input>(
 /// Graph `01CA`'s first item, as DataTool exports it: a server-only message
 /// entry (unique ID 6) for game message `00000000003E.025`.
 #[test]
-#[ignore = "reads an Overwatch 1.74 install in ORPHEUS_GAME_DIR"]
+#[ignore = "reads an Overwatch 1.74 install in LUCY_GAME_DIR"]
 fn a_graph_item_reads_its_scalars_and_asset_references() {
     let game = game();
     let guid = stored(&game, GRAPH)

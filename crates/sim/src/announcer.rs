@@ -38,7 +38,7 @@
 //! mode, the Practice Range too.
 //!
 //! The server runs `0215` itself under the player's `0C90` in the VM
-//! (`orpheus_script::controller`, enabler 2 of `docs/dev/graphs-plan.md`):
+//! (`lucy_script::controller`, enabler 2 of `docs/dev/graphs-plan.md`):
 //! each elimination goes to the controller as `0093.025`, and the
 //! controller frames carry st21's count and #10122 as the script has them
 //! (projected from its snapshot, `crate::controller`). Assumptions: an elimination is the final blow (the server
@@ -59,8 +59,8 @@
 //! `0345`/`0346`/`0348.062`), the "N PLAYER KILL STREAK!" text and the team
 //! kill (see `docs/notes/behavior.md`).
 
-use orpheus_core::tick::TICK_PERIOD;
-use orpheus_script::graph::GraphStore;
+use lucy_core::tick::TICK_PERIOD;
+use lucy_script::graph::GraphStore;
 
 /// `0215` st4's wait, #2036 = 2 s, in world ticks (2000 / 16 = 125).
 pub const MULTIKILL_WINDOW_TICKS: u32 = 2000 / TICK_PERIOD.as_millis() as u32;

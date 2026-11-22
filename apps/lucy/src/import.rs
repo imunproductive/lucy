@@ -1,4 +1,4 @@
-//! `orpheus state import`: copy saved player state from an older checkout.
+//! `lucy state import`: copy saved player state from an older checkout.
 
 use std::{
     fs, io,

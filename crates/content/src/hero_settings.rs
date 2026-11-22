@@ -11,7 +11,7 @@
 //!
 //! A hero setting is an entity variable of the hero's body, whose id is the
 //! setting identifier's index: no graph writes it, and the graphs compare it
-//! with the setting's choices. `orpheus script query var 8336` gives
+//! with the setting's choices. `lucy script query var 8336` gives
 //! "identifier 2090.01C", the ALLIED HEALTH BARS setting.
 //!
 //! What the client sends (its sender `0x7FF7895257B0`, after it joins and
@@ -34,7 +34,7 @@
 //! networked node down another branch than the client's (Ana's Nano Boost
 //! search found nobody with a cone of `10 × null`).
 
-use orpheus_wire::{jam::codec::Value, messages::Message};
+use lucy_wire::{jam::codec::Value, messages::Message};
 
 pub const HERO_SETTINGS: u32 = 21604;
 
@@ -104,7 +104,7 @@ const fn setting(hero: u64, index: u64, default: SettingDefault) -> ScriptSettin
 /// Every `054/0126` setting that a graph node the server runs (not
 /// client-only) reads, with the graphs of those reads: the survey of
 /// `D:/Work/Coding/refs/reports/HeroSettings.md`, checked against the data
-/// by `orpheus_sim` `the_script_settings_are_the_hero_settings_server_nodes_read`.
+/// by `lucy_sim` `the_script_settings_are_the_hero_settings_server_nodes_read`.
 /// The other 41 are read by client code or client-only nodes alone.
 pub const SCRIPT_SETTINGS: [ScriptSetting; 50] = {
     use SettingDefault::{Bool, Float, Identifier};
@@ -291,7 +291,7 @@ impl HeroSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orpheus_wire::jam::codec::Fields;
+    use lucy_wire::jam::codec::Fields;
 
     use crate::heroes::{ANA, SOLDIER};
 

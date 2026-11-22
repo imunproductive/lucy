@@ -5,10 +5,10 @@ use serde_json::{Value, json};
 
 fn derived() -> Value {
     assert_eq!(
-        orpheus_testkit::derived_outputs("game_anim_lengths"),
+        lucy_testkit::derived_outputs("game_anim_lengths"),
         ["data/game_anim_lengths_174.json"]
     );
-    orpheus_testkit::runtime_json("data/game_anim_lengths_174.json")
+    lucy_testkit::runtime_json("data/game_anim_lengths_174.json")
 }
 
 /// Every hero and bot body names one blend tree set, whose every alias is

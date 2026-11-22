@@ -1,6 +1,6 @@
 """owprobe: the Python side of owprobe.dll, the in-process probe of the Overwatch 1.74 client (crates/probe).
 
-    python -m tools.owprobe launch --enter-range --hero Soldier --keep-running   # orpheus play --probe
+    python -m tools.owprobe launch --enter-range --hero Soldier --keep-running   # lucy play --probe
     python -m tools.owprobe info
     python -m tools.owprobe trace --seconds 5 --out x.jsonl --input "walk 2s; walk+jump 1; walk 2s"
     python -m tools.owprobe hook 0x7FF78991F5D0 --name rollback --stack 4 --seconds 5

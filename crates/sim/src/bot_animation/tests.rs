@@ -244,13 +244,13 @@ fn a_rig_refuses_a_bone_before_its_parent_and_an_unknown_clip() {
 
 mod game {
     use crate::{scene_assets::PreparedScene, scene_assets::SceneAssets};
-    use orpheus_content::maps::GameMap;
-    use orpheus_script::vm::Unknowns;
+    use lucy_content::maps::GameMap;
+    use lucy_script::vm::Unknowns;
 
     const TRAINING_BOT: u64 = 0x0400_0000_0000_1403;
 
     fn practice_range() -> PreparedScene {
-        SceneAssets::load(orpheus_testkit::runtime_dir())
+        SceneAssets::load(lucy_testkit::runtime_dir())
             .unwrap()
             .prepare(GameMap::practice_range())
             .unwrap()
@@ -259,7 +259,7 @@ mod game {
     /// The Practice Range with its bots' scripts, which ask for the
     /// patrols' walks (they hold content the VM doesn't know yet).
     fn scripted_practice_range() -> PreparedScene {
-        let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+        let mut assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
         assets.set_bot_unknowns(Unknowns::Tolerate);
         assets.prepare(GameMap::practice_range()).unwrap()
     }
@@ -363,7 +363,7 @@ mod game {
 #[test]
 #[ignore = "requires a derived 104319 Practice Range scene"]
 fn the_assembly_poses_the_bones_where_the_client_draws_them() {
-    let path = orpheus_testkit::runtime_dir().join("data/game_bot_animation_174.json");
+    let path = lucy_testkit::runtime_dir().join("data/game_bot_animation_174.json");
     let catalog = BotRigCatalog::load(path).unwrap();
     let body = catalog.for_body(0x0400_0000_0000_1403).unwrap();
     let bones = |t: f64| {

@@ -17,7 +17,7 @@ use super::{
 };
 
 static QUERY: LazyLock<Query> = LazyLock::new(|| {
-    Query::load(&orpheus_testkit::runtime_dir(), None).expect("the derived game data loads")
+    Query::load(&lucy_testkit::runtime_dir(), None).expect("the derived game data loads")
 });
 
 fn query() -> &'static Query {

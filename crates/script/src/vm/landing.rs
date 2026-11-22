@@ -12,12 +12,12 @@
 //! (`m_1549F0F9`) unless the ground under it is an entity's (the server's
 //! search meets the static map only), writes the point and true; a miss
 //! writes false and keeps the last point. The search is
-//! [`orpheus_physics::mover::landing`]. The selector's other form (a
+//! [`lucy_physics::mover::landing`]. The selector's other form (a
 //! summoner's placement, confirmed by its input plug `m_6647ED22`) runs as
 //! a plain state, recorded.
 
 use super::*;
-use orpheus_physics::mover::landing::LandingSearch;
+use lucy_physics::mover::landing::LandingSearch;
 
 const SELECTOR: &str = "STU_4C96470A";
 /// The landing form's fields: its search's length (`m_6386E7B4`) and gate.

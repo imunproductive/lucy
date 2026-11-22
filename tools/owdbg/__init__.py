@@ -1,7 +1,7 @@
 """owdbg: a small Win32 debugger (Python + ctypes) for the Overwatch 1.74 debug build.
 
 CLIs (run from the repo root):
-    python -m tools.owdbg.launch   ORPHEUS serve + the game under the debugger with the relay
+    python -m tools.owdbg.launch   Lucy serve + the game under the debugger with the relay
     python -m tools.owdbg.probe    logging breakpoints: args, return value, caller, counts
     python -m tools.owdbg.crash    named stack, registers, disassembly and a minidump on an exception
     python -m tools.owdbg.watch    hardware read/write watch -> accessing instructions and functions
@@ -9,7 +9,7 @@ CLIs (run from the repo root):
 
 Library: core.Debugger (process, events, breakpoints, debug registers, memory, stack walk),
 game.Session (server + game + relay, cleanup), names.Names (index/docs names, address specs),
-msg (message handlers/layouts from the index, ORPHEUS marker sends, Practice Range entry for
+msg (message handlers/layouts from the index, Lucy marker sends, Practice Range entry for
 `watch --msg` / `probe --msg`).
 """
 from .core import Debugger, DebugError, Hit

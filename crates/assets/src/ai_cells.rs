@@ -1,6 +1,6 @@
 //! `data/aicells/<map>.bin.gz`: each map's AI cell data, the voxel grids the
 //! client's path query searches. The server's reader is
-//! `orpheus_physics::ai_cells`.
+//! `lucy_physics::ai_cells`.
 //!
 //! Where it comes from: document 0 of the map's chunk 0x12 (see
 //! [`crate::navigation`] for the chunk header), root `STU_3BC32A6E` at
@@ -13,7 +13,7 @@
 //! The client's loader (`0x7FF78A61CB80`, from `0x7FF78AA64190`, which builds
 //! the grid with cells of 16 × 22.4 × 16 m) keeps each block as is, keyed by
 //! the cell key; the block's own layout is read by
-//! `orpheus_physics::ai_cells`. The derivation checks that each block starts
+//! `lucy_physics::ai_cells`. The derivation checks that each block starts
 //! with its 17 section offsets in order and inside the block, and stores the
 //! blocks unchanged:
 //!

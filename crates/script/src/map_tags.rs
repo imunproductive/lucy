@@ -5,7 +5,7 @@
 //! The client walks every entity of its pool for a query (0x7FF789BA15F0)
 //! and tests each one's tags (0x7FF789CC5030: component 76's own list,
 //! less the suppressed, plus the added). The worlds know the map's
-//! placeables (`0x80000000 | flat`, `orpheus_assets`' `map_areas`
+//! placeables (`0x80000000 | flat`, `lucy_assets`' `map_areas`
 //! `tagged`) and, of the bodies, only their own: a tag that some body
 //! definition carries could also find bodies, so a query for one is left
 //! unanswered.

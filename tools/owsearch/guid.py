@@ -1,7 +1,7 @@
-"""Overwatch asset GUIDs the way ORPHEUS shows them (`crates/casc/src/lib.rs` `guid_type`/`guid_name`).
+"""Overwatch asset GUIDs the way Lucy shows them (`crates/casc/src/lib.rs` `guid_type`/`guid_name`).
 
 A GUID is 64 bits: the asset type sits bit-reversed, minus one, at bits 48..59; the low 48 bits are the
-index. ORPHEUS writes `<index:012X>.<type:03X>` (`000000000307.025`) and, in docs and graphs, the short
+index. Lucy writes `<index:012X>.<type:03X>` (`000000000307.025`) and, in docs and graphs, the short
 form `0307.025` (index with at least 4 digits), or just `0307` when the type is clear from context. The
 research notes also write `<type>:<index>` (`097:0001`).
 """
@@ -10,7 +10,7 @@ import re
 
 INDEX_MASK = 0xFFFF_FFFF_FFFF
 
-# Type names: the GUID type constants of ORPHEUS's crates (crates/assets, crates/script, crates/casc).
+# Type names: the GUID type constants of Lucy's crates (crates/assets, crates/script, crates/casc).
 TYPE_NAMES = {
     0x002: "map",
     0x003: "entity definition",
@@ -57,7 +57,7 @@ def is_guid(value):
 
 
 def name(guid):
-    """ORPHEUS's full name, `000000000307.025`."""
+    """Lucy's full name, `000000000307.025`."""
     return f"{guid & INDEX_MASK:012X}.{guid_type(guid):03X}"
 
 

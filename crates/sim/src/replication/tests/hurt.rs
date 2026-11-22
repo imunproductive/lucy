@@ -5,7 +5,7 @@
 use super::*;
 use crate::combat::Shooter;
 use crate::hurt_feedback::HurtFeedback;
-use orpheus_wire::{combat_messages::CombatNotice, commands::Command};
+use lucy_wire::{combat_messages::CombatNotice, commands::Command};
 
 const OWNER: u32 = 0xa000_0100;
 /// `02C5`'s networked knockback anim.
@@ -20,7 +20,7 @@ fn viewer(card: &PlayerCard) -> PlayerAppearance<'_> {
         slot: 0,
         team: 0,
         spawn: 0,
-        room: orpheus_content::maps::SpawnChoice::First,
+        room: lucy_content::maps::SpawnChoice::First,
         card,
     }
 }
@@ -66,7 +66,7 @@ fn rockets(scene: &PreparedScene, hits: &[u32], ticks: u32) -> Reactions {
     );
     world.area_step(scene, &viewer(&card));
     assert_eq!(world.in_spawn_room(), Some(false));
-    let explosion: orpheus_script::weapons::DamageTags = [0x03bf, 0x04b1, 0x078d, 0x0980, 0x2d30]
+    let explosion: lucy_script::weapons::DamageTags = [0x03bf, 0x04b1, 0x078d, 0x0980, 0x2d30]
         .map(|tag| 0x0d80_0000_0000_0000_u64 | tag)
         .into_iter()
         .collect();
@@ -166,8 +166,8 @@ fn rockets(scene: &PreparedScene, hits: &[u32], ticks: u32) -> Reactions {
 #[test]
 #[ignore = "requires a derived 104319 Practice Range pack"]
 fn every_rocket_knocks_the_player_back_and_hurts_unless_switched_off() {
-    let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
-    assets.set_player_unknowns(orpheus_script::vm::Unknowns::Tolerate);
+    let mut assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
+    assets.set_player_unknowns(lucy_script::vm::Unknowns::Tolerate);
     let mut scene = assets.prepare(GameMap::practice_range()).unwrap();
     let hits = [10, 70, 130];
     let knocked: Vec<_> = hits

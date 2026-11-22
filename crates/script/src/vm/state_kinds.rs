@@ -616,7 +616,7 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
     }
 
     /// A `MoveTo`'s begin: the block it hands the mover
-    /// (`orpheus_physics::mover::move_to`, which has the client's code).
+    /// (`lucy_physics::mover::move_to`, which has the client's code).
     /// It moves only toward a point: a destination entity that is a valid
     /// entity is not modelled (the target would move with it and its bone),
     /// nor is a block handed again each update (`m_84D349FB`); the fields
@@ -766,7 +766,7 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
         }
     }
 
-    /// Meteor Strike's flight (`STU_6154B909`, `orpheus_physics::mover::rise`):
+    /// Meteor Strike's flight (`STU_6154B909`, `lucy_physics::mover::rise`):
     /// its block as the client's update (`0x7FF789C4CA20`) hands a new
     /// behaviour each frame (slot 57 `0x7FF789C3CDA0`): `m_4999D53A` as a
     /// bool (unset or no value: false), `m_62F6795F` as a float (0), and
@@ -781,7 +781,7 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
                     .is_some_and(|value| truthy(&value))
         };
         let height = self.move_number(id, node, "m_62F6795F", 0.0).unwrap_or(0.0);
-        let unset = f64::from(orpheus_physics::mover::rise::UNSET_FLOOR);
+        let unset = f64::from(lucy_physics::mover::rise::UNSET_FLOOR);
         let floor = self
             .move_number(id, node, "m_2A7E6E17", unset)
             .unwrap_or(unset);
@@ -887,7 +887,7 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
 
     /// A velocity action (`STU_FF3471E9`, run 0x7FF789C3B350): each element
     /// of `m_BC5E91CF`, in order, for the body's next pose
-    /// ([`Motion::Velocity`], `orpheus_physics::mover::Mover::act_on_velocity`).
+    /// ([`Motion::Velocity`], `lucy_physics::mover::Mover::act_on_velocity`).
     /// A scalar element (`STU_D71F17E2`: add `7104FC1F`, multiply
     /// `1308AA6A`, set `9AF0FA80`, min `748FC65A`, max `EC4841E7`; the clamp
     /// `20E18047` with `m_8AD739CE` lower, default the smallest normal

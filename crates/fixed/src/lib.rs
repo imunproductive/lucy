@@ -29,7 +29,7 @@ pub const RETAIL_TEMPLATES: &str = include_str!("../data/retail_templates.json")
 /// `lobby_celebrations`.
 pub const RESOURCE_KEYS: &str = include_str!("../data/resource_keys.json");
 
-/// Research names for the statescript graphs (`orpheus script query`): class
+/// Research names for the statescript graphs (`lucy script query`): class
 /// aliases, the STU fields that hold a variable, logical buttons, the hero
 /// select and HUD graphs, each game mode's scripts and the variable names the
 /// server uses.

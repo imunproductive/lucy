@@ -421,7 +421,7 @@ fn info(probe: &Probe) -> Value {
         "body": game.state.lock().ok().and_then(|state| state.last.as_ref().map(|s| s.body_id)),
         "frame_hook": game.frame_hook.lock().ok().and_then(|hook| *hook),
         "records": probe.ring.lock().map(|ring| ring.last()).unwrap_or(0),
-        "orpheus_base": crate::ORPHEUS_BASE,
+        "lucy_base": crate::LUCY_BASE,
     })
 }
 

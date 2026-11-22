@@ -5,11 +5,11 @@
 //! with the map's collision, is prepared off the game thread while the
 //! players load (match.py `_refresh_collision`); players can join it while it
 //! runs (ow174/game/server.py `join_match`). In the PvP modes the first spawn
-//! starts the match flow (orpheus_sim::match_flow): "assemble your team"
+//! starts the match flow (lucy_sim::match_flow): "assemble your team"
 //! (match.py `_end_assemble`), then the mode's setup, rounds, objectives and
 //! scoring; at the match's end the result goes to the lobby and the players
 //! go home. In Practice vs AI, AI heroes fill the teams: players without a
-//! game, whose bodies the server plays (`ai.rs`, `orpheus_sim::ai`).
+//! game, whose bodies the server plays (`ai.rs`, `lucy_sim::ai`).
 //!
 //! How a player gets into the world (client research, 1.74): when the map is
 //! loaded the client sends 21601 (and later 21602). 0.3 s later the server
@@ -54,20 +54,20 @@ use crate::{
     connection::{GameConnections, MAX_CONNECTION_ID, Outgoing, Received, SILENCE_TIME, Timeout},
     ingress::{GameIngress, MapReadiness, MapReadyStep, MessageKind, WorldReadiness, pong},
 };
-use orpheus_content::{
+use lucy_content::{
     hero_settings,
     heroes::SOLDIER,
     maps::{GameMap, SpawnChoice},
     parameters::{CLIENT_GAME_MESSAGE, PICK_HERO},
     stats::{BRONZE, GOLD, Medals, PlayerStats, SILVER, StatsCatalog},
 };
-use orpheus_lobby::handoff::Handoff;
-use orpheus_script::{
+use lucy_lobby::handoff::Handoff;
+use lucy_script::{
     mode::ModePlayer,
     snapshot::ProjectedSnapshot,
     vm::{AuraChange, GameMessage, PlayRequest, ScopeChange, TrackedStat},
 };
-use orpheus_sim::{
+use lucy_sim::{
     ai::{Difficulty, Random},
     bot_plate::{BotPlate, PlateChange, PlateView},
     bot_script::{BotShotKind, SeenRocket},
@@ -91,8 +91,8 @@ use orpheus_sim::{
     voice_lines::VoiceLine,
     workshop::{WorkshopPlayer, WorkshopRun},
 };
-use orpheus_wire::entity::Component as WorldComponent;
-use orpheus_wire::{
+use lucy_wire::entity::Component as WorldComponent;
+use lucy_wire::{
     combat_messages::CombatNotice,
     entity::{EntityUpdate, GAME_MODE_ENTITY, MAX_PAYLOAD, SkinTheme, frame},
     jam::codec::{Fields, Schemas, Value},
@@ -109,7 +109,7 @@ const MAX_PENDING_COMBAT_NOTICES: usize = 256;
 /// The game mode entity gets a frame with the match flow's clock every
 /// second, and at each phase change (ow174/game/match.py `COUNTDOWN_EVERY`).
 const MODE_FRAME_EVERY: Duration = Duration::from_secs(1);
-/// The AI players' seats (Practice vs AI, `orpheus_sim::ai`) take
+/// The AI players' seats (Practice vs AI, `lucy_sim::ai`) take
 /// connection ids no game link has.
 const FIRST_AI_CONNECTION: u32 = MAX_CONNECTION_ID + 1;
 
@@ -223,10 +223,10 @@ pub struct PlayerResult {
 pub fn collision_build(install: PathBuf) -> Arc<CollisionBuild> {
     Arc::new(move |map, name| {
         let started = Instant::now();
-        let opened = orpheus_assets::Install::open(&install, "enUS").map_err(io::Error::other)?;
+        let opened = lucy_assets::Install::open(&install, "enUS").map_err(io::Error::other)?;
         let movement =
-            orpheus_assets::collision_cache(&opened, map, name).map_err(io::Error::other)?;
-        let rays = orpheus_assets::ray_cache(&opened, map, name).map_err(io::Error::other)?;
+            lucy_assets::collision_cache(&opened, map, name).map_err(io::Error::other)?;
+        let rays = lucy_assets::ray_cache(&opened, map, name).map_err(io::Error::other)?;
         tracing::info!(
             "[game] built the collision of {name} in {:.1} s",
             started.elapsed().as_secs_f64()
@@ -289,7 +289,7 @@ enum Request {
         change: String,
         reply: mpsc::SyncSender<Result<HurtFeedback, String>>,
     },
-    /// The marker messages (`ORPHEUS_DEBUG_SEND`): the seat's entities.
+    /// The marker messages (`LUCY_DEBUG_SEND`): the seat's entities.
     DebugSeat {
         connection: u32,
         id: MatchId,
@@ -326,8 +326,8 @@ enum Request {
     /// The Workshop script of the match that just opened.
     Workshop {
         id: MatchId,
-        logic: Arc<orpheus_workshop::Logic>,
-        catalog: Arc<orpheus_workshop::Catalog>,
+        logic: Arc<lucy_workshop::Logic>,
+        catalog: Arc<lucy_workshop::Catalog>,
         reply: mpsc::SyncSender<bool>,
     },
     /// The matches that ended since the last call, oldest first.
@@ -361,12 +361,12 @@ enum Request {
 pub(crate) struct WorkshopReport {
     /// Whether the engine runs (the mode's graph drives the mode entity).
     pub running: bool,
-    /// Values it doesn't evaluate ([`orpheus_workshop::Engine::unsupported`]).
+    /// Values it doesn't evaluate ([`lucy_workshop::Engine::unsupported`]).
     pub unsupported: Vec<String>,
     /// Executions it stopped.
     pub faults: Vec<String>,
     /// The mode entity's graphs' refused or assumed classes, by graph
-    /// (`orpheus_script::mode::ModeScript::gaps`).
+    /// (`lucy_script::mode::ModeScript::gaps`).
     pub gaps: Vec<((u32, String), usize)>,
 }
 
@@ -423,7 +423,7 @@ impl GameService {
         let stopping = Arc::new(AtomicBool::new(false));
         let worker_stopping = Arc::clone(&stopping);
         let worker = thread::Builder::new()
-            .name("orpheus-game".into())
+            .name("lucy-game".into())
             .spawn(move || run(socket, poll, receiver, worker_stopping, schemas))?;
         Ok(Self {
             address,
@@ -526,7 +526,7 @@ impl GameService {
     /// fails, their games go back to the menu and the match ends
     /// (`_collision_failure`). Seats in player order. With `ai`, AI heroes
     /// of that level fill the places the players leave free on the teams,
-    /// in the slots after theirs (Practice vs AI, `orpheus_sim::ai`).
+    /// in the slots after theirs (Practice vs AI, `lucy_sim::ai`).
     pub fn open_world(
         &self,
         id: MatchId,
@@ -548,7 +548,7 @@ impl GameService {
         let requests = self.requests.clone();
         let wake = Arc::clone(&self.wake);
         let spawned = thread::Builder::new()
-            .name("orpheus-scene".into())
+            .name("lucy-scene".into())
             .spawn(move || {
                 let scene = prepare().map(Box::new);
                 if requests.send(Request::Scene { id, scene }).is_ok() {
@@ -612,8 +612,8 @@ impl GameService {
     pub fn attach_workshop(
         &self,
         id: MatchId,
-        logic: Arc<orpheus_workshop::Logic>,
-        catalog: Arc<orpheus_workshop::Catalog>,
+        logic: Arc<lucy_workshop::Logic>,
+        catalog: Arc<lucy_workshop::Catalog>,
     ) -> io::Result<bool> {
         self.request(|reply| Request::Workshop {
             id,
@@ -695,7 +695,7 @@ impl GameService {
         })
     }
 
-    /// The live nameplate tool (`orpheus_sim::bot_plate`): apply a change,
+    /// The live nameplate tool (`lucy_sim::bot_plate`): apply a change,
     /// if any, to every match's training bots at once, and show the changes
     /// in force with what the first live bot sends now. A change the tool
     /// refuses comes back as its reason.
@@ -703,7 +703,7 @@ impl GameService {
         self.request(|reply| Request::BotPlate { change, reply })
     }
 
-    /// The live hurt feedback switch (`orpheus_sim::hurt_feedback`): apply
+    /// The live hurt feedback switch (`lucy_sim::hurt_feedback`): apply
     /// a change given as the chat command's text, if any, to every match's
     /// players at once, and show what is in force. A change it refuses
     /// comes back as its reason.
@@ -712,7 +712,7 @@ impl GameService {
         self.request(|reply| Request::Hurt { change, reply })
     }
 
-    /// The marker messages (`ORPHEUS_DEBUG_SEND`): the seat's controller and
+    /// The marker messages (`LUCY_DEBUG_SEND`): the seat's controller and
     /// body, or none when its game is not connected to the match.
     pub(crate) fn debug_seat(&self, handoff: &Handoff) -> io::Result<Option<DebugSeat>> {
         self.request(|reply| Request::DebugSeat {
@@ -846,10 +846,10 @@ struct Room {
     flow_tick: u32,
     /// The hand-built mode entity frame every client gets this tick, and
     /// when the next is due.
-    mode_frame: Option<orpheus_core::bits::BitWriter>,
+    mode_frame: Option<lucy_core::bits::BitWriter>,
     next_mode_frame: Duration,
     /// The mode graph's observer frame while it drives the mode entity:
-    /// what each client's frames bring him (`orpheus_sim::mode_view`).
+    /// what each client's frames bring him (`lucy_sim::mode_view`).
     graph_frame: Option<Arc<ProjectedSnapshot>>,
     /// Hero select closed this tick: the heroes are assembled.
     assembled: bool,
@@ -862,14 +862,14 @@ struct Room {
     /// Its dummy bots (`ai.rs`): the Practice Range's Training Partner.
     dummies: Vec<ai::DummySeat>,
     /// Its Workshop script (`attach_workshop`) and, once the mode starts,
-    /// its engine (`orpheus_sim::workshop`).
+    /// its engine (`lucy_sim::workshop`).
     workshop: Option<RoomWorkshop>,
 }
 
 /// A match's Workshop script and its engine.
 struct RoomWorkshop {
-    logic: Arc<orpheus_workshop::Logic>,
-    catalog: Arc<orpheus_workshop::Catalog>,
+    logic: Arc<lucy_workshop::Logic>,
+    catalog: Arc<lucy_workshop::Catalog>,
     /// Runs from the mode's start (`Room::begin_flow`).
     run: Option<WorkshopRun>,
 }
@@ -994,7 +994,7 @@ impl Room {
         // assemble phase and plays on like Skirmish.
         let skirmish = || {
             let map = GameMap {
-                mode_guid: orpheus_sim::match_flow::SKIRMISH,
+                mode_guid: lucy_sim::match_flow::SKIRMISH,
                 ..self.map.clone()
             };
             MatchFlow::new(
@@ -1128,7 +1128,7 @@ struct Peer {
 
 /// A game's reported round trip is logged when it moves this far (ms) from
 /// the last one logged: the client predicts no impact effects on other
-/// bodies above about 220 ms (`orpheus_wire::commands::InputRecord`).
+/// bodies above about 220 ms (`lucy_wire::commands::InputRecord`).
 const LATENCY_STEP: u16 = 20;
 
 #[derive(Default)]
@@ -1154,7 +1154,7 @@ fn take_placeable_removals(mode: &mut ModeRunner, scene: &mut PreparedScene) {
 
 /// The mode graph's frame this tick, while it drives the mode entity: the
 /// `last` one while nothing in it changed, so each client's view sees it
-/// is the same (`orpheus_sim::mode_view`).
+/// is the same (`lucy_sim::mode_view`).
 fn graph_frame(
     mode: &mut ModeRunner,
     last: Option<Arc<ProjectedSnapshot>>,
@@ -1169,7 +1169,7 @@ fn graph_frame(
 /// A scene the worker can open a world on, whose world creates fit a
 /// datagram for every player (`teams` and `cards` in slot order). A
 /// statescript chunk too big for one goes in parts
-/// (`orpheus_sim::replication`).
+/// (`lucy_sim::replication`).
 fn check_scene(
     scene: &PreparedScene,
     map: &GameMap,
@@ -1259,7 +1259,7 @@ fn room_peers<'p>(
 }
 
 /// The stats a player's graphs counted (TrackStat, TrackStatTime;
-/// `orpheus_script::vm` `stats`) go to the stat table of each target's
+/// `lucy_script::vm` `stats`) go to the stat table of each target's
 /// player, as the catalog keeps each ([`StatsCatalog::credit`]: a "Best"
 /// stat its best single amount): the target is a player's controller or
 /// one of his bodies (the body ids share the controller's high bits). A
@@ -1475,7 +1475,7 @@ impl Peer {
         let bytes = encode(schemas, message.id, &message.fields).map_err(invalid)?;
         let ordinal = self.egress.queue_reliable(bytes).map_err(invalid)?;
         tracing::debug!(
-            target: "orpheus::join",
+            target: "lucy::join",
             id = message.id,
             ordinal,
             "reliable message queued"
@@ -2332,7 +2332,7 @@ impl State {
                     *reported_latency = Some(latency);
                     let view_delay = input.commands.last().map(|command| command.extra);
                     tracing::info!(
-                        target: "orpheus::latency",
+                        target: "lucy::latency",
                         "[game] {} reports a {latency} ms round trip (view delay {view_delay:?} ms)",
                         room.players[slot].info.name
                     );
@@ -2567,7 +2567,7 @@ impl State {
     /// (combat.py `_heal`); his board counts both with the room's other
     /// native stats (`Combat::take_tracked_stats`). A bot he kills counts
     /// for his multikills, in the Practice Range too
-    /// (`orpheus_sim::announcer`).
+    /// (`lucy_sim::announcer`).
     fn deliver_bot_hits(&mut self, id: MatchId, shooter: Option<u32>, hits: Vec<BotHit>) {
         if let Some(world) = self.rooms.get_mut(&id).and_then(|room| room.world.as_mut()) {
             for hit in &hits {
@@ -2722,7 +2722,7 @@ impl State {
     }
 
     /// The auras the tick's hits put on bodies (Biotic Grenade's explosion,
-    /// `orpheus_script::vm` `auras`) and the auras the bodies' ApplyAura
+    /// `lucy_script::vm` `auras`) and the auras the bodies' ApplyAura
     /// states put on bodies or took off: each to its body's script, a
     /// bot's or a player's. Then the health changes the bots' graphs made
     /// (their auras' heals and damage), applied as hits by their
@@ -2840,7 +2840,7 @@ impl State {
                 // The health packs the bodies' searches find (`0033` st11),
                 // and the placeables' entity variables their graphs read.
                 let pickups = world.scene.pickups();
-                let map_variables: Arc<[(u32, orpheus_script::wire::Variables)]> =
+                let map_variables: Arc<[(u32, lucy_script::wire::Variables)]> =
                     world.scene.placed_scripts().entity_variables().into();
                 for peer in room_peers(&mut self.peers, &self.seats, id, players.len())
                     .into_iter()
@@ -2959,7 +2959,7 @@ impl State {
             }
             self.apply_auras(id, tick, now);
             // The environment kills a living body whose capsule centre is in
-            // a death zone (`orpheus_sim::map_areas`), with the tick's hits.
+            // a death zone (`lucy_sim::map_areas`), with the tick's hits.
             {
                 let Room { players, world, .. } = self.rooms.get_mut(&id).expect("room");
                 let world = world.as_mut().expect("room with a world");
@@ -2980,7 +2980,7 @@ impl State {
                             tracing::warn!(
                                 "[game] a body fell {} m below {} ({:#x}) at {centre:?}: \
                                  the map's data has no volume that kills there",
-                                orpheus_sim::map_areas::FALL_LIMIT,
+                                lucy_sim::map_areas::FALL_LIMIT,
                                 world.scene.map().name,
                                 world.scene.map().map_guid,
                             );
@@ -3043,7 +3043,7 @@ impl State {
 
     /// projectiles.py `Projectiles.update` for a room once its players'
     /// shots stepped: the other clients' copies and the Biotic Fields
-    /// (`orpheus_sim::spawned`).
+    /// (`lucy_sim::spawned`).
     fn deliver_projectiles(&mut self, id: MatchId, tick: u32) {
         let Some(Room { players, world, .. }) = self.rooms.get_mut(&id) else {
             return;
@@ -3073,7 +3073,7 @@ impl State {
         }
     }
 
-    /// Every PvP room's match flow this tick (orpheus_sim::match_flow): it
+    /// Every PvP room's match flow this tick (lucy_sim::match_flow): it
     /// advances with where the players' bodies stand, the game mode
     /// entity's frame is made when due, hero select closes once the heroes
     /// are assembled, the phase messages and the mode graph's go to the
@@ -3120,13 +3120,13 @@ impl State {
             }
             // The Range (no match flow): its graph advances with the room,
             // and its frame goes to every client each tick, as what changed
-            // since the frame he acknowledged (`orpheus_sim::mode_view`):
+            // since the frame he acknowledged (`lucy_sim::mode_view`):
             // `0CBB` st58's timed ChaseVar (#19530e toward 99999) changes it
             // every tick, and the whole frame (about 920 bytes) crowded the
             // movement records out of the datagrams.
             if room.flow.is_none() {
                 if let (Some(mode), Some(_)) = (room.mode.as_mut(), room.world.as_ref()) {
-                    let variables = orpheus_script::wire::Variables::new();
+                    let variables = lucy_script::wire::Variables::new();
                     room.mail.extend(mode.advance(tick, &variables, players));
                     room.graph_frame = graph_frame(mode, room.graph_frame.take());
                     // No flow stands in for the graph's own entries here.
@@ -3162,7 +3162,7 @@ impl State {
             let events;
             match room.mode.as_mut() {
                 Some(mode) if mode.holds_rooms() => {
-                    let variables = orpheus_script::wire::Variables::new();
+                    let variables = lucy_script::wire::Variables::new();
                     messages = mode.advance(tick, &variables, players);
                     events = match mode.match_state() {
                         Some(state) => flow.follow(state),
@@ -3230,7 +3230,7 @@ impl State {
             // entry (Lúcioball's `0F9D`).
             if let Some(mode) = room.mode.as_mut() {
                 let stand_in = !mode.holds_rooms()
-                    && orpheus_sim::mode_script::takes_set_match_time(room.map.mode_guid);
+                    && lucy_sim::mode_script::takes_set_match_time(room.map.mode_guid);
                 if let Some(script) = mode.script_mut() {
                     for message in script.take_own_messages() {
                         if stand_in {
@@ -3243,7 +3243,7 @@ impl State {
                 .iter()
                 .any(|event| matches!(event, FlowEvent::Phase(_)));
             // A graph that drives the mode entity gives its frame each tick
-            // (`orpheus_sim::mode_view`); else the hand-built one goes once a
+            // (`lucy_sim::mode_view`); else the hand-built one goes once a
             // second and at each phase.
             match room.mode.as_mut() {
                 Some(mode) if mode.graph_driven() => {
@@ -3400,7 +3400,7 @@ impl State {
     }
 
     /// The game messages every room's entities sent since the last tick
-    /// (`orpheus_sim::messages`): from the players' and AI heroes' bodies
+    /// (`lucy_sim::messages`): from the players' and AI heroes' bodies
     /// and controllers, the mode graph and the match flow in its place
     /// (`Room::mail`), the placed scripts, the hits' modifier notices
     /// (`Combat::take_messages`) and the Biotic Fields, to the entity each
@@ -3455,7 +3455,7 @@ impl State {
             if let Some(variables) = room.mode.as_ref().and_then(ModeRunner::entity_variables) {
                 world.scene.set_placed_mode_variables(variables);
             }
-            let held = orpheus_sim::mode_script::held(room.mode.as_ref());
+            let held = lucy_sim::mode_script::held(room.mode.as_ref());
             let (mut bots, placed) = world.scene.message_recipients(tick);
             let mut recipients: Vec<&mut dyn Recipients> = vec![&mut players, &mut bots, placed];
             if let Some(spawned) = spawned {
@@ -3504,7 +3504,7 @@ impl State {
     }
 
     /// The graphs the players' ability graphs played on other bodies
-    /// (`orpheus_script` `vm/play.rs` `Plays::Others`: Rocket Punch's
+    /// (`lucy_script` `vm/play.rs` `Plays::Others`: Rocket Punch's
     /// `0D07`, Soundwave's `0ECA`) play in the struck player's body script
     /// or the struck bot's; a target nobody runs gets none. Then the
     /// knockbacks the bodies' graphs reported (`STU_AFBB59E9`, `0D07`
@@ -3569,7 +3569,7 @@ impl State {
     }
 
     /// The scope instances of the placed scripts' and the players' bodies'
-    /// scope states (`orpheus_script` `vm/scopes.rs`: the Training Partner
+    /// scope states (`lucy_script` `vm/scopes.rs`: the Training Partner
     /// console's scope 12 on the bodies near it, scope 126 on every
     /// controller, scope 197 from a body's scope 12 on a re-picked dummy)
     /// open or close in the target's player's scripts; an opened one goes
@@ -3888,7 +3888,7 @@ impl State {
 
     /// ClientInVoice 27500 for the lines the players' bodies said this tick
     /// (the communication wheel's and the pain lines,
-    /// `orpheus_sim::voice_lines`): each goes to every client of the room
+    /// `lucy_sim::voice_lines`): each goes to every client of the room
     /// whose body its audience lists (all for the wheel's; the hurt body
     /// and its attacker for a pain line) and is within the stimulus's
     /// radius of the speaker's (35 m for both), the speaker's own client
@@ -4123,7 +4123,7 @@ fn run(
     Ok(())
 }
 
-/// A debugging switch: `ORPHEUS_DEBUG_DROP_NOTICES` lists combat notices the
+/// A debugging switch: `LUCY_DEBUG_DROP_NOTICES` lists combat notices the
 /// server leaves out (`hit`, `kill-flag` (25001 sent without its kill bit),
 /// `elimination` (25005), `death` (25004)), to find which one stalls the
 /// client's own body after a kill (leafall903/ORPHEUS issue 14).
@@ -4136,7 +4136,7 @@ struct DroppedNotices {
 }
 
 static DROPPED_NOTICES: std::sync::LazyLock<DroppedNotices> = std::sync::LazyLock::new(|| {
-    let Ok(list) = std::env::var("ORPHEUS_DEBUG_DROP_NOTICES") else {
+    let Ok(list) = std::env::var("LUCY_DEBUG_DROP_NOTICES") else {
         return DroppedNotices::default();
     };
     let mut dropped = DroppedNotices::default();
@@ -4150,7 +4150,7 @@ static DROPPED_NOTICES: std::sync::LazyLock<DroppedNotices> = std::sync::LazyLoc
             "kill-flag" => dropped.kill_flag = true,
             "elimination" => dropped.elimination = true,
             "death" => dropped.death = true,
-            other => tracing::warn!("ORPHEUS_DEBUG_DROP_NOTICES: unknown notice {other:?}"),
+            other => tracing::warn!("LUCY_DEBUG_DROP_NOTICES: unknown notice {other:?}"),
         }
     }
     tracing::warn!("debugging: dropping combat notices {list:?}");

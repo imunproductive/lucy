@@ -1,8 +1,8 @@
 //! The queue messages as the client decodes them; ports the message test of
 //! `tests/test_queue.py` (the handler tests are in the server's matchmaker).
 
-use orpheus_lobby::queue::{ENTER_QUEUE, MATCHMAKE, QUEUE, queue_joined};
-use orpheus_wire::jam::codec::{
+use lucy_lobby::queue::{ENTER_QUEUE, MATCHMAKE, QUEUE, queue_joined};
+use lucy_wire::jam::codec::{
     Fields, Schemas,
     Value::{self, Array, Signed, Struct, Unsigned},
 };

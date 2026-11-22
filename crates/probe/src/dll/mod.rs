@@ -112,9 +112,9 @@ impl Probe {
             .map_err(Clone::clone)
     }
 
-    /// An ORPHEUS VA as this run's address.
-    pub fn runtime(&self, orpheus_va: u64) -> u64 {
-        crate::runtime(self.base, orpheus_va)
+    /// A Lucy VA as this run's address.
+    pub fn runtime(&self, lucy_va: u64) -> u64 {
+        crate::runtime(self.base, lucy_va)
     }
 }
 

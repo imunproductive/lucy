@@ -27,7 +27,7 @@ use crate::{
     ranked::PC_PLATFORM,
     transport::LobbyMessage,
 };
-use orpheus_wire::jam::codec::{
+use lucy_wire::jam::codec::{
     Fields,
     Value::{self, Array, Bool, Struct, Unsigned},
     id16,
@@ -131,8 +131,8 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     use crate::templates::RetailTemplates;
-    use orpheus_content::catalog::ItemDb;
-    use orpheus_wire::jam::codec::Schemas;
+    use lucy_content::catalog::ItemDb;
+    use lucy_wire::jam::codec::Schemas;
 
     #[test]
     fn pending_tiles_use_a_timer_and_only_the_leader_has_the_flag() {
@@ -190,7 +190,7 @@ mod tests {
     #[test]
     #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn solo_and_group_party_payloads_match_the_python_wire_bytes() {
-        let runtime = orpheus_testkit::runtime_dir().join("data");
+        let runtime = lucy_testkit::runtime_dir().join("data");
         let schemas = Schemas::lobby();
         let templates = RetailTemplates::captured();
         let items = Arc::new(ItemDb::load(&runtime).unwrap());

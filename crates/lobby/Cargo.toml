@@ -1,5 +1,5 @@
 [package]
-name = "orpheus-lobby"
+name = "lucy-lobby"
 description = "Lobby services for retail build 104319: accounts, collection, login content, parties and match handoff"
 version.workspace = true
 edition.workspace = true
@@ -8,14 +8,14 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
-orpheus-fixed.workspace = true
+lucy-fixed.workspace = true
 crc32fast.workspace = true
 getrandom.workspace = true
 indexmap.workspace = true
-orpheus-bnet.workspace = true
-orpheus-content.workspace = true
-orpheus-core.workspace = true
-orpheus-wire.workspace = true
+lucy-bnet.workspace = true
+lucy-content.workspace = true
+lucy-core.workspace = true
+lucy-wire.workspace = true
 prost.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -23,6 +23,6 @@ tempfile.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-orpheus-testkit.workspace = true
+lucy-testkit.workspace = true
 sha2.workspace = true
-orpheus-wire = { workspace = true, features = ["fixtures"] }
+lucy-wire = { workspace = true, features = ["fixtures"] }

@@ -1,6 +1,6 @@
 //! The AI that drives a hero's body when the game plays the hero (Practice
 //! vs AI), from the derived file `game_ai_definitions_174.json` (the
-//! `orpheus-assets` derivation `game_ai_definitions`, which documents how
+//! `lucy-assets` derivation `game_ai_definitions`, which documents how
 //! the data is read; the research is in
 //! `D:/Work/Coding/refs/reports/AiDefinitions.md`).
 //!
@@ -108,7 +108,7 @@ fn invalid(error: impl ToString) -> io::Error {
 }
 
 fn guid(text: &str) -> io::Result<u64> {
-    orpheus_core::guid::parse_guid(text).ok_or_else(|| invalid(format!("invalid GUID {text:?}")))
+    lucy_core::guid::parse_guid(text).ok_or_else(|| invalid(format!("invalid GUID {text:?}")))
 }
 
 impl AiDefinitions {

@@ -26,8 +26,8 @@ use crate::{
     weapons::DamageTags,
     wire::{Value, Variables},
 };
-use orpheus_content::maps::{PRACTICE_RANGE_MODE, TUTORIAL_MODE};
-use orpheus_wire::entity::GAME_MODE_ENTITY;
+use lucy_content::maps::{PRACTICE_RANGE_MODE, TUTORIAL_MODE};
+use lucy_wire::entity::GAME_MODE_ENTITY;
 
 /// `003E.025`: the body's authoritative death message.
 pub const DIED: u64 = 0x0240_0000_0000_003e;
@@ -111,7 +111,7 @@ pub const DEAD_FLAG: u32 = 478;
 const PRACTICE_BOT_HEROES: Range<u64> = 0x02e0_0000_0000_016b..0x02e0_0000_0000_016f;
 const OWNER_HEALTH: u32 = 253;
 /// A bot's movement sample on the ground (bit 1 of the 13 movement bits,
-/// `orpheus_physics::mover::sample_movement_flags`).
+/// `lucy_physics::mover::sample_movement_flags`).
 pub const BOT_MOVEMENT_SAMPLE: u16 = 1 << 1;
 
 /// Every nameplate (`0D24`) instance of a body's script.
@@ -375,7 +375,7 @@ impl World for BotWorld {
         let class = config.get("$")?.as_str()?;
         // The bot's knockback scale (mover mod 26) for Rocket Punch's victim
         // graph `0D07` on it: a Training Bot's graphs hold no movement mod
-        // 26, so its default 1 (`orpheus_physics::mover::Mover::knockback_scale`).
+        // 26, so its default 1 (`lucy_physics::mover::Mover::knockback_scale`).
         if class == "STU_ABE57332" && is_owner(config.get("m_entity")) {
             return Some(Value::Float(1.0));
         }
@@ -1498,7 +1498,7 @@ mod tests {
     #[test]
     #[ignore = "requires the derived game data's bot graph bundle"]
     fn the_practice_training_bot_starts_its_behavior_and_dies() {
-        let data = orpheus_testkit::runtime_dir().join("data");
+        let data = lucy_testkit::runtime_dir().join("data");
         let graphs =
             Arc::new(GraphStore::load_runtime(&data, "game_graphs_bots_174.json.gz").unwrap());
         let codecs = CodecTable::client();
@@ -1537,9 +1537,9 @@ mod tests {
             Some(&name)
         );
         let full = encoder.full(&observed).unwrap();
-        let mut text = orpheus_core::bits::BitWriter::new();
+        let mut text = lucy_core::bits::BitWriter::new();
         crate::wire::write_value(&mut text, &name, crate::wire::ValueEncoding::Compact).unwrap();
-        assert!(orpheus_testkit::contains_bits(
+        assert!(lucy_testkit::contains_bits(
             full.as_bytes(),
             full.bit_len(),
             text.as_bytes(),
@@ -1578,7 +1578,7 @@ mod tests {
     #[test]
     #[ignore = "requires the derived game data's bot graph bundle"]
     fn a_respawned_training_bot_rebuilds_itself() {
-        let data = orpheus_testkit::runtime_dir().join("data");
+        let data = lucy_testkit::runtime_dir().join("data");
         let graphs =
             Arc::new(GraphStore::load_runtime(&data, "game_graphs_bots_174.json.gz").unwrap());
         let rebuild = |respawned| {
@@ -1627,7 +1627,7 @@ mod tests {
         const DIRECTION: u32 = 1018;
         // The authored 0.2 as the client's float32.
         let rifle_flinch = Value::Float(f64::from(0.2_f32));
-        let data = orpheus_testkit::runtime_dir().join("data");
+        let data = lucy_testkit::runtime_dir().join("data");
         let graphs =
             Arc::new(GraphStore::load_runtime(&data, "game_graphs_bots_174.json.gz").unwrap());
         let codecs = CodecTable::client();
@@ -1831,7 +1831,7 @@ mod tests {
     #[test]
     #[ignore = "requires the derived game data's bot graph bundle"]
     fn the_patrol_asks_for_its_route_points_on_its_graphs_timings() {
-        let data = orpheus_testkit::runtime_dir().join("data");
+        let data = lucy_testkit::runtime_dir().join("data");
         let graphs =
             Arc::new(GraphStore::load_runtime(&data, "game_graphs_bots_174.json.gz").unwrap());
         let codecs = CodecTable::client();
@@ -1911,7 +1911,7 @@ mod tests {
     /// (client-only, stimulus `0001`). The kill criteria `071B` names the
     /// killer, not the bot, so the bot keeps none of it. The killing hit's
     /// damage message comes first, with the kill's fields, as the match
-    /// sends it (`orpheus_sim::bot_script` `BotScripts::died`): it adds no
+    /// sends it (`lucy_sim::bot_script` `BotScripts::died`): it adds no
     /// second cry, but `0C17`'s pain branch still runs (its entry rid0 on
     /// `0011`, server-only; only tag `0262` skips it, rid25): rid34 reads
     /// the health left (#520 = `STU_9B7648C3(self)`, 0 after the kill),
@@ -1926,7 +1926,7 @@ mod tests {
     #[ignore = "requires the derived game data's bot graph bundle"]
     fn a_dead_training_bot_raises_the_death_cry_its_killing_tags_pick() {
         const KILLER: u32 = 0xa000_0101;
-        let data = orpheus_testkit::runtime_dir().join("data");
+        let data = lucy_testkit::runtime_dir().join("data");
         let graphs =
             Arc::new(GraphStore::load_runtime(&data, "game_graphs_bots_174.json.gz").unwrap());
         let cry = |tags: &[u64]| {
@@ -1971,7 +1971,7 @@ mod tests {
     fn the_biotic_grenade_aura_damages_an_enemy_bot_and_heals_an_ally() {
         const BIOTIC_GRENADE: u64 = 0x04a0_0000_0000_0267;
         const ANA: u32 = 0xa000_0101;
-        let data = orpheus_testkit::runtime_dir().join("data");
+        let data = lucy_testkit::runtime_dir().join("data");
         let graphs =
             Arc::new(GraphStore::load_runtime(&data, "game_graphs_bots_174.json.gz").unwrap());
         let changes = |thrower_team: u8| {

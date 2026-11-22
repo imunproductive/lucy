@@ -6,7 +6,7 @@
 //! take.
 //!
 //! A message names one entity, or every entity
-//! ([`orpheus_script::mode::EVERY_ENTITY`]: a `STU_1D719351` target with its
+//! ([`lucy_script::mode::EVERY_ENTITY`]: a `STU_1D719351` target with its
 //! primary channel, `STU_57692020`). One to every entity reaches each
 //! entity that runs graphs once, but its sender: the sender's own instances
 //! took it from the VM when it was sent. The client works so (research
@@ -27,7 +27,7 @@
 //! sends while it takes one goes the next tick (the client's receivers pick
 //! a send up at their own next update: the same frame or the next).
 
-use orpheus_script::{
+use lucy_script::{
     mode::EVERY_ENTITY,
     vm::{GameMessage, MessageEnd},
 };
@@ -67,7 +67,7 @@ pub trait Recipients {
 }
 
 /// Persistent senders' new parameters to the entities that hold their
-/// messages (`orpheus_script` `World::update_message`), after the tick's
+/// messages (`lucy_script` `World::update_message`), after the tick's
 /// messages ([`deliver`]).
 pub fn deliver_updates(updates: &[GameMessage], recipients: &mut [&mut dyn Recipients]) {
     for update in updates {
@@ -88,7 +88,7 @@ pub struct HeldReach {
 }
 
 /// The messages held to every entity now (`held`: a mode graph's
-/// SendGameMessage states, `orpheus_script::mode::ModeScript::held`):
+/// SendGameMessage states, `lucy_script::mode::ModeScript::held`):
 /// each goes once to every entity that runs graphs and hasn't had it,
 /// but its sender, as the client's receivers find a live sender at their
 /// next look-up whenever they start (GameMessages.md). An entity that
@@ -383,7 +383,7 @@ impl Recipients for ModeRunner {
 mod tests {
     use std::collections::BTreeSet;
 
-    use orpheus_script::wire::Variables;
+    use lucy_script::wire::Variables;
 
     use super::*;
 

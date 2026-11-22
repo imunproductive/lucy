@@ -1,6 +1,6 @@
 //! `game_graphs_174.json.gz` and `game_graphs_bots_174.json.gz`: the
 //! statescript graphs the server runs, after `tools/extract_game_graphs.py`
-//! and the target tag step of `orpheus runtime prepare --target-tags-xml`.
+//! and the target tag step of `lucy runtime prepare --target-tags-xml`.
 //!
 //! The hero bundle keeps every graph reachable from the hero bodies (their
 //! statescript component's initial graphs and their weapon scripts) and from
@@ -44,7 +44,7 @@ use std::{
 };
 
 use flate2::{Compression, write::GzEncoder};
-use orpheus_stu::{Asset, Kind, Object, Types, Value, types::Field};
+use lucy_stu::{Asset, Kind, Object, Types, Value, types::Field};
 use serde_json::{Map, Value as Json, json};
 
 use crate::{Install, Output, Result, asset_error, guid_name, guid_type};
@@ -375,7 +375,7 @@ impl<'a> Assets<'a> {
         let guid = *self.graphs.get(&index)?;
         let bytes = self.install.raw(guid).ok()?;
         Some(
-            orpheus_stu::read(&bytes)
+            lucy_stu::read(&bytes)
                 .map_err(|error| asset_error(format!("{}: {error}", guid_name(guid)))),
         )
     }
@@ -1269,7 +1269,7 @@ fn component<'a>(asset: &'a Asset, class: &str) -> Result<Option<&'a Object>> {
 }
 
 /// A body's authored target tags (`STUTargetTagComponent.m_targetTags`),
-/// sorted and without duplicates or nulls, as `orpheus runtime prepare
+/// sorted and without duplicates or nulls, as `lucy runtime prepare
 /// --target-tags-xml` added them to the hero bundle.
 fn target_tags(asset: &Asset) -> Result<Vec<Json>> {
     let mut tags = BTreeSet::new();

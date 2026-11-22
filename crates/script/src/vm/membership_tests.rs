@@ -80,7 +80,7 @@ fn keyed_config_leaves_its_operands_to_the_existing_native_query() {
 }
 
 fn authored_graphs() -> GraphStore {
-    GraphStore::load(orpheus_testkit::runtime_dir().join("data/game_graphs_174.json.gz")).unwrap()
+    GraphStore::load(lucy_testkit::runtime_dir().join("data/game_graphs_174.json.gz")).unwrap()
 }
 
 /// The probe graph's index, its run message, and the entity variables that

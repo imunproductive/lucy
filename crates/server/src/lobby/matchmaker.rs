@@ -46,8 +46,8 @@ use std::{
     time::Duration,
 };
 
-use orpheus_content::maps::{GameMap, MapCatalog, MapListing};
-use orpheus_lobby::{
+use lucy_content::maps::{GameMap, MapCatalog, MapListing};
+use lucy_lobby::{
     accounts::Account,
     handoff::{
         self, FOUND_DELAY, Handoff, LobbySeat, general_channel, match_channel, queue_popped,
@@ -62,11 +62,11 @@ use orpheus_lobby::{
     session::PreparedLogin,
     transport::LobbyMessage,
 };
-use orpheus_wire::jam::codec::{Fields, Value};
+use lucy_wire::jam::codec::{Fields, Value};
 
 use super::{Lobby, TICK, match_id, peer::Peer, services};
 use crate::game_service::{GameService, MatchResult, WorldPlayer};
-use orpheus_sim::ai::Difficulty;
+use lucy_sim::ai::Difficulty;
 pub(crate) use parties::{Parties, Party};
 
 pub(crate) struct Matchmaker {
@@ -80,7 +80,7 @@ pub(crate) struct Matchmaker {
     /// The runtime `data` folder, for what loads when first needed.
     data: PathBuf,
     /// The Workshop catalog, loaded the first time a Workshop is read.
-    catalog: OnceLock<Arc<orpheus_workshop::Catalog>>,
+    catalog: OnceLock<Arc<lucy_workshop::Catalog>>,
     state: Mutex<State>,
 }
 
@@ -856,7 +856,7 @@ impl Matchmaker {
     }
 
     /// The handoff of the account's seat in a match it has not left, if
-    /// any (the marker messages, `ORPHEUS_DEBUG_SEND`).
+    /// any (the marker messages, `LUCY_DEBUG_SEND`).
     pub(crate) fn seat_of(&self, account_lo: u32) -> Option<Handoff> {
         let state = self.lock();
         let (room, seat) = state.player_of(account_lo)?;
