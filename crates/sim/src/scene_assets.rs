@@ -2092,7 +2092,6 @@ mod tests {
                     "the server finishes it after m_ED97A97C s"
                 ),
                 (0x0043, Some(24), "STU_B5C87F3D", "no effect"),
-                (0x0043, Some(60), "STU_77E13026", "no hits"),
                 // st19's end begins st0.
                 (0x0043, Some(0), "STU_23A00A53", "no effect"),
             ],

@@ -265,7 +265,9 @@ fn modes_without_a_flow_or_their_objectives_get_none() {
 
 /// Assault plays on its mode graph `0F4A` alone: its flow, objectives or
 /// none, only follows the graph ([`MatchFlow::follow`]); started, it stays
-/// waiting and plays nothing.
+/// waiting and plays nothing. The graph's winner decides the match, and
+/// the players go home only once the graph ends the game (`180A`'s
+/// `STU_147B34C6` after the match end's cards), not on a timer.
 #[test]
 fn an_assault_flow_only_follows_its_mode_graph() {
     let mut flow = new_flow(&map(ASSAULT, Vec::new()), false, Timers::default()).unwrap();
@@ -281,10 +283,32 @@ fn an_assault_flow_only_follows_its_mode_graph() {
         attackers: Some(1),
         objective: 1,
         overtime: false,
+        over: false,
     };
-    assert_eq!(flow.follow(0.0, state), [FlowEvent::Phase(Phase::Round)]);
+    assert_eq!(flow.follow(state), [FlowEvent::Phase(Phase::Round)]);
     assert_eq!(flow.clock(), 200.0);
     assert_eq!(flow.attackers(), Some(1));
+    let ended = MatchState {
+        phase: Phase::MatchEnd,
+        clock: 0.0,
+        winner: Some(0),
+        ..state
+    };
+    assert_eq!(
+        flow.follow(ended),
+        [FlowEvent::MatchOver, FlowEvent::Phase(Phase::MatchEnd)]
+    );
+    assert_eq!(flow.standing(0, 0), Some(Standing::Won));
+    for _ in 0..10_000 {
+        assert!(flow.follow(ended).is_empty(), "the cards still show");
+    }
+    assert_eq!(
+        flow.follow(MatchState {
+            over: true,
+            ..ended
+        }),
+        [FlowEvent::Finished]
+    );
 }
 
 #[test]

@@ -157,12 +157,10 @@ const ASSUMED_NO_OPS: &[&str] = &[
     // (MIT) `rust` `vm/nodes.rs`, the 104319 class registry, checked with
     // `tools/stu.py`). Server-only meaning unknown: STU_88DE7AD3 (one
     // dynamic m_F97A13C6; the phase handoff of 0D0B, 0D76, 0EC2, 0F4A
-    // rid57, 0F60), STU_147B34C6 (no fields; 0D76, 180A rid17's phase
-    // cleanup), STU_7947FBE4 (no fields; 181D), STU_5B025A5D and
+    // rid57, 0F60), STU_7947FBE4 (no fields; 181D), STU_5B025A5D and
     // STU_8A8255AF (an integer m_5FAC4660, the latter a float m_5CF63914;
-    // 0D94).
+    // 0D94). STU_147B34C6 ends the game (`vm/actions.rs`).
     "STU_88DE7AD3",
-    "STU_147B34C6",
     "STU_7947FBE4",
     "STU_5B025A5D",
     "STU_8A8255AF",
@@ -535,6 +533,7 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
                 Ok(true)
             }
             "STU_D49BBD03" => self.set_parent_variable(id, node, depth),
+            "STU_147B34C6" => self.end_game(id, node, depth),
             "STU_523EE38D" => self.destroy_entity(id, node, depth),
             "STU_FC3921B1" => self.create_dummy_bot(id, node, depth),
             "STUStatescriptActionCreateEntity" => self.create_entity(id, node, depth),
@@ -984,14 +983,11 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
             // base state, `python tools/stu.py STU_7F5C3F95`), so the
             // client runs it plain.
             "STU_7F5C3F95" => StateKind::Plain,
-            // A UX presenter of the match's end (`180A` st19, remote 11:
-            // the cards' fades `m_AD8C28BA`/`m_D7ED647E`/`m_C69C2A73`).
-            // The client shows it; its block is one bit (`+0x470`, set by
-            // its event 1, 0x7FF7899E7BE0) the server sends unset
-            // (`snapshot.rs`). What sets it, and so its `m_82A8A67E` plug
-            // to the next card (#59 + 1), is not read: the server's match
-            // end sends the players home after its own wait.
-            "STU_4BD2E886" => StateKind::Plain,
+            // A UX presenter: fade in, hold, fade out (`vm/presenter.rs`);
+            // the match end's card presenter (`180A` st19) moves on to the
+            // next card with it.
+            "STU_4BD2E886" => StateKind::Presenter,
+            "STU_2F07848F" => StateKind::ScaleTime { on: 0, off: 0 },
             // The authored zero-valued form inherits the base state reader.
             "STU_D9843704"
                 if node.is_networked() && node.remote == -1 && {
@@ -1240,10 +1236,10 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
             "STU_54FEB21C" => StateKind::Plain,
             class if ASSUMED_PLAIN_STATES.contains(&class) => StateKind::Plain,
             class if ASSUMED_INERT_STATES.contains(&class) => StateKind::Plain,
-            "STU_77E13026" => StateKind::HitList,
-            // `STU_CB4905E9` plays its graph on its targets as the scope
-            // state opens its scopes (`vm/scopes.rs`).
-            "STU_550D0C5C" | "STU_CB4905E9" => StateKind::Scope,
+            // Scope states (`vm/scopes.rs`): a scope instance per target
+            // (`STU_550D0C5C`) or per listed value (`STU_77E13026`), or
+            // the played graph on each target (`STU_CB4905E9`).
+            "STU_550D0C5C" | "STU_77E13026" | "STU_CB4905E9" => StateKind::Scope,
             "STUStatescriptStateWeaponVolley" => StateKind::WeaponVolley {
                 volleys: 1,
                 offset_ms: 0,
@@ -1379,7 +1375,8 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
                 self.refresh_auras(key, node)?;
                 self.register_tick(key, self.machine.now_ms);
             }
-            StateKind::HitList => self.assume(self.site(id, node), &node.class, "no hits"),
+            StateKind::Presenter => self.begin_presenter(key, node),
+            StateKind::ScaleTime { .. } => self.begin_scale_time(key, node),
             StateKind::Scope => self.begin_scope(key, node, depth)?,
             StateKind::CreateEntity { .. } => self.begin_create_entity(key, node)?,
             StateKind::Pickup => self.begin_pickup(key, node),

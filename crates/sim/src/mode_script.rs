@@ -258,7 +258,9 @@ impl ModeRunner {
     /// assemble, 2 setup, 3 round, 4 round end, 5 match end), the mode
     /// entity's clock #1303 (`match_flow::CLOCK`), the winning team (#7525,
     /// which `0F4A` sends in `0695` as `03A6`), the attacking team, the
-    /// current objective and overtime. None before the graph set its phase.
+    /// current objective, overtime and whether a graph ended the game
+    /// (`180A` after the match end's cards). None before the graph set its
+    /// phase.
     pub fn match_state(&self) -> Option<MatchState> {
         let Self::Graph {
             script,
@@ -295,6 +297,7 @@ impl ModeRunner {
             ))
             .unwrap_or(0),
             overtime: orpheus_script::expr::truthy(&script.entity_value(OVERTIME)),
+            over: script.game_over(),
         })
     }
 
@@ -475,7 +478,9 @@ impl ModeRunner {
         else {
             return None;
         };
-        let encoder = SnapshotEncoder::new(graphs, codecs).with_unknowns(script.unknowns());
+        let encoder = SnapshotEncoder::new(graphs, codecs)
+            .with_unknowns(script.unknowns())
+            .with_presenters();
         project_created(script, &encoder, created);
         let snapshot = script.snapshot()?;
         let projected = match previous {
@@ -520,7 +525,11 @@ impl ModeRunner {
         else {
             return None;
         };
-        Some(SnapshotEncoder::new(graphs, codecs).with_unknowns(script.unknowns()))
+        Some(
+            SnapshotEncoder::new(graphs, codecs)
+                .with_unknowns(script.unknowns())
+                .with_presenters(),
+        )
     }
 }
 
@@ -742,7 +751,9 @@ mod tests {
         let root = &snapshot.instances[&1];
         assert_eq!(root.graph, 0x13c0);
         assert!(root.states.get(&6).is_some_and(|state| state.active));
-        let encoder = SnapshotEncoder::new(graphs, codecs).with_unknowns(script.unknowns());
+        let encoder = SnapshotEncoder::new(graphs, codecs)
+            .with_unknowns(script.unknowns())
+            .with_presenters();
         let projected = encoder.project(snapshot, View::Observer).unwrap();
         assert!(
             projected.state(1, 6).is_some(),
@@ -780,6 +791,226 @@ mod tests {
             mode.project(None),
             Some(projected),
             "the graph's frame, not the hand-built one"
+        );
+    }
+
+    /// The match's end on `0F4A` (Practice vs AI on Anubis, ruleset
+    /// `00E8`; `09A3` declares team 0 the winner at 32 ms, frame 2): its
+    /// child `180A` gets `0695`, waits 0.24 s (st23) and shows the five
+    /// cards of `#16638` in turn, each a list of graphs (`#13151.id(16748)`)
+    /// and a time (`.id(215)`): 2.9 s, 5, 17, 15 and 15 s. For each graph
+    /// of the shown card st17 (`STU_77E13026`) opens a scope 822 instance
+    /// of `180A` on the mode entity with the graph in `#9694`, and there
+    /// st16 (`STU_CB4905E9`) plays it as a root instance; a graph the next
+    /// card shows too keeps its instances. After a card's time the
+    /// presenter st19 (`STU_4BD2E886`: fade in 0.3 s, hold 0.1 s, fade
+    /// out 0.3 s, client arithmetic) moves on to the next card as its fade
+    /// in ends (#59 + 1), at the end of that server frame; card 3 has
+    /// `.id(2579)` and moves on with no presenter at its time's end. After
+    /// the last card `180A` sends its clients `0BED` and ends the game
+    /// (`STU_147B34C6`). Every frame of the mode entity can be made.
+    #[test]
+    #[ignore = "requires the derived 104319 data"]
+    fn the_match_end_plays_its_cards_and_then_ends_the_game() {
+        use orpheus_content::maps::MapCatalog;
+        const ANUBIS: u64 = 0x0800_0000_0000_005b;
+        const CARDS: u16 = 7;
+        let runtime = orpheus_testkit::runtime_dir();
+        let assets = SceneAssets::load(&runtime).unwrap();
+        let catalog = MapCatalog::load(runtime.join("data")).unwrap();
+        let mut map = catalog
+            .game_map(
+                ANUBIS,
+                crate::match_flow::ASSAULT,
+                "Assault",
+                false,
+                &[6, 6],
+            )
+            .unwrap();
+        map.ruleset = 0x0fd0_0000_0000_00e8;
+        let mut scene = assets.prepare(map).unwrap();
+        scene.advance_placed(1, &[]);
+        let mut mode = ModeRunner::start(&scene, 1, Vec::new());
+        assert!(mode.holds_rooms(), "{:?}", mode.gaps());
+        mode.start_match();
+        mode.advance(2, &Variables::new(), Vec::new());
+        mode.receive_message(&GameMessage {
+            sender: 0,
+            target: GAME_MODE_ENTITY,
+            message: 0x0240_0000_0000_09a3,
+            parameters: Variables::from([(0x008d, Value::Integer(0))]),
+        });
+        let graph = |index: u64| Value::Asset(0x0580_0000_0000_0000 | index);
+        let mut projected: Option<ProjectedSnapshot> = None;
+        let mut steps = Vec::new();
+        let mut bits = Vec::new();
+        let mut over = None;
+        let mut last_step = None;
+        let mut last_bit = None;
+        let mut shown = std::collections::BTreeSet::new();
+        for frame in 3..=3600u32 {
+            mode.advance(frame, &Variables::new(), Vec::new());
+            let next = mode.project(projected.as_ref());
+            assert!(
+                next.is_some(),
+                "frame {frame} can't be made: {:?}",
+                mode.gaps()
+            );
+            projected = next;
+            let frame_now = projected.as_ref().unwrap();
+            let Some(script) = mode.script_mut() else {
+                panic!("the mode graph stopped: {:?}", mode.gaps());
+            };
+            let cards = &script.snapshot().unwrap().instances[&CARDS];
+            assert_eq!(cards.graph, 0x180a);
+            let step = cards.variables.get(&59).cloned();
+            if step != last_step {
+                steps.push((frame, step.clone()));
+                last_step = step;
+            }
+            let presenter = cards.states.get(&19).filter(|state| state.active).map(|_| {
+                frame_now.state_payload(CARDS, 19).unwrap_or_else(|| {
+                    panic!(
+                        "{frame}: {:?}",
+                        (0..30u16)
+                            .filter(|&raw| frame_now.state(CARDS, raw).is_some())
+                            .collect::<Vec<_>>()
+                    )
+                })["value"]
+                    .clone()
+            });
+            if presenter != last_bit {
+                bits.push((frame, presenter.clone()));
+                last_bit = presenter;
+            }
+            if over.is_none() && mode.match_state().is_some_and(|state| state.over) {
+                over = Some(frame);
+            }
+            let listed = |frame_now: &ProjectedSnapshot| {
+                frame_now
+                    .instance_graphs()
+                    .filter(|&(id, _)| id > 8)
+                    .collect::<Vec<_>>()
+            };
+            shown.extend(
+                listed(frame_now)
+                    .into_iter()
+                    .map(|(_, graph)| graph)
+                    .filter(|&graph| graph != 0x180a),
+            );
+            if frame == 20 {
+                // Card 0 (from 272 ms): `027F`, `17DF`, `181E`, `0D94`,
+                // `184C`, each in a scope instance (9 to 13) and played in
+                // a root instance (14 to 18).
+                assert_eq!(
+                    listed(frame_now),
+                    [
+                        (9, 0x180a),
+                        (10, 0x180a),
+                        (11, 0x180a),
+                        (12, 0x180a),
+                        (13, 0x180a),
+                        (14, 0x027f),
+                        (15, 0x17df),
+                        (16, 0x181e),
+                        (17, 0x0d94),
+                        (18, 0x184c)
+                    ]
+                );
+                for id in 9..=18 {
+                    assert_eq!(frame_now.instance(id).unwrap().1, None);
+                }
+                // st17's frame record: per graph its value, the entity
+                // holding its scope instance and that instance, its index,
+                // not kept.
+                let hits: Vec<Value> = [0x027f, 0x17df, 0x181e, 0x0d94, 0x184c]
+                    .into_iter()
+                    .zip(9..)
+                    .enumerate()
+                    .map(|(index, (played, instance))| {
+                        Value::Array(vec![
+                            graph(played),
+                            Value::Entity(GAME_MODE_ENTITY),
+                            Value::Integer(instance),
+                            Value::Integer(index as i64),
+                            Value::Bool(false),
+                        ])
+                    })
+                    .collect();
+                assert_eq!(
+                    frame_now.state_payload(CARDS, 17),
+                    Some(&orpheus_script::codecs::StatePayload::from([
+                        ("hits".into(), Value::Array(hits)),
+                        ("flag".into(), Value::Bool(false)),
+                    ]))
+                );
+            }
+            if frame == 218 {
+                // Card 1, in the frame after #59 moved on (st17 lists its
+                // card's graphs again on its tick). Its server-only graphs
+                // ran at once and exited: `1F93` (`0F58` to every body)
+                // and `181D` (`0669` to every body, then it removes the
+                // entities tagged `0D60…44`). `17DF` and `184C` stay;
+                // `0281` and `17E2` came, the others left.
+                assert_eq!(
+                    listed(frame_now),
+                    [
+                        (10, 0x180a),
+                        (13, 0x180a),
+                        (15, 0x17df),
+                        (18, 0x184c),
+                        (19, 0x180a),
+                        (20, 0x180a),
+                        (21, 0x180a),
+                        (22, 0x180a),
+                        (24, 0x0281),
+                        (25, 0x17e2)
+                    ]
+                );
+            }
+            if over.is_some() {
+                break;
+            }
+        }
+        // The cards' graphs the clients get, each for at least a frame (the
+        // server-only `1F93` and `181D` exit in the frame they came).
+        assert_eq!(
+            shown.into_iter().collect::<Vec<_>>(),
+            [
+                0x027f, 0x0281, 0x0282, 0x0283, 0x0b46, 0x0d94, 0x17ca, 0x17df, 0x17e2, 0x17e3,
+                0x17e4, 0x1818, 0x181e, 0x184c, 0x184d
+            ]
+        );
+        // In ms: card 0 at 32 + 240 = 272 (frame 17, which sets #59 to 0),
+        // its presenter at 272 + 2900 = 3172, which moves on at the first
+        // frame end 300 ms later (3472, frame 217); card 1 from there, its
+        // presenter at 8472, on at 8784 (frame 549); card 2's presenter at
+        // 8784 + 17000, on at 26096 (frame 1631); card 3 (`2579`) moves on
+        // at its time's end, 41096 (frame 2569, the frame ending 41104);
+        // card 4's presenter at 56096, on at 56400 (frame 3525), and with
+        // #59 at 5 the game ends.
+        assert_eq!(
+            steps,
+            [
+                (17, Some(Value::Float(0.0))),
+                (217, Some(Value::Float(1.0))),
+                (549, Some(Value::Float(2.0))),
+                (1631, Some(Value::Float(3.0))),
+                (2569, Some(Value::Float(4.0))),
+                (3525, Some(Value::Float(5.0)))
+            ]
+        );
+        assert_eq!(over, Some(3525));
+        // Card 0's presenter: on from 3172 (frame 199, the frame ending
+        // 3184) unset, set once 0.1 s passed after its fade in (3572,
+        // frame 224), off once its fade out ends (3872, frame 242).
+        assert_eq!(
+            &bits[..3],
+            [
+                (199, Some(Value::Bool(false))),
+                (224, Some(Value::Bool(true))),
+                (242, None)
+            ]
         );
     }
 }

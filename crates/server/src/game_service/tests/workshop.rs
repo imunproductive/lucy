@@ -10,39 +10,13 @@ use orpheus_content::{
     maps::{GameModes, MODES_FILE, MapCatalog},
     parameters::PICK_HERO,
 };
-use orpheus_script::wire::{DeltaInstance, read_delta_instances, read_full_head};
+use orpheus_script::wire::read_full_head;
 use orpheus_sim::scene_assets::SceneAssets;
 
 const DOOMFIST: u64 = 0x02e0_0000_0000_012f;
 const CREATE_HUD_TEXT: u16 = 0x1d8a;
 /// A match ruleset of the test's own (`custom.rs` `MATCH_RULESETS`).
 const RULESET: u64 = 0x0fd0_8000_0000_0001;
-
-/// The graphs of the instances a mode entity's frame lists: a whole
-/// frame's, or the new ones of a delta.
-fn listed_graphs(graphs: &orpheus_script::graph::GraphStore, chunk: &ReceivedChunk) -> Vec<u16> {
-    if chunk.first == 0 {
-        let head = read_full_head(&chunk.data, |graph| {
-            graphs
-                .graph(u32::from(graph))
-                .map(|graph| graph.header.states_bits)
-        })
-        .expect("a full frame's head");
-        return head
-            .instances
-            .iter()
-            .map(|&(_, graph, _, _)| graph)
-            .collect();
-    }
-    read_delta_instances(&chunk.data)
-        .expect("a delta's instances")
-        .into_iter()
-        .filter_map(|instance| match instance {
-            DeltaInstance::Described((_, graph, _, _)) => Some(graph),
-            _ => None,
-        })
-        .collect()
-}
 
 /// The player picks Doomfist, the only hero C32S2 allows, and the rules
 /// run against him: "Player HUD" creates his HUD texts, each a Create HUD

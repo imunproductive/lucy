@@ -609,6 +609,8 @@ pub struct SnapshotEncoder<'a> {
     codecs: &'a CodecTable,
     unknowns: Unknowns,
     hidden: &'a [u16],
+    /// Observer frames carry UX presenters ([`Self::with_presenters`]).
+    presenters: bool,
 }
 
 impl<'a> SnapshotEncoder<'a> {
@@ -618,6 +620,7 @@ impl<'a> SnapshotEncoder<'a> {
             codecs,
             unknowns: Unknowns::for_build(),
             hidden: &[],
+            presenters: false,
         }
     }
 
@@ -637,6 +640,19 @@ impl<'a> SnapshotEncoder<'a> {
     /// `ow174/game/script/bot.py`).
     pub fn hiding(self, hidden: &'a [u16]) -> Self {
         Self { hidden, ..self }
+    }
+
+    /// Observer frames carry the UX presenters too. A body's are its
+    /// owner's HUD (ammo, ability icons), which no other client draws, so
+    /// they are left out of others' frames (upstream `observers.py`); the
+    /// mode entity's are the match's own, which every client shows from
+    /// its frames: `180A`'s card presenter st19 and the cards' graphs'
+    /// (`027F` st6) are remote-synced states.
+    pub fn with_presenters(self) -> Self {
+        Self {
+            presenters: true,
+            ..self
+        }
     }
 
     pub fn project(
@@ -778,7 +794,8 @@ impl<'a> SnapshotEncoder<'a> {
                     continue;
                 }
                 if !node.is_networked()
-                    || (view == View::Observer && (node.is_presenter() || !node.is_remote_synced()))
+                    || (view == View::Observer
+                        && ((node.is_presenter() && !self.presenters) || !node.is_remote_synced()))
                 {
                     continue;
                 }
@@ -2129,12 +2146,18 @@ fn state_payload(
             | StateKind::PickupSearch { .. },
             Some("none"),
         ) if codec.empty() => StatePayload::new(),
-        // `STU_4BD2E886`, the match end's card presenter (`180A` st19):
-        // its one bit (`+0x470`) unset; what sets it is not read
-        // (`vm/nodes.rs`).
-        (StateKind::Plain, Some("bit")) => {
-            StatePayload::from([("value".into(), Value::Bool(false))])
-        }
+        // A presenter's bit (`+0x470`, `vm/presenter.rs`): fading out.
+        (StateKind::Presenter, Some("bit")) => StatePayload::from([(
+            "value".into(),
+            Value::Bool(state.presenter.is_some_and(|presenter| presenter.bit)),
+        )]),
+        // ScaleTime's frames (`vm/time_scale.rs`): the frame it starts, the
+        // frame it stops; the codec sends the one of its side.
+        (StateKind::ScaleTime { on, off }, Some("value_slot")) => StatePayload::from([
+            ("active".into(), Value::Bool(state.active)),
+            ("on".into(), Value::Integer(i64::from(on))),
+            ("off".into(), Value::Integer(i64::from(off))),
+        ]),
         // The landing search (`0B27` st6, `vm/landing.rs`): its block's
         // byte, which its begin sets to 0 and only its input plug
         // `m_6647ED22` (no link in the landing form) sets to 1
@@ -2248,10 +2271,11 @@ fn state_payload(
             payload
         }
         // A scope state's targets (`vm/scopes.rs`, `Write_STU_07AD90EE`
-        // 0x7FF789C56790): per target its value, the entity holding its
-        // instance (the target) and the instance once opened, its index,
-        // the keep flag and the bit every created hit sets (`+37`); the
-        // closing bit (`+0x3B4`) is cleared at the state's begin.
+        // 0x7FF789C56790): per target its value (the target entity, or a
+        // value scope's listed value), the entity holding its instance and
+        // the instance once opened, its index, the keep flag and the bit
+        // every created hit sets (`+37`); the closing bit (`+0x3B4`) is
+        // cleared at the state's begin.
         (StateKind::Scope, Some("hits")) => StatePayload::from([
             (
                 "hits".into(),
@@ -2262,7 +2286,9 @@ fn state_payload(
                         .enumerate()
                         .map(|(index, hit)| {
                             Value::Array(vec![
-                                Value::Entity(hit.target),
+                                hit.value
+                                    .clone()
+                                    .unwrap_or(Value::Entity(hit.target)),
                                 hit.instance.map_or(Value::Null, |_| Value::Entity(hit.target)),
                                 Value::Integer(i64::from(hit.instance.unwrap_or(0))),
                                 Value::Integer(index as i64),
@@ -2274,9 +2300,6 @@ fn state_payload(
             ),
             ("flag".into(), Value::Bool(false)),
         ]),
-        (StateKind::HitList, Some("hits")) => {
-            StatePayload::from([("flag".into(), Value::Bool(false))])
-        }
         // The frame lists the dropped targets a search still holds for its
         // `m_93AB8C13` seconds (writer `0x7FF789BA5F80`), not the found
         // ones (those go in the output variables). The server runs no

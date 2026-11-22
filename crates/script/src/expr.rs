@@ -1840,8 +1840,11 @@ impl Evaluator<'_> {
                     .unwrap_or(Value::Null)
             }
             // Local Player (`Eval_STU_8985E00A`: the client's own player
-            // entity): the server has none.
-            "STU_8985E00A" => Value::Null,
+            // entity): the server has none. `STU_DAAE1875`
+            // (`Eval_STU_DAAE1875` 0x7FF78982A7C0) is the client game's
+            // local entity, the invalid entity on a host with no client
+            // game (`180A` st6 reads `!STU_DAAE1875().id(29350)`).
+            "STU_8985E00A" | "STU_DAAE1875" => Value::Null,
             // A copy of a reevaluated Workshop parameter (Create HUD Text's
             // scope `1D8A` rid6 and five more Create graphs). Server-only:
             // the client's evaluate is the base config's `xor al, al`; the
@@ -2178,7 +2181,11 @@ impl Evaluator<'_> {
             // case 0xE) pushes the invalid value (type 255) for it: null,
             // read as false. The server's own meaning is unknown; this is
             // the client's answer (assumption: the same on the server).
-            "STU_68F68CD7" => Value::Null,
+            // `STU_1232F9A3` and `STU_AA7C7E9F` (a number of `m_entity`) are
+            // two more of the kind (no registration of their own, the base
+            // evaluate): `0D94`, the Play of the Game card `180A`'s first
+            // card plays, reads them as it times the reel (#8191, #8189).
+            "STU_68F68CD7" | "STU_1232F9A3" | "STU_AA7C7E9F" => Value::Null,
             // The ForCode value `254B` of the script's entity as a float
             // (`Eval_STU_295F1CDE` 0x7FF789BD9A80 → 0x7FF789B2BBB0 →
             // 0x7FF789C6ACC0: the entity's statescript registry, first row

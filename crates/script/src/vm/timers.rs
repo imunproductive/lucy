@@ -163,6 +163,7 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
                         let node = self.graph(id).state(usize::from(raw)).expect("sender");
                         self.refresh_send_state(key, node)?;
                     }
+                    Some(StateKind::Presenter) => self.tick_presenter(key, 0)?,
                     Some(StateKind::WeaponVolley { .. }) => self.tick_volley(key)?,
                     Some(StateKind::PickupSearch { .. }) => {
                         let node = self.graph(id).state(usize::from(raw)).expect("search");

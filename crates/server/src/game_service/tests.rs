@@ -465,6 +465,33 @@ fn joined_chunks<'a>(chunks: impl IntoIterator<Item = &'a ReceivedChunk>) -> Vec
     whole
 }
 
+/// The graphs of the instances a mode entity's frame lists: a whole
+/// frame's, or the new ones of a delta.
+fn listed_graphs(graphs: &orpheus_script::graph::GraphStore, chunk: &ReceivedChunk) -> Vec<u16> {
+    use orpheus_script::wire::{DeltaInstance, read_delta_instances, read_full_head};
+    if chunk.first == 0 {
+        let head = read_full_head(&chunk.data, |graph| {
+            graphs
+                .graph(u32::from(graph))
+                .map(|graph| graph.header.states_bits)
+        })
+        .expect("a full frame's head");
+        return head
+            .instances
+            .iter()
+            .map(|&(_, graph, _, _)| graph)
+            .collect();
+    }
+    read_delta_instances(&chunk.data)
+        .expect("a delta's instances")
+        .into_iter()
+        .filter_map(|instance| match instance {
+            DeltaInstance::Described((_, graph, _, _)) => Some(graph),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Hero select open (#2438e), the pick (#13161e while #2114e) and the hero
 /// he plays (#940e), as a full owner controller frame shows them.
 type ControllerShows = (bool, Option<u64>, Option<u64>);
@@ -5678,8 +5705,8 @@ fn a_pvp_match_on_another_map_assembles_its_team_and_takes_a_third_player() {
 /// on his body reports him on the point, `08AF` for team 1; the point's
 /// `0E8E` counts him), the round's end, the match's end; the result goes to the
 /// lobby (a win for the attackers' team, a loss for the defenders') and
-/// both players go home (20304) after the server's wait, here 1/10 of
-/// it (orpheus_sim::match_flow `Timers`).
+/// both players go home (20304) once `0F4A`'s `180A` has shown the match
+/// end's cards (56.4 s) and ended the game.
 ///
 /// The test moves both points into the attackers' spawn room, so the
 /// attacker captures them standing where he spawns: walking 125 m to A
@@ -5835,10 +5862,10 @@ fn slow_an_assault_match_on_anubis_captures_a_and_b_and_sends_the_players_home()
     );
     // `0F4A`'s times: 30 s to assemble, 45 s of setup, A in 30 s and B in
     // 18 s with one attacker on them, the round's end, then the match's
-    // end and the server's 2 s. The clients send their (idle) commands,
-    // which run their bodies' scripts, the aura's `0F00` among them.
+    // end's cards (56.4 s). The clients send their (idle) commands, which
+    // run their bodies' scripts, the aura's `0F00` among them.
     let (mut defending, mut attacking) = (defender.tick + 1, attacker.tick + 1);
-    let deadline = server.now() + Duration::from_secs(150);
+    let deadline = server.now() + Duration::from_secs(210);
     while [&*defender, &*attacker]
         .iter()
         .any(|watcher| received(watcher, 20304).is_none())
@@ -5921,7 +5948,8 @@ fn slow_an_assault_match_on_anubis_captures_a_and_b_and_sends_the_players_home()
 /// spawn room only once the spawn walls' `0FA8` reads the attacking team
 /// from the mode graph, and the point counts who stands on it only once
 /// the bodies' `08AE`/`08AF` end as they leave), and the mode graph ends
-/// the match: the result has the player only, and his game goes home.
+/// the match: the result has the player only, his game gets the match
+/// end's cards (`180A`) and goes home once they end the game.
 #[test]
 #[ignore = "slow: simulates a whole match on the mode graph's clocks with twelve bodies, about 8 min optimised; requires an Overwatch 1.74 install (ORPHEUS_GAME_DIR)"]
 fn slow_a_practice_vs_ai_match_plays_its_ai_heroes_to_the_end() {
@@ -6159,6 +6187,51 @@ fn slow_a_practice_vs_ai_match_plays_its_ai_heroes_to_the_end() {
         (me.slot, me.name.as_str(), me.team, me.finished),
         (0, "player#1111", 0, true)
     );
+
+    // The result phase: `0F4A`'s `180A` shows the match end's cards, each
+    // a list of graphs it plays on the mode entity, and the player's game
+    // gets them in the mode entity's frames (the graphs the orpheus-sim
+    // test `the_match_end_plays_its_cards_and_then_ends_the_game` lists).
+    // He goes home only when the last card ends the game: 56368 ms after
+    // `0F4A` began the match's end at a frame's end, the first card's
+    // graphs 240 ms after that, so 56128 ms (3508 ticks) after them.
+    const CARD_GRAPHS: [u16; 15] = [
+        0x027f, 0x0281, 0x0282, 0x0283, 0x0b46, 0x0d94, 0x17ca, 0x17df, 0x17e2, 0x17e3, 0x17e4,
+        0x1818, 0x181e, 0x184c, 0x184d,
+    ];
+    let graphs = assets.graphs();
+    let mode_chunks = |records: &[WorldRecord]| -> Vec<ReceivedChunk> {
+        records
+            .iter()
+            .filter(|record| record.entity == GAME_MODE_ENTITY)
+            .filter_map(|record| record.script.clone())
+            .collect()
+    };
+    let shown: std::collections::BTreeSet<u16> = joined_chunks(
+        watcher
+            .datagrams
+            .iter()
+            .flat_map(|(_, records)| mode_chunks(records))
+            .collect::<Vec<_>>()
+            .iter(),
+    )
+    .iter()
+    .flat_map(|chunk| listed_graphs(graphs, chunk))
+    .filter(|graph| CARD_GRAPHS.contains(graph))
+    .collect();
+    assert_eq!(shown, std::collections::BTreeSet::from(CARD_GRAPHS));
+    let first_card = watcher
+        .datagrams
+        .iter()
+        .position(|(_, records)| {
+            mode_chunks(records)
+                .iter()
+                .filter(|chunk| chunk.part.is_none())
+                .any(|chunk| listed_graphs(graphs, chunk).contains(&0x027f))
+        })
+        .expect("the first card's graphs");
+    let home = watcher.datagrams.len() - 1;
+    assert_eq!(watcher.ticks[home] - watcher.ticks[first_card], 3508);
     server.stop().unwrap();
 }
 
