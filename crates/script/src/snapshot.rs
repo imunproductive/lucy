@@ -2102,6 +2102,7 @@ fn state_payload(
             | StateKind::ServerFrames
             | StateKind::MoveTo
             | StateKind::NavPath
+            | StateKind::Rise
             | StateKind::AiMove
             | StateKind::ModifyHealth { .. }
             | StateKind::Status

@@ -1536,3 +1536,52 @@ fn a_shockwave_walks_over_the_floor_and_a_step_not_off_a_ledge_or_over_a_pit() {
     ]);
     assert!(!reaches(pit, [0.0, 1.0, 5.0]));
 }
+
+/// Meteor Strike's flight (`super::rise`, kind 13, the block's `+24` set):
+/// held without input it stays where it stood, on the floor (the capsule's
+/// lowest point at the feet); running at a 1 m crate (front face at z 3)
+/// it keeps to the floor until its capsule (radius 0.5) reaches the face,
+/// rises over the edge as the settling sphere rolls up it, never higher
+/// than the top, and stands on the top once its feet are over it.
+#[test]
+fn meteor_strikes_flight_keeps_to_the_ground_and_climbs_a_crate() {
+    use super::{Behaviour, MoveKey, Rise, rise::UNSET_FLOOR};
+
+    const FLIGHT: MoveKey = MoveKey {
+        instance: 1,
+        raw_state: 36,
+        activation: 1,
+    };
+    let rise = Behaviour::Rise(Rise {
+        low: true,
+        height: 10.0,
+        floor: UNSET_FLOOR,
+    });
+    let triangles = joined([floor(), cuboid([-2.0, 2.0], [1.0, 2.0], [3.0, 8.0])]);
+    let mut body = Body::new([0.0, 1.0, 0.0], Some(triangles), &[], 0);
+    let fly = |body: &mut Body, command: Command| {
+        body.mover
+            .step_pose_to(body.rays.index(), command, TICK, Some((FLIGHT, &rise)))
+            .unwrap();
+        body.position()
+    };
+    for frame in 0..10 {
+        assert_eq!(fly(&mut body, stand(frame)), [0.0, 1.0, 0.0]);
+    }
+    let path: Vec<[f64; 3]> = (10..80).map(|frame| fly(&mut body, run(frame))).collect();
+    assert!(path.iter().all(|feet| feet[0] == 0.0), "{path:?}");
+    assert!(
+        path.windows(2).all(|pair| pair[1][1] >= pair[0][1]),
+        "{path:?}"
+    );
+    for feet in &path {
+        if feet[2] <= 2.5 {
+            assert_eq!(feet[1], 1.0, "{path:?}");
+        } else if feet[2] >= 3.0 && feet[2] < 8.0 {
+            assert_eq!(feet[1], 2.0, "{path:?}");
+        } else {
+            assert!((1.0..=2.0).contains(&feet[1]), "{path:?}");
+        }
+    }
+    assert!(path.last().unwrap()[2] > 5.0, "{path:?}");
+}

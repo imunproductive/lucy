@@ -890,6 +890,52 @@ pub fn caught(height: f64, y: f64, above_feet: f64) -> bool {
     y < height + above_feet + CATCH_MARGIN
 }
 
+/// The zones the client's `0x7FF789B2F280` tests a falling ray against
+/// (Meteor Strike's floor, `orpheus_physics::mover::rise`): the world's
+/// kill height (the client's world `+276`; here the catch floor,
+/// [`kill_height`], an assumption) and the damage areas (the client keeps
+/// those with `m_1BB427AE` set; here the lethal ones, an assumption).
+#[derive(Debug)]
+pub struct DeathZones {
+    pub kill_height: Option<f64>,
+    pub areas: std::sync::Arc<[DamageArea]>,
+}
+
+impl orpheus_physics::mover::DeathZones for DeathZones {
+    /// Below the kill height: the start when it is below, else where the
+    /// segment crosses it (the start when it is level within 0.004); then
+    /// the highest entry into an area's box over that.
+    fn entry(&self, start: [f64; 3], end: [f64; 3]) -> Option<[f64; 3]> {
+        let mut found = None;
+        if let Some(height) = self.kill_height {
+            if start[1] < height {
+                return Some(start);
+            }
+            if end[1] < height {
+                found = Some(if (start[1] - end[1]).abs() > 0.0040000002 {
+                    let share = (height - start[1]) / (end[1] - start[1]);
+                    std::array::from_fn(|axis| (end[axis] - start[axis]) * share + start[axis])
+                } else {
+                    start
+                });
+            }
+        }
+        for share in self
+            .areas
+            .iter()
+            .flat_map(|area| &area.boxes)
+            .filter_map(|area| area.entry(start, end))
+        {
+            let point: [f64; 3] =
+                std::array::from_fn(|axis| (end[axis] - start[axis]) * share + start[axis]);
+            if found.is_none_or(|best: [f64; 3]| point[1] > best[1]) {
+                found = Some(point);
+            }
+        }
+        found
+    }
+}
+
 fn invalid(error: impl std::fmt::Display) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error.to_string())
 }

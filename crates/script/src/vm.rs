@@ -76,7 +76,7 @@ use crate::{
     wire::{Value, Variables},
 };
 use orpheus_physics::mover::{
-    Behaviour, MoveTo, PathWalk, Speed,
+    Behaviour, MoveTo, PathWalk, Rise, Speed,
     modifiers::{
         MOVE_HEADING, Modifier, ModifierKey, Operation, VectorOperation, VelocityElement, heading,
     },
@@ -875,6 +875,14 @@ pub trait World {
         None
     }
 
+    /// Whether a ray from `start` down to `end`, stopped by the map, enters
+    /// a zone that kills (the kill height, a lethal damage area:
+    /// [`orpheus_physics::mover::rise::fatal_drop`], `STU_88687E54`). None:
+    /// unknown here.
+    fn fatal_drop(&self, _site: Site, _start: [f64; 3], _end: [f64; 3]) -> Option<bool> {
+        None
+    }
+
     /// Whether the match's map lists game mode `mode` among its supported
     /// modes (`STU_02514B6A.m_supportedGamemodes`, `STU_16753B11`). None:
     /// unknown here.
@@ -1564,6 +1572,10 @@ pub enum StateKind {
     /// kind 10, `vm/grapple.rs`): its walk is in
     /// [`Component::move_requests`] while it runs.
     NavPath,
+    /// Meteor Strike's flight (`STU_6154B909`, kind 13, `vm/state_kinds.rs`
+    /// `rise_block`): its block, evaluated again each frame, is in
+    /// [`Component::move_requests`] while it runs.
+    Rise,
     /// An AI movement state (`STU_ECAEE401`): the point its move goal names
     /// for the server's walker, in [`Component::ai_move_requests`].
     AiMove,
@@ -3171,6 +3183,10 @@ struct Machine {
     command_buttons: u32,
     held_buttons: Vec<u8>,
     owner_dead: bool,
+    /// The button edge whose listening states re-check their transitions
+    /// now (the client's host `+1083`/`+1084` while it dispatches a button
+    /// event to them; `vm/buttons.rs` `recheck_button_conditions`).
+    current_edge: Option<ButtonEdge>,
     /// Each instance's `Defer` states due in its deferred phase: priority and
     /// raw state, sorted by priority.
     deferred: BTreeMap<u16, Vec<(f64, u16)>>,

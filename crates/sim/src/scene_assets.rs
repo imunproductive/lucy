@@ -895,7 +895,14 @@ impl PreparedScene {
             yaw,
             mover_category(&self.map, team),
         )
-        .map(|mover| mover.with_navigation(self.navigation.clone()))
+        .map(|mover| {
+            mover
+                .with_navigation(self.navigation.clone())
+                .with_death_zones(Some(Arc::new(map_areas::DeathZones {
+                    kill_height: self.kill_height,
+                    areas: Arc::clone(&self.lethal_areas),
+                })))
+        })
         .map_err(invalid)
     }
 
@@ -2064,24 +2071,6 @@ mod tests {
                     0x0043,
                     Some(10),
                     "STUStatescriptStateModifyHealth m_B12BFE8B",
-                    "not read"
-                ),
-                (
-                    0x0043,
-                    Some(10),
-                    "STUStatescriptModifyHealth m_knockbackRings",
-                    "not read"
-                ),
-                (
-                    0x0043,
-                    Some(10),
-                    "STUStatescriptModifyHealth m_C0139FA6",
-                    "not read"
-                ),
-                (
-                    0x0043,
-                    Some(10),
-                    "STUStatescriptModifyHealth m_E33EFEE1",
                     "not read"
                 ),
                 (

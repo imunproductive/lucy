@@ -163,14 +163,15 @@
 //!   the server lists has it [inference: its one factory, no hero data
 //!   class]). The fields that override the point or add hardpoint lists
 //!   (`m_48837057`, `m_294660A6`, `m_229DD034`, `m_BA6C9F75`,
-//!   `m_9E1426F6`, `m_E8474EE8`, `m_C1B724B2`, `m_47AB1887`) are among
-//!   those a search can't run with. The server casts rays 1 and 3 to a
-//!   listed body's model hardpoints when it knows them
-//!   ([`TargetCandidate::hardpoints`], `game_hitboxes_174.json`, since
-//!   2026-11-21), so it answers as the client does. A body without them
-//!   gets rays 2, 0.6 up and 4: a body ray 2 sees is seen as the client
-//!   sees it; any other answer is an assumption naming the hardpoints, as
-//!   is a seen body of a search with a sweep, or a world with no map.
+//!   `m_9E1426F6`, `m_E8474EE8`, `m_C1B724B2`) are among those a search
+//!   can't run with. The server casts rays 1 and 3 to a listed body's
+//!   model hardpoints when it knows them ([`TargetCandidate::hardpoints`],
+//!   `game_hitboxes_174.json`, since 2026-11-21), so it answers as the
+//!   client does. A body without them gets rays 2, 0.6 up and 4: a body
+//!   ray 2 sees is seen as the client sees it; any other answer is an
+//!   assumption naming the hardpoints, as is a seen body of a search with
+//!   a sweep, or a world with no map. The search's own sight lines
+//!   `m_47AB1887` (`in_sight`) take the place of the rays.
 //! - `m_1C2A9945`: when the searcher has a player (component 43 → 29; a
 //!   projectile through its shooter, component 50), bodies are tested
 //!   where that player saw them, rewound (`0x7FF789CBB340`,
@@ -194,11 +195,12 @@
 //! placeable, whole: no assumption), `0257` st6 and Reinhardt's `0095`
 //! st18, both counting allies within 10 m for a criteria, the Biotic
 //! Field's `0258` st0, quick melee's `0043` st5, the aimed ally cones
-//! (Nano Boost's `0B9E` st6) and the Training Partner console's `265F`
-//! rid1 (the players within 1.75 m of it, in sight). Any other set field
-//! (the output `m_CEE20F6F` that SetVars read, other scorings) or an
-//! offset the server can't evaluate leaves the search finding nothing,
-//! recorded as an assumption naming the field.
+//! (Nano Boost's `0B9E` st6), the Training Partner console's `265F`
+//! rid1 (the players within 1.75 m of it, in sight) and Meteor Strike's
+//! landing `0C51` st10 (its sight lines and the distances output
+//! `m_CEE20F6F`, `write_targets`). Any other set field (other scorings)
+//! or an offset the server can't evaluate leaves the search finding
+//! nothing, recorded as an assumption naming the field.
 //!
 //! Assumed, as nothing in the data says: a body counts when its capsule
 //! (as the match places it, or where the searcher's player saw it) comes
@@ -215,7 +217,6 @@ const CLASS: &str = "STUStatescriptStateTrackTargets";
 /// The class's own fields the server doesn't model: set, the search finds
 /// nothing.
 const UNMODELLED: &[&str] = &[
-    "m_47AB1887",
     "m_2F88C5F2",
     "m_544C3E6F",
     "m_762A56C0",
@@ -230,7 +231,6 @@ const UNMODELLED: &[&str] = &[
     "m_E8474EE8",
     "m_C1B724B2",
     "m_93AB8C13",
-    "m_CEE20F6F",
     "m_2A0FB8BB",
 ];
 
@@ -266,6 +266,7 @@ const SIGHT_ORIGIN: &str = "m_D59188D5";
 const SIGHT_FILTER: &str = "m_3D667CE3";
 const SIGHT_SWEEP: &str = "m_8D13DD07";
 const SIGHT_SIDES: &str = "m_2F5FAF65";
+const SIGHT_LINES: &str = "m_47AB1887";
 /// The ray profile of a line of sight whose filter names none
 /// (`002D.097`, `0x7FF789BB3570`).
 const SIGHT_PROFILE: u64 = 0x0690_0000_0000_002D;
@@ -372,6 +373,9 @@ struct ScoreTerm {
 struct Found {
     entities: Vec<u32>,
     scores: Vec<(u32, f64)>,
+    /// Each listed body's distance from the centre, for the distances
+    /// output `m_CEE20F6F`.
+    distances: Vec<(u32, f64)>,
 }
 
 impl Found {
@@ -473,13 +477,18 @@ impl Sight {
 
     /// Whether the ray from the origin to `point` meets nothing of the map.
     fn clear(&self, map: &dyn MapRays, point: [f64; 3]) -> Option<bool> {
-        let offset = sub(point, self.origin);
+        self.clear_line(map, self.origin, point)
+    }
+
+    /// Whether the ray from `from` to `point` meets nothing of the map.
+    fn clear_line(&self, map: &dyn MapRays, from: [f64; 3], point: [f64; 3]) -> Option<bool> {
+        let offset = sub(point, from);
         let reach = dot(offset, offset).sqrt();
         if reach < 1e-6 {
             return Some(true);
         }
         let direction = offset.map(|value| value / reach);
-        let hit = map.cast(self.origin, direction, reach, Some(self.profile))?;
+        let hit = map.cast(from, direction, reach, Some(self.profile))?;
         Some(hit.is_none_or(|hit| hit.distance >= reach))
     }
 }
@@ -684,12 +693,35 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
         state.tracked.truncate(limit);
         let after: Vec<u32> = state.tracked.iter().map(|target| target.entity).collect();
         if begin || after != before {
-            self.write_targets(key.instance, node, &after)?;
+            let distances: Vec<f64> = after
+                .iter()
+                .map(|entity| {
+                    found
+                        .distances
+                        .iter()
+                        .find(|(listed, _)| listed == entity)
+                        .map_or(0.0, |(_, distance)| *distance)
+                })
+                .collect();
+            self.write_targets(key.instance, node, &after, &distances)?;
         }
         Ok(true)
     }
 
-    fn write_targets(&mut self, id: u16, node: &Node, entities: &[u32]) -> Result<(), InitFault> {
+    /// The outputs: the found entities, their count and (`m_CEE20F6F`)
+    /// each one's distance from the centre, as the candidate query
+    /// measures it for the radius (the capsule's, an assumption: the
+    /// client takes the query's float, `0x7FF789B99F60`, which was not
+    /// read). The client writes the distances again whenever one changes;
+    /// the server only with the entities (an assumption that holds for
+    /// a search read once, Meteor Strike's `0C51` st10).
+    fn write_targets(
+        &mut self,
+        id: u16,
+        node: &Node,
+        entities: &[u32],
+        distances: &[f64],
+    ) -> Result<(), InitFault> {
         let outputs = [
             (
                 "m_8A2905A0",
@@ -701,6 +733,15 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
                 ),
             ),
             ("m_1B89EA79", Value::Integer(entities.len() as i64)),
+            (
+                "m_CEE20F6F",
+                Value::Array(
+                    distances
+                        .iter()
+                        .map(|&distance| Value::Float(distance))
+                        .collect(),
+                ),
+            ),
         ];
         for (name, value) in outputs {
             match expr::lvalue(field(&node.fields, name)) {
@@ -788,6 +829,10 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
         let mut found = Found {
             entities,
             scores: Vec::new(),
+            distances: bodies
+                .iter()
+                .map(|body| (body.entity, body.distance(centre)))
+                .collect(),
         };
         if !search.scoring.is_empty() {
             let view = if search
@@ -861,6 +906,58 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
                 return found;
             }
         };
+        // The search's own sight lines (`m_47AB1887`, `STU_97368A55`
+        // `m_start`/`m_end` with the body as every parameter; the search
+        // hands them to `0x7FF789BB3570` from `+0xE8`): Meteor Strike's
+        // `0C51` st10 from 0.5 m over his feet to 0.5 m over each body's.
+        // Assumption: they take the place of the body rays, and a body is
+        // seen when one of them meets nothing of the map.
+        let lines = array_field(&node.fields, SIGHT_LINES);
+        if !lines.is_empty() {
+            let mut ends = Vec::new();
+            for &entity in &found {
+                let outer = self.candidate.replace(Value::Entity(entity));
+                let each: Vec<_> = lines
+                    .iter()
+                    .map(|line| {
+                        let start = self.evaluate_quietly(id, node, field(line, "m_start"));
+                        let end = self.evaluate_quietly(id, node, field(line, "m_end"));
+                        match (start, end) {
+                            (Some(Value::Vector(start)), Some(Value::Vector(end))) => {
+                                Some((start, end))
+                            }
+                            _ => None,
+                        }
+                    })
+                    .collect();
+                self.candidate = outer;
+                ends.push((entity, each));
+            }
+            let Some(map) = self.world.map_rays() else {
+                self.assume(site, &format!("{CLASS} {SIGHT}"), "no line-of-sight test");
+                return found;
+            };
+            let mut unknown = false;
+            let seen = ends
+                .into_iter()
+                .filter(|(_, each)| {
+                    each.iter().any(|line| {
+                        let clear = line.and_then(|(start, end)| sight.clear_line(map, start, end));
+                        unknown |= clear.is_none();
+                        clear == Some(true)
+                    })
+                })
+                .map(|(entity, _)| entity)
+                .collect();
+            if unknown {
+                self.assume(
+                    site,
+                    &format!("{CLASS} {SIGHT_LINES}"),
+                    "a line it can't cast hides the body",
+                );
+            }
+            return seen;
+        }
         let Some(map) = self.world.map_rays() else {
             self.assume(site, &format!("{CLASS} {SIGHT}"), "no line-of-sight test");
             return found;

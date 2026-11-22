@@ -55,6 +55,7 @@ impl Machine {
             command_buttons: 0,
             held_buttons: Vec::new(),
             owner_dead: false,
+            current_edge: None,
             deferred: BTreeMap::new(),
             disabled: BTreeMap::new(),
             movements: BTreeMap::new(),

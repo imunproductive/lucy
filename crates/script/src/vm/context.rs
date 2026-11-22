@@ -292,6 +292,11 @@ impl<W: World + ?Sized> Context for InstanceContext<'_, W> {
         self.world.body_radius(self.site, entity)
     }
 
+    fn fatal_drop(&mut self, start: [f64; 3], end: [f64; 3]) -> Option<bool> {
+        self.read_native = true;
+        self.world.fatal_drop(self.site, start, end)
+    }
+
     fn map_ray(
         &mut self,
         origin: [f64; 3],

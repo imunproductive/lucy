@@ -4176,7 +4176,7 @@ fn conditions_branch_on_containers_held_buttons_and_a_state_age_without_a_state(
             condition(
                 2,
                 "STU_7DEB522D",
-                json!({"m_logicalButton":{"$":"STUConfigVarLogicalButton","m_logicalButton":20}}),
+                json!({"m_logicalButton":{"$":"STUConfigVarLogicalButton","m_logicalButton":20}, "m_00994FF0":1}),
                 6,
                 7,
             ),
