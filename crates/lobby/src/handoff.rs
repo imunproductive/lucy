@@ -42,6 +42,17 @@ pub fn match_channel(id: [u64; 2]) -> Fields {
     chat_channel(id, 6)
 }
 
+/// A team's chat channel in match `id` (type 5, the client's team chat):
+/// the match id with its top bit set and the team in its low bit, which no
+/// match id has (`lobby::match_id` clears the top bits).
+pub fn team_channel(id: [u64; 2], team: u8) -> Fields {
+    chat_channel(team_channel_id(id, team), 5)
+}
+
+pub fn team_channel_id(id: [u64; 2], team: u8) -> [u64; 2] {
+    [id[0] | 1 << 63, id[1] ^ u64::from(team)]
+}
+
 pub fn join_chat_channel(channel: Fields) -> LobbyMessage {
     (
         CHAT_IN,
@@ -202,7 +213,11 @@ pub fn game_found(
     messages
 }
 
-/// Leave General, join the match channel, then transfer to the game server.
+/// Leave General, join the match's channel and the player's team's, then
+/// transfer to the game server. The client sends its team chat only once
+/// it has a type-5 channel: before that it queues the lines and shows them
+/// locally, and the 20402 of a team channel sends the queue
+/// (`refs/reports/Dashboard.md` §1.2).
 ///
 /// No team colour table (custom games 23310) is sent: it puts the client in
 /// team-colour mode, where every nameplate carries a number badge (an empty
@@ -211,9 +226,10 @@ pub fn game_found(
 pub fn enter_game(
     general: Fields,
     match_channel: Fields,
+    team_channel: Fields,
     handoff: &Handoff,
     (host, port): (&str, u16),
-) -> io::Result<[LobbyMessage; 3]> {
+) -> io::Result<[LobbyMessage; 4]> {
     Ok([
         (
             CHAT_IN,
@@ -221,6 +237,7 @@ pub fn enter_game(
             Fields::from([(0x78, Value::Struct(general))]),
         ),
         join_chat_channel(match_channel),
+        join_chat_channel(team_channel),
         (HANDOFF, HANDOFF_MESSAGE, handoff.fields(host, port)?),
     ])
 }
@@ -242,6 +259,8 @@ pub struct LobbySeat {
     /// Identity of the lobby session that reserved this seat, not the account ID.
     pub lobby_session: u64,
     pub handoff: Handoff,
+    /// The player's team in the match, whose chat channel he is in.
+    pub team: u8,
 }
 
 pub enum SeatAction {
@@ -450,11 +469,17 @@ mod tests {
             [53000, 53001, 53003, 53002]
         );
 
-        let entering =
-            enter_game(Fields::new(), Fields::new(), &seat, ("127.0.0.1", 3730)).unwrap();
+        let entering = enter_game(
+            Fields::new(),
+            Fields::new(),
+            Fields::new(),
+            &seat,
+            ("127.0.0.1", 3730),
+        )
+        .unwrap();
         assert_eq!(
             entering.map(|(_, id, _)| id),
-            [20404, 20402, HANDOFF_MESSAGE]
+            [20404, 20402, 20402, HANDOFF_MESSAGE]
         );
         assert_eq!(handoff_delay(false, FOUND_DELAY, true), Duration::ZERO);
         assert_eq!(handoff_delay(true, FOUND_DELAY, true), FOUND_DELAY);
@@ -470,6 +495,7 @@ mod tests {
             account_lo,
             lobby_session,
             handoff: handoff(conn),
+            team: 0,
         }
     }
 

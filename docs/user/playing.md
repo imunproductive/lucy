@@ -112,60 +112,16 @@ While the server runs, open <http://127.0.0.1:3725> in a browser. The account li
 | **Loot boxes** | `/boxes` | Give loot boxes, or open all of them at once. |
 | **Collection** | `/collection` | Buy or unlock items, remove unlocked items, choose the portrait frame. |
 | **Server** | `/server` | See the server status. Change the matchmaking, the mode settings, the map and the Workshop script. End the running matches. Choose the default account and the account the game plays. Start a second game for another account. Use the group finder bot. |
-| **Live matches** | `/matches` | Not available yet: the server does not report live matches yet. |
+| **Live matches** | `/matches` | See every running match (map, mode, phase, time, players) and the lobby's chat, updated each second. Send a message to everyone online, to the players in the menu only, or to the players in matches only. Open a match. |
+| **Match** | `/matches/<id>` | See the match's chat (match and team lines) and send lines as the system, to the match or one team. Kick a player, with a reason he sees in the menu. Control the match where its mode allows it: set the time left in this phase, skip the phase, pause and resume, go back to the hero assembly, declare a round's winner, keep the match on at clock 0. Stop the match with a winner or a draw (the result screens play, then everyone goes home) or with no result (everyone goes home now). |
+
+System lines and messages show in the players' chat without a name, in the colour of the channel. The match's chat stays on the page for 30 minutes after the match ends. The controls a match offers depend on its mode: Assault and Skirmish on their own game mode scripts have most of them; Escort, Hybrid and Control offer setting the time and stopping with a winner; the Practice Range has none, but its players can be messaged and kicked.
 
 The button with the sun or moon in the top bar changes between the light and the dark theme. The page keeps your choice. On a narrow window, the menu button opens the page list.
 
 The second game plays the account you choose. The local Battle.net tells the two games apart by the process that owns each connection.
 
 `--dashboard-port 0` (or `dashboard = 0` in `config.toml`) turns the dashboard off.
-
-### Bot plate (chat command)
-
-`.plate` is a debugging tool. It looks for the input that makes our Training Bot's health bar look unlike retail's: black outlines around the segments and a small bar (`▌`) before the name. It changes what the server sends about every training bot, in every running match. A change reaches the games at once as an update. Nothing respawns, and you don't restart anything. A bot that respawns gets the changes too. The changes stay until you reset them or stop the server.
-
-In a match, type `.plate <command>` in any chat. Separate commands with `;`. The bot in the chat answers with what is in force and with the first live bot's pool parts: component 51 (the health pools) as the bot sends it now. `.plate` alone (or `.plate show`) only shows them. The only message the server can send to the nameplate graph `0D24` is `0C3C` (the plate on): the graph waits for its other messages only on the client.
-
-The commands:
-
-| Command | What it changes |
-|---|---|
-| `<array>[.<slot>].<attribute> <value>` | One attribute of a pool part. `<array>` is `health`, `armour` or `shields`; `<slot>` is 0 to 15 (0 if you leave it out). `<attribute>` is `id`, `max`, `now`, `kind`, or one of the four flag bytes `b16`, `b17`, `b18`, `b19`. A part the bot doesn't have is added, with id `256 + field` |
-| `<array>[.<slot>].tail <b16>.<b17>.<b18>.<b19>` | The four flag bytes at once, for example `health.tail 0.1.0.1` |
-| `<array>[.<slot>] default` | Takes back every change of that part |
-| `c51.<48 to 52> <value>` | Component 51's five fields after the pools (`u32`, `u32`, an entity, `u8`, `u8`). We don't send them; once set, a field goes back as 0 |
-| `name`, `enabled`, `nameonly`, `offset` `<value>` | The nameplate's own variables: the name text (`#8812`; we send the bot's name), the plate on (`#8807`), the name alone instead of the full plate (`#14680`), the root layout's offset (`#8813`) |
-| `meter`, `status`, `dead` `<value>` | The body's variables that `0D24` reads: the name's meter (`#6036`; it shows 1 minus this), the status icon (`#2143`), the dead flag (`#478`; true hides the bar) |
-| `antiheal`, `healboost` `<value>` | The body's statuses that every health bar reads (`#8202`, `#8203`): Biotic Grenade sets the first on an enemy and the second on an ally. They show the anti-heal and heal boost icon above the plate; they don't change the outline colour. Neither set is "no status" |
-| `entity.<id> <value>`, `plate.<id> <value>` | Any variable of the bot body, or of its nameplate instances |
-| `message <id>` | A game message to every live bot's nameplate, by its `025` index (`0C3C`) or whole GUID. The messages `0D24` waits for only on the client (`0744` and the others) are refused |
-| `reset` | Takes back every change |
-
-A variable's value is `null`, `true`, `false`, a whole number, a number with a point, `0x` with 16 hex digits (an asset), or text. Put text in quotes when it reads as one of the others (`name "null"`). `default` as a value takes a change back. When you take a variable back, the bot gets its old value; a variable it never had becomes `null`.
-
-Our bots send one pool part: `health.0`, id `1`, kind `0`, maximum and current health, and flag bytes `0.1.0.1`. Byte 17 set and byte 18 clear draws the part as health; any other pair draws it as over-health, in another colour (your tests with `0.0.0.0` and `1.1.1.1` turned the segments turquoise). Nobody has tested bytes 16 and 19 one at a time. They are the first things to try for the outlines. To find the input, change one thing at a time in the Practice Range and compare the bar with retail's:
-
-1. `.plate antiheal true`, then `.plate antiheal default`; `.plate healboost true`, then `.plate healboost default`. Tested: they show the status icon above the plate and leave the outline black.
-2. `.plate entity.19452 100`, then `.plate entity.19452 default`. Tested: nothing seen.
-3. Compare with an enemy player's bar in a PvP match: if it has black outlines too, the cause is in what every body sends, not in the bots.
-
-There is no `hero` command any more: putting a hero (component 75) on a bot's stand-in controller crashed the game.
-
-After each step, look at the segment outlines and at the `▌` before the name.
-
-## Hurt feedback switch
-
-When a hit leaves you alive, the server sends your hero a damage message. Your hero then flinches (a small camera kick), an explosion knocks your view back, and about 0.15 s later you hear a pain line. Before 12 November 2026 the server sent no such message. To compare the two, type in any chat during a match:
-
-| Command | Effect |
-|---|---|
-| `.hurt` | Shows what is on |
-| `.hurt off` | No damage message: no flinch, no knockback, no pain line (the old behaviour) |
-| `.hurt on` | Everything on again (the default) |
-| `.hurt flinch off` / `.hurt flinch on` | The message goes without the hit's damage tags: no flinch and no knockback, but the pain line stays |
-| `.hurt pain off` / `.hurt pain on` | No pain line; the flinch and the knockback stay |
-
-The switch is for every player of every running match, at once. It does not change how the training bots and the AI heroes react to their own hits. It goes back on when the server restarts.
 
 ## Matches with fewer players
 

@@ -36,11 +36,9 @@ use std::{
 };
 
 use crate::{
-    bot_plate::BotPlate,
     bot_script::SeenRocket,
     bots::{BOT_ENTITY, BOT_RECORD_DELAY, Bot},
     hitscan::{HitscanShot, Impact, TargetHistory, TargetPose, ViewFrame},
-    hurt_feedback::HurtFeedback,
     projectile_flight::{FlightEnd, ProjectileFlight},
     projectiles::{
         FIELD_ENTITY, FieldDeliver, FieldIds, FiredProjectile, ProjectileEvent, SeenIds, ShotKey,
@@ -272,32 +270,21 @@ pub fn damage_message(
 /// `0011.025` alone, not `003E.025`, and posts the kill feed line
 /// (`0765.025`) from them when a native flag (#33688e, no graph writes
 /// it) marks the blow as lethal (`refs/reports/PlayerHurt.md`, "Killing
-/// hit"). The live hurt feedback switch ([`HurtFeedback`]) holds the
-/// damage message back, or with the flinch off sends it without its tags;
-/// the death message is not switched.
+/// hit").
 pub fn hit_messages(
     hit: &PlayerHit,
     tags: DamageTags,
     dealt: f64,
     kill: Option<&[u32]>,
     camera: Option<DeathCamera>,
-    feedback: HurtFeedback,
 ) -> Vec<(u64, Variables)> {
     let source = hit.shooter.source;
     let death = |tags, camera| {
         kill.map(|assists| death_message(source, hit.critical, hit.loadout, tags, assists, camera))
     };
-    let mut messages = Vec::new();
-    if feedback.message {
-        let flinch = if feedback.flinch {
-            tags
-        } else {
-            DamageTags::NONE
-        };
-        let (message, mut parameters) = damage_message(source, dealt, flinch, hit.direction);
-        parameters.extend(death(flinch, None).into_iter().flat_map(|(_, kill)| kill));
-        messages.push((message, parameters));
-    }
+    let (message, mut parameters) = damage_message(source, dealt, tags, hit.direction);
+    parameters.extend(death(tags, None).into_iter().flat_map(|(_, kill)| kill));
+    let mut messages = vec![(message, parameters)];
     messages.extend(death(tags, camera));
     messages
 }
@@ -1753,7 +1740,6 @@ impl Combat {
                 .combat_scale(impact.entity, taken, &mut tags, shooter.source);
         self.modified.extend(scaled.notices(amount, shooter.source));
         let amount = scaled.apply(amount);
-        let plate = Arc::clone(scene.bot_plate());
         let (bot, target) = scene
             .bots_mut()
             .iter_mut()
@@ -1761,7 +1747,7 @@ impl Combat {
             .find(|(bot, _)| !bot.dead && bot.entity == impact.entity)?;
         if heal {
             let given = target.vitals.heal(amount);
-            let hit = (given > 0.0).then(|| healed_bot(bot, target, given, &plate, tags));
+            let hit = (given > 0.0).then(|| healed_bot(bot, target, given, tags));
             // A player healer's Healing Done counts what the pools took.
             if hit.is_some() && !shooter.bot {
                 self.count(shooter.source, vec![board.healing], given);
@@ -1783,7 +1769,7 @@ impl Combat {
         if result.dealt == 0.0 {
             return None;
         }
-        let mut components = vec![plate.pools(&target.vitals)];
+        let mut components = vec![target.vitals.component()];
         if result.killed {
             bot.died();
             target.respawn_at = Some(context.now.saturating_add(respawn));
@@ -1867,7 +1853,7 @@ impl Combat {
             next_bot = next_bot
                 .checked_add(1)
                 .ok_or_else(|| io::Error::other("bot entity IDs exhausted"))?;
-            let created = bot_create(&fresh, scene.bot_plate())?;
+            let created = bot_create(&fresh)?;
             let link = Some(bot_controller_link(&fresh, slot)?);
             prepared.push((
                 slot,
@@ -1893,16 +1879,10 @@ impl Combat {
 
 /// A bot's heal of `given`: its new pools for every client, and no notice
 /// (combat.py `_heal` sends none).
-fn healed_bot(
-    bot: &Bot,
-    target: &mut Target,
-    given: f64,
-    plate: &BotPlate,
-    tags: DamageTags,
-) -> BotHit {
+fn healed_bot(bot: &Bot, target: &mut Target, given: f64, tags: DamageTags) -> BotHit {
     let health = EntityUpdate {
         entity: bot.entity,
-        operation: Some(Operation::Update(vec![plate.pools(&target.vitals)])),
+        operation: Some(Operation::Update(vec![target.vitals.component()])),
         ..EntityUpdate::default()
     };
     target.vitals.clear_changed();
@@ -2274,7 +2254,7 @@ pub fn apply_player_hits(
             .filter_map(|&(slot, _)| bodies[slot])
             .collect();
         if let Some(world) = players[victim].world.as_deref_mut() {
-            world.send_hit_messages(scene, &hit, &damage, &assisters);
+            world.send_hit_messages(&hit, &damage, &assisters);
         }
         // His body's `0B8B` decides the charge, his own blow's too (none:
         // rid28, the body hit must be hostile to him).

@@ -67,10 +67,8 @@ use lucy_lobby::handoff::Handoff;
 use lucy_script::{snapshot::ProjectedSnapshot, vm::GameMessage};
 use lucy_sim::{
     ai::Difficulty,
-    bot_plate::{BotPlate, PlateChange, PlateSample, PlateView},
     combat::{BotReplacement, Combat},
     egress::GameEgress,
-    hurt_feedback::HurtFeedback,
     instance::{RETAIL_QUANTA, TOURNAMENT_QUANTA},
     match_flow::{MatchFlow, Timers},
     messages::{Backlog, HeldReach},
@@ -89,6 +87,8 @@ use lucy_wire::{
 
 use router::Router;
 pub use timing::{RoomTiming, Spread, TickStats};
+
+pub use controls::{Control, Driven, FlowAction, FlowRefusal, FlowState};
 
 const GAME_SOCKET: Token = Token(0);
 const REQUESTS: Token = Token(1);
@@ -120,7 +120,7 @@ pub struct WorldPlayer {
 pub type ScenePreparation = Box<dyn FnOnce() -> io::Result<PreparedScene> + Send>;
 
 /// A match as the dashboard and the matchmaker see it (match.py `snapshot`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct MatchSnapshot {
     pub id: MatchId,
     pub map: String,
@@ -132,6 +132,11 @@ pub struct MatchSnapshot {
     /// A Workshop match (a custom game, or `--workshop`): how many rules
     /// its script has for the Workshop engine; `None` for every other match.
     pub workshop_rules: Option<usize>,
+    /// How long ago the match opened.
+    pub age: Duration,
+    /// Its flow as the mode graph or the flow keeps it, and what the host
+    /// can do with it (`controls.rs`).
+    pub flow: FlowState,
     /// How long its ticks take, by phase, and how late they start
     /// (`timing.rs`).
     pub timing: RoomTiming,
@@ -140,10 +145,15 @@ pub struct MatchSnapshot {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlayerSnapshot {
     pub name: String,
+    /// The account's id (`account_lo`) on the player's card; 0 for an AI
+    /// player.
+    pub account: u32,
     /// The hero he plays, or the lobby's before his first pick.
     pub hero: u64,
     pub team: u8,
     pub state: PlayerState,
+    /// An AI hero or a dummy bot the server plays.
+    pub ai: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -255,17 +265,6 @@ enum Request {
     Results {
         reply: mpsc::SyncSender<Vec<MatchResult>>,
     },
-    /// The live nameplate tool: a change, if any, then what it shows.
-    BotPlate {
-        change: Option<PlateChange>,
-        reply: mpsc::SyncSender<Result<PlateAnswers, String>>,
-    },
-    /// The live hurt feedback switch: a change, if any, then what is in
-    /// force.
-    Hurt {
-        change: String,
-        reply: mpsc::SyncSender<Result<HurtFeedback, String>>,
-    },
     /// Tests: the match flow's timers for the matches that open later.
     #[cfg(test)]
     Timers {
@@ -346,32 +345,22 @@ enum RoomRequest {
         skin: SkinTheme,
         reply: mpsc::SyncSender<()>,
     },
-    /// The lobby's `.hero` chat command.
-    Hero {
-        connection: u32,
+    /// The host's control of the match's flow (`controls.rs`).
+    Flow {
         id: MatchId,
-        hero: u64,
+        action: FlowAction,
+        reply: mpsc::SyncSender<Result<(), FlowRefusal>>,
+    },
+    /// The host takes the player of this account out of the match.
+    Kick {
+        id: MatchId,
+        account: u32,
         reply: mpsc::SyncSender<bool>,
     },
-    /// The marker messages (`LUCY_DEBUG_SEND`): the seat's entities.
-    DebugSeat {
-        connection: u32,
+    /// The host sends every game of the match home now.
+    Stop {
         id: MatchId,
-        reply: mpsc::SyncSender<Option<DebugSeat>>,
-    },
-    /// The marker messages: encoded game messages for the seat's game,
-    /// queued as the server's own reliable messages.
-    DebugSend {
-        connection: u32,
-        id: MatchId,
-        messages: Vec<Vec<u8>>,
-        reply: mpsc::SyncSender<bool>,
-    },
-    /// The marker messages: the environment kills the seat's body.
-    DebugKill {
-        connection: u32,
-        id: MatchId,
-        reply: mpsc::SyncSender<DebugKill>,
+        reply: mpsc::SyncSender<usize>,
     },
 }
 
@@ -384,9 +373,12 @@ enum Target {
 impl RoomRequest {
     fn target(&self) -> Target {
         match *self {
-            Self::Join { id, .. } | Self::Scene { id, .. } | Self::Workshop { id, .. } => {
-                Target::Match(id)
-            }
+            Self::Join { id, .. }
+            | Self::Scene { id, .. }
+            | Self::Workshop { id, .. }
+            | Self::Flow { id, .. }
+            | Self::Kick { id, .. }
+            | Self::Stop { id, .. } => Target::Match(id),
             #[cfg(test)]
             Self::Bodies { id, .. } | Self::WorkshopReport { id, .. } | Self::Hold { id, .. } => {
                 Target::Match(id)
@@ -396,11 +388,7 @@ impl RoomRequest {
             Self::Pending { connection, .. }
             | Self::Cancel { connection, .. }
             | Self::Seat { connection, .. }
-            | Self::Skin { connection, .. }
-            | Self::Hero { connection, .. }
-            | Self::DebugSeat { connection, .. }
-            | Self::DebugSend { connection, .. }
-            | Self::DebugKill { connection, .. } => Target::Connection(connection),
+            | Self::Skin { connection, .. } => Target::Connection(connection),
         }
     }
 
@@ -416,9 +404,14 @@ impl RoomRequest {
             | Self::Pending { reply, .. }
             | Self::Cancel { reply, .. }
             | Self::Seat { reply, .. }
-            | Self::Hero { reply, .. }
-            | Self::DebugSend { reply, .. } => {
+            | Self::Kick { reply, .. } => {
                 let _ = reply.send(false);
+            }
+            Self::Flow { reply, .. } => {
+                let _ = reply.send(Err(FlowRefusal::NoMatch));
+            }
+            Self::Stop { reply, .. } => {
+                let _ = reply.send(0);
             }
             #[cfg(test)]
             Self::Bodies { reply, .. } => {
@@ -439,12 +432,6 @@ impl RoomRequest {
             Self::Skin { reply, .. } => {
                 let _ = reply.send(());
             }
-            Self::DebugSeat { reply, .. } => {
-                let _ = reply.send(None);
-            }
-            Self::DebugKill { reply, .. } => {
-                let _ = reply.send(DebugKill::NotConnected);
-            }
         }
     }
 }
@@ -454,22 +441,6 @@ impl RoomRequest {
 struct RoomSnapshot {
     started: Instant,
     snapshot: MatchSnapshot,
-}
-
-/// The live nameplate tool's answer: the plate's commands, the messages it
-/// sent the live bots, and each room's part on the receiver.
-struct PlateAnswers {
-    commands: Vec<String>,
-    messages: Vec<u64>,
-    rooms: mpsc::Receiver<RoomPlate>,
-}
-
-/// A room's part of the nameplate tool's answer: how many of its live bots
-/// took each message, and what its first live bot sends now.
-struct RoomPlate {
-    started: Instant,
-    taken: Vec<usize>,
-    sample: Option<PlateSample>,
 }
 
 /// Tests: what a Workshop match's rules met so far
@@ -510,30 +481,6 @@ struct Opening {
 struct WorldStart {
     scene: Box<PreparedScene>,
     combat: Option<Combat>,
-}
-
-/// The entities of a seat whose game is connected to its match.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DebugSeat {
-    /// The player entity: the controller.
-    pub controller: u32,
-    /// The hero body it possesses; none before the first pick.
-    pub body: Option<u32>,
-}
-
-/// What `/api/debug/kill` did to a seat's body.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DebugKill {
-    /// The body dies at the next tick.
-    Killed(u32),
-    /// The seat's game is not connected to the match.
-    NotConnected,
-    /// No hero picked yet.
-    NoBody,
-    /// The body is dead already (waiting to respawn).
-    Dead,
-    /// The body is in its team's spawn room, where nothing hurts it.
-    InSpawnRoom,
 }
 
 impl GameService {
@@ -845,83 +792,29 @@ impl GameService {
         })
     }
 
-    /// Play another hero in the seat's match, as a pick on the hero select
-    /// screen does (`ow174/game/server.py` switch_hero for the lobby's `.hero`
-    /// command). False when the seat's game is not in the match's world.
-    pub(crate) fn switch_hero(&self, handoff: &Handoff, hero: u64) -> io::Result<bool> {
-        self.room_request(|reply| RoomRequest::Hero {
-            connection: handoff.conn,
-            id: handoff.match_id,
-            hero,
-            reply,
-        })
+    /// The host's control of match `id`'s flow: the Workshop action that
+    /// does it runs on the mode entity, or the flow stands in for the
+    /// mode graph's entry (`controls.rs`).
+    pub(crate) fn run_flow(
+        &self,
+        id: MatchId,
+        action: FlowAction,
+    ) -> io::Result<Result<(), FlowRefusal>> {
+        self.room_request(|reply| RoomRequest::Flow { id, action, reply })
     }
 
-    /// The live nameplate tool (`lucy_sim::bot_plate`): apply a change,
-    /// if any, to every match's training bots at once, and show the changes
-    /// in force with what the first live bot sends now. A change the tool
-    /// refuses comes back as its reason, as does a message no live bot of
-    /// any match took.
-    pub fn bot_plate(&self, change: Option<PlateChange>) -> io::Result<Result<PlateView, String>> {
-        let answers = match self.request(|reply| Request::BotPlate { change, reply })? {
-            Ok(answers) => answers,
-            Err(reason) => return Ok(Err(reason)),
-        };
-        let mut rooms: Vec<RoomPlate> = answers.rooms.iter().collect();
-        rooms.sort_by_key(|room| room.started);
-        for (index, message) in answers.messages.iter().enumerate() {
-            if rooms.iter().all(|room| room.taken[index] == 0) {
-                return Ok(Err(format!(
-                    "No live training bot took message {message:016X}."
-                )));
-            }
-        }
-        Ok(Ok(PlateView {
-            commands: answers.commands,
-            bot: rooms.into_iter().find_map(|room| room.sample),
-        }))
+    /// Take the player of `account` out of match `id`, as
+    /// [`Self::release_seat`] does: for a seat the matchmaker doesn't
+    /// hold (the solo Practice Range's). False when no such player is in
+    /// the match.
+    pub(crate) fn kick(&self, id: MatchId, account: u32) -> io::Result<bool> {
+        self.room_request(|reply| RoomRequest::Kick { id, account, reply })
     }
 
-    /// The live hurt feedback switch (`lucy_sim::hurt_feedback`): apply
-    /// a change given as the chat command's text, if any, to every match's
-    /// players at once, and show what is in force. A change it refuses
-    /// comes back as its reason.
-    pub fn hurt_feedback(&self, change: &str) -> io::Result<Result<HurtFeedback, String>> {
-        let change = change.to_owned();
-        self.request(|reply| Request::Hurt { change, reply })
-    }
-
-    /// The marker messages (`LUCY_DEBUG_SEND`): the seat's controller and
-    /// body, or none when its game is not connected to the match.
-    pub(crate) fn debug_seat(&self, handoff: &Handoff) -> io::Result<Option<DebugSeat>> {
-        self.room_request(|reply| RoomRequest::DebugSeat {
-            connection: handoff.conn,
-            id: handoff.match_id,
-            reply,
-        })
-    }
-
-    /// The marker messages: queue encoded game messages for the seat's game
-    /// as reliable messages, in order. False when its game is not connected
-    /// to the match.
-    pub(crate) fn debug_send(&self, handoff: &Handoff, messages: Vec<Vec<u8>>) -> io::Result<bool> {
-        self.room_request(|reply| RoomRequest::DebugSend {
-            connection: handoff.conn,
-            id: handoff.match_id,
-            messages,
-            reply,
-        })
-    }
-
-    /// The marker messages: the environment kills the seat's living body,
-    /// as the map's catch floor does ([`Combat::environment_kill`]): the
-    /// hit goes the normal way (death message, board, respawn).
-    pub(crate) fn debug_kill(&self, handoff: &Handoff) -> io::Result<DebugKill> {
-        self.room_request(|reply| RoomRequest::DebugKill {
-            connection: handoff.conn,
-            id: handoff.match_id,
-            reply,
-        })
+    /// Send every game of match `id` home now, as [`Self::release_seat`]
+    /// does for each seat; how many seats it had.
+    pub(crate) fn stop_match(&self, id: MatchId) -> io::Result<usize> {
+        self.room_request(|reply| RoomRequest::Stop { id, reply })
     }
 
     fn seat(&self, handoff: &Handoff, release: bool) -> io::Result<bool> {
@@ -1221,10 +1114,6 @@ struct RoomState {
     next_input_peer: usize,
     /// The match flow's timers (tests shorten them).
     timers: Timers,
-    /// The live nameplate tool's changes.
-    bot_plate: Arc<BotPlate>,
-    /// The live hurt feedback switch.
-    hurt: HurtFeedback,
     /// What the router learns from the room.
     events: router::Events,
     /// Its ticks' timing (`timing.rs`).
@@ -1239,8 +1128,6 @@ struct RoomState {
 struct RoomSettings {
     schemas: Arc<Schemas>,
     timers: Timers,
-    bot_plate: Arc<BotPlate>,
-    hurt: HurtFeedback,
     events: router::Events,
 }
 
@@ -1287,6 +1174,7 @@ fn send(socket: &impl Transport, outgoing: Outgoing) -> io::Result<u32> {
 
 mod ai;
 mod combat;
+mod controls;
 mod flow;
 mod messages;
 mod peer;

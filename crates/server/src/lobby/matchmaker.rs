@@ -51,6 +51,7 @@ use lucy_lobby::{
     accounts::Account,
     handoff::{
         self, FOUND_DELAY, Handoff, LobbySeat, general_channel, match_channel, queue_popped,
+        team_channel,
     },
     lineup,
     login::Identity,
@@ -198,6 +199,8 @@ struct Found {
     session: [u64; 2],
     match_id: [u64; 2],
     handoff: Handoff,
+    /// His team in the match: its chat channel is his team chat.
+    team: u8,
     map_name: String,
     /// On the lobby's clock.
     deadline: Duration,
@@ -433,15 +436,15 @@ impl Matchmaker {
     }
 
     /// Out of General (a match has the team, match and group chats only),
-    /// into the match's chat channel, the team colours, then 20600 (Python
-    /// `_enter_game`).
+    /// into the match's chat channel and his team's, the team colours,
+    /// then 20600 (Python `_enter_game`).
     fn enter_game(&self, peer: &mut Peer<'_, '_>, found: Found) -> io::Result<()> {
         let lobby = peer.lobby;
         let Some(game) = lobby.game.as_deref() else {
             // No match starts with the game server off (`start`).
             return Ok(());
         };
-        lobby.open_match_chat(found.match_id, &[found.account_lo]);
+        lobby.open_match_chat(found.match_id, found.team, &[found.account_lo]);
         let port = game.local_addr().port();
         // The address the game reached the lobby at, or the public one for
         // a player outside the network (`game_address`).
@@ -449,12 +452,14 @@ impl Matchmaker {
         let sent = handoff::enter_game(
             general_channel(),
             match_channel(found.match_id),
+            team_channel(found.match_id, found.team),
             &found.handoff,
             (&host, port),
         )
-        .and_then(|[leave, join, ticket]| {
+        .and_then(|[leave, join, team, ticket]| {
             peer.send(&leave)?;
             peer.send(&join)?;
+            peer.send(&team)?;
             peer.send(&ticket)
         });
         match sent {
@@ -468,6 +473,7 @@ impl Matchmaker {
                     account_lo: found.account_lo,
                     lobby_session: found.session[0],
                     handoff: found.handoff,
+                    team: found.team,
                 });
                 Ok(())
             }
@@ -856,7 +862,7 @@ impl Matchmaker {
     }
 
     /// The handoff of the account's seat in a match it has not left, if
-    /// any (the marker messages, `LUCY_DEBUG_SEND`).
+    /// any: while it holds one, its lobby link stays when its game is quiet.
     pub(crate) fn seat_of(&self, account_lo: u32) -> Option<Handoff> {
         let state = self.lock();
         let (room, seat) = state.player_of(account_lo)?;
@@ -864,40 +870,41 @@ impl Matchmaker {
         (!seat.released).then(|| seat.handoff.clone())
     }
 
-    /// Send the account's game, or every game for `None`, that is connected
-    /// to a match back to the menu (20304 with 0 = leave for good) and take
-    /// the player out of it. How many games were told (Python
-    /// `GameServer.send_home`, for the lobby's `.leave` and the dashboard's
-    /// "End matches"). A game counts as connected as soon as its handoff is
-    /// used, before the next sweep marks the seat joined.
-    pub(crate) fn send_home(&self, lobby: &Lobby, account_lo: Option<u32>) -> usize {
+    /// Send games back to the menu (20304 with 0 = leave for good) and
+    /// take their players out of their matches, by the host's hand: their
+    /// leaving is not a leave (`results.rs`). How many players were taken
+    /// out (Python `GameServer.send_home`). [`Home::Every`] tells only the
+    /// games connected to a match ("End matches"): a game counts as
+    /// connected as soon as its handoff is used, before the next sweep
+    /// marks the seat joined. A match's own stop or kick takes the seat
+    /// out whether its game connected or not.
+    pub(crate) fn send_home(&self, lobby: &Lobby, home: Home) -> usize {
         let Some(game) = lobby.game.as_deref() else {
             return 0;
         };
         self.with(lobby, |ctx| {
             let mut told = 0;
             for room in 0..ctx.state.rooms.len() {
+                let id = ctx.state.rooms[room].id;
                 for seat in 0..ctx.state.rooms[room].seats.len() {
                     let player = &ctx.state.rooms[room].seats[seat];
-                    if player.gone
-                        || player.released
-                        || account_lo.is_some_and(|account| player.account.account_lo != account)
-                    {
+                    let (chosen, reason) = match home {
+                        Home::Every => (true, "the dashboard ended the matches"),
+                        Home::Match(match_id) => (match_id == id, "the host stopped the match"),
+                        Home::Player(match_id, account) => (
+                            match_id == id && player.account.account_lo == account,
+                            "the host kicked him",
+                        ),
+                    };
+                    if !chosen || player.gone || player.released {
                         continue;
                     }
                     let connected = player.joined
                         || (matches!(game.handoff_pending(player.handoff.conn), Ok(false))
                             && matches!(game.seat_exists(&player.handoff), Ok(true)));
-                    if connected {
-                        let reason = if account_lo.is_some() {
-                            "sent home"
-                        } else {
-                            "the dashboard ended the matches"
-                        };
+                    if connected || home != Home::Every {
                         ctx.take_out(room, seat, reason);
-                        // `.leave` is the player's own leave; the dashboard's
-                        // end of every match is not.
-                        ctx.state.rooms[room].seats[seat].excused = account_lo.is_none();
+                        ctx.state.rooms[room].seats[seat].excused = true;
                         told += 1;
                     }
                 }
@@ -905,6 +912,17 @@ impl Matchmaker {
             told
         })
     }
+}
+
+/// Whose games [`Matchmaker::send_home`] sends home.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Home {
+    /// Every game connected to a match.
+    Every,
+    /// Every player of the match.
+    Match([u64; 2]),
+    /// The player of this account in the match.
+    Player([u64; 2], u32),
 }
 
 /// Out of the party, as 22107 does; nothing for a party of one.
@@ -1721,6 +1739,7 @@ impl Ctx<'_> {
                 session: entry.session,
                 match_id: handoff.match_id,
                 handoff,
+                team: entry.team,
                 map_name: map_name.to_owned(),
                 deadline,
             });

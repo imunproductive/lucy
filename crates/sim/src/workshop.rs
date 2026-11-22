@@ -657,6 +657,26 @@ fn parameter(catalog: &Catalog, kind: Option<ParamKind>, param: &Param) -> Wire 
     }
 }
 
+/// A constant parameter of an action the server runs on its own (the
+/// dashboard's match controls, `ModeScript::start_workshop_action`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Constant {
+    Number(f64),
+    /// A team: 0 or 1 (the Workshop's Team 1 or Team 2).
+    Team(u8),
+}
+
+/// A constant parameter as the action's graph takes it in `#18739`: inside
+/// Number, as the engine's own constants go ([`tree`]); a team as its
+/// Team 1 or Team 2 identifier ([`TEAMS`]).
+pub fn constant_parameter(constant: Constant) -> Wire {
+    let value = match constant {
+        Constant::Number(number) => Wire::Float(number),
+        Constant::Team(team) => Wire::Asset(identifier(TEAMS[usize::from(team.min(1)) + 1])),
+    };
+    workshop_tree(identifier(ids::NUMBER), vec![value])
+}
+
 /// A value as a Workshop value tree the clients evaluate to it: a string
 /// or a custom colour as their own values ([`text`]), Null as Null
 /// (`4E63`; inside Number a client read it as 0, and Create HUD Text's

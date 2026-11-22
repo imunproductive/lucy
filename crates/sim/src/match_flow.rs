@@ -87,6 +87,14 @@ const SETUP_CLOCK: u32 = 0x017e;
 /// which the phase states chase to 0 (Assemble's st7 then sets `#59` = 2,
 /// setup).
 pub const SET_MATCH_TIME_MESSAGE: u64 = 0x0240_0000_0000_08d8;
+/// Declare Team Victory and Declare Match Draw: the Workshop actions
+/// `1384` and `1D55` send `09A3` to the mode entity with the winning team
+/// (`#18739[0]` through `STU_382A5949`; `1D55` sends -1, a draw) as
+/// `008D`. The entries of `0F4A` (rid341), `0D76` (rid63), `0EC2`, `0D0B`
+/// and `0F60` write it into the winner `#7525`, and the match ends.
+pub const DECLARE_VICTORY_MESSAGE: u64 = 0x0240_0000_0000_09a3;
+/// The team parameter of [`DECLARE_VICTORY_MESSAGE`] (`0A4:008D`).
+pub const DECLARED_TEAM: u32 = 0x008d;
 const ROUND_STARTED: u32 = 0x085a;
 const WINNER: u32 = 0x03a6;
 
@@ -777,20 +785,41 @@ impl MatchFlow {
     }
 
     /// A message to the mode entity that 0F4A takes and the flow stands in
-    /// for: Set Match Time ([`SET_MATCH_TIME_MESSAGE`]) gives the current
+    /// for. Set Match Time ([`SET_MATCH_TIME_MESSAGE`]) gives the current
     /// phase that many seconds left (the Workshop's "Set Match Time":
-    /// assembling heroes, setup or the round). Others are left to the mode
+    /// assembling heroes, setup or the round). A declared winner or draw
+    /// ([`DECLARE_VICTORY_MESSAGE`]: team 0 or 1, or -1) decides a team
+    /// match that is on, as the graph's `#7525` does; a free-for-all's
+    /// graph (`0F73`) has no such entry. Others are left to the mode
     /// entity's graph.
     pub fn receive(&mut self, message: u64, parameters: &Variables) {
-        if message != SET_MATCH_TIME_MESSAGE || self.phase == Phase::Waiting {
+        if self.phase == Phase::Waiting {
             return;
         }
-        let seconds = match parameters.get(&SETUP_CLOCK) {
-            Some(Value::Float(seconds)) => *seconds,
-            Some(Value::Integer(seconds)) => *seconds as f64,
-            _ => return,
+        let number = |key| match parameters.get(&key) {
+            Some(Value::Float(value)) => Some(*value),
+            Some(Value::Integer(value)) => Some(*value as f64),
+            _ => None,
         };
-        self.left = seconds.clamp(0.0, 3599.0);
+        match message {
+            SET_MATCH_TIME_MESSAGE => {
+                if let Some(seconds) = number(SETUP_CLOCK) {
+                    self.left = seconds.clamp(0.0, 3599.0);
+                }
+            }
+            DECLARE_VICTORY_MESSAGE
+                if self.mode != Mode::Deathmatch
+                    && self.standings.is_empty()
+                    && self.phase < Phase::RoundEnd =>
+            {
+                match number(DECLARED_TEAM) {
+                    Some(team) if team == 0.0 || team == 1.0 => self.decide(Some(team as u8)),
+                    Some(team) if team < 0.0 => self.decide(None),
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
     }
 
     /// A kill: the killer's slot and team (none for the world or a bot) and

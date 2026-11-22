@@ -143,7 +143,9 @@ impl Api<'_> {
             .lobby
             .filter(|lobby| lobby.game.is_some())
             .ok_or_else(|| ApiError::new(409, "The game server is off."))?;
-        let told = lobby.matchmaker.send_home(lobby, None);
+        let told = lobby
+            .matchmaker
+            .send_home(lobby, crate::lobby::matchmaker::Home::Every);
         Ok(json!({"message": format!("Sent {told} game(s) back to the menu.")}))
     }
 

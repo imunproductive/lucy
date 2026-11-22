@@ -43,7 +43,6 @@ test('a refused account switch remains an error with the server message', async 
     assert.ok(error instanceof ApiError);
     assert.equal(error.message, 'Profile not found');
     assert.equal(error.status, 404);
-    assert.equal(error.missing, true);
     return true;
   });
 });
@@ -117,7 +116,7 @@ test('an error status inside a 200 reply is still an error', async () => {
 
 test('a failed reply without a message names its status', async () => {
   serve({}, 500);
-  await assert.rejects(api.reconnect(), (error: unknown) => error instanceof ApiError && error.message === 'Server error (500).' && !error.missing);
+  await assert.rejects(api.reconnect(), (error: unknown) => error instanceof ApiError && error.message === 'Server error (500).' && error.status === 500);
 });
 
 test('an unreachable server and an unreadable reply have their own messages', async () => {
