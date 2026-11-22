@@ -36,7 +36,7 @@ The dashboard (`web/dashboard`, served by `server/src/server/dashboard*`) become
    - the agent tools that call them (`tools/owdbg/msg.py` and the `owdbg` actions, game and watch code that use the debug API), and their docs (`docs/user/playing.md`, `troubleshooting.md`, `client-tools.md`, `architecture.md`, `behavior.md`, `loose-ends.md`).
 
    Done after stage 1 merges, since `game_service.rs` holds their requests.
-2. **Redesign** the look and layout so it is clearer and easier to use; keep the existing account and profile tools working.
+2. **Redesign** the look and layout so it is clearer and easier to use; keep the existing account and profile tools working. Branded Lucy (no Overwatch name or logo). Stack (user, 2026-11-22): Vite + Svelte + TypeScript in `web/dashboard`, built to static files that are committed and embedded in `lucy.exe` (a plain `cargo build` needs no Node; editing the dashboard runs `npm run build`), with a check that the committed build matches the source and tests for the API client. Live data by server-sent events from the dashboard's HTTP server.
 3. **Live matches:** a list of every running match (mode, map, players, time, state), updated live.
 4. **Global message:** send a message to everyone online (lobby and matches), as the system.
 5. **Per-match page:**
