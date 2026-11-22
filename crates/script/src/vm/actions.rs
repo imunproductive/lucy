@@ -1,4 +1,5 @@
-//! Conditions' branches, `CycleIndex` and `StopAbility`.
+//! Conditions' branches, `CycleIndex`, `StopAbility` and the end of the
+//! game.
 //!
 //! Client research (1.74): Condition execute (0x7FF78AA83CB0) takes a false
 //! result when a false link is, a true one when a true link is or when
@@ -103,5 +104,28 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
             self.stop_ability(StateKey { instance: id, raw }, node, depth + 1)?;
         }
         Ok(())
+    }
+
+    /// `STU_147B34C6`: the game ends. A server-only action with no fields
+    /// and no registration of its own (`python tools/stu.py STU_147B34C6`:
+    /// the base action's run). Its two uses are where a match is over for
+    /// good: `180A` rid17, after the last of the match end's cards
+    /// (`#59 == #25645`) and the clients' `0BED`, and `0D76` rid31, when
+    /// the Skirmish clock runs out. So it is the retail server's "the game
+    /// is over, the players go home" [inference from those two places; the
+    /// retail server's code is not in the client]. The world ends the game
+    /// ([`World::end_game`]).
+    pub(super) fn end_game(
+        &mut self,
+        id: u16,
+        node: &Node,
+        depth: usize,
+    ) -> Result<bool, InitFault> {
+        let site = self.site(id, node);
+        if !self.world.end_game(site) {
+            self.assume(site, &node.class, "the game goes on (this world ends none)");
+        }
+        self.follow(id, node, "m_outPlug", None, depth)?;
+        Ok(true)
     }
 }

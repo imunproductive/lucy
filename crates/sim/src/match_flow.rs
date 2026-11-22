@@ -180,8 +180,11 @@ impl Default for Timers {
     }
 }
 
-/// Assumption: how long the match's end shows before the players go home.
-/// Neither POTG nor the cards are played; their length is unknown (rule 167).
+/// Assumption: how long the match's end shows before the players go home
+/// where no mode graph drives the match ([`MatchFlow::advance`]). Neither
+/// POTG nor the cards are played; their length is unknown (rule 167). A
+/// graph-driven match ends when the graph ends the game
+/// ([`MatchState::over`]).
 pub const MATCH_END: f64 = 20.0;
 /// Rule 95: the top 4 of a free-for-all get win credit.
 pub const DEATHMATCH_WINNERS: usize = 4;
@@ -201,7 +204,8 @@ pub enum FlowEvent {
     Overtime(bool),
     /// A round was decided: its winning team, or a draw.
     RoundOver(Option<u8>),
-    /// The match was decided; it ends once [`MATCH_END`] is over.
+    /// The match was decided; it ends once [`MATCH_END`] is over, or the
+    /// mode graph ends the game ([`MatchState::over`]).
     MatchOver,
     /// The end screen is over: the players go home.
     Finished,
@@ -341,6 +345,9 @@ pub struct MatchState {
     pub objective: u32,
     /// Overtime (#3392e).
     pub overtime: bool,
+    /// A graph ended the game (`STU_147B34C6`: `180A` after the match
+    /// end's last card): the players go home.
+    pub over: bool,
 }
 
 /// The match flow of a room.
@@ -862,13 +869,15 @@ impl MatchFlow {
     /// counts the round), a change of the graph's overtime a
     /// [`FlowEvent::Overtime`] and of its objective a
     /// [`FlowEvent::Objective`] (the one that fell); the match's end is
-    /// decided by the graph's winner (`0F4A` #7525, a team, else a draw)
-    /// and goes home [`MATCH_END`] later, as in [`Self::advance`].
-    pub fn follow(&mut self, seconds: f64, state: MatchState) -> Vec<FlowEvent> {
+    /// decided by the graph's winner (`0F4A` #7525, a team, else a draw),
+    /// and the players go home once the graph ends the game
+    /// ([`MatchState::over`]: after the match end's cards).
+    pub fn follow(&mut self, state: MatchState) -> Vec<FlowEvent> {
         let MatchState {
             phase,
             clock,
             winner,
+            over,
             ..
         } = state;
         let before = self.graph.replace(state);
@@ -889,20 +898,14 @@ impl MatchFlow {
                 Phase::MatchEnd => {
                     self.standings = standings(winner);
                     self.events.push(FlowEvent::MatchOver);
-                    self.left = self.scaled(MATCH_END);
                 }
                 _ => {}
             }
             self.events.push(FlowEvent::Phase(phase));
         }
-        if phase == Phase::MatchEnd {
-            self.left -= seconds;
-            if self.left <= 0.0 && !self.events.contains(&FlowEvent::Finished) {
-                self.left = 0.0;
-                self.events.push(FlowEvent::Finished);
-            }
-        } else {
-            self.left = clock;
+        self.left = clock;
+        if over {
+            self.events.push(FlowEvent::Finished);
         }
         std::mem::take(&mut self.events)
     }

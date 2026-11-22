@@ -125,7 +125,8 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
             StateKind::Assist => self.end_assist(key, node),
             StateKind::ApplyAura => self.end_auras(key),
             StateKind::FilterArray => self.end_filter_array(key, node)?,
-            StateKind::Scope => self.end_scopes(key),
+            StateKind::Scope => self.end_scopes(key)?,
+            StateKind::ScaleTime { .. } => self.end_scale_time(key, node),
             StateKind::CreateEntity {
                 entity: Some(entity),
             } => self.end_create_entity(key, node, entity),
@@ -142,6 +143,7 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
         state.pending_check = false;
         state.delayed_timers = [false; 2];
         state.tracked.clear();
+        state.presenter = None;
         if matches!(kind, StateKind::SubScript { .. }) {
             state.kind = StateKind::SubScript { child: None };
         }
@@ -294,7 +296,7 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
                 } else if kind == StateKind::ApplyAura {
                     self.end_auras(key);
                 } else if kind == StateKind::Scope {
-                    self.end_scopes(key);
+                    self.end_scopes(key)?;
                 } else if matches!(kind, StateKind::GrappleCast | StateKind::Ray) {
                     self.unlink_outputs(key, 0)?;
                 } else if matches!(kind, StateKind::Ability { .. }) {

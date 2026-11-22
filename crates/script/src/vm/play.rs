@@ -110,22 +110,9 @@ impl<W: World + ?Sized> Vm<'_, '_, '_, W> {
         if targets.is_empty() {
             return Ok(());
         }
-        let mut parameters = Vec::new();
-        for row in array_field(&node.fields, "m_params") {
-            let Some(key) = row.get("m_B5051BCE").and_then(asset_guid) else {
-                continue;
-            };
-            let value = match field(row, "m_value") {
-                Json::Null => Value::Array(Vec::new()),
-                config => match self.evaluate_value(id, node, config, None) {
-                    Some(Value::Array(items)) => Value::Array(items),
-                    Some(Value::Null) => Value::Array(Vec::new()),
-                    Some(value) => Value::Array(vec![value]),
-                    None => return Ok(()),
-                },
-            };
-            parameters.push((key, value));
-        }
+        let Some(parameters) = self.play_parameters(id, node) else {
+            return Ok(());
+        };
         let policy = node
             .fields
             .get("m_AA4DE426")
@@ -190,6 +177,27 @@ impl<W: World + ?Sized> Vm<'_, '_, '_, W> {
         self.start_entries(target, parameters, caller)
     }
 
+    /// A PlayScript's (or `STU_CB4905E9`'s) `m_params` rows: each key with
+    /// its value as an array (1BA7C60). None: a value can't be evaluated.
+    pub(super) fn play_parameters(&mut self, id: u16, node: &Node) -> Option<Vec<(u64, Value)>> {
+        let mut parameters = Vec::new();
+        for row in array_field(&node.fields, "m_params") {
+            let Some(key) = row.get("m_B5051BCE").and_then(asset_guid) else {
+                continue;
+            };
+            let value = match field(row, "m_value") {
+                Json::Null => Value::Array(Vec::new()),
+                config => match self.evaluate_value(id, node, config, None)? {
+                    Value::Array(items) => Value::Array(items),
+                    Value::Null => Value::Array(Vec::new()),
+                    value => Value::Array(vec![value]),
+                },
+            };
+            parameters.push((key, value));
+        }
+        Some(parameters)
+    }
+
     /// `Instance.start_entries`: bind each start entry's named parameters,
     /// then queue it. A parameter of one item binds as the item, as the
     /// client's binder does (`sub_7FF78AAA5950` copies each parameter and
@@ -197,7 +205,7 @@ impl<W: World + ?Sized> Vm<'_, '_, '_, W> {
     /// Workshop's Chase Variable `1CCF` reads its rate and destination
     /// (`#2316`, `#13151`) with `STU_77B0987E`, which takes only a value
     /// tree, not an array holding one.
-    fn start_entries(
+    pub(super) fn start_entries(
         &mut self,
         id: u16,
         parameters: &[(u64, Value)],

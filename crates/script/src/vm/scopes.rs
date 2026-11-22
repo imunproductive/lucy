@@ -57,6 +57,36 @@
 //! instance variables when it opens: its parent reads see them as they
 //! were then (assumption; the client reads the parent live: `265F` reads
 //! its parent only at the scope's begin).
+//!
+//! `STU_77E13026` (state record #203, runtime vtable 0x7FF78B582478) opens
+//! its scope instances for values instead of targets: slot 56
+//! (`0x7FF789C522B0`) lists the items of `m_814F8EC3` (an array's items,
+//! else the value itself; nulls left out), and for each new one slot 57
+//! (`0x7FF789C52400`) creates an instance of the state's own graph on the
+//! state's own entity in the scope, writes the item into its
+//! `m_3DC6FAAA` and its index into its `m_339A63DB`, and begins the
+//! state's copy there. Items are told apart by value
+//! (`0x7FF789C60F70`: an item stays while the list still holds as many
+//! equal values). `180A` st17 so opens a scope 822 instance for each graph
+//! of the shown card (`#13151.id(16748)`) with the graph in `#9694`;
+//! there st16 plays it.
+//!
+//! `STU_CB4905E9` (state record #208, runtime vtable 0x7FF78B583E00) plays
+//! another graph on its targets the same way: its after-begin
+//! (`0x7FF789C5C080`) evaluates the graph of `m_69F4B52C` (a graph with
+//! overrides, `STU_9DB46B98`; empty in every use) or else `m_script`
+//! (`0x7FF789C15510`: a graph asset or a variable holding one; `180A`
+//! st16 plays `#9694`), lists the valid entities of `m_targets` and hands
+//! the list to `0x7FF789C61200`/`0x7FF789C60870`, which play the graph on
+//! each new target and stop it on those that left; its end
+//! (`0x7FF789C5CA80`) stops them all. So it runs as a scope state whose
+//! targets get a root instance of that graph with `m_params` as a
+//! PlayScript's ([`ScopeChange::Open`] `played`), created with the playing
+//! entity (`26DB` reads the payload's distance as `#27.id(479)`). Not
+//! modelled: its event slot (`0x7FF789C5CCC0`, event 1, which slot 60
+//! `0x7FF789C5CC40` posts once no played instance is left) finishes it,
+//! or follows `m_9DD3E3F1` when `m_8C797956` holds (false at `180A` st16;
+//! `1225`'s `1246` and `26DB` never end).
 
 use super::*;
 
@@ -83,12 +113,15 @@ pub struct ScopeLink {
 
 /// A target of a scope state and its instance there, once the match
 /// reported it ([`Component::scope_opened`]).
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ScopeHit {
     pub target: u32,
     pub instance: Option<u16>,
     /// The state keeps the instance when the target leaves (`m_4B7DF406`).
     pub keep: bool,
+    /// A value scope's item (`STU_77E13026`); its instance is on the
+    /// state's own entity, the `target`.
+    pub value: Option<Value>,
 }
 
 /// A scope instance a scope state opens on a target or closes there
@@ -107,6 +140,10 @@ pub enum ScopeChange {
         /// instead of opening another (`m_DED58406`).
         reuse: bool,
         parent: Variables,
+        /// Not a scope instance but `graph` played on the target
+        /// (`STU_CB4905E9`): a root instance whose start entries take these
+        /// parameters (`m_params`, as a PlayScript's).
+        played: Option<Vec<(u64, Value)>>,
     },
     Close {
         source: ScopeSource,
@@ -142,6 +179,23 @@ pub(super) fn scope_id(node: &Node) -> u32 {
         .unwrap_or(0)
 }
 
+/// The state that plays a graph on its targets as a scope state opens
+/// scopes (module notes).
+const PLAYED_GRAPHS: &str = "STU_CB4905E9";
+
+/// The state that opens a scope instance on its own entity for each value
+/// its list holds (module notes).
+const VALUE_SCOPES: &str = "STU_77E13026";
+
+/// Whether `STU_CB4905E9` takes its graph from `m_script`: `m_69F4B52C`
+/// names none (an empty `STU_9DB46B98`).
+fn plays_script(node: &Node) -> bool {
+    let overrides = field(&node.fields, "m_69F4B52C");
+    overrides.is_null()
+        || (overrides.get("$").and_then(Json::as_str) == Some("STU_9DB46B98")
+            && field(overrides, "m_6525E98B").is_null())
+}
+
 /// The scope an entry runs in (`STUStatescriptEntry.m_5AEA0A51`; 0: the
 /// instances that are no scope's).
 pub(super) fn entry_scope(node: &Node) -> u32 {
@@ -175,9 +229,27 @@ impl Component {
                 keep,
                 reuse,
                 parent,
+                played,
                 ..
             } => {
                 if let Some(&(id, _)) = self.machine.scopes.get(source) {
+                    return Ok(Some(id));
+                }
+                if let Some(parameters) = played {
+                    let id = u16::try_from(self.machine.next_id)
+                        .map_err(|_| InitFault::InstanceIdExhausted)?;
+                    let mut created = false;
+                    self.run(erase(world), |vm| {
+                        created = vm.create(id, *graph, None, Variables::new(), *creator)?;
+                        if created {
+                            vm.start_entries(id, parameters, *creator)?;
+                        }
+                        vm.run()
+                    })?;
+                    if !created {
+                        return Ok(None);
+                    }
+                    self.machine.scopes.insert(*source, (id, *keep));
                     return Ok(Some(id));
                 }
                 let reused = self
@@ -305,9 +377,30 @@ impl<W: World + ?Sized> Vm<'_, '_, '_, W> {
     /// a re-picked Training Partner); the client makes it at once.
     pub(super) fn refresh_scopes(&mut self, key: StateKey, node: &Node) -> Result<(), InitFault> {
         let id = key.instance;
-        if self.instance_scope(id) == scope_id(node) {
+        let played = node.class == PLAYED_GRAPHS;
+        if !played && self.instance_scope(id) == scope_id(node) {
             return Ok(());
         }
+        if node.class == VALUE_SCOPES {
+            return self.refresh_value_scopes(key, node);
+        }
+        let played = if played {
+            match self.played_graph(key, node) {
+                Some(Some(graph)) => Some(graph),
+                // No graph (an unset `m_script`): nothing plays, as on the
+                // client.
+                Some(None) => return Ok(()),
+                None => {
+                    self.report(
+                        self.site(id, node),
+                        Issue::UnsupportedField("STU_CB4905E9 graph"),
+                    );
+                    return Ok(());
+                }
+            }
+        } else {
+            None
+        };
         let listed = self.listed_entities(key, node, "m_targets");
         let source = self.scope_source(key);
         let state = self.state(key).expect("active scope state");
@@ -363,8 +456,22 @@ impl<W: World + ?Sized> Vm<'_, '_, '_, W> {
                 self.assume(site, "STU_550D0C5C index outputs", "not written");
             }
             let parent = self.instance_values(id);
-            let creator = self.source_of(id);
-            let graph = self.machine.snapshot.instances[&id].graph;
+            let (graph, creator, parameters) = match played {
+                // The played instance's creator (#27) is the entity whose
+                // state plays it: `26DB` reads the payload's distance as
+                // `#27.id(479)`.
+                Some(graph) => {
+                    let Some(parameters) = self.play_parameters(id, node) else {
+                        return Ok(());
+                    };
+                    (graph, source.entity, Some(parameters))
+                }
+                None => (
+                    self.machine.snapshot.instances[&id].graph,
+                    self.source_of(id),
+                    None,
+                ),
+            };
             for &target in came.iter().chain(&unopened) {
                 taken &= self.world.change_scope(
                     site,
@@ -377,6 +484,7 @@ impl<W: World + ?Sized> Vm<'_, '_, '_, W> {
                         keep,
                         reuse,
                         parent: parent.clone(),
+                        played: parameters.clone(),
                     },
                 );
             }
@@ -384,6 +492,7 @@ impl<W: World + ?Sized> Vm<'_, '_, '_, W> {
                 target,
                 instance: None,
                 keep,
+                value: None,
             }));
         }
         if !taken {
@@ -395,15 +504,164 @@ impl<W: World + ?Sized> Vm<'_, '_, '_, W> {
         Ok(())
     }
 
+    /// The graph `STU_CB4905E9` plays now: `m_script` (a graph asset, or a
+    /// variable holding one) when `m_69F4B52C` names none. `Some(None)`: no
+    /// graph; None: another form, or a value that is no graph.
+    fn played_graph(&mut self, key: StateKey, node: &Node) -> Option<Option<u32>> {
+        if !plays_script(node) {
+            return None;
+        }
+        let graph = |guid: u64| (guid >> 48 == 0x0580).then_some(guid as u32);
+        if let Some(guid) = node.field("m_script.m_graph").and_then(asset_guid) {
+            return graph(guid).map(Some);
+        }
+        let script = field(&node.fields, "m_script");
+        match self.evaluate(key.instance, node, script, Some(key))? {
+            Value::Null => Some(None),
+            Value::Asset(guid) => graph(guid).map(Some),
+            _ => None,
+        }
+    }
+
+    /// A value scope's tick (`STU_77E13026`, module notes): the items of
+    /// `m_814F8EC3` that came get a scope instance here, those that left
+    /// lose theirs.
+    fn refresh_value_scopes(&mut self, key: StateKey, node: &Node) -> Result<(), InitFault> {
+        let id = key.instance;
+        let listed = match field(&node.fields, "m_814F8EC3") {
+            Json::Null => Vec::new(),
+            config => match self.evaluate_value(id, node, config, Some(key)) {
+                None => return Ok(()),
+                Some(Value::Array(items)) => items
+                    .into_iter()
+                    .filter(|item| *item != Value::Null)
+                    .collect(),
+                Some(Value::Null) => Vec::new(),
+                Some(item) => vec![item],
+            },
+        };
+        let state = self.state(key).expect("active scope state");
+        // An item stays while the list holds as many equal values.
+        let mut unmatched = listed.clone();
+        let mut left = Vec::new();
+        for (index, hit) in state.scopes.iter().enumerate() {
+            match unmatched
+                .iter()
+                .position(|item| Some(item) == hit.value.as_ref())
+            {
+                Some(found) => {
+                    unmatched.remove(found);
+                }
+                None => left.push(index),
+            }
+        }
+        let mut kept: Vec<&Value> = state
+            .scopes
+            .iter()
+            .filter_map(|hit| hit.value.as_ref())
+            .collect();
+        let mut came = Vec::new();
+        for (index, item) in listed.iter().enumerate() {
+            match kept.iter().position(|value| *value == item) {
+                Some(found) => {
+                    kept.remove(found);
+                }
+                None => came.push((index, item.clone())),
+            }
+        }
+        if left.is_empty() && came.is_empty() {
+            return Ok(());
+        }
+        let gone: Vec<ScopeHit> = left
+            .iter()
+            .rev()
+            .map(|&index| {
+                self.state_mut(key)
+                    .expect("active scope state")
+                    .scopes
+                    .remove(index)
+            })
+            .collect();
+        for hit in gone {
+            self.close_value_scope(&hit)?;
+        }
+        if came.is_empty() {
+            return Ok(());
+        }
+        let site = self.site(id, node);
+        let keep = match field(&node.fields, "m_4B7DF406") {
+            Json::Null => false,
+            config => self
+                .evaluate(id, node, config, Some(key))
+                .is_some_and(|value| truthy(&value)),
+        };
+        let lvalue = |name: &str| match expr::lvalue(field(&node.fields, name)) {
+            Ok(variable) => Ok(variable),
+            Err(error) => Err(Issue::Expression(error)),
+        };
+        let (item_var, index_var) = match (lvalue("m_3DC6FAAA"), lvalue("m_339A63DB")) {
+            (Ok(item), Ok(index)) => (item, index),
+            (Err(issue), _) | (_, Err(issue)) => {
+                self.report(site, issue);
+                return Ok(());
+            }
+        };
+        let link = ScopeLink {
+            id: scope_id(node),
+            source: self.scope_source(key),
+            parent: self.instance_values(id),
+        };
+        let graph = self.machine.snapshot.instances[&id].graph;
+        let creator = self.source_of(id);
+        let entity = self.machine.snapshot.entity;
+        for (index, item) in came {
+            let scope =
+                u16::try_from(self.machine.next_id).map_err(|_| InitFault::InstanceIdExhausted)?;
+            if !self.create_scoped(scope, graph, Some(link.clone()), creator)? {
+                return Ok(());
+            }
+            if let Some(variable) = item_var {
+                self.write(source_key(scope, variable), item.clone())?;
+            }
+            if let Some(variable) = index_var {
+                self.write(source_key(scope, variable), Value::Integer(index as i64))?;
+            }
+            self.post(scope, Event::Begin(key.raw))?;
+            self.state_mut(key)
+                .expect("active scope state")
+                .scopes
+                .push(ScopeHit {
+                    target: entity,
+                    instance: Some(scope),
+                    keep,
+                    value: Some(item),
+                });
+        }
+        Ok(())
+    }
+
+    /// A value scope's item left, or its state ended: its instance goes
+    /// unless the state keeps it.
+    fn close_value_scope(&mut self, hit: &ScopeHit) -> Result<(), InitFault> {
+        match hit.instance {
+            Some(instance)
+                if !hit.keep && self.machine.snapshot.instances.contains_key(&instance) =>
+            {
+                self.post(instance, Event::ExitInstance)
+            }
+            _ => Ok(()),
+        }
+    }
+
     /// The scope state ended, or its instance went: each target loses its
     /// scope (kept instances stay; `0x7FF789C55C70`).
-    pub(super) fn end_scopes(&mut self, key: StateKey) {
-        let Some(state) = self.state(key) else {
-            return;
+    pub(super) fn end_scopes(&mut self, key: StateKey) -> Result<(), InitFault> {
+        let Some(state) = self.state_mut(key) else {
+            return Ok(());
         };
-        let targets: Vec<u32> = state.scopes.iter().map(|hit| hit.target).collect();
-        if targets.is_empty() {
-            return;
+        let hits = std::mem::take(&mut state.scopes);
+        if hits.is_empty() {
+            return Ok(());
         }
         let source = self.scope_source(key);
         let node = self
@@ -411,13 +669,20 @@ impl<W: World + ?Sized> Vm<'_, '_, '_, W> {
             .state(usize::from(key.raw))
             .expect("scope state");
         let site = self.site(key.instance, node);
-        for target in targets {
-            self.world
-                .change_scope(site, ScopeChange::Close { source, target });
+        for hit in hits {
+            if hit.value.is_some() {
+                self.close_value_scope(&hit)?;
+            } else {
+                self.world.change_scope(
+                    site,
+                    ScopeChange::Close {
+                        source,
+                        target: hit.target,
+                    },
+                );
+            }
         }
-        if let Some(state) = self.state_mut(key) {
-            state.scopes.clear();
-        }
+        Ok(())
     }
 
     /// An instance's variables as its expressions read them now.

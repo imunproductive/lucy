@@ -1109,10 +1109,9 @@ fn project_ability(
     Ok(())
 }
 
-/// A scope state's targets (`snapshot.rs` builds the rows: target, host
+/// A scope state's targets (`snapshot.rs` builds the rows: value, host
 /// entity or null, instance, index, keep), as `Write_STU_07AD90EE`
-/// (0x7FF789C56790) writes them; melee's hit list (`STU_77E13026`) has
-/// none.
+/// (0x7FF789C56790) writes them.
 fn project_hits(fields: &mut LayoutFields<'static>, vm: &Vm<'_>) -> Result<(), PayloadError> {
     let hits = match vm.0.get("hits") {
         None => &[][..],

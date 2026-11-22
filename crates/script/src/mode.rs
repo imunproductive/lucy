@@ -192,6 +192,8 @@ pub struct ModeWorld {
     destroyed: Vec<u32>,
     /// The next id to try ([`CREATED_FIRST`]).
     next_created: u32,
+    /// A graph ended the game (`STU_147B34C6`, [`ModeScript::game_over`]).
+    game_over: bool,
 }
 
 impl ModeWorld {
@@ -230,6 +232,7 @@ impl ModeWorld {
             created: Vec::new(),
             destroyed: Vec::new(),
             next_created: 0,
+            game_over: false,
         }
     }
 
@@ -484,6 +487,12 @@ impl World for ModeWorld {
     /// [`ModeScript`] after the run.
     fn change_scope(&mut self, _site: Site, change: ScopeChange) -> bool {
         self.scope_changes.push(change);
+        true
+    }
+
+    /// The match sends its players home ([`ModeScript::game_over`]).
+    fn end_game(&mut self, _site: Site) -> bool {
+        self.game_over = true;
         true
     }
 
@@ -1308,6 +1317,12 @@ impl ModeScript {
 
     pub fn snapshot(&self) -> Option<&Snapshot> {
         self.component.snapshot()
+    }
+
+    /// Whether a graph ended the game (`STU_147B34C6`: `180A` after the
+    /// match end's last card): the players go home.
+    pub fn game_over(&self) -> bool {
+        self.world.game_over
     }
 
     pub fn unknowns(&self) -> Unknowns {

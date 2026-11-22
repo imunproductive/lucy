@@ -3165,7 +3165,7 @@ impl State {
                     let variables = orpheus_script::wire::Variables::new();
                     messages = mode.advance(tick, &variables, players);
                     events = match mode.match_state() {
-                        Some(state) => flow.follow(seconds, state),
+                        Some(state) => flow.follow(state),
                         None => Vec::new(),
                     };
                 }

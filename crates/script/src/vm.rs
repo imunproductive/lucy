@@ -25,6 +25,7 @@ mod machine;
 mod nodes;
 mod pickups;
 mod play;
+mod presenter;
 mod rays;
 mod residency;
 mod scopes;
@@ -34,6 +35,7 @@ mod stats;
 mod statuses;
 mod switches;
 mod targets;
+mod time_scale;
 mod timers;
 mod turn;
 mod view_limits;
@@ -54,6 +56,7 @@ pub use health::HealthChange;
 use indexmap::IndexMap;
 pub use pickups::Pickup;
 pub use play::HEALTH_PACK;
+pub use presenter::Presenter;
 pub use scopes::{ParentWrite, ScopeChange, ScopeHit, ScopeLink, ScopeSource};
 use serde_json::Value as Json;
 pub use statuses::{
@@ -1159,6 +1162,12 @@ pub trait World {
         false
     }
 
+    /// A graph ended the game (`STU_147B34C6`, `vm/actions.rs`): the match
+    /// sends its players home. False: this world ends none.
+    fn end_game(&mut self, _site: Site) -> bool {
+        false
+    }
+
     /// A scope instance set a variable of its scope state's instance on
     /// another entity (`STU_D49BBD03`): the match sets it there
     /// ([`Component::set_instance_variable`]). False: this world sets
@@ -1546,10 +1555,6 @@ pub enum StateKind {
     /// Auras on the bodies its targets list while active (ApplyAura
     /// `STU_431F3FCC`, `vm/auras.rs`); the bodies are [`State::tracked`].
     ApplyAura,
-    /// Melee's hit list (`STU_77E13026`). The hits melee's ModifyHealth
-    /// makes go to the match, not to this list, so it records none.
-    /// Unverified.
-    HitList,
     WeaponVolley {
         volleys: u8,
         offset_ms: u64,
@@ -1607,9 +1612,19 @@ pub enum StateKind {
     /// TrackStatTime (`STU_441B50E4`, server-only): the seconds it ran go
     /// to its stats when it ends ([`World::track_stat`]).
     StatTime,
-    /// A per-target scope (`STU_550D0C5C`, `vm/scopes.rs`): its targets'
-    /// scope instances are [`State::scopes`].
+    /// A scope state (`vm/scopes.rs`): per target (`STU_550D0C5C`), per
+    /// listed value (`STU_77E13026`) or a played graph per target
+    /// (`STU_CB4905E9`); its scope instances are [`State::scopes`].
     Scope,
+    /// A UX presenter (`STU_4BD2E886`, `vm/presenter.rs`): its fades and
+    /// bit are [`State::presenter`].
+    Presenter,
+    /// ScaleTime (`STU_2F07848F`, `vm/time_scale.rs`): the frames its
+    /// change of speed starts and stops.
+    ScaleTime {
+        on: u32,
+        off: u32,
+    },
     /// `StateCreateEntity` (`vm/entities.rs`): the entity it made while
     /// active, which goes as it ends.
     CreateEntity {
@@ -1679,6 +1694,8 @@ pub struct State {
     ability_stack: Option<VarKey>,
     /// A scope state's targets and their instances (`vm/scopes.rs`).
     pub scopes: Vec<ScopeHit>,
+    /// A presenter's fades while active (`vm/presenter.rs`).
+    pub presenter: Option<Presenter>,
 }
 
 impl State {
@@ -1701,6 +1718,7 @@ impl State {
             linked_variable: None,
             ability_stack: None,
             scopes: Vec::new(),
+            presenter: None,
         }
     }
 }
