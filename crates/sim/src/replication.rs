@@ -2822,9 +2822,15 @@ impl WorldDelivery {
     /// bots' first movement records ([`WorldDelivery::bot_shown`]): their
     /// datagram arrived, or was lost and the next record's counts.
     pub fn acknowledge_movement(&mut self, ack: u32, ack_bits: u64) {
-        self.bot_sights.retain(|_, sight| match *sight {
+        self.bot_sights.retain(|&entity, sight| match *sight {
             BotSight::Sent(sequence) => match delivery(sequence, ack, ack_bits) {
                 Some(true) => {
+                    tracing::debug!(
+                        target: "orpheus::join",
+                        entity = format_args!("{entity:08X}"),
+                        sequence,
+                        "bot's first movement record arrived"
+                    );
                     *sight = BotSight::Arrived;
                     true
                 }
@@ -3393,6 +3399,8 @@ impl WorldDelivery {
             Delivery::Possession(_) => "possession",
             Delivery::DestroyBody(_) => "body destroy",
             Delivery::BodyScript { delta: false, .. } => "owner full frame",
+            Delivery::BotCreate { .. } => "bot create",
+            Delivery::BotDestroy => "bot destroy",
             Delivery::Script { close: true, .. } => "controller frame (close)",
             Delivery::Script { .. } => "controller frame",
             Delivery::Mode { .. } => "mode frame",
@@ -3473,8 +3481,14 @@ impl WorldDelivery {
                         // Even a fallback confirmation needs an acknowledged owner lease.
                         return None;
                     }
+                    // A bot's first frame goes in its create's datagram, after
+                    // it (`BotViews::ready`).
                     Delivery::BotFrames { last }
-                        if !self.bot_views.ready(record.update.entity, last) =>
+                        if !self.bot_views.ready(
+                            record.update.entity,
+                            last,
+                            creating.contains(&record.update.entity),
+                        ) =>
                     {
                         return None;
                     }
@@ -3662,10 +3676,18 @@ impl WorldDelivery {
                 continue;
             };
             let entity = movements[index].entity;
-            if self.bots.get(&entity) == Some(&BotLifetime::Live) {
+            if self.bots.get(&entity) == Some(&BotLifetime::Live)
+                && !self.bot_sights.contains_key(&entity)
+            {
+                tracing::debug!(
+                    target: "orpheus::join",
+                    entity = format_args!("{entity:08X}"),
+                    sequence = sent.sequence,
+                    tick,
+                    "bot's first movement record sent"
+                );
                 self.bot_sights
-                    .entry(entity)
-                    .or_insert(BotSight::Sent(sent.sequence));
+                    .insert(entity, BotSight::Sent(sent.sequence));
             }
         }
         Ok(sent)

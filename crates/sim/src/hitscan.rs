@@ -228,6 +228,14 @@ impl TargetPose {
             })
     }
 
+    /// The body's critical shapes in the world, each as the middle of its
+    /// segment and its radius (the `orpheus::hits` trace).
+    pub(crate) fn critical_shapes(&self) -> impl Iterator<Item = (Vec3, f64)> + '_ {
+        self.placed()
+            .filter(|shape| shape.3)
+            .map(|(a, b, radius, _)| (std::array::from_fn(|k| (a[k] + b[k]) * 0.5), radius))
+    }
+
     /// Where a ray, or a sphere of radius `size` swept along it, first
     /// enters the body within `length`: the distance, and for a body with
     /// shapes whether the shape it enters is critical (the nearest shape;

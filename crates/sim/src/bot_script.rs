@@ -1355,10 +1355,12 @@ impl BotViews {
             .is_some_and(|view| !view.cancelled.contains(&last))
     }
 
-    pub(crate) fn ready(&self, entity: u32, last: u32) -> bool {
-        self.views
-            .get(&entity)
-            .is_some_and(|view| view.stream.ready_to_send(last))
+    /// Chunk `last` of the bot may go now: its create arrived, or `with_create`
+    /// (the create goes in the same datagram, ahead of it).
+    pub(crate) fn ready(&self, entity: u32, last: u32, with_create: bool) -> bool {
+        self.views.get(&entity).is_some_and(|view| {
+            view.stream.ready_to_send(last) || (with_create && view.stream.queued(last))
+        })
     }
 
     pub(crate) fn sent(&mut self, entity: u32, last: u32) {
@@ -1509,7 +1511,12 @@ struct Flush<'a, 'o> {
 
 impl Flush<'_, '_> {
     /// server.py `_track_body_create`: the lifetime's full frame from its
-    /// latest live frame, sent once the create arrived.
+    /// latest live frame, sent in its create's datagram (or once the create
+    /// arrived). The client starts the bot's states, and their animations
+    /// (the assembly `0BA8` st1), when this frame comes; one that waited a
+    /// round trip for the create's ACK put the client's assembly that much
+    /// behind the pose the server's rewound shots met (refs report
+    /// `CombatFeel.md`).
     fn register(&mut self, entity: u32) -> Option<BotView> {
         let latest = self.scripts.latest(entity)?;
         let chosen = Chosen::new(Arc::clone(latest), self.context.mode_ready, None);

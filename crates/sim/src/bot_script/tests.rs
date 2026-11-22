@@ -126,8 +126,10 @@ fn practice_bots_start_one_script_per_update_and_the_firing_bots_shoot() {
     assert!(live.is_subset(&firing) && !live.is_empty());
 }
 
-/// server.py: each client gets every bot's first frame once its create
-/// arrived, without the nameplate until the mode UI has arrived, then the
+/// server.py: each client gets every bot's first frame in its create's
+/// datagram, right after the create (the client starts the bot's states,
+/// the assembly's animation among them, when it comes), without the
+/// nameplate until the mode UI has arrived, then the
 /// nameplate alone, with the bot's name as its text; a surviving hit's
 /// pools without a frame, its flinch's live frame; a death's frames with
 /// the dead flag; and the respawned bot's new script.
@@ -153,13 +155,23 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
     world.start(&scene, &viewer, tick).unwrap();
     world.update_bots(&scene, &[], tick);
     let entities: BTreeSet<u32> = scene.bots().iter().map(|bot| bot.entity).collect();
-    // The first frames wait for the creates.
+    // Each bot's first frame goes with its create, after it.
     let first = deliver(&mut world);
-    assert!(script_chunks(&first).is_empty());
-    assert!(first.iter().any(|update| update.entity == BOT_ENTITY));
-    let full = script_chunks(&deliver(&mut world));
+    let full = script_chunks(&first);
     assert_eq!(full.iter().copied().collect::<BTreeSet<_>>(), entities);
     assert_eq!(full.len(), entities.len());
+    for &entity in &entities {
+        let at = |chunk: bool| {
+            first
+                .iter()
+                .position(|update| update.entity == entity && update.chunk.is_some() == chunk)
+                .unwrap()
+        };
+        assert!(
+            at(false) < at(true),
+            "{entity:08X}'s frame before its create"
+        );
+    }
     // Whether the client's acknowledged frame has the bot's nameplate; one
     // that has it shows the bot's hero name.
     let nameplate = |scene: &PreparedScene, world: &WorldDelivery, entity: u32| {
@@ -398,7 +410,8 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
     }
     assert_eq!(dead_flag(&world), Some(Value::Bool(true)));
 
-    // The respawn: a new script under the new entity, sent after its create.
+    // The respawn: a new script under the new entity, in its create's
+    // datagram (after the old bot's destroy and the create).
     let fresh = scene.bots()[slot].respawned(BOT_ENTITY + 15, tick + 8);
     let created = bot_create(&fresh, scene.bot_plate()).unwrap();
     scene.bots_mut()[slot] = fresh;
@@ -412,7 +425,6 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
     });
     assert!(world.bot_stream(victim).is_none());
     world.update_bots(&scene, &[], tick);
-    assert!(script_chunks(&deliver(&mut world)).is_empty());
     assert_eq!(script_chunks(&deliver(&mut world)), [BOT_ENTITY + 15]);
     assert!(nameplate(&scene, &world, BOT_ENTITY + 15).is_some());
     // The replacement starts alive: no dead flag.
@@ -544,7 +556,6 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
         link: None,
     });
     world.update_bots(&scene, &[], tick);
-    deliver(&mut world);
     assert_eq!(script_chunks(&deliver(&mut world)), [BOT_ENTITY + 16]);
     assert_eq!(
         variable(&world, BOT_ENTITY + 16, 6036),

@@ -1017,15 +1017,41 @@ impl Combat {
                     .at(view, scene.bot_target(bot))
                     .map(|pose| (bot.entity, pose))
             });
-        let Some(impact) = ray
+        let traced = tracing::enabled!(target: "orpheus::hits", tracing::Level::DEBUG);
+        if traced {
+            trace_shot(
+                shooter,
+                shot_frame,
+                view,
+                ray,
+                players.iter().cloned().chain(bots.clone()),
+            );
+        }
+        let impact = ray
             .resolve(
                 players.into_iter().chain(bots),
                 |origin, direction, reach| {
                     scene.hitscan_wall(origin, direction, reach, ray_profile)
                 },
             )
-            .map_err(io::Error::other)?
-        else {
+            .map_err(io::Error::other)?;
+        if traced {
+            tracing::debug!(
+                target: "orpheus::hits",
+                "shot of {:08X} at frame {shot_frame}: {}",
+                shooter.source,
+                impact.map_or_else(
+                    || "missed".to_owned(),
+                    |impact| format!(
+                        "struck {:08X} at {:.3} m{}",
+                        impact.entity,
+                        impact.distance,
+                        if impact.critical { ", critical" } else { "" }
+                    )
+                )
+            );
+        }
+        let Some(impact) = impact else {
             self.count_shot(shooter, None);
             return Ok(None);
         };
@@ -2625,6 +2651,54 @@ pub fn deliver_projectiles(
         world.end_fields(&live);
         world.advance_observed(tick);
     }
+}
+
+/// The `orpheus::hits` debug trace of a hitscan shot: its ray and view,
+/// and each candidate body the ray's line passes within 2 m of, as the
+/// shot meets it (rewound to the view): its feet and facing, and each
+/// critical shape's middle, radius and how far the line passes from it.
+fn trace_shot(
+    shooter: Shooter,
+    shot_frame: u32,
+    view: ViewFrame,
+    ray: &HitscanShot,
+    candidates: impl Iterator<Item = (u32, TargetPose)>,
+) {
+    let [ox, oy, oz] = ray.origin;
+    let [dx, dy, dz] = ray.direction;
+    // How far the ray's line passes from a point.
+    let off = |point: Vec3| {
+        let p = [point[0] - ox, point[1] - oy, point[2] - oz];
+        let along = (p[0] * dx + p[1] * dy + p[2] * dz).max(0.0);
+        let q = [p[0] - dx * along, p[1] - dy * along, p[2] - dz * along];
+        (q[0] * q[0] + q[1] * q[1] + q[2] * q[2]).sqrt()
+    };
+    let mut near = String::new();
+    for (entity, pose) in candidates {
+        let [x, y, z] = pose.feet;
+        let middle = [x, y + pose.height * 0.5, z];
+        if off(middle) > 2.0 + pose.height * 0.5 {
+            continue;
+        }
+        near.push_str(&format!(
+            "; {entity:08X} feet ({x:.3}, {y:.3}, {z:.3}) yaw {:.1}",
+            pose.yaw.to_degrees()
+        ));
+        for (centre, radius) in pose.critical_shapes() {
+            near.push_str(&format!(
+                " crit ({:.3}, {:.3}, {:.3}) r {radius:.2} off {:.3}",
+                centre[0],
+                centre[1],
+                centre[2],
+                off(centre)
+            ));
+        }
+    }
+    tracing::debug!(
+        target: "orpheus::hits",
+        "shot of {:08X} at frame {shot_frame} {view:?}: from ({ox:.3}, {oy:.3}, {oz:.3}) along ({dx:.4}, {dy:.4}, {dz:.4}){near}",
+        shooter.source,
+    );
 }
 
 /// A living bot other than the shooter, of another team (any in a

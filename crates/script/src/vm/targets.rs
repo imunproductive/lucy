@@ -770,20 +770,58 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
             None => search.offset,
         };
         let filter_config = field(&node.fields, "m_filter");
+        let traced = tracing::enabled!(target: "orpheus::targets", tracing::Level::DEBUG);
+        let mut considered = String::new();
         let mut entities = Vec::new();
-        for candidate in bodies.iter().filter(|candidate| {
-            candidate.distance(centre) <= search.radius
-                && search
-                    .cone
-                    .as_ref()
-                    .is_none_or(|cone| in_cone(candidate, centre, cone, search.radius))
-        }) {
-            if self.filter_admits(id, node, filter_config, &search.filter, candidate.entity)? {
+        for candidate in &bodies {
+            if candidate.distance(centre) > search.radius {
+                continue;
+            }
+            let inside = search
+                .cone
+                .as_ref()
+                .is_none_or(|cone| in_cone(candidate, centre, cone, search.radius));
+            let admitted = inside
+                && self.filter_admits(id, node, filter_config, &search.filter, candidate.entity)?;
+            if traced {
+                let [x, y, z] = candidate.feet;
+                considered.push_str(&format!(
+                    " {:08X} feet ({x:.3}, {y:.3}, {z:.3}) h {:.2} r {:.2} {}",
+                    candidate.entity,
+                    candidate.height,
+                    candidate.radius,
+                    match (inside, admitted) {
+                        (false, _) => "outside",
+                        (true, false) => "filtered",
+                        (true, true) => "in",
+                    }
+                ));
+            }
+            if admitted {
                 entities.push(candidate.entity);
             }
         }
         if is_set(field(&node.fields, SIGHT)) {
+            let before = entities.len();
             entities = self.in_sight(id, node, centre, &bodies, entities);
+            if traced && entities.len() != before {
+                considered.push_str(&format!("; in sight {entities:08X?}"));
+            }
+        }
+        if traced {
+            let [x, y, z] = centre;
+            let cone = search.cone.as_ref().map_or_else(String::new, |cone| {
+                let [dx, dy, dz] = cone.direction;
+                format!(" cone ({dx:.4}, {dy:.4}, {dz:.4}) cos {:.4?}", cone.cos)
+            });
+            tracing::debug!(
+                target: "orpheus::targets",
+                "search of {:08X} graph {:04X} node {:?} frame {}: centre ({x:.3}, {y:.3}, {z:.3}){cone}:{considered}",
+                site.entity,
+                site.graph & 0xFFFF,
+                site.node,
+                self.machine.frame,
+            );
         }
         let mut found = Found {
             entities,
