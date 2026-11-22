@@ -169,8 +169,9 @@ impl Network {
         self.wire.lock().server.push_back((from, datagram));
     }
 
-    /// The next datagram the service sent to the client at `to`, if any.
-    pub(crate) fn take(&self, to: SocketAddr) -> Option<Vec<u8>> {
+    /// The next datagram the service sent to the client at `to`, if any,
+    /// with the service's time when it was sent.
+    pub(crate) fn take(&self, to: SocketAddr) -> Option<(Duration, Vec<u8>)> {
         self.wire.lock().clients.get_mut(&to)?.pop_front()
     }
 
@@ -267,14 +268,29 @@ impl Client {
             .send(self.address, self.cipher.seal(&packet).unwrap());
     }
 
-    /// The next datagram, running ticks until one comes (at most
-    /// [`RECEIVE_TICKS`]).
+    /// The next datagram but the bare link ACKs a room sends for each of
+    /// the client's datagrams with content as it takes it
+    /// (`GameConnections::acknowledge`), running ticks until one comes (at
+    /// most [`RECEIVE_TICKS`]). A test reads what the ticks send; one that
+    /// looks at the ACKs reads [`Self::receive_any`].
     pub(crate) fn receive(&self) -> Packet {
+        loop {
+            let (_, packet) = self.receive_any();
+            if !is_bare_ack(&packet) {
+                return packet;
+            }
+        }
+    }
+
+    /// The next datagram, a bare ACK too, and the service's time when it
+    /// was sent, running ticks until one comes (at most
+    /// [`RECEIVE_TICKS`]).
+    pub(crate) fn receive_any(&self) -> (Duration, Packet) {
         for _ in 0..=RECEIVE_TICKS {
-            if let Some(bytes) = self.network.take(self.address) {
+            if let Some((sent, bytes)) = self.network.take(self.address) {
                 let packet = self.cipher.open(&bytes).unwrap();
                 assert_eq!(packet.conn, self.connection);
-                return packet;
+                return (sent, packet);
             }
             self.network.step();
         }
@@ -306,6 +322,11 @@ impl Client {
     }
 }
 
+/// A bare link ACK: a control packet with ACK alone and no payload.
+pub(crate) fn is_bare_ack(packet: &Packet) -> bool {
+    packet.kind == KIND_CONTROL && packet.flags == ACK && packet.payload.is_empty()
+}
+
 enum Control {
     Step { reply: mpsc::SyncSender<Duration> },
     AwaitScenes { reply: mpsc::SyncSender<()> },
@@ -319,9 +340,11 @@ struct Wire(Arc<Mutex<Datagrams>>);
 struct Datagrams {
     /// To the service, with their sender.
     server: VecDeque<(SocketAddr, Vec<u8>)>,
-    /// To each client.
-    clients: HashMap<SocketAddr, VecDeque<Vec<u8>>>,
+    /// To each client, with the service's time when each was sent.
+    clients: HashMap<SocketAddr, VecDeque<(Duration, Vec<u8>)>>,
     next_port: u16,
+    /// The time of the service's pass that runs.
+    now: Duration,
 }
 
 impl Wire {
@@ -333,8 +356,10 @@ impl Wire {
 impl Transport for Wire {
     /// A datagram to an address no client has is lost, as over UDP.
     fn send_to(&self, datagram: &[u8], address: SocketAddr) -> io::Result<usize> {
-        if let Some(inbox) = self.lock().clients.get_mut(&address) {
-            inbox.push_back(datagram.to_vec());
+        let mut datagrams = self.lock();
+        let now = datagrams.now;
+        if let Some(inbox) = datagrams.clients.get_mut(&address) {
+            inbox.push_back((now, datagram.to_vec()));
         }
         Ok(datagram.len())
     }
@@ -367,13 +392,14 @@ impl Service {
         now: Duration,
     ) -> bool {
         let mut handled = 0;
+        wire.lock().now = now;
         for request in requests.try_iter().take(RECEIVE_BATCH) {
             self.handle(request, now);
             handled += 1;
         }
         if deliver {
             while let Some((from, datagram)) = wire.receive() {
-                self.router.route(&datagram, from);
+                self.router.route(&datagram, from, now);
             }
         }
         let mut busy = handled == RECEIVE_BATCH;

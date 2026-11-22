@@ -116,11 +116,11 @@ const BUFFER_TARGET: usize = 1;
 // Before mid-2016 retail let up to 4 commands wait (~48 ms). Beyond that a
 // tick runs the oldest at once.
 const MAX_BUFFERED: usize = 4;
-// Retail's client shrank and grew the buffer by dilating its 16 ms frame
+// Retail's client shrank and grew its lead by dilating its 16 ms frame
 // (15.2 ms, Ford) when the server asked (the ch3 clock flags,
-// [`clock_flags`]). The server also does it from its side: a buffer above
-// the target for this many ticks in a row runs one command more, and one
-// below it while the client sends waits a tick (assumption).
+// [`clock_flags`]). The server also keeps its buffer from its side: a
+// buffer above the target for this many ticks in a row runs one command
+// more, and one below it while the client sends waits a tick (assumption).
 const DRAIN_TICKS: u32 = 20;
 // A dry buffer waits this many ticks in a row for the client's next frame
 // before it repeats his last input. A datagram a few frames late, or lost
@@ -148,19 +148,42 @@ const MAX_WAIT: u32 = MAX_BUFFERED as u32;
 // (`HOLD_INPUT_FRAMES`).
 const MAX_REPEATS: u32 = HOLD_INPUT_FRAMES - MAX_WAIT;
 
-/// The ch3 clock flags for `depth` commands in hand as a tick takes its
-/// own: they move the client's lead toward [`BUFFER_TARGET`] commands
-/// left waiting. Faster with fewer, four times as much again with none (a
-/// dry tick waits for the client's frame, and past [`MAX_WAIT`] repeats
-/// his last input, after which a press in the frame it stood in for runs
-/// late); slower with more, four times as much again beyond
-/// [`MAX_BUFFERED`].
-fn clock_flags(depth: usize) -> u8 {
-    match depth {
-        0 => CLOCK_FASTER | CLOCK_STRONGER,
-        depth if depth <= BUFFER_TARGET => CLOCK_FASTER,
-        depth if depth > MAX_BUFFERED => CLOCK_SLOWER | CLOCK_STRONGER,
-        depth if depth > BUFFER_TARGET + 1 => CLOCK_SLOWER,
+/// The ch3 clock flags for a client whose command frames came `lead` frames
+/// ahead of the server's last tick when they first arrived (the latest of
+/// them since the last tick: `InputQueue::commands`). They move his clock
+/// toward the lead that puts the next tick's command and one more
+/// ([`BUFFER_TARGET`]) in hand before the next tick runs, `lead` 2: faster
+/// with less, four times as much again when the next tick's own came late
+/// (0 or less); slower with more, four times as much again two frames or
+/// more over. A client that sends in bursts (a stalling PC, the debugger)
+/// is sped up until even a burst's oldest new frame comes in time, as
+/// retail's client dilated time when its input was lost (Ford 30:50); one
+/// that leads by more than he needs is slowed.
+///
+/// Retail's server "measures how early or late each command frame arrives
+/// and tells the client" (GDC-Netcode.md §1): the lead, not the buffer's
+/// depth. The depth can't show it: a burst runs all but [`MAX_BUFFERED`]
+/// at once and a dry tick waits, so a client 11 frames ahead kept 1-4
+/// commands in hand and got "slower" or nothing, while every dry tick after
+/// a stall asked for "faster × 4" (refs/reports/Latency.md §6). His clock
+/// also jumps ahead on its own: at each spawn (his entity's create,
+/// `0x7FF78969C360` → `0x7FF7896D1400`) and whenever the packet frame passes
+/// it (the ch3 handler `0x7FF7896DADD0`; a frame over 150 ms advances it by
+/// 150 ms only, `0x7FF789AC7140`), it restarts at the newest packet frame
+/// plus his link's smoothed round trip in frames (`0x7FF7894A6960`,
+/// connection +0x118, at most 16). Right after the map loads that round
+/// trip still holds the loading's stalls, so his first spawn could start up
+/// to 16 frames (256 ms) ahead (10.9 in one run), and the old flags pulled
+/// him in by 0.2 frames a second. The client scales each frame's time by
+/// `1 ∓ k` (k = 0.625 %) and by `1 ∓ 4k` again with [`CLOCK_STRONGER`]
+/// (`0x7FF789D28B10`): 0.39 or 1.9 frames a second.
+fn clock_flags(lead: i32) -> u8 {
+    let target = BUFFER_TARGET as i32 + 1;
+    match lead {
+        lead if lead <= 0 => CLOCK_FASTER | CLOCK_STRONGER,
+        lead if lead < target => CLOCK_FASTER,
+        lead if lead > target + 1 => CLOCK_SLOWER | CLOCK_STRONGER,
+        lead if lead > target => CLOCK_SLOWER,
         _ => 0,
     }
 }
@@ -1380,6 +1403,14 @@ struct InputQueue {
     /// A command of the client came since the last tick.
     arrived: bool,
     late: LateInput,
+    /// The client's lead: how early the command frames that came for the
+    /// first time since the last release arrived, the latest of them (its
+    /// frame less the server's last tick when it came), until a release
+    /// takes it ([`clock_flags`]).
+    arrival_lead: Option<i32>,
+    /// The lead the clock flags follow: the last release's `arrival_lead`,
+    /// kept while no new frame comes.
+    lead: i32,
     /// The ch3 clock flags of the frames sent after the last release.
     clock: u8,
     closing: bool,
@@ -1438,6 +1469,17 @@ impl InputQueue {
             admitted = ?self.admitted,
             "commands arrived"
         );
+        // How early each command frame arrives, the first time it does
+        // (the redundant window resends older ones): the oldest new frame
+        // came the latest ([`clock_flags`]). A datagram that waited, or a
+        // burst after a stall, shows a small lead or none.
+        let seen = self.last.map(|command| command.frame);
+        if let Some(first) = commands.iter().find(|command| {
+            seen.is_none_or(|seen| (1..FRAME_HALF).contains(&frame_distance(command.frame, seen)))
+        }) {
+            let lead = first.frame.wrapping_sub(tick) as i32;
+            self.arrival_lead = Some(self.arrival_lead.map_or(lead, |earlier| earlier.min(lead)));
+        }
         // The client sends: a dry tick may repeat his newest input again,
         // late ones included (he is behind the frames run, not silent).
         self.repeats = 0;
@@ -1509,7 +1551,8 @@ impl InputQueue {
     /// for his next frame, up to [`MAX_WAIT`] in a row; each later one
     /// runs the next frame: his last input again, past [`MAX_REPEATS`]
     /// such frames since his last datagram a neutral one ([`neutral`]).
-    /// Sets the clock flags the client's next frames get ([`clock_flags`]).
+    /// Sets the clock flags the client's next frames get from his lead
+    /// ([`clock_flags`]).
     fn release(&mut self, ticks: u32, body: bool) {
         self.clock = 0;
         if self.immediate || self.closing {
@@ -1518,8 +1561,11 @@ impl InputQueue {
         let arrived = std::mem::take(&mut self.arrived);
         let depth = self.depth();
         let sending = body && self.last.is_some();
+        if let Some(lead) = self.arrival_lead.take() {
+            self.lead = lead;
+        }
         if sending {
-            self.clock = clock_flags(depth);
+            self.clock = clock_flags(self.lead);
         }
         if depth == 0 {
             self.surplus = 0;

@@ -292,7 +292,9 @@ fn a_tap_a_long_stall_repeated_still_fires() {
             server.queue_commands(tick, &window);
         }
         server.release_input(1);
-        // Ticks the clock asks the client to go four times as fast.
+        // Dry ticks ask the client to go four times as fast: his datagrams
+        // come at the tick of their newest frame or later (no lead,
+        // `clock_flags`).
         if server.input.dry != 0 {
             assert_eq!(server.input.clock, CLOCK_FASTER | CLOCK_STRONGER);
         }

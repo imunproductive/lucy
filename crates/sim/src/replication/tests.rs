@@ -444,9 +444,8 @@ fn released_frames(input: &mut InputQueue) -> Vec<u32> {
 /// One command a tick, in frame order, with one more in hand
 /// (`BUFFER_TARGET`): a datagram a tick late still runs on time. A burst
 /// runs all but `MAX_BUFFERED` at once; more than the target waiting for
-/// `DRAIN_TICKS` ticks runs one more. The frames after each tick ask the
-/// client's clock to go faster with fewer than two in hand, slower with
-/// more, four times as much beyond `MAX_BUFFERED`.
+/// `DRAIN_TICKS` ticks runs one more. (The clock flags follow the client's
+/// lead, not the buffer: `the_clock_flags_follow_the_clients_lead`.)
 #[test]
 fn the_input_buffer_runs_a_command_a_tick_with_the_next_in_hand() {
     let mut input = InputQueue::default();
@@ -454,19 +453,16 @@ fn the_input_buffer_runs_a_command_a_tick_with_the_next_in_hand() {
     input.commands(100, &[forward(100)]);
     input.release(1, true);
     assert!(released_frames(&mut input).is_empty());
-    assert_eq!(input.clock, CLOCK_FASTER);
     // Each datagram resends the window: the oldest runs, one waits.
     for frame in 101..110 {
         input.commands(frame, &[forward(frame - 1), forward(frame)]);
         input.release(1, true);
         assert_eq!(released_frames(&mut input), [frame - 1]);
-        assert_eq!(input.clock, 0, "frame {frame}");
     }
     // 110 comes a tick late: 109, in hand, runs on time; then 110 runs
     // and 111 waits.
     input.release(1, true);
     assert_eq!(released_frames(&mut input), [109]);
-    assert_eq!(input.clock, CLOCK_FASTER);
     input.commands(111, &[forward(109), forward(110), forward(111)]);
     input.release(1, true);
     assert_eq!(released_frames(&mut input), [110]);
@@ -474,7 +470,6 @@ fn the_input_buffer_runs_a_command_a_tick_with_the_next_in_hand() {
     input.commands(112, &(111..=121).map(forward).collect::<Vec<_>>());
     input.release(1, true);
     assert_eq!(released_frames(&mut input), (111..=117).collect::<Vec<_>>());
-    assert_eq!(input.clock, CLOCK_SLOWER | CLOCK_STRONGER);
     // Four wait; the burst's tick was the first of 20 with more than one
     // waiting, the 20th (frame 140 comes) runs two.
     for frame in 122..=140 {
@@ -491,13 +486,62 @@ fn the_input_buffer_runs_a_command_a_tick_with_the_next_in_hand() {
     input.commands(141, &[forward(141)]);
     input.release(2, true);
     assert_eq!(released_frames(&mut input), [138, 139]);
-    assert_eq!(input.clock, CLOCK_SLOWER);
+}
+
+/// The frames after each tick move the client's clock toward a lead of 2:
+/// each command frame, the first time it comes, 2 frames ahead of the last
+/// tick (the next tick's command and one more in hand before it runs).
+/// Faster below, four times as much at 0 or less (the next tick's own came
+/// late); slower above, four times as much from 4 on. The latest new frame
+/// since the last tick decides, not the buffer: a client 11 frames ahead,
+/// as one whose spawn restarted his clock with a stale round trip, is
+/// slowed four times as much though the buffer holds what a punctual one's
+/// does, and a burst after a stall is sped up by its oldest new frame
+/// though its newest is on time. A resend, or a dry tick, keeps the flags.
+/// No flags before his first command or without a body.
+#[test]
+fn the_clock_flags_follow_the_clients_lead() {
+    let mut input = InputQueue::default();
+    input.release(1, true);
+    assert_eq!(input.clock, 0);
+    // A datagram with these frames at the tick, then the next tick.
+    let mut flags = |tick: u32, frames: std::ops::RangeInclusive<u32>| {
+        input.commands(tick, &frames.map(forward).collect::<Vec<_>>());
+        input.release(1, true);
+        input.work.clear();
+        input.clock
+    };
+    let slower_4 = CLOCK_SLOWER | CLOCK_STRONGER;
+    let faster_4 = CLOCK_FASTER | CLOCK_STRONGER;
+    // 110 came 10 frames ahead, then 112 11.
+    assert_eq!(flags(100, 110..=111), slower_4);
+    assert_eq!(flags(101, 111..=112), slower_4);
+    // His clock slows: 113 comes 4 ahead, 114 3, a resend changes nothing,
+    // 115 comes 2 ahead.
+    assert_eq!(flags(109, 112..=113), slower_4);
+    assert_eq!(flags(111, 113..=114), CLOCK_SLOWER);
+    assert_eq!(flags(112, 113..=114), CLOCK_SLOWER);
+    assert_eq!(flags(113, 114..=115), 0);
+    // 116 comes 1 ahead; then 117 1 and 118 2 ahead together: 117 decides.
+    assert_eq!(flags(115, 115..=116), CLOCK_FASTER);
+    assert_eq!(flags(116, 116..=118), CLOCK_FASTER);
+    assert_eq!(flags(117, 118..=119), 0);
+    // A burst after a stall: 128 is 2 ahead, but 120 came 6 late.
+    assert_eq!(flags(126, 119..=128), faster_4);
+    // Dry ticks keep them.
+    for _ in 0..3 {
+        input.release(1, true);
+        assert_eq!(input.clock, faster_4);
+    }
+    input.release(1, false);
+    assert_eq!(input.clock, 0);
 }
 
 /// A dry tick runs nothing: the body waits for the client's next frame,
 /// the ack stays at the last frame run, and the client's clock goes four
-/// times as fast. The frames that come late run in order, each with its
-/// own buttons and click, as the client predicted them.
+/// times as fast (his last datagram came at the tick of its newest frame:
+/// no lead, `clock_flags`). The frames that come late run in order, each
+/// with its own buttons and click, as the client predicted them.
 #[test]
 fn a_dry_tick_waits_and_the_late_commands_run_as_the_client_made_them() {
     let fire = |frame| Command {
@@ -513,7 +557,8 @@ fn a_dry_tick_waits_and_the_late_commands_run_as_the_client_made_them() {
     assert_eq!(released(&mut world.input), [(100, 0)]);
     world.input.processed = Some(100);
     // Nothing comes for three ticks: 101, in hand, runs; then none. No
-    // body: the clock is left alone; with one, it goes four times as fast.
+    // body: the clock is left alone; with one, it goes four times as fast
+    // (lead 0 at 101's datagram).
     world.release_input(1);
     assert_eq!(released(&mut world.input), [(101, 0)]);
     world.input.processed = Some(101);
@@ -607,7 +652,8 @@ fn past_the_wait_a_dry_tick_repeats_the_last_input_then_runs_neutral_frames() {
     input.release(1, true);
     assert_eq!(released(&mut input), [(100, FIRE), (101, FIRE)]);
     // The client goes silent: 4 ticks wait, `MAX_REPEATS` repeat 101's
-    // input from 102 on, the next run neutral frames.
+    // input from 102 on, the next run neutral frames. His clock goes four
+    // times as fast: his last datagram had no lead (`clock_flags`).
     for tick in 1..=MAX_WAIT + MAX_REPEATS + 6 {
         input.release(1, true);
         assert_eq!(
