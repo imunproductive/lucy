@@ -26,7 +26,7 @@ use crate::{
     combat::{BodyCombat, BotDeath, RespawnTimes},
     controller::Controller,
     hitboxes::HitboxCatalog,
-    hitscan::{RAY_PROFILES_FILE, RayProfiles, SceneRays},
+    hitscan::{PlaceableRays, RAY_PROFILES_FILE, RayProfiles, SceneRays},
     hurt_feedback::HurtFeedback,
     map_areas::{self, DamageArea, MapAreaData, PlacedScript, SpawnRoom},
     match_flow::{MatchFlow, Mode, Timers},
@@ -245,6 +245,8 @@ pub struct PreparedScene {
     /// category (the ray cache), queried with the volley's ray profile's map
     /// mask ([`PreparedScene::hitscan_wall`]).
     rays: Arc<CollisionScene>,
+    /// The server placeables' models the shots meet while they stand.
+    placeable_rays: Arc<PlaceableRays>,
     ray_profiles: Arc<RayProfiles>,
     contacts: Option<Arc<ContactWorld>>,
     controller: Controller,
@@ -304,9 +306,10 @@ pub struct PreparedScene {
     map_tags: Arc<MapTags>,
     /// Each body definition's target tags ([`body_tags`]).
     body_tags: Arc<BodyTags>,
-    /// The team walls' entities, by their switched group in the contact
-    /// world ([`Self::switch_team_walls`]).
-    team_walls: Vec<u32>,
+    /// The server placeables whose models stop the mover: each one's entity
+    /// and whether it is a team wall, by its switched group in the contact
+    /// world ([`Self::switch_placeable_bodies`]).
+    placeable_bodies: Vec<(u32, bool)>,
     /// Their scripts (`placed_script`).
     placed_scripts: PlacedScripts,
     /// Where a falling body dies on a map with neither damage areas nor
@@ -500,13 +503,22 @@ impl SceneAssets {
         // The ray scene takes the longest (about 2 s for the Practice Range
         // in a debug build): it builds on a thread of its own beside the
         // movement scene, the contacts and the navigation.
-        let walls = self.map_areas.team_walls(&map, identifiers);
-        let team_walls: Vec<u32> = walls.iter().map(|wall| wall.entity()).collect();
-        let wall_shapes = walls
+        let bodies = self.map_areas.placeable_bodies(&map, identifiers);
+        let placeable_bodies: Vec<(u32, bool)> = bodies
             .iter()
-            .map(|wall| wall.shapes())
+            .map(|body| (body.entity(), body.team_wall))
+            .collect();
+        let body_shapes = bodies
+            .iter()
+            .map(|body| body.shapes())
             .collect::<Result<Vec<_>, _>>()
             .map_err(invalid)?;
+        let mut ray_scenes = Vec::new();
+        for (group, body) in bodies.iter().enumerate() {
+            if let Some(scene) = body.ray_scene().map_err(invalid)? {
+                ray_scenes.push((group, body.entity(), scene));
+            }
+        }
         let (ground, contacts, navigation, rays) = std::thread::scope(|scope| {
             let rays = scope.spawn(|| {
                 let cache = read_ray_cache(BufReader::new(File::open(&rays_path)?), identity)
@@ -515,16 +527,19 @@ impl SceneAssets {
             });
             let ground = CollisionScene::movement_probe(&cache, identifiers).map_err(invalid);
             // Every map's players move on its collision (match.py
-            // `new_mover`), and on its team walls while they are on.
+            // `new_mover`), and on the server placeables' models while
+            // they stand.
             let contacts = ContactWorld::from_movement_cache(cache, identifiers)
-                .and_then(|world| world.with_switched(wall_shapes))
+                .and_then(|world| world.with_switched(body_shapes))
                 .map(Arc::new)
                 .map_err(invalid);
             let navigation = self.navigation(&map);
             (ground, contacts, navigation, joined(rays))
         });
         let ground = ground?;
-        let contacts = Some(contacts?);
+        let contacts = contacts?;
+        let placeable_rays = Arc::new(PlaceableRays::new(Arc::clone(&contacts), ray_scenes));
+        let contacts = Some(contacts);
         let rays = Arc::new(rays?);
         let mut bots = self.bots.make(map.map_guid, |body| {
             BotWalk::from_mover(self.movers.for_body(Some(body)))
@@ -547,7 +562,7 @@ impl SceneAssets {
                 bot.attach_animation(body);
             }
         }
-        let map_rays = SceneRays::shared(&rays, &self.ray_profiles);
+        let map_rays = SceneRays::shared(&rays, &placeable_rays, &self.ray_profiles);
         let bot_scripts = BotScripts::new(
             scripts.bot_graphs.clone(),
             self.codecs
@@ -634,6 +649,7 @@ impl SceneAssets {
             map,
             ground,
             rays,
+            placeable_rays,
             ray_profiles: Arc::clone(&self.ray_profiles),
             contacts,
             controller,
@@ -673,8 +689,9 @@ impl SceneAssets {
             removed_placeables: Vec::new(),
             map_tags,
             body_tags: Arc::clone(&scripts.body_tags),
-            team_walls,
+            placeable_bodies,
         };
+        scene.switch_placeable_bodies();
         let mut factories = self
             .owner_bodies
             .lock()
@@ -959,7 +976,7 @@ impl PreparedScene {
 
     /// The map's collision as the scripts' ray casts meet it.
     pub fn map_rays(&self) -> Arc<dyn MapRays> {
-        SceneRays::shared(&self.rays, &self.ray_profiles)
+        SceneRays::shared(&self.rays, &self.placeable_rays, &self.ray_profiles)
     }
 
     /// The map's entities with target tags in this mode, for the scripts'
@@ -1062,6 +1079,7 @@ impl PreparedScene {
             self.placed_scripts.remove(placed.entity());
             self.removed_placeables.push(placed.entity());
         }
+        self.switch_placeable_bodies();
     }
 
     /// The server placeables removed so far ([`Self::remove_placeables`]).
@@ -1081,8 +1099,8 @@ impl PreparedScene {
     /// itself; else [`Self::room_holds`]) the mode's message, then advance
     /// them to `tick`. A placeable that removed itself (a health pack the
     /// ruleset turns off, `0046`) goes as [`Self::remove_placeables`]'
-    /// do. The team walls then stand as their scripts say
-    /// ([`Self::switch_team_walls`]).
+    /// do. The placeables' models then stand as their scripts say
+    /// ([`Self::switch_placeable_bodies`]).
     pub fn advance_placed(&mut self, tick: u32, holds: &[(u32, Option<u8>)]) {
         self.placed_scripts.advance(tick, holds);
         let removed = self.placed_scripts.take_removed();
@@ -1091,32 +1109,41 @@ impl PreparedScene {
                 .retain(|placed| !removed.contains(&placed.entity()));
             self.removed_placeables.extend(removed);
         }
-        self.switch_team_walls();
+        self.switch_placeable_bodies();
     }
 
-    /// Turn each team wall on in the movers' world while its script runs
-    /// `0FA8`'s state 3, off otherwise ([`map_areas::team_wall_on`]).
-    fn switch_team_walls(&self) {
+    /// Turn each server placeable's model on in the movers' world while
+    /// its placeable stands (not removed); a team wall only while its
+    /// script runs `0FA8`'s state 3 ([`map_areas::team_wall_on`]).
+    fn switch_placeable_bodies(&self) {
         let Some(contacts) = &self.contacts else {
             return;
         };
         let world = self.placed_scripts.world();
-        for (group, &entity) in self.team_walls.iter().enumerate() {
-            let script = world.and_then(|world| world.entity(entity));
-            contacts.switch(group, map_areas::team_wall_on(script));
+        for (group, &(entity, team_wall)) in self.placeable_bodies.iter().enumerate() {
+            let on = if team_wall {
+                map_areas::team_wall_on(world.and_then(|world| world.entity(entity)))
+            } else {
+                !self.removed_placeables.contains(&entity)
+            };
+            contacts.switch(group, on);
         }
     }
 
-    /// The team walls' entities and whether each stands in the movers'
-    /// world now.
-    pub fn team_walls(&self) -> impl Iterator<Item = (u32, bool)> + '_ {
-        self.team_walls.iter().enumerate().map(|(group, &entity)| {
-            let on = self
-                .contacts
-                .as_ref()
-                .is_some_and(|contacts| contacts.is_on(group));
-            (entity, on)
-        })
+    /// The server placeables whose models stop the mover: each one's
+    /// entity, whether it is a team wall and whether it stands in the
+    /// movers' world now.
+    pub fn placeable_bodies(&self) -> impl Iterator<Item = (u32, bool, bool)> + '_ {
+        self.placeable_bodies
+            .iter()
+            .enumerate()
+            .map(|(group, &(entity, team_wall))| {
+                let on = self
+                    .contacts
+                    .as_ref()
+                    .is_some_and(|contacts| contacts.is_on(group));
+                (entity, team_wall, on)
+            })
     }
 
     /// The placed scripts' game messages the match hasn't taken yet
@@ -1335,8 +1362,10 @@ impl PreparedScene {
         reach: f64,
         profile: Option<u64>,
     ) -> Result<Option<WallHit>, orpheus_physics::collision::index::IndexError> {
-        self.rays
+        self.placeable_rays
             .cast_ray(
+                &self.rays,
+                None,
                 origin,
                 direction,
                 reach,
@@ -2622,7 +2651,7 @@ mod tests {
         for profile in [Some(HOOK_PROFILE), None] {
             let hit = scene
                 .map_rays()
-                .cast(origin, way, 20.0, profile)
+                .cast(None, origin, way, 20.0, profile)
                 .unwrap()
                 .unwrap();
             assert!(

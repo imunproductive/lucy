@@ -1811,3 +1811,64 @@ fn doomfists_ability_pressed_while_another_runs_starts_when_it_stops() {
         [(0, (false, true)), (56, (true, false))]
     );
 }
+
+/// Doomfist walks into the Practice Range's Training Partner console (a
+/// server placeable, definition `3963`: one 0x80 mesh at its placement)
+/// and slides round it instead of walking through. Game session c2
+/// (2026-11-22, `refs/reports/MapEntities.md` "MapCollision"): standing
+/// by the console facing -25406, his walk reached the server in bursts
+/// (his client stalled), commands of frames 5664-5680, 5699-5702 and
+/// 5725-5759; the server's feet (these, frame by frame, to 5727) touched
+/// the console at 5728 (flag 0x20000), slid along it to 5753 and came to
+/// rest at 5763 at (35.2373046875, 2.0, 16.77734375), and his client's
+/// feet equalled the server's from 5751 to the rest, touching it on the
+/// same frames (no correction after them). From 5728 on this test's feet
+/// differ from that run's server by up to 0.2 m (its mover had a match's
+/// history behind it; not traced), so past the contact it checks that he
+/// touches the console and never enters the box the client's physics
+/// world gave it, (33.922, 17.194)-(35.330, 18.650) in x and z, which the
+/// straight walk crosses.
+#[test]
+#[ignore = "requires the derived 104319 data and the Practice Range collision"]
+fn doomfist_slides_round_the_range_console_instead_of_walking_through() {
+    const YAW: i32 = -25406;
+    let mut doomfist = Player::spawn(DOOMFIST);
+    let body = doomfist.scene.heroes().get(DOOMFIST).unwrap().body;
+    let feet = [37.060546875, 2.0, 20.140625];
+    doomfist.world.mover = Some(doomfist.scene.player_mover_at(body, 0, feet, YAW).unwrap());
+    doomfist.idle(60, YAW);
+    assert_eq!(doomfist.position(), feet);
+    let walk = |doomfist: &mut Player| {
+        doomfist.step(Command {
+            yaw: YAW,
+            forward: 127,
+            ..Command::default()
+        });
+    };
+    for _ in 0..17 {
+        walk(&mut doomfist);
+    }
+    doomfist.idle(18, YAW);
+    for _ in 0..4 {
+        walk(&mut doomfist);
+    }
+    doomfist.idle(22, YAW);
+    assert_eq!(doomfist.position(), [35.75390625, 2.0, 18.5888671875]);
+    for _ in 0..3 {
+        walk(&mut doomfist);
+    }
+    assert_eq!(doomfist.position(), [35.615234375, 2.0, 18.42578125]);
+    let inside =
+        |[x, _, z]: [f64; 3]| (33.922..=35.330).contains(&x) && (17.194..=18.650).contains(&z);
+    let mut touched = 0;
+    for _ in 0..32 {
+        walk(&mut doomfist);
+        let pose = doomfist.world.mover.as_ref().unwrap().pose();
+        touched += usize::from(pose.flags & TOUCHING != 0);
+        assert!(!inside(pose.position), "{:?}", pose.position);
+    }
+    assert!(touched > 10, "touched the console on {touched} frames");
+    // Past it, along the walk's line.
+    let rest = doomfist.position();
+    assert!(rest[2] < 17.194, "{rest:?}");
+}

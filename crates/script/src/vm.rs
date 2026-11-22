@@ -510,10 +510,15 @@ pub struct MapHit {
 pub trait MapRays: fmt::Debug + Send + Sync {
     /// The first map shape a ray from `origin` along unit `direction` meets
     /// within `reach`: the shapes that stop a ray of ray profile `profile`
-    /// (`097`; none: the default profile's map mask). None: the map's
-    /// collision can't answer (a bad shape).
+    /// (`097`; none: the default profile's map mask), but not the model of
+    /// the `caster` entity, whose script casts it (a placeable's model
+    /// stands in the map's collision: the Training Partner console's line
+    /// of sight starts inside its own model; assumption: the client's ray
+    /// leaves its caster's shapes out). None: the map's collision can't
+    /// answer (a bad shape).
     fn cast(
         &self,
+        caster: Option<u32>,
         origin: [f64; 3],
         direction: [f64; 3],
         reach: f64,

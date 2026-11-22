@@ -76,11 +76,12 @@ fn spawn_rooms_belong_to_their_team_or_hold_its_spawn_point() {
     );
 }
 
-/// The derived file: a map's rooms, damage areas, door barriers, team walls
-/// and kill volumes, and a map whose rooms' derivation failed has no rooms.
-/// Damage areas of 100 and more kill, an area of 0 doesn't; an area or
-/// server placeable with an identifier exists only in the modes that list
-/// it; a team wall's mesh stands where the map turns, scales and puts it;
+/// The derived file: a map's rooms, damage areas, door barriers, the
+/// placeables' models, team walls and kill volumes, and a map whose rooms'
+/// derivation failed has no rooms. Damage areas of 100 and more kill, an
+/// area of 0 doesn't; an area or server placeable with an identifier exists
+/// only in the modes that list it; a placeable's model stands where the
+/// map turns, scales and puts it, a team wall (graph `0FA8`) among them;
 /// kill volumes exist in every mode.
 #[test]
 fn the_area_file_reads_rooms_damage_areas_placeables_kill_volumes_and_failures() {
@@ -96,16 +97,25 @@ fn the_area_file_reads_rooms_damage_areas_placeables_kill_volumes_and_failures()
                     {"placeable": 702, "identifier": "0x0D80000000002962", "damage": 9999.0,
                      "boxes": [{"centre": [0, -40, 0], "half": [1, 1, 1], "rotation": [0, 0, 0, 1]}]}],
                 "server_placeables": [{"placeable": 340, "definition": "0x0400000000001307",
-                    "position": [1.5, 2, -3], "script": {"overrides": [{"graph": 246,
+                    "position": [1.5, 2, -3], "rotation": [0, 0, 0, 1], "scale": [2, 2, 2], "moving": true,
+                    "script": {"overrides": [{"graph": 246,
                     "m_1EB5A024": [], "m_75408640": 0}], "extra": []}},
-                    {"placeable": 341, "definition": "0x0400000000001307", "identifier": "0x0D80000000002962"},
+                    {"placeable": 341, "definition": "0x0400000000001307", "identifier": "0x0D80000000002962",
+                     "position": [5, 0, 5], "rotation": [0, 0, 0, 1], "scale": [3, 3, 3], "posed": true},
                     {"placeable": 342, "definition": "0x0400000000001C90", "identifier": "0x0D80000000002962",
                      "position": [10, 0, 0], "rotation": [0, 0.7071068, 0, 0.7071068], "scale": [2, 1, 1],
-                     "collision": [{"mask": 136, "vertices": [[0, 0, 0], [1, 0, 0], [0, 2, 0]],
-                         "triangles": [[0, 1, 2, -1, -1, -1, 136, 0]]}]}],
+                     "script": {"overrides": [{"graph": 4008, "m_1EB5A024": [], "m_75408640": 0}]}}],
                 "kill_volumes": [{"centre": [10, -30, 0], "half": [20, 2, 5],
                     "rotation": [0, 0.7071068, 0, 0.7071068]}]},
             "0x0800000000000002": {"error": "a room's area is not a box"}
+        },
+        "models": {
+            "0x0400000000001C90": [{"kind": "mesh", "category": 1, "mask": 136,
+                "vertices": [[0, 0, 0], [1, 0, 0], [0, 2, 0]],
+                "triangles": [[0, 1, 2, -1, -1, -1, 136, 0]]}],
+            "0x0400000000001307": [{"kind": "capsule", "category": 128, "mask": 24,
+                "a": [0, 0, 0], "b": [0, 1, 0], "radius": 0.25},
+                {"kind": "sphere", "category": 4096, "mask": 24, "center": [0, 1, 0], "radius": 0.5}]
         }}"#,
     )
     .unwrap();
@@ -136,11 +146,43 @@ fn the_area_file_reads_rooms_damage_areas_placeables_kill_volumes_and_failures()
     };
     assert_eq!(placed(&none), [340]);
     assert_eq!(placed(&listed), [340, 341, 342]);
-    assert!(data.team_walls(&map, &none).is_empty());
-    let walls = data.team_walls(&map, &listed);
-    assert_eq!(walls.len(), 1);
-    assert_eq!(walls[0].entity(), 0x8000_0156);
-    let shapes = walls[0].shapes().unwrap();
+    let bodies = |identifiers| -> Vec<(u32, bool)> {
+        data.placeable_bodies(&map, identifiers)
+            .iter()
+            .map(|body| (body.entity(), body.team_wall))
+            .collect()
+    };
+    assert_eq!(bodies(&none), [(0x8000_0154, false)]);
+    assert_eq!(
+        bodies(&listed),
+        [
+            (0x8000_0154, false),
+            (0x8000_0155, false),
+            (0x8000_0156, true)
+        ]
+    );
+    let listed_bodies = data.placeable_bodies(&map, &listed);
+    // The idle-animated door's capsule, 0.5 m round and 2 m long once
+    // scaled, stands upright on its position; its animated sphere
+    // (category 0x1000) follows the animation, which the server doesn't
+    // play, so it is left out.
+    let shapes = listed_bodies[0].shapes().unwrap();
+    assert_eq!(shapes.len(), 1);
+    assert_eq!(shapes[0].geometry().mask(), 24);
+    let bounds = shapes[0].fat_bounds().unwrap();
+    assert!((bounds.low[0] - 1.0).abs() < 0.2 && (bounds.high[0] - 2.0).abs() < 0.2);
+    assert!((bounds.low[1] - 1.5).abs() < 0.2 && (bounds.high[1] - 4.5).abs() < 0.2);
+    // The door posed by its animation component keeps both shapes at the
+    // world origin, unscaled.
+    let shapes = listed_bodies[1].shapes().unwrap();
+    assert_eq!(shapes.len(), 2);
+    let bounds = shapes[0].fat_bounds().unwrap();
+    assert!((bounds.low[0] - -0.25).abs() < 0.2 && (bounds.high[0] - 0.25).abs() < 0.2);
+    assert!((bounds.low[1] - -0.25).abs() < 0.2 && (bounds.high[1] - 1.25).abs() < 0.2);
+    let bounds = shapes[1].fat_bounds().unwrap();
+    assert!((bounds.low[0] - -0.5).abs() < 0.2 && (bounds.high[0] - 0.5).abs() < 0.2);
+    assert!((bounds.low[1] - 0.5).abs() < 0.2 && (bounds.high[1] - 1.5).abs() < 0.2);
+    let shapes = listed_bodies[2].shapes().unwrap();
     assert_eq!(shapes.len(), 1);
     assert_eq!(shapes[0].geometry().mask(), 0x88);
     // Its 1 m edge along x, scaled to 2 m and turned a quarter about y,
