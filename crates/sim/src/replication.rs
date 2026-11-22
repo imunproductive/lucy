@@ -6305,10 +6305,26 @@ impl WorldDelivery {
         }
         mover.set_peers(&self.blockers);
         let rays = scene.movement_index();
+        let quanta = (dt * 1_000_000.0).round() as u32;
         // A jump or a landing cancels another's knock ([`KnockCredit`]).
         let knocks = &mut self.knocks;
         let stepped =
             mover.step_pending_with(&mut pending.poses, budget - used, |mover, command| {
+                // The idle-animated placeables' parts where this client had
+                // them as it predicted the command.
+                scene.pose_idle_for(&command, quanta);
+                tracing::debug!(
+                    target: "orpheus::pose",
+                    frame = command.frame,
+                    forward = command.forward,
+                    right = command.right,
+                    yaw = command.yaw,
+                    pitch = command.pitch,
+                    buttons = format_args!("{:#x}", command.buttons),
+                    extra = command.extra,
+                    subframe = command.subframe(),
+                    "command"
+                );
                 let Some(script) = script.as_mut().filter(|_| failed.is_none()) else {
                     mover.step_pose_to(rays, command, dt, None)?;
                     knocks.posed(mover.landed(), mover.jumped());

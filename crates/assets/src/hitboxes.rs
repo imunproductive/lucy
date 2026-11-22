@@ -206,7 +206,7 @@ pub(crate) struct Skeleton {
 }
 
 impl Skeleton {
-    fn read(data: &[u8]) -> Result<Option<Self>, String> {
+    pub(crate) fn read(data: &[u8]) -> Result<Option<Self>, String> {
         let Some(payload) = chunk(data, b"mskl")? else {
             return Ok(None);
         };

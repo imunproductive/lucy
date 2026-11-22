@@ -111,17 +111,24 @@
 //! - nothing: every shape at the placeable's place times its scale (the
 //!   Range's Training Partner console `3963`, one 0x80 mesh, its box within
 //!   0.01 m of the client's; Hanamura's `0428`);
-//! - an animation component (component 39, `STU_496257B5`, whose mirrored
-//!   state the server never sends; the spawn doors of graph `0D32`, the
-//!   Range's `1793` and `230A`, Hanamura's `292C`, `292B`, `25D7`): the whole
-//!   model at the world origin, unscaled, its static frame mesh too;
+//! - an animation component (component 39, `STU_496257B5`; the spawn doors
+//!   of graph `0D32`, the Range's `1793` and `230A`, Hanamura's `292C`,
+//!   `292B`, `25D7`): component 39 brings component 28, whose movement
+//!   state gives the entity's transform; a create without one leaves the
+//!   whole model at the world origin, unscaled. The server's create carries
+//!   the map's place as that state ([`Posed`]: the position on the
+//!   1/1024 m grid, the turn as three 16-bit angles), and the shapes stand
+//!   there;
 //! - an idle animation (`STUMirroredIdleAnimComponent`): the static parts
 //!   (category 1 or 0x80) at the placeable's place (Hanamura's `13C7`), the
 //!   animated ones (category 0x1000) where the animation puts their bones:
-//!   the Range's platforms `0516` circle at y 6.5, Hanamura's cars `03B6`
-//!   and `03B7` stand 0.35 m off their bind pose and bob by centimetres,
-//!   its truck `03B4` holds another pose. The server doesn't play these
-//!   animations, so it leaves the animated parts out (loose end).
+//!   Hanamura's cars `03B6` and `03B7` stand 0.35 m off their bind pose
+//!   and bob by centimetres, its truck `03B4` holds another pose. The
+//!   server poses them as the client does each tick
+//!   ([`crate::idle_animation`]; moving shapes, `orpheus_physics`
+//!   `ContactWorld::place`). The Range's platforms `0516` circle at y 6.5
+//!   along their path (component 98, `STU_66A032BC`), which the server
+//!   doesn't play, so their animated parts stay out (loose end).
 //!
 //! The shots meet a standing body's shapes of category 1 or 0x80, the
 //! categories the client's world ray asks for
@@ -185,6 +192,8 @@ use orpheus_script::{
 use serde::Deserialize;
 
 use crate::{
+    bot_animation::{multiply, rotate},
+    idle_animation::{IdleMotion, RawIdleRig},
     objective_data::MapObjectives,
     objectives::{Area, CaptureBox},
 };
@@ -389,6 +398,9 @@ pub struct PlacedScript {
     /// Its second identifier, by which a mode graph removes it
     /// (`STU_A3DC6A25`: Hanamura's health packs carry `2AB0.01C`).
     pub second_identifier: Option<u64>,
+    /// Its model has the animation component 39 (the spawn doors `0D32`):
+    /// its create carries this place ([`Posed`]).
+    pub posed: Option<Posed>,
 }
 
 impl PlacedScript {
@@ -404,6 +416,64 @@ impl PlacedScript {
             position: self.position,
             overrides: &self.overrides,
             extra: &self.extra,
+        }
+    }
+}
+
+/// Where a placeable with component 39 stands: the map's place as the
+/// movement state of its create carries it, the position on the 1/1024 m
+/// grid and the turn as three 16-bit angles (see the module notes).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Posed {
+    /// Metres, on the grid.
+    pub position: [f64; 3],
+    /// The turn `Ry(yaw) · Rx(pitch) · Rz(roll)` (refs `Payloads.md`
+    /// "ModeGraph5 payload position" §2: yaw 0 along +z, 16384 along +x;
+    /// a positive pitch puts the nose down), each angle a 16-bit word.
+    pub yaw: i32,
+    pub pitch: i32,
+    pub roll: i32,
+}
+
+impl Posed {
+    /// The place of a placeable the map puts at `position`, turned by
+    /// `rotation` (x, y, z, w).
+    pub fn new(position: [f64; 3], rotation: [f32; 4]) -> Self {
+        let [x, y, z, w] = rotation.map(f64::from);
+        // The turn's matrix entries: forward (column z) and column x's y.
+        let forward = [
+            2.0 * (x * z + w * y),
+            2.0 * (y * z - w * x),
+            1.0 - 2.0 * (x * x + y * y),
+        ];
+        let (right_y, up_y) = (2.0 * (x * y + w * z), 1.0 - 2.0 * (x * x + z * z));
+        let word = |angle: f64| {
+            let steps = (angle * 32768.0 / std::f64::consts::PI).round() as i64;
+            i32::from(steps as u16 as i16)
+        };
+        Self {
+            position: position.map(|axis| (axis * 1024.0).round_ties_even() / 1024.0),
+            yaw: word(forward[0].atan2(forward[2])),
+            pitch: word((-forward[1]).clamp(-1.0, 1.0).asin()),
+            roll: word(right_y.atan2(up_y)),
+        }
+    }
+
+    /// Its frame as the client builds it from the state: each angle word
+    /// times 2π/65536 in float (`0x7FF7895AE980`), `Ry · Rx · Rz`.
+    pub fn frame(&self) -> ContactFrame {
+        let half = |word: i32| f64::from(f32::from(word as u16) * 9.587_38e-5_f32) * 0.5;
+        let (yaw, pitch, roll) = (half(self.yaw), half(self.pitch), half(self.roll));
+        let turn = multiply(
+            multiply(
+                [0.0, yaw.sin(), 0.0, yaw.cos()],
+                [pitch.sin(), 0.0, 0.0, pitch.cos()],
+            ),
+            [0.0, 0.0, roll.sin(), roll.cos()],
+        );
+        ContactFrame {
+            translation: self.position.map(|axis| axis as f32),
+            rotation: turn.map(|v| v as f32),
         }
     }
 }
@@ -426,26 +496,25 @@ pub struct PlaceableBody {
 
 /// What poses a placeable's model on the clients, and so its physics
 /// (see the module notes).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 enum ModelPose {
-    /// Nothing: the model stands where the map puts it.
+    /// Nothing but where it stands: the map's place, or a placeable with
+    /// component 39's as its create carries it ([`Posed`]).
     Placed,
-    /// Its animation component (component 39, `STU_496257B5`), whose state
-    /// the server never sends: the model stays at the world origin,
-    /// unscaled.
-    Origin,
     /// Its idle animation (`STUMirroredIdleAnimComponent`,
-    /// [`PlacedScript::moving`]): its animated parts follow the animation,
-    /// which the server doesn't play, the rest stands where the map puts
-    /// it.
-    Idle,
+    /// [`PlacedScript::moving`]): its animated parts follow the animation
+    /// ([`IdleBody`]; none without the definition's idle animation), the
+    /// rest stands where the map puts it.
+    Idle(Option<IdleMotion>),
 }
 
 /// One physics shape of a placeable's model, in model space, with the
-/// category the client files it under.
+/// category the client files it under and, for an animated part of an
+/// idle-animated model, the bone of the idle rig it hangs on.
 #[derive(Debug)]
 struct ModelShape {
     category: u16,
+    bone: Option<usize>,
     geometry: ModelGeometry,
 }
 
@@ -463,21 +532,68 @@ const ANIMATED: u16 = 0x1000;
 /// (refs `WeaponRays.md`).
 const RAY_CATEGORIES: u16 = 0x81;
 
+/// Where the client puts a shape of a placeable's model.
+enum ShapePlace {
+    /// At this frame times this scale.
+    Fixed(ContactFrame, [f32; 3]),
+    /// On a bone of the idle rig, at the placeable's frame times its scale
+    /// moved by the bone's move ([`IdleBody`]).
+    Bone(usize),
+}
+
 impl ModelPose {
-    /// Where the client puts a shape of `category` of a model that the map
-    /// puts at `frame` times `scale`; `None` for an animated part of an
-    /// idle animation.
+    /// Where the client puts `shape` of a model that the map puts at
+    /// `frame` times `scale`; `None` for an animated part of an idle
+    /// animation the server can't play.
     fn place(
-        self,
-        category: u16,
+        &self,
+        shape: &ModelShape,
         frame: ContactFrame,
         scale: [f32; 3],
-    ) -> Option<(ContactFrame, [f32; 3])> {
+    ) -> Option<ShapePlace> {
         match self {
-            Self::Origin => Some((ContactFrame::IDENTITY, [1.0; 3])),
-            Self::Idle if category == ANIMATED => None,
-            Self::Placed | Self::Idle => Some((frame, scale)),
+            Self::Idle(motion) if shape.category == ANIMATED => {
+                motion.as_ref().and(shape.bone).map(ShapePlace::Bone)
+            }
+            Self::Placed | Self::Idle(_) => Some(ShapePlace::Fixed(frame, scale)),
         }
+    }
+}
+
+/// The animated parts of an idle-animated placeable: where the map puts
+/// it, its animation and each part's index among its shapes
+/// ([`PlaceableBody::shapes`]) with its bone.
+#[derive(Clone, Debug)]
+pub struct IdleBody {
+    frame: ContactFrame,
+    scale: [f32; 3],
+    motion: IdleMotion,
+    parts: Vec<(u32, usize)>,
+}
+
+impl IdleBody {
+    /// Each part's index and frame at the clock's time `time`: the
+    /// placeable's frame after its bone's move, the move's translation
+    /// scaled by the placeable's scale (see the module notes of
+    /// [`crate::idle_animation`]).
+    pub fn frames(&self, time: f32) -> Vec<(u32, ContactFrame)> {
+        let moves = self.motion.moves(time);
+        let rotation = self.frame.rotation.map(f64::from);
+        let translation = self.frame.translation.map(f64::from);
+        self.parts
+            .iter()
+            .map(|&(index, bone)| {
+                let moved = &moves[bone];
+                let scaled =
+                    std::array::from_fn(|k| moved.translation[k] * f64::from(self.scale[k]));
+                let turned = rotate(rotation, scaled);
+                let frame = ContactFrame {
+                    translation: std::array::from_fn(|k| (translation[k] + turned[k]) as f32),
+                    rotation: multiply(rotation, moved.rotation).map(|v| v as f32),
+                };
+                (index, frame)
+            })
+            .collect()
     }
 }
 
@@ -490,14 +606,17 @@ impl PlaceableBody {
     /// Its shapes in the world as the client places them
     /// ([`ModelPose::place`]), each in its frame times its scale as the
     /// movement cache places a prop's (`ContactWorld::from_movement_cache`).
+    /// An animated part of an idle animation is a moving shape, at the
+    /// placeable's frame until the match poses it ([`Self::idle`]).
     pub fn shapes(&self) -> Result<Vec<StaticShape>, ContactWorldError> {
         self.model
             .iter()
-            .filter_map(|shape| {
-                let placed = self.pose.place(shape.category, self.frame, self.scale)?;
-                Some((shape, placed))
-            })
-            .map(|(shape, (frame, scale))| {
+            .filter_map(|shape| Some((shape, self.pose.place(shape, self.frame, self.scale)?)))
+            .map(|(shape, place)| {
+                let (frame, scale) = match place {
+                    ShapePlace::Fixed(frame, scale) => (frame, scale),
+                    ShapePlace::Bone(_) => (self.frame, self.scale),
+                };
                 let geometry = match &shape.geometry {
                     ModelGeometry::Mesh(mask, mesh) => StaticGeometry::Mesh(Arc::new(
                         ContactMesh::new(Arc::clone(mesh), scale, *mask)?,
@@ -506,9 +625,36 @@ impl PlaceableBody {
                         scaled_solid(solid, scale).ok_or(ContactWorldError::InvalidGeometry)?
                     }
                 };
-                StaticShape::new(geometry, Some(frame))
+                let placed = StaticShape::new(geometry, Some(frame))?;
+                Ok(match place {
+                    ShapePlace::Fixed(..) => placed,
+                    ShapePlace::Bone(_) => placed.moving(),
+                })
             })
             .collect()
+    }
+
+    /// Its animated parts, when its idle animation poses any.
+    pub fn idle(&self) -> Option<IdleBody> {
+        let ModelPose::Idle(Some(motion)) = &self.pose else {
+            return None;
+        };
+        let parts: Vec<(u32, usize)> = self
+            .model
+            .iter()
+            .filter_map(|shape| self.pose.place(shape, self.frame, self.scale))
+            .zip(0..)
+            .filter_map(|(place, index)| match place {
+                ShapePlace::Bone(bone) => Some((index, bone)),
+                ShapePlace::Fixed(..) => None,
+            })
+            .collect();
+        (!parts.is_empty()).then(|| IdleBody {
+            frame: self.frame,
+            scale: self.scale,
+            motion: motion.clone(),
+            parts,
+        })
     }
 
     /// Its shapes that the client's shots meet (categories 1 and 0x80,
@@ -524,17 +670,9 @@ impl PlaceableBody {
             .model
             .iter()
             .filter(|shape| shape.category & RAY_CATEGORIES != 0)
-            .map(|shape| match &shape.geometry {
-                ModelGeometry::Mesh(mask, mesh) => Shape::Mesh {
-                    mask: *mask,
-                    mesh: Mesh::clone(mesh),
-                },
-                ModelGeometry::Solid(solid) => solid.clone(),
-            })
+            .map(ModelShape::cache_shape)
             .collect();
-        let Some((frame, scale)) = self.pose.place(RAY_CATEGORIES, self.frame, self.scale) else {
-            return Ok(None);
-        };
+        let (frame, scale) = (self.frame, self.scale);
         if model.is_empty() {
             return Ok(None);
         }
@@ -546,6 +684,44 @@ impl PlaceableBody {
             rotation: frame.rotation,
         };
         CollisionScene::placed_model(&model, placement).map(Some)
+    }
+
+    /// Its animated parts as a script's ray meets them
+    /// (`crate::hitscan::PlaceableRays`): each one's index among its shapes
+    /// ([`Self::shapes`]) and its geometry in that moving shape's frame
+    /// (scaled by the placeable's scale; the movers' world gives the
+    /// frame).
+    pub fn moving_ray_parts(&self) -> Result<Vec<(u32, CollisionScene)>, SceneError> {
+        let placement = CachePlacement {
+            model: 0,
+            group: 0,
+            translation: [0.0; 3],
+            scale: self.scale,
+            rotation: ContactFrame::IDENTITY.rotation,
+        };
+        self.model
+            .iter()
+            .filter_map(|shape| Some((shape, self.pose.place(shape, self.frame, self.scale)?)))
+            .zip(0..)
+            .filter(|((_, place), _)| matches!(place, ShapePlace::Bone(_)))
+            .map(|((shape, _), index)| {
+                let scene = CollisionScene::placed_model(&[shape.cache_shape()], placement)?;
+                Ok((index, scene))
+            })
+            .collect()
+    }
+}
+
+impl ModelShape {
+    /// Its geometry as the collision cache keeps a prop's.
+    fn cache_shape(&self) -> Shape {
+        match &self.geometry {
+            ModelGeometry::Mesh(mask, mesh) => Shape::Mesh {
+                mask: *mask,
+                mesh: Mesh::clone(mesh),
+            },
+            ModelGeometry::Solid(solid) => solid.clone(),
+        }
     }
 }
 
@@ -598,6 +774,10 @@ struct RawFile {
     /// mover, in model space, by definition.
     #[serde(default)]
     models: HashMap<String, Vec<RawModelShape>>,
+    /// Each idle-animated definition's rig, by definition
+    /// ([`crate::idle_animation`]).
+    #[serde(default)]
+    idle_animations: HashMap<String, RawIdleRig>,
 }
 
 #[derive(Deserialize)]
@@ -648,8 +828,8 @@ struct RawServerPlaceable {
     script: RawScript,
     #[serde(default)]
     moving: bool,
-    /// Its model has the animation component the server mirrors
-    /// (component 39; [`ModelPose::Origin`]).
+    /// Its model has the animation component 39, whose create carries its
+    /// place ([`Posed`]).
     #[serde(default)]
     posed: bool,
     #[serde(default)]
@@ -659,12 +839,26 @@ struct RawServerPlaceable {
     rotation: Option<[f32; 4]>,
     #[serde(default)]
     scale: Option<[f32; 3]>,
+    /// Where its idle animation starts and how fast it plays, when its
+    /// instance data says (`STU_5AD3B86B`).
+    #[serde(default)]
+    idle: Option<RawIdleStart>,
 }
 
-/// A model's physics shape with the category the client files it under.
+/// A placeable's idle animation start, in 30 fps frames, and rate.
+#[derive(Deserialize)]
+struct RawIdleStart {
+    start: i32,
+    rate: f32,
+}
+
+/// A model's physics shape with the category the client files it under and,
+/// for an animated part of an idle-animated model, its bone in the rig.
 #[derive(Deserialize)]
 struct RawModelShape {
     category: u16,
+    #[serde(default)]
+    bone: Option<usize>,
     #[serde(flatten)]
     shape: RawShape,
 }
@@ -859,15 +1053,30 @@ impl MapAreaData {
 
     pub fn read(bytes: &[u8]) -> io::Result<Self> {
         let file: RawFile = serde_json::from_slice(bytes).map_err(invalid)?;
+        let definition_of = |key: &str, what: &str| {
+            u64::from_str_radix(key.trim_start_matches("0x"), 16)
+                .map_err(|_| invalid(format!("{FILE}: {what} key {key}")))
+        };
+        let mut rigs = HashMap::new();
+        for (key, raw) in file.idle_animations {
+            let rig = raw
+                .rig()
+                .map_err(|error| invalid(format!("{FILE}: idle animation {key}: {error}")))?;
+            rigs.insert(definition_of(&key, "idle animation")?, Arc::new(rig));
+        }
         let mut models = HashMap::new();
         for (key, shapes) in file.models {
-            let definition = u64::from_str_radix(key.trim_start_matches("0x"), 16)
-                .map_err(|_| invalid(format!("{FILE}: model key {key}")))?;
+            let definition = definition_of(&key, "model")?;
+            let bones = rigs.get(&definition).map_or(0, |rig| rig.bones());
             let shapes = shapes
                 .into_iter()
                 .map(|raw| {
+                    if raw.bone.is_some_and(|bone| bone >= bones) {
+                        return Err("a shape on a bone the idle rig hasn't");
+                    }
                     Ok(ModelShape {
                         category: raw.category,
+                        bone: raw.bone,
                         geometry: raw.shape.read()?,
                     })
                 })
@@ -926,6 +1135,16 @@ impl MapAreaData {
                 };
                 let definition = guid("definition", raw.definition)?.unwrap_or_default();
                 let second_identifier = guid("second identifier", raw.second_identifier)?;
+                let posed = match (raw.posed, raw.rotation) {
+                    (false, _) => None,
+                    (true, Some(rotation)) => Some(Posed::new(raw.position, rotation)),
+                    (true, None) => {
+                        return Err(invalid(format!(
+                            "{FILE}: map {key}: placeable {}: posed without rotation",
+                            placeable.placeable
+                        )));
+                    }
+                };
                 if let Some(model) = models.get(&definition) {
                     let (Some(rotation), Some(scale)) = (raw.rotation, raw.scale) else {
                         return Err(invalid(format!(
@@ -941,17 +1160,30 @@ impl MapAreaData {
                         .any(|binding| binding.graph == Some(TEAM_WALL_GRAPH));
                     bodies.push(PlaceableBody {
                         placeable,
-                        frame: ContactFrame {
-                            translation: raw.position.map(|axis| axis as f32),
-                            rotation,
-                        },
-                        scale,
+                        frame: posed.map_or(
+                            ContactFrame {
+                                translation: raw.position.map(|axis| axis as f32),
+                                rotation,
+                            },
+                            |posed| posed.frame(),
+                        ),
+                        // The movement state carries no scale: the client
+                        // keeps a posed model unscaled (Anubis's door 971,
+                        // scale 0.5 on the map).
+                        scale: if posed.is_some() { [1.0; 3] } else { scale },
                         model: Arc::clone(model),
                         team_wall,
-                        pose: match (raw.posed, raw.moving) {
-                            (true, _) => ModelPose::Origin,
-                            (false, true) => ModelPose::Idle,
-                            (false, false) => ModelPose::Placed,
+                        pose: match rigs.get(&definition).filter(|_| raw.moving) {
+                            Some(rig) => {
+                                let start = raw.idle.as_ref();
+                                ModelPose::Idle(Some(IdleMotion {
+                                    rig: Arc::clone(rig),
+                                    start: start.map_or(0, |idle| idle.start),
+                                    rate: start.map_or(1.0, |idle| idle.rate),
+                                }))
+                            }
+                            None if raw.moving => ModelPose::Idle(None),
+                            None => ModelPose::Placed,
                         },
                     });
                 }
@@ -963,6 +1195,7 @@ impl MapAreaData {
                     extra: raw.script.extra,
                     moving: raw.moving,
                     second_identifier,
+                    posed,
                 }));
                 server_placeables.push(placeable);
             }

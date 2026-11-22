@@ -98,10 +98,12 @@ fn the_area_file_reads_rooms_damage_areas_placeables_kill_volumes_and_failures()
                      "boxes": [{"centre": [0, -40, 0], "half": [1, 1, 1], "rotation": [0, 0, 0, 1]}]}],
                 "server_placeables": [{"placeable": 340, "definition": "0x0400000000001307",
                     "position": [1.5, 2, -3], "rotation": [0, 0, 0, 1], "scale": [2, 2, 2], "moving": true,
+                    "idle": {"start": 15, "rate": 2.0},
                     "script": {"overrides": [{"graph": 246,
                     "m_1EB5A024": [], "m_75408640": 0}], "extra": []}},
                     {"placeable": 341, "definition": "0x0400000000001307", "identifier": "0x0D80000000002962",
-                     "position": [5, 0, 5], "rotation": [0, 0, 0, 1], "scale": [3, 3, 3], "posed": true},
+                     "position": [5.0001, 0, 5], "rotation": [0, 0.7071068, 0, 0.7071068], "scale": [3, 3, 3],
+                     "posed": true},
                     {"placeable": 342, "definition": "0x0400000000001C90", "identifier": "0x0D80000000002962",
                      "position": [10, 0, 0], "rotation": [0, 0.7071068, 0, 0.7071068], "scale": [2, 1, 1],
                      "script": {"overrides": [{"graph": 4008, "m_1EB5A024": [], "m_75408640": 0}]}}],
@@ -115,7 +117,14 @@ fn the_area_file_reads_rooms_damage_areas_placeables_kill_volumes_and_failures()
                 "triangles": [[0, 1, 2, -1, -1, -1, 136, 0]]}],
             "0x0400000000001307": [{"kind": "capsule", "category": 128, "mask": 24,
                 "a": [0, 0, 0], "b": [0, 1, 0], "radius": 0.25},
-                {"kind": "sphere", "category": 4096, "mask": 24, "center": [0, 1, 0], "radius": 0.5}]
+                {"kind": "sphere", "category": 4096, "mask": 24, "center": [0, 1, 0], "radius": 0.5,
+                 "bone": 1}]
+        },
+        "idle_animations": {"0x0400000000001307": {"frames": 30, "bones": [
+            {"id": 1, "parent": null, "rotation": [0, 0, 0, 1], "scale": [1, 1, 1], "translation": [0, 0, 0]},
+            {"id": 2, "parent": 0, "rotation": [0, 0, 0, 1], "scale": [1, 1, 1], "translation": [0, 1, 0]}],
+            "clip": {"additive": true, "duration": 1.0, "fps": 30, "frames": 31, "tracks": [
+                {"bone": 1, "positions": [[0, 0, 0, 0], [30, 0, 3, 0]]}]}}
         }}"#,
     )
     .unwrap();
@@ -164,23 +173,56 @@ fn the_area_file_reads_rooms_damage_areas_placeables_kill_volumes_and_failures()
     let listed_bodies = data.placeable_bodies(&map, &listed);
     // The idle-animated door's capsule, 0.5 m round and 2 m long once
     // scaled, stands upright on its position; its animated sphere
-    // (category 0x1000) follows the animation, which the server doesn't
-    // play, so it is left out.
+    // (category 0x1000) is a moving shape on bone 1 of its idle rig.
     let shapes = listed_bodies[0].shapes().unwrap();
-    assert_eq!(shapes.len(), 1);
+    assert_eq!(shapes.len(), 2);
     assert_eq!(shapes[0].geometry().mask(), 24);
+    assert!(!shapes[0].is_moving() && shapes[1].is_moving());
     let bounds = shapes[0].fat_bounds().unwrap();
     assert!((bounds.low[0] - 1.0).abs() < 0.2 && (bounds.high[0] - 2.0).abs() < 0.2);
     assert!((bounds.low[1] - 1.5).abs() < 0.2 && (bounds.high[1] - 4.5).abs() < 0.2);
-    // The door posed by its animation component keeps both shapes at the
-    // world origin, unscaled.
+    // It starts 15 frames in at twice the rate: at 0.125 s, (0.125 + 0.5)
+    // s · 30 · 2 = 37.5 frames, 7.5 into its 30-frame loop, a quarter of
+    // the 1 s clip, whose delta lifts bone 1 by a quarter of 3 m: the
+    // sphere rises 0.75 m, 1.5 m at the placeable's scale 2.
+    let idle = listed_bodies[0].idle().unwrap();
+    let [(1, frame)] = idle.frames(0.125)[..] else {
+        panic!("one part, the sphere");
+    };
+    let expected = [1.5, 3.5, -3.0];
+    for (axis, value) in frame.translation.iter().enumerate() {
+        assert!((value - expected[axis]).abs() < 1e-5, "{frame:?}");
+    }
+    assert_eq!(frame.rotation, [0.0, 0.0, 0.0, 1.0]);
+    // A whole loop later (0.5 s at twice the rate) it is there again.
+    let [(1, again)] = idle.frames(0.625)[..] else {
+        panic!("one part, the sphere");
+    };
+    for (axis, value) in again.translation.iter().enumerate() {
+        assert!((value - expected[axis]).abs() < 1e-5, "{again:?}");
+    }
+    // The door with component 39 stands where its create puts it: on the
+    // 1/1024 m grid (x 5.0001 → 5), turned a quarter (yaw word 16384),
+    // unscaled (the state carries no scale; the map's 3 is left out).
+    let door = &data.placed_scripts(&map, &listed)[1];
+    assert_eq!(
+        door.posed,
+        Some(Posed {
+            position: [5.0, 0.0, 5.0],
+            yaw: 16384,
+            pitch: 0,
+            roll: 0,
+        })
+    );
+    assert!(listed_bodies[1].idle().is_none());
     let shapes = listed_bodies[1].shapes().unwrap();
     assert_eq!(shapes.len(), 2);
+    // The capsule (radius 0.25, 1 m tall) and the sphere (radius 0.5, 1 m
+    // up) at x 5, the margins aside.
     let bounds = shapes[0].fat_bounds().unwrap();
-    assert!((bounds.low[0] - -0.25).abs() < 0.2 && (bounds.high[0] - 0.25).abs() < 0.2);
+    assert!((bounds.low[0] - 4.75).abs() < 0.2 && (bounds.high[0] - 5.25).abs() < 0.2);
     assert!((bounds.low[1] - -0.25).abs() < 0.2 && (bounds.high[1] - 1.25).abs() < 0.2);
     let bounds = shapes[1].fat_bounds().unwrap();
-    assert!((bounds.low[0] - -0.5).abs() < 0.2 && (bounds.high[0] - 0.5).abs() < 0.2);
     assert!((bounds.low[1] - 0.5).abs() < 0.2 && (bounds.high[1] - 1.5).abs() < 0.2);
     let shapes = listed_bodies[2].shapes().unwrap();
     assert_eq!(shapes.len(), 1);

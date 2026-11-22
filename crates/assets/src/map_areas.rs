@@ -100,16 +100,18 @@
 
 use std::{collections::HashMap, path::Path};
 
+use orpheus_stu::Value as Stu;
 use serde_json::{Map, Value as Json, json};
 
 use crate::{
-    Install, Output, Result, asset_error,
+    Install, Output, Result, animation, asset_error, bot_animation,
     collision::mask_triangles,
     game_maps::{
         Components, Placed, REQUIRED, SPAWN, TARGET_AREA, TARGET_TAG_DATA, chunk_index, graph_vars,
         instance, map_chunks, placed_script, read_map, target_tags,
     },
     guid_hex,
+    hitboxes::Skeleton,
     map_chunk::{COLLISION, areas, chunk_kind, guid_of, name_index, short},
     props::{self, Shape},
 };
@@ -129,6 +131,24 @@ const DAMAGE: usize = 24;
 /// model plays an idle animation that moves it (the Practice Range's
 /// platforms, definition `0516`).
 const MIRRORED_IDLE_ANIM: u32 = 0x3AA5_CB04;
+/// Its fields: the idle clip (`006`, `m_idleAnimation`) and the embedded
+/// `STUAnimGameData_Animation`, whose `m_8E7A6FDE` is the loop's length in
+/// the client's 30 fps frames.
+const IDLE_ANIMATION: u32 = 0xC9D6_69B6;
+const IDLE_GAME_DATA: u32 = 0x25D5_4A00;
+const IDLE_FRAMES: u32 = 0x8E7A_6FDE;
+/// `STU_5AD3B86B`, a placeable's instance data for its idle animation:
+/// the rate (`f32` at +8) and the start in 30 fps frames (`s32` at +12).
+const IDLE_START_DATA: u32 = 0x5AD3_B86B;
+const IDLE_RATE: usize = 8;
+const IDLE_START: usize = 12;
+/// The category of the parts of a model that its animation places
+/// (`props::Structured::static_category`).
+const ANIMATED: u16 = 0x1000;
+/// `STU_66A032BC` (client component 98): the client walks the model along
+/// a path of waypoint entities (the Practice Range's platforms `0516`,
+/// refs `Payloads.md` "ModeGraph4 client pass" §1).
+const PATH_FOLLOWER: u32 = 0x66A0_32BC;
 /// `STU_496257B5` (client component 39, mirror `STU_56B22CE6`): the
 /// definition's model is posed by an animation state the server mirrors
 /// (the spawn doors `0D32`); until it comes, the client keeps the model,
@@ -153,10 +173,18 @@ its damage (m_B81F7395) and its boxes; its server placeables: every entity place
 whose definition (003) has neither component 0x737C5C41 nor 0xCA1FB0B8 (those are on the loading \
 list), with its definition, its first identifier and its second identifier (body +16), and when its \
 definition's model has static physics shapes that stop the team proxies 0x18 (STUModel m_CB4D298D) \
-its rotation x y z w and scale; its models: each such definition's shapes in model space with the \
+or its definition has STU_496257B5 (then also posed: true) its rotation x y z w and scale; when its \
+definition has STUMirroredIdleAnimComponent, moving: true, \
+and its STU_5AD3B86B instance data's idle start (s32 +12, 30 fps frames) and rate (f32 +8); its \
+models: each such definition's shapes in model space with the \
 category the client files each under (meshes: holder mask, vertices, triangles as corners, wings, \
 mask, surface; polytopes: mask, centroid, vertices, planes, faces, half edges as twin, origin, face, \
-next; capsules and spheres: mask and geometry); its tagged entities: every entity placeable on \
+next; capsules and spheres: mask and geometry), an animated shape (category 0x1000) of a moving \
+definition with the index of the skeleton bone it hangs on (its node, m_30F925F4); its idle \
+animations: each moving definition's with animated shapes: its model's skeleton (mskl: id, parent, \
+rotation, scale, translation relative to the parent), its idle clip's keys on those bones (006 \
+m_idleAnimation) and the loop's length in 30 fps frames (embedded STUAnimGameData_Animation \
+m_8E7A6FDE); its tagged entities: every entity placeable on \
 the loading list or with client id 0 that has target tags (STUTargetTagInstanceData.m_targetTags, then \
 its definition's STUTargetTagComponent.m_targetTags, each once), with its first identifier, \
 position and rotation x y z w; its kill volumes: the boxes the triangles of the \
@@ -169,8 +197,9 @@ pub(crate) fn derive(install: &Install, _out: &Path) -> Result<Vec<Output>> {
     maps.sort_unstable();
     let mut derived = Map::new();
     let mut components = Components::default();
-    // Each server placeable definition's shapes (null without any).
-    let mut models = Map::new();
+    // Each server placeable definition's shapes (null without any) and idle
+    // animation.
+    let mut models = Models::default();
     for map in maps {
         let data = map_chunks(install, &chunks, map);
         // A map whose rooms don't fit keeps the reason instead: the server
@@ -208,10 +237,19 @@ pub(crate) fn derive(install: &Install, _out: &Path) -> Result<Vec<Output>> {
             derived.insert(guid_hex(guid_of(map, MAP)), Json::Object(entry));
         }
     }
-    models.retain(|_, shapes| !shapes.is_null());
+    let Models {
+        mut shapes,
+        idle_animations,
+    } = models;
+    shapes.retain(|_, shapes| !shapes.is_null());
     Ok(vec![Output::json(
         PATH,
-        &json!({"source": SOURCE, "maps": derived, "models": models}),
+        &json!({
+            "source": SOURCE,
+            "maps": derived,
+            "models": shapes,
+            "idle_animations": idle_animations,
+        }),
     )])
 }
 
@@ -427,7 +465,7 @@ fn damage_areas(
 fn server_placeables(
     install: &Install,
     components: &mut Components,
-    models: &mut Map<String, Json>,
+    models: &mut Models,
     base: usize,
     entities: &[Placed<'_>],
 ) -> Result<Vec<Json>> {
@@ -454,18 +492,33 @@ fn server_placeables(
             );
         }
         entry.insert("position".into(), json!(entity.translation.map(short)));
-        if placeable_shapes(install, models, entity.definition)? {
+        let found = components.of(entity.definition);
+        let moving = found.is_some_and(|found| found.contains(&MIRRORED_IDLE_ANIM));
+        let posed = found.is_some_and(|found| found.contains(&POSED));
+        // A model that also follows a path (component 98) is where the
+        // path puts it, which the server doesn't play: its idle animation
+        // alone doesn't place its animated parts.
+        let idle = moving && !found.is_some_and(|found| found.contains(&PATH_FOLLOWER));
+        if placeable_shapes(install, models, entity.definition, idle)? || posed {
             entry.insert("rotation".into(), json!(entity.rotation.map(short)));
             entry.insert("scale".into(), json!(entity.scale.map(short)));
         }
         if let Some(script) = placed_script(&placed.instances) {
             entry.insert("script".into(), script);
         }
-        let found = components.of(entity.definition);
-        if found.is_some_and(|found| found.contains(&MIRRORED_IDLE_ANIM)) {
+        if moving {
             entry.insert("moving".into(), json!(true));
+            if let Some((stu, root)) = instance(placed, IDLE_START_DATA) {
+                entry.insert(
+                    "idle".into(),
+                    json!({
+                        "start": stu.i32(root + IDLE_START),
+                        "rate": stu.f32(root + IDLE_RATE).map(short),
+                    }),
+                );
+            }
         }
-        if found.is_some_and(|found| found.contains(&POSED)) {
+        if posed {
             entry.insert("posed".into(), json!(true));
         }
         out.push(Json::Object(entry));
@@ -473,36 +526,104 @@ fn server_placeables(
     Ok(out)
 }
 
+/// The server placeable definitions' models (see the module notes), by
+/// definition: the shapes (null without any) and the idle animations.
+#[derive(Default)]
+struct Models {
+    shapes: Map<String, Json>,
+    idle_animations: Map<String, Json>,
+}
+
 /// Whether a server placeable's definition has static physics shapes that
 /// stop the mover, its model's shapes kept in `models` by definition the
-/// first time (null when it has none; see the module notes).
+/// first time (null when it has none; see the module notes). A `moving`
+/// definition's animated shapes name the bone they hang on, and its idle
+/// animation goes into the models too ([`idle_animation`]).
 fn placeable_shapes(
     install: &Install,
-    models: &mut Map<String, Json>,
+    models: &mut Models,
     definition: u64,
+    moving: bool,
 ) -> Result<bool> {
     let key = guid_hex(definition);
-    if let Some(found) = models.get(&key) {
+    if let Some(found) = models.shapes.get(&key) {
         return Ok(!found.is_null());
     }
-    let shapes = props::definition_shapes(install, definition, props::MOVER)?;
-    let has = !shapes.is_empty();
-    let json = if has {
-        Json::from(
-            shapes
-                .iter()
-                .map(|(category, shape)| {
-                    let mut json = shape_json(shape);
-                    json["category"] = json!(category);
-                    json
-                })
-                .collect::<Vec<_>>(),
-        )
-    } else {
-        Json::Null
+    let Some((model, parts)) = props::definition_shapes(install, definition, props::MOVER)?
+        .filter(|(_, parts)| !parts.is_empty())
+    else {
+        models.shapes.insert(key, Json::Null);
+        return Ok(false);
     };
-    models.insert(key, json);
-    Ok(has)
+    let idle = if moving && parts.iter().any(|part| part.category == ANIMATED) {
+        idle_animation(install, definition, model)?
+    } else {
+        None
+    };
+    let shapes = parts
+        .iter()
+        .map(|part| {
+            let mut json = shape_json(&part.shape);
+            json["category"] = json!(part.category);
+            let bone = idle
+                .as_ref()
+                .filter(|_| part.category == ANIMATED)
+                .zip(part.node)
+                .and_then(|((skeleton, _), node)| skeleton.bone(node));
+            if let Some(bone) = bone {
+                json["bone"] = json!(bone);
+            }
+            json
+        })
+        .collect::<Vec<_>>();
+    models.shapes.insert(key.clone(), Json::from(shapes));
+    if let Some((_, animation)) = idle {
+        models.idle_animations.insert(key, animation);
+    }
+    Ok(true)
+}
+
+/// A definition's idle animation (its `STUMirroredIdleAnimComponent`): the
+/// model's skeleton and the idle clip's keys ([`bot_animation::idle_rig`]),
+/// with the loop's length in the client's 30 fps frames (the component's
+/// embedded `STUAnimGameData_Animation` `m_8E7A6FDE`); none when the
+/// definition, its clip or its model's skeleton lacks a part.
+fn idle_animation(
+    install: &Install,
+    definition: u64,
+    model: u64,
+) -> Result<Option<(Skeleton, Json)>> {
+    let asset = install.stu(definition)?;
+    let Some(Stu::Map(entries)) = asset.root().and_then(|root| root.get("m_componentMap")) else {
+        return Ok(None);
+    };
+    let Some(component) = entries
+        .iter()
+        .filter_map(|(_, index)| asset.instances.get((*index)?)?.as_ref())
+        .find(|object| object.class == MIRRORED_IDLE_ANIM)
+    else {
+        return Ok(None);
+    };
+    let frames = component
+        .stored(IDLE_GAME_DATA)
+        .and_then(|data| asset.resolve(data))
+        .and_then(|data| match data.stored(IDLE_FRAMES) {
+            Some(Stu::UInt(frames)) => Some(*frames),
+            _ => None,
+        });
+    let (Some(Stu::Guid(clip)), Some(frames)) = (component.stored(IDLE_ANIMATION), frames) else {
+        return Ok(None);
+    };
+    let Some(skeleton) = Skeleton::read(&install.raw(model)?)
+        .map_err(|reason| asset_error(format!("{}: {reason}", guid_hex(model))))?
+    else {
+        return Ok(None);
+    };
+    let animation = animation::read(&install.raw(*clip)?)
+        .map_err(|reason| asset_error(format!("{}: {reason}", guid_hex(*clip))))?;
+    let mut json = bot_animation::idle_rig(&skeleton, &animation);
+    json["frames"] = json!(frames);
+    Ok(Some((skeleton, json)))
 }
 
 /// One model-space physics shape (`crate::props`), as the server reads it
