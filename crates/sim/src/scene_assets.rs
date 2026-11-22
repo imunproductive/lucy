@@ -50,7 +50,7 @@ use orpheus_content::{
     stats::{BoardStats, PlayerStats, StatRules, StatsCatalog, initial_on_fire},
     voice_sets::VoiceCatalog,
 };
-use orpheus_core::{bits::BitWriter, guid::parse_guid};
+use orpheus_core::{bits::BitWriter, guid::parse_guid, tick::TICK_PERIOD};
 use orpheus_physics::{
     ai_cells::{self, AiCells},
     collision::cache::{
@@ -77,7 +77,10 @@ use orpheus_script::{
     },
     wire::Variables,
 };
-use orpheus_wire::entity::{Component, EntityUpdate, Operation};
+use orpheus_wire::{
+    commands::Command,
+    entity::{Component, EntityUpdate, Operation},
+};
 
 const MOVER_CATEGORY: u16 = 0x18;
 
@@ -310,6 +313,9 @@ pub struct PreparedScene {
     /// and whether it is a team wall, by its switched group in the contact
     /// world ([`Self::switch_placeable_bodies`]).
     placeable_bodies: Vec<(u32, bool)>,
+    /// The animated parts of the idle-animated ones, by switched group
+    /// ([`Self::pose_idle_bodies`]).
+    idle_bodies: Vec<(usize, map_areas::IdleBody)>,
     /// Their scripts (`placed_script`).
     placed_scripts: PlacedScripts,
     /// Where a falling body dies on a map with neither damage areas nor
@@ -508,15 +514,24 @@ impl SceneAssets {
             .iter()
             .map(|body| (body.entity(), body.team_wall))
             .collect();
+        let idle_bodies: Vec<(usize, map_areas::IdleBody)> = bodies
+            .iter()
+            .enumerate()
+            .filter_map(|(group, body)| Some((group, body.idle()?)))
+            .collect();
         let body_shapes = bodies
             .iter()
             .map(|body| body.shapes())
             .collect::<Result<Vec<_>, _>>()
             .map_err(invalid)?;
         let mut ray_scenes = Vec::new();
+        let mut ray_parts = Vec::new();
         for (group, body) in bodies.iter().enumerate() {
             if let Some(scene) = body.ray_scene().map_err(invalid)? {
                 ray_scenes.push((group, body.entity(), scene));
+            }
+            for (index, part) in body.moving_ray_parts().map_err(invalid)? {
+                ray_parts.push((group, body.entity(), index, part));
             }
         }
         let (ground, contacts, navigation, rays) = std::thread::scope(|scope| {
@@ -538,7 +553,22 @@ impl SceneAssets {
         });
         let ground = ground?;
         let contacts = contacts?;
-        let placeable_rays = Arc::new(PlaceableRays::new(Arc::clone(&contacts), ray_scenes));
+        let ray_parts = ray_parts
+            .into_iter()
+            .map(|(group, entity, index, part)| {
+                (
+                    group,
+                    entity,
+                    contacts.group_shapes(group).start + index,
+                    part,
+                )
+            })
+            .collect();
+        let placeable_rays = Arc::new(PlaceableRays::new(
+            Arc::clone(&contacts),
+            ray_scenes,
+            ray_parts,
+        ));
         let contacts = Some(contacts);
         let rays = Arc::new(rays?);
         let mut bots = self.bots.make(map.map_guid, |body| {
@@ -694,8 +724,10 @@ impl SceneAssets {
             map_tags,
             body_tags: Arc::clone(&scripts.body_tags),
             placeable_bodies,
+            idle_bodies,
         };
         scene.switch_placeable_bodies();
+        scene.pose_idle_bodies(0);
         let mut factories = self
             .owner_bodies
             .lock()
@@ -1121,6 +1153,7 @@ impl PreparedScene {
             self.removed_placeables.extend(removed);
         }
         self.switch_placeable_bodies();
+        self.pose_idle_bodies(tick);
     }
 
     /// Turn each server placeable's model on in the movers' world while
@@ -1138,6 +1171,45 @@ impl PreparedScene {
                 !self.removed_placeables.contains(&entity)
             };
             contacts.switch(group, on);
+        }
+    }
+
+    /// Put the idle-animated placeables' animated parts where a client
+    /// without view delay has them at `tick` (the AI and the bots move
+    /// then; [`idle_clock`]).
+    fn pose_idle_bodies(&self, tick: u32) {
+        self.pose_idle_at(idle_clock(tick));
+    }
+
+    /// Put the idle-animated placeables' animated parts where a player's
+    /// client had them as it predicted `command`: at the command's view
+    /// time, its frame less its view delay (`Command::view_delay`, the
+    /// time of the client's interpolation clock `0x7FF789D287F0`, which
+    /// also times the idle animations; refs `MapEntities.md` "MapAnim").
+    pub fn pose_idle_for(&self, command: &Command, quanta: u32) {
+        if self.idle_bodies.is_empty() {
+            return;
+        }
+        let frame = f64::from(command.frame) * TICK_PERIOD.as_secs_f64();
+        self.pose_idle_at((frame - command.view_delay(quanta)) as f32);
+    }
+
+    /// Put the idle-animated placeables' animated parts where their
+    /// animation has them at the clock's time `time`
+    /// ([`map_areas::IdleBody`]).
+    fn pose_idle_at(&self, time: f32) {
+        let Some(contacts) = &self.contacts else {
+            return;
+        };
+        for (group, body) in &self.idle_bodies {
+            let first = contacts.group_shapes(*group).start;
+            let moves = body
+                .frames(time)
+                .into_iter()
+                .map(|(index, frame)| (first + index, frame));
+            contacts
+                .place(moves)
+                .expect("an idle body's parts are moving shapes at finite frames");
         }
     }
 
@@ -1382,6 +1454,7 @@ impl PreparedScene {
                 direction,
                 reach,
                 self.ray_profiles.map_mask(profile),
+                false,
             )
             .map(|hit| {
                 hit.map(|hit| WallHit {
@@ -1807,6 +1880,12 @@ fn cache_version(path: &Path) -> Option<u32> {
     let mut head = [0; 12];
     File::open(path).ok()?.read_exact(&mut head).ok()?;
     (&head[..8] == MAGIC).then(|| u32::from_le_bytes([head[8], head[9], head[10], head[11]]))
+}
+
+/// The clients' idle animation clock at `tick`, in seconds
+/// ([`crate::idle_animation`]).
+fn idle_clock(tick: u32) -> f32 {
+    (f64::from(tick) * TICK_PERIOD.as_secs_f64()) as f32
 }
 
 fn invalid(error: impl std::fmt::Display) -> io::Error {

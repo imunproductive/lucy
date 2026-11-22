@@ -38,7 +38,7 @@ use orpheus_script::{
 use orpheus_wire::commands::Command;
 use serde::Deserialize;
 
-use crate::hitboxes::HitShape;
+use crate::{bot_animation::rotate, hitboxes::HitShape};
 
 pub const DEFAULT_REACH: f64 = 200.0;
 const HISTORY: usize = 64;
@@ -141,15 +141,21 @@ impl RayProfiles {
     }
 }
 
-/// The server placeables' models that the client's shots meet
+/// The server placeables' models that the client's rays meet
 /// (`crate::map_areas::PlaceableBody::ray_scene`), each with its switched
 /// group in the movers' world and its entity: a model meets a ray while
 /// its group is on there (`crate::scene_assets` switches the groups as the
-/// placeables stand or go), unless the ray is its own entity's.
+/// placeables stand or go), unless the ray is its own entity's. The
+/// shots' rays meet a model's category 1 and 0x80 shapes (body mask &
+/// 0x81); a script's ray (the statescript line of sight `0x7FF789BB3570`
+/// asks for 0x1081) also meets its animated parts (category 0x1000), which
+/// are moving shapes of the movers' world (`moving`: each part's group,
+/// entity, shape and its geometry in the shape's own frame).
 #[derive(Default)]
 pub struct PlaceableRays {
     contacts: Option<Arc<ContactWorld>>,
     scenes: Vec<(usize, u32, CollisionScene)>,
+    moving: Vec<(usize, u32, u32, CollisionScene)>,
 }
 
 impl std::fmt::Debug for PlaceableRays {
@@ -161,16 +167,26 @@ impl std::fmt::Debug for PlaceableRays {
 }
 
 impl PlaceableRays {
-    /// `scenes`: each model's switched group, entity and shapes.
-    pub fn new(contacts: Arc<ContactWorld>, scenes: Vec<(usize, u32, CollisionScene)>) -> Self {
+    /// `scenes`: each model's switched group, entity and shapes; `moving`:
+    /// each animated part's group, entity, shape in the movers' world and
+    /// geometry in that shape's frame.
+    pub fn new(
+        contacts: Arc<ContactWorld>,
+        scenes: Vec<(usize, u32, CollisionScene)>,
+        moving: Vec<(usize, u32, u32, CollisionScene)>,
+    ) -> Self {
         Self {
             contacts: Some(contacts),
             scenes,
+            moving,
         }
     }
 
     /// The map's first hit along a unit direction (`scene`), or a standing
-    /// placeable model's nearer one, but not `caster`'s own model.
+    /// placeable model's nearer one, but not `caster`'s own model; with
+    /// `animated` (a script's ray) its animated parts where they stand now
+    /// too.
+    #[allow(clippy::too_many_arguments)]
     pub fn cast_ray(
         &self,
         scene: &CollisionScene,
@@ -179,6 +195,7 @@ impl PlaceableRays {
         direction: Vec3,
         length: f64,
         mask: u16,
+        animated: bool,
     ) -> Result<Option<RayHit>, IndexError> {
         let mut hit = scene.cast_ray(origin, direction, length, mask)?;
         let Some(contacts) = &self.contacts else {
@@ -193,6 +210,29 @@ impl PlaceableRays {
                 if found.distance < reach {
                     hit = Some(found);
                 }
+            }
+        }
+        let moving = self.moving.iter().filter(|_| animated);
+        for (group, entity, shape, part) in moving {
+            if !contacts.is_on(*group) || caster == Some(*entity) {
+                continue;
+            }
+            let Some(frame) = contacts.shapes()[*shape as usize].frame() else {
+                continue;
+            };
+            let turn = frame.rotation.map(f64::from);
+            let back = [-turn[0], -turn[1], -turn[2], turn[3]];
+            let offset = std::array::from_fn(|k| origin[k] - f64::from(frame.translation[k]));
+            let reach = hit.map_or(length, |hit| hit.distance);
+            let local =
+                part.cast_ray(rotate(back, offset), rotate(back, direction), reach, mask)?;
+            if let Some(found) = local.filter(|found| found.distance < reach) {
+                let point = rotate(turn, found.point);
+                hit = Some(RayHit {
+                    point: std::array::from_fn(|k| point[k] + f64::from(frame.translation[k])),
+                    normal: rotate(turn, found.normal),
+                    ..found
+                });
             }
         }
         Ok(hit)
@@ -243,6 +283,7 @@ impl MapRays for SceneRays {
                 direction,
                 reach,
                 self.profiles.map_mask(profile),
+                true,
             )
             .ok()?;
         Some(hit.map(|hit| MapHit {
@@ -1067,10 +1108,16 @@ mod tests {
     /// A standing placeable's model meets a shot nearer than the map's wall
     /// behind it; while its group is off in the movers' world (the
     /// placeable gone) the shot passes it, and a model behind the wall
-    /// never wins.
+    /// never wins. An animated part meets only a script's ray, where the
+    /// movers' world has moved it.
     #[test]
     fn placeable_models_meet_rays_while_their_group_is_on() {
         use orpheus_physics::collision::cache::{Mesh, Placement, Shape, Triangle};
+        use orpheus_physics::contact::{
+            math::ContactFrame,
+            round::{RoundShape, Sphere},
+            world::{StaticGeometry, StaticShape},
+        };
         let wall = |z: f32| {
             let shape = Shape::Mesh {
                 mask: 0x1FDF,
@@ -1094,22 +1141,44 @@ mod tests {
             CollisionScene::placed_model(&[shape], placement).unwrap()
         };
         let map = wall(10.0);
+        // Group 2: one animated part (a moving shape), its wall at z 0 in
+        // its own frame.
+        let part = StaticShape::new(
+            StaticGeometry::Round {
+                shape: RoundShape::Sphere(Sphere {
+                    center: [0.0; 3],
+                    radius: 0.5,
+                }),
+                mask: 0x1FDF,
+            },
+            Some(ContactFrame::IDENTITY),
+        )
+        .unwrap()
+        .moving();
         let contacts = Arc::new(
             ContactWorld::new(Vec::new())
                 .unwrap()
-                .with_switched(vec![Vec::new(), Vec::new()])
+                .with_switched(vec![Vec::new(), Vec::new(), vec![part]])
                 .unwrap(),
         );
         let rays = PlaceableRays::new(
             Arc::clone(&contacts),
             vec![(0, 0x8000_0001, wall(5.0)), (1, 0x8000_0002, wall(15.0))],
+            vec![(2, 0x8000_0003, 0, wall(0.0))],
         );
-        let distance = |caster: Option<u32>| {
-            rays.cast_ray(&map, caster, [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], 50.0, 0x1FDF)
-                .unwrap()
-                .unwrap()
-                .distance
+        let cast = |caster: Option<u32>, mask, animated| {
+            rays.cast_ray(
+                &map,
+                caster,
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+                50.0,
+                mask,
+                animated,
+            )
+            .unwrap()
         };
+        let distance = |caster: Option<u32>| cast(caster, 0x1FDF, false).unwrap().distance;
         assert_eq!(distance(None), 10.0);
         contacts.switch(1, true);
         assert_eq!(distance(None), 10.0);
@@ -1118,9 +1187,18 @@ mod tests {
         // A placeable's own ray passes its model.
         assert_eq!(distance(Some(0x8000_0001)), 10.0);
         // A mask the model doesn't stop passes it.
-        let hit = rays
-            .cast_ray(&map, None, [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], 50.0, 0x2000)
-            .unwrap();
-        assert!(hit.is_none());
+        assert!(cast(None, 0x2000, false).is_none());
+        // The animated part, moved 3 m along z, meets a script's ray where
+        // it stands now, and a shot's not at all.
+        contacts.switch(0, false);
+        contacts.switch(2, true);
+        let frame = ContactFrame {
+            translation: [0.0, 0.0, 3.0],
+            ..ContactFrame::IDENTITY
+        };
+        contacts.place([(0, frame)]).unwrap();
+        let hit = cast(None, 0x1FDF, true).unwrap();
+        assert_eq!((hit.distance, hit.point), (3.0, [0.0, 1.0, 3.0]));
+        assert_eq!(distance(None), 10.0);
     }
 }

@@ -1107,6 +1107,103 @@ fn doomfists_tapped_airborne_slam_flies_from_the_press_frame() {
     assert_eq!(hit, Some(7558));
 }
 
+/// C32S2 on Hanamura, game session car4 (`D:/Temp/ma/car4`, refs
+/// `MapEntities.md` "MapAnim"): Doomfist stands 2 m from the car 80000380
+/// (`03B7`, idle-animated: its body bobs on bone 1 of clip `11B3`) and
+/// walks into it (3481-3574), then stands against it. The car's 0x1000
+/// hulls stop him where his client did (3505; without them he walked on
+/// through the car) and push him on as they bob. Each command poses the
+/// car at its view time (the logged `extra`; the client's comp27 clock
+/// matched it to within a frame). This replay equals the live server's
+/// poses on all 242 frames; the client's own samples equal them on 69 of
+/// 95, the others one 1/1024 m step apart (3516-3583, 3611-3664, the same
+/// with the car posed 8-24 ms later or earlier; not traced), listed here
+/// where they are equal.
+#[test]
+#[ignore = "requires the derived 104319 data and the install (Hanamura's collision)"]
+fn doomfist_walks_into_a_hanamura_car_and_stops_where_his_client_did() {
+    const FEET: [f64; 3] = [38.228_515_625, 0.095_703_125, -7.752_929_687_5];
+    const YAW: i32 = -20857;
+    // (first frame, the command's extra) in the server's log.
+    const EXTRA: &[(u32, u16)] = &[
+        (3450, 202),
+        (3456, 203),
+        (3484, 202),
+        (3486, 203),
+        (3488, 194),
+        (3493, 193),
+        (3519, 192),
+        (3526, 189),
+        (3528, 185),
+        (3530, 181),
+        (3534, 178),
+        (3537, 177),
+        (3548, 176),
+        (3554, 175),
+        (3562, 174),
+        (3568, 173),
+        (3578, 172),
+        (3597, 171),
+        (3605, 170),
+        (3621, 169),
+        (3624, 166),
+        (3628, 161),
+        (3633, 158),
+        (3637, 157),
+        (3646, 156),
+        (3653, 155),
+        (3655, 154),
+        (3658, 153),
+        (3662, 151),
+        (3675, 152),
+        (3678, 155),
+        (3687, 156),
+    ];
+    let mut doomfist = Player::on_hanamura(DOOMFIST, FEET, YAW);
+    let view = Command {
+        yaw: YAW,
+        ..Command::default()
+    };
+    while doomfist.frame < 3449 {
+        doomfist.step(view);
+    }
+    assert_eq!(doomfist.position(), FEET);
+    let mut feet = std::collections::BTreeMap::new();
+    for frame in 3450..=3691 {
+        let extra = EXTRA
+            .iter()
+            .rev()
+            .find(|(first, _)| *first <= frame)
+            .unwrap()
+            .1;
+        doomfist.step(Command {
+            forward: if (3481..3575).contains(&frame) {
+                127
+            } else {
+                0
+            },
+            extra,
+            ..view
+        });
+        feet.insert(frame, doomfist.position());
+    }
+    let client = [
+        (3487, [37.712_890_625, -0.064_453_125, -7.986_328_125]),
+        (3505, [36.293_945_312_5, -0.027_343_75, -8.627_929_687_5]),
+        (3507, [36.293_945_312_5, -0.024_414_062_5, -8.629_882_812_5]),
+        (3514, [36.296_875, -0.024_414_062_5, -8.636_718_75]),
+        (3520, [36.298_828_125, -0.023_437_5, -8.642_578_125]),
+        (3540, [36.306_640_625, -0.023_437_5, -8.662_109_375]),
+        (3574, [36.316_406_25, -0.021_484_375, -8.695_312_5]),
+        (3627, [36.320_312_5, -0.030_273_437_5, -8.693_359_375]),
+        (3650, [36.321_289_062_5, -0.030_273_437_5, -8.693_359_375]),
+        (3686, [36.322_265_625, -0.030_273_437_5, -8.693_359_375]),
+    ];
+    for (frame, client) in client {
+        assert_eq!(feet[&frame], client, "frame {frame}");
+    }
+}
+
 /// Rocket Punch (graph `0D06`) on the server: the charge (st11) while
 /// secondary fire is held, then at the release the dash, a server-only
 /// MovementMod (st42: forward throttle 1 at 8.18 times the run speed,
@@ -1905,63 +2002,120 @@ fn doomfists_ability_pressed_while_another_runs_starts_when_it_stops() {
 
 /// Doomfist walks into the Practice Range's Training Partner console (a
 /// server placeable, definition `3963`: one 0x80 mesh at its placement)
-/// and slides round it instead of walking through. Game session c2
-/// (2026-11-22, `refs/reports/MapEntities.md` "MapCollision"): standing
-/// by the console facing -25406, his walk reached the server in bursts
-/// (his client stalled), commands of frames 5664-5680, 5699-5702 and
-/// 5725-5759; the server's feet (these, frame by frame, to 5727) touched
-/// the console at 5728 (flag 0x20000), slid along it to 5753 and came to
-/// rest at 5763 at (35.2373046875, 2.0, 16.77734375), and his client's
-/// feet equalled the server's from 5751 to the rest, touching it on the
-/// same frames (no correction after them). From 5728 on this test's feet
-/// differ from that run's server by up to 0.2 m (its mover had a match's
-/// history behind it; not traced), so past the contact it checks that he
-/// touches the console and never enters the box the client's physics
-/// world gave it, (33.922, 17.194)-(35.330, 18.650) in x and z, which the
-/// straight walk crosses.
+/// and slides round it instead of walking through, frame for frame as his
+/// client did. Game session c2 (2026-11-22, `refs/reports/MapEntities.md`
+/// "MapCollision", "Console slide divergence (MapAnim)"): standing by the
+/// console at (37.060546875, 2.0, 20.140625) facing -25406, he held the
+/// walk while his client stalled. The server's poses (`orpheus::pose`)
+/// give the input it ran: the walk at 5664-5680, 5699-5702, 5725-5727 and
+/// 5731-5759, none at 5681-5698, 5703-5724 and 5728-5730 (each of those
+/// frames slows him as with the keys up: 0.91 m/s at 5729, at rest at 5730
+/// with `02C5`'s idle state, walking again at 5731). With that input this
+/// mover equals the server's on every frame: he touches the console at
+/// 5728 (flag 0x20000), slides along it to 5753 and comes to rest at 5763
+/// at (35.2373046875, 2.0, 16.77734375), and his client's feet equalled
+/// these from 5751 to the rest, touching on the same frames (no correction
+/// after them). His client's own predictions, with the walk held where the
+/// server ran none, equal this mover's too: from the server's 5729 record
+/// (5730 walking), its 5747 and 5749; after the server's frames to 5720
+/// (walking from 5721 on), its 5739.
 #[test]
 #[ignore = "requires the derived 104319 data and the Practice Range collision"]
 fn doomfist_slides_round_the_range_console_instead_of_walking_through() {
     const YAW: i32 = -25406;
-    let mut doomfist = Player::spawn(DOOMFIST);
-    let body = doomfist.scene.heroes().get(DOOMFIST).unwrap().body;
-    let feet = [37.060546875, 2.0, 20.140625];
-    doomfist.world.mover = Some(doomfist.scene.player_mover_at(body, 0, feet, YAW).unwrap());
-    doomfist.idle(60, YAW);
-    assert_eq!(doomfist.position(), feet);
-    let walk = |doomfist: &mut Player| {
-        doomfist.step(Command {
-            yaw: YAW,
-            forward: 127,
-            ..Command::default()
-        });
+    /// The frames the server ran without his walk.
+    const STILL: [std::ops::RangeInclusive<u32>; 3] = [5681..=5698, 5703..=5724, 5728..=5730];
+    /// His feet and whether he touched something each frame from 5664 to
+    /// `last`, from the stand, walking on the frames `walks` keeps.
+    fn run(
+        doomfist: &mut Player,
+        last: u32,
+        walks: impl Fn(u32) -> bool,
+    ) -> BTreeMap<u32, ([f64; 3], bool)> {
+        let body = doomfist.scene.heroes().get(DOOMFIST).unwrap().body;
+        let feet = [37.060546875, 2.0, 20.140625];
+        doomfist.world.mover = Some(doomfist.scene.player_mover_at(body, 0, feet, YAW).unwrap());
+        doomfist.idle(60, YAW);
+        assert_eq!(doomfist.position(), feet);
+        let mut poses = BTreeMap::new();
+        for frame in 5664..=last {
+            doomfist.step(Command {
+                yaw: YAW,
+                forward: if walks(frame) { 127 } else { 0 },
+                ..Command::default()
+            });
+            let pose = doomfist.world.mover.as_ref().unwrap().pose();
+            poses.insert(frame, (pose.position, pose.flags & TOUCHING != 0));
+        }
+        poses
+    }
+    let server = |frame: u32| {
+        (5664..=5759).contains(&frame) && !STILL.iter().any(|still| still.contains(&frame))
     };
-    for _ in 0..17 {
-        walk(&mut doomfist);
+    let mut doomfist = Player::spawn(DOOMFIST);
+    let poses = run(&mut doomfist, 5766, server);
+    assert_eq!(poses[&5706], ([35.75390625, 2.0, 18.5888671875], false));
+    assert_eq!(poses[&5727], ([35.615234375, 2.0, 18.42578125], false));
+    // The server's feet from 5728, his client's from 5751.
+    let slide = [
+        [35.619140625, 2.021484375, 18.3974609375],
+        [35.6259765625, 2.001953125, 18.384765625],
+        [35.6279296875, 2.0009765625, 18.3857421875],
+        [35.6328125, 2.0166015625, 18.36328125],
+        [35.638671875, 2.01953125, 18.3330078125],
+        [35.6455078125, 2.021484375, 18.2939453125],
+        [35.65234375, 2.0244140625, 18.2451171875],
+        [35.6572265625, 2.02734375, 18.1845703125],
+        [35.6728515625, 2.0185546875, 18.1552734375],
+        [35.6875, 2.0185546875, 18.1279296875],
+        [35.7021484375, 2.0185546875, 18.1025390625],
+        [35.71484375, 2.0185546875, 18.076171875],
+        [35.7275390625, 2.01953125, 18.0498046875],
+        [35.740234375, 2.0205078125, 18.0224609375],
+        [35.7529296875, 2.0224609375, 17.994140625],
+        [35.765625, 2.0224609375, 17.9619140625],
+        [35.7783203125, 2.0234375, 17.923828125],
+        [35.791015625, 2.0234375, 17.876953125],
+        [35.8017578125, 2.0244140625, 17.8193359375],
+        [35.80859375, 2.0244140625, 17.7509765625],
+        [35.80859375, 2.0224609375, 17.677734375],
+        [35.7998046875, 2.0205078125, 17.6015625],
+        [35.783203125, 2.0166015625, 17.521484375],
+        [35.7548828125, 2.0126953125, 17.44140625],
+        [35.7158203125, 2.0078125, 17.3623046875],
+        [35.6669921875, 2.00390625, 17.2890625],
+        [35.6103515625, 2.0, 17.2216796875],
+        [35.5537109375, 2.0, 17.154296875],
+        [35.4970703125, 2.0, 17.0869140625],
+        [35.4404296875, 2.0, 17.01953125],
+        [35.3837890625, 2.0, 16.9521484375],
+        [35.3271484375, 2.0, 16.884765625],
+        [35.2841796875, 2.0, 16.833984375],
+        [35.2548828125, 2.0, 16.798828125],
+        [35.2392578125, 2.0, 16.7802734375],
+        [35.2373046875, 2.0, 16.77734375],
+    ];
+    for (frame, feet) in (5728..).zip(slide) {
+        assert_eq!(poses[&frame], (feet, frame <= 5753), "frame {frame}");
     }
-    doomfist.idle(18, YAW);
-    for _ in 0..4 {
-        walk(&mut doomfist);
-    }
-    doomfist.idle(22, YAW);
-    assert_eq!(doomfist.position(), [35.75390625, 2.0, 18.5888671875]);
-    for _ in 0..3 {
-        walk(&mut doomfist);
-    }
-    assert_eq!(doomfist.position(), [35.615234375, 2.0, 18.42578125]);
-    let inside =
-        |[x, _, z]: [f64; 3]| (33.922..=35.330).contains(&x) && (17.194..=18.650).contains(&z);
-    let mut touched = 0;
-    for _ in 0..32 {
-        walk(&mut doomfist);
-        let pose = doomfist.world.mover.as_ref().unwrap().pose();
-        touched += usize::from(pose.flags & TOUCHING != 0);
-        assert!(!inside(pose.position), "{:?}", pose.position);
-    }
-    assert!(touched > 10, "touched the console on {touched} frames");
-    // Past it, along the walk's line.
-    let rest = doomfist.position();
-    assert!(rest[2] < 17.194, "{rest:?}");
+    assert_eq!(poses[&5766].0, [35.2373046875, 2.0, 16.77734375]);
+    assert_eq!(
+        doomfist.world.mover.as_ref().unwrap().pose().velocity,
+        [0.0; 3]
+    );
+    // His client's prediction from the server's 5729 record.
+    let poses = run(&mut doomfist, 5749, |frame| frame >= 5730 || server(frame));
+    assert_eq!(
+        poses[&5747],
+        ([35.8076171875, 2.0224609375, 17.669921875], true)
+    );
+    assert_eq!(
+        poses[&5749],
+        ([35.7802734375, 2.0166015625, 17.513671875], true)
+    );
+    // And after the server's frames to 5720.
+    let poses = run(&mut doomfist, 5739, |frame| frame >= 5721 || server(frame));
+    assert_eq!(poses[&5739], ([35.8056640625, 2.025390625, 17.78125], true));
 }
 
 /// Meteor Strike (`0C51`) through his client's own run (game m1, release of

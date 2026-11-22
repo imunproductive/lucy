@@ -56,7 +56,9 @@ use orpheus_core::tick::{MAX_LEASE_FRAME, TICK_PERIOD};
 use orpheus_physics::{
     contact::cache::CapsulePose,
     mover::correction::CorrectionHistory,
-    mover::kinematics::{Poses, neutral, poses as kinematics_poses, repeated},
+    mover::kinematics::{
+        HOLD_INPUT_FRAMES, Poses, held, neutral, poses as kinematics_poses, repeated,
+    },
     mover::modifiers::{Modifier, ModifierKey},
     mover::{MoveEnd, MoveKey, Mover},
 };
@@ -129,16 +131,22 @@ const DRAIN_TICKS: u32 = 20;
 // silence is a client stall, and his body goes on with his last input for
 // the others (retail), for `MAX_REPEATS` frames.
 const MAX_WAIT: u32 = MAX_BUFFERED as u32;
-// Past the wait a dry tick repeats the client's last input for at most
-// this many frames since his last datagram with commands; later dry ticks
-// run a neutral frame (no button, no movement key, his aim), so a silent
-// body still simulates (gravity, a fall, its timers) but stops walking and
-// firing. Retail duplicated the last input to bridge the gap until the
-// client, told to run faster, refilled the buffer (GDC 2017, Ford 30:50,
-// GDC-Netcode.md §1): a short gap, not a client that stopped sending. Ford
-// gives no count; 4 frames (64 ms) is ours: the wait's length, and the cap
-// of the rule before the wait (4 repeats, then the body stood).
-const MAX_REPEATS: u32 = 4;
+// Past the wait a dry tick repeats the client's newest input for at most
+// this many frames since his last datagram with commands, however far
+// behind the frames run that input is; later dry ticks run a neutral frame
+// (no button, no movement key, his aim), so a silent body still simulates
+// (gravity, a fall, its timers) but stops walking and firing. Retail
+// duplicated the last input to bridge the gap until the client, told to
+// run faster, refilled the buffer (GDC 2017, Ford 30:50, GDC-Netcode.md
+// §1); Ford gives no count. A stalling client (a loaded PC, 27 fps) goes
+// silent for 150-450 ms at a time with his keys held, then sends every
+// frame of the stall late, and falls 30 frames and more behind the frames
+// run; the 4 repeats this rule had stopped his body in those stalls where
+// his client walked on (MapEntities.md "Console slide divergence
+// (MapAnim)", sessions c2, st1, st2). The wait and the repeats together
+// hold his input 0.5 s, the mover's own horizon for a held input
+// (`HOLD_INPUT_FRAMES`).
+const MAX_REPEATS: u32 = HOLD_INPUT_FRAMES - MAX_WAIT;
 
 /// The ch3 clock flags for `depth` commands in hand as a tick takes its
 /// own: they move the client's lead toward [`BUFFER_TARGET`] commands
@@ -1419,6 +1427,17 @@ impl InputQueue {
         if self.closing || commands.is_empty() {
             return;
         }
+        // Late (newest at or before `admitted`) or with frames the client
+        // skipped (fewer commands than frames) after a stall.
+        tracing::debug!(
+            target: "orpheus::input",
+            tick,
+            oldest = commands[0].frame,
+            newest = commands[commands.len() - 1].frame,
+            count = commands.len(),
+            admitted = ?self.admitted,
+            "commands arrived"
+        );
         // The client sends: a dry tick may repeat his newest input again,
         // late ones included (he is behind the frames run, not silent).
         self.repeats = 0;
@@ -1572,8 +1591,9 @@ impl InputQueue {
     }
 
     /// A dry buffer past the wait: the next `count` frames, each the
-    /// client's last input again, or past [`MAX_REPEATS`] since his last
-    /// datagram a neutral frame.
+    /// client's newest input held ([`held`], however many frames behind it
+    /// is: a client behind the frames run still sends), or past
+    /// [`MAX_REPEATS`] since his last datagram a neutral frame.
     fn repeat(&mut self, count: u32) {
         let Some(last) = self.last else {
             return;
@@ -1588,7 +1608,7 @@ impl InputQueue {
             };
             let command = if self.repeats < MAX_REPEATS {
                 self.repeats += 1;
-                let command = self.take_late(repeated(last, frame));
+                let command = self.take_late(held(last, frame));
                 tracing::debug!(
                     target: "orpheus::input",
                     frame,
@@ -6310,10 +6330,26 @@ impl WorldDelivery {
         }
         mover.set_peers(&self.blockers);
         let rays = scene.movement_index();
+        let quanta = (dt * 1_000_000.0).round() as u32;
         // A jump or a landing cancels another's knock ([`KnockCredit`]).
         let knocks = &mut self.knocks;
         let stepped =
             mover.step_pending_with(&mut pending.poses, budget - used, |mover, command| {
+                // The idle-animated placeables' parts where this client had
+                // them as it predicted the command.
+                scene.pose_idle_for(&command, quanta);
+                tracing::debug!(
+                    target: "orpheus::pose",
+                    frame = command.frame,
+                    forward = command.forward,
+                    right = command.right,
+                    yaw = command.yaw,
+                    pitch = command.pitch,
+                    buttons = format_args!("{:#x}", command.buttons),
+                    extra = command.extra,
+                    subframe = command.subframe(),
+                    "command"
+                );
                 let Some(script) = script.as_mut().filter(|_| failed.is_none()) else {
                     mover.step_pose_to(rays, command, dt, None)?;
                     knocks.posed(mover.landed(), mover.jumped());

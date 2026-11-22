@@ -218,7 +218,22 @@ pub(crate) fn rig(install: &Install, set: u64, skeleton: &Skeleton) -> Result<Va
             json!({"plain": clips.branch(&plain)?, "arms_forward": clips.branch(&forward)?}),
         );
     }
-    let bones: Vec<Value> = skeleton
+    let keys: Map<String, Value> = clips
+        .read
+        .iter()
+        .map(|(clip, animation)| (guid_hex(*clip), Clips::keys(animation, skeleton)))
+        .collect();
+    Ok(json!({
+        "bones": bones(skeleton),
+        "branches": branches,
+        "anims": anims,
+        "clips": keys,
+    }))
+}
+
+/// A skeleton's bones: id, parent index, transform relative to the parent.
+fn bones(skeleton: &Skeleton) -> Vec<Value> {
+    skeleton
         .local
         .iter()
         .enumerate()
@@ -231,16 +246,12 @@ pub(crate) fn rig(install: &Install, set: u64, skeleton: &Skeleton) -> Result<Va
                 "translation": floats(&bone.translation),
             })
         })
-        .collect();
-    let keys: Map<String, Value> = clips
-        .read
-        .iter()
-        .map(|(clip, animation)| (guid_hex(*clip), Clips::keys(animation, skeleton)))
-        .collect();
-    Ok(json!({
-        "bones": bones,
-        "branches": branches,
-        "anims": anims,
-        "clips": keys,
-    }))
+        .collect()
+}
+
+/// The rig of a model that plays one clip by itself (an idle animation,
+/// `crate::map_areas`): its skeleton's bones and the clip's keys on them,
+/// as [`rig`] writes them.
+pub(crate) fn idle_rig(skeleton: &Skeleton, clip: &Animation) -> Value {
+    json!({"bones": bones(skeleton), "clip": Clips::keys(clip, skeleton)})
 }

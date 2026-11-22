@@ -335,7 +335,8 @@ impl CharacterBody {
 
     fn update_pairs(&mut self) {
         // A switch change takes the switched-off shapes out and lets the
-        // switched-on ones in, whether or not the proxy moved.
+        // switched-on ones in, whether or not the proxy moved; a moving
+        // shape's contact starts over where the shape stands now.
         let epoch = self.world.epoch();
         let switched = epoch != self.epoch;
         if !std::mem::take(&mut self.proxy_moved) && !switched {
@@ -343,13 +344,17 @@ impl CharacterBody {
         }
         if switched {
             self.epoch = epoch;
-            let (world, pairs) = (&self.world, &mut self.pairs);
-            self.contacts.retain(|(id, _)| {
-                let on = world.shape_on(*id);
-                if !on {
+            let (world, pairs, category) = (&self.world, &mut self.pairs, self.category);
+            self.contacts.retain_mut(|(id, contact)| {
+                if !world.shape_on(*id) {
                     pairs.remove(id);
+                    return false;
                 }
-                on
+                let shape = &world.shapes()[*id as usize];
+                if shape.is_moving() {
+                    *contact = ProxyContact::new(shape, category);
+                }
+                true
             });
         }
         let before = self.contacts.len();

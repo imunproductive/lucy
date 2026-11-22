@@ -23,12 +23,20 @@
 //! message `0845`); the match does the same through
 //! [`ContactWorld::switch`]. A switched-off shape is out of every query;
 //! a body drops its pairs with it at its next pair update.
+//!
+//! Moving shapes ([`StaticShape::moving`], [`ContactWorld::place`]): the
+//! parts of an idle-animated server placeable's model that its animation
+//! moves (Hanamura's cars `03B6`/`03B7`, whose bodies bob on their
+//! springs). They stay out of the column grid: each query looks at where
+//! each stands now. A move counts as a switch change, so a body rebuilds
+//! its contacts with the moved shapes at its next pair update.
 
 use std::collections::{BTreeSet, HashMap, hash_map::Entry};
 use std::error::Error;
 use std::fmt;
-use std::sync::Arc;
+use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, PoisonError, RwLock};
 
 use crate::collision::cache::{CacheError, CollisionCache, Hull, Mesh, Placement, Shape};
 use crate::collision::grid::{ColumnGrid, ColumnRange, GridBuilder};
@@ -109,16 +117,26 @@ impl StaticGeometry {
 
 pub struct StaticShape {
     geometry: StaticGeometry,
-    frame: Option<ContactFrame>,
-    matrix: Option<CastFrame>,
-    fat: Option<ContactBounds>,
+    placed: Placed,
+    /// A moving shape's place now ([`ContactWorld::place`]); `placed` is
+    /// where it started.
+    moving: Option<RwLock<Placed>>,
     /// The group that switches it ([`ContactWorld::with_switched`]).
     switch: Option<usize>,
 }
 
-impl StaticShape {
-    pub fn new(
-        geometry: StaticGeometry,
+/// Where a shape stands: its frame, the matrix the casts take, its fat
+/// AABB.
+#[derive(Clone, Copy)]
+struct Placed {
+    frame: Option<ContactFrame>,
+    matrix: Option<CastFrame>,
+    fat: Option<ContactBounds>,
+}
+
+impl Placed {
+    fn new(
+        geometry: &StaticGeometry,
         frame: Option<ContactFrame>,
     ) -> Result<Self, ContactWorldError> {
         if frame.is_some_and(|frame| {
@@ -131,7 +149,7 @@ impl StaticShape {
             return Err(ContactWorldError::InvalidGeometry);
         }
         let matrix = frame.map(CastFrame::from);
-        let fat = shape_bounds(&geometry, frame, matrix).map(|bounds| ContactBounds {
+        let fat = shape_bounds(geometry, frame, matrix).map(|bounds| ContactBounds {
             low: sub(bounds.low, [PROXY_MARGIN; 3]),
             high: add(bounds.high, [PROXY_MARGIN; 3]),
         });
@@ -140,12 +158,40 @@ impl StaticShape {
         {
             return Err(ContactWorldError::InvalidGeometry);
         }
+        Ok(Self { frame, matrix, fat })
+    }
+}
+
+impl StaticShape {
+    pub fn new(
+        geometry: StaticGeometry,
+        frame: Option<ContactFrame>,
+    ) -> Result<Self, ContactWorldError> {
+        let placed = Placed::new(&geometry, frame)?;
         Ok(Self {
             geometry,
-            frame,
-            matrix,
-            fat,
+            placed,
+            moving: None,
             switch: None,
+        })
+    }
+
+    /// This shape, which the match moves ([`ContactWorld::place`]): the
+    /// animated parts of an idle-animated model.
+    pub fn moving(self) -> Self {
+        Self {
+            moving: Some(RwLock::new(self.placed)),
+            ..self
+        }
+    }
+
+    pub fn is_moving(&self) -> bool {
+        self.moving.is_some()
+    }
+
+    fn placed(&self) -> Placed {
+        self.moving.as_ref().map_or(self.placed, |moving| {
+            *moving.read().unwrap_or_else(PoisonError::into_inner)
         })
     }
 
@@ -154,11 +200,11 @@ impl StaticShape {
     }
 
     pub fn frame(&self) -> Option<ContactFrame> {
-        self.frame
+        self.placed().frame
     }
 
     pub fn fat_bounds(&self) -> Option<ContactBounds> {
-        self.fat
+        self.placed().fat
     }
 }
 
@@ -269,9 +315,15 @@ pub struct WorldHit {
 pub struct ContactWorld {
     shapes: Vec<StaticShape>,
     grid: ColumnGrid,
+    /// The moving shapes ([`StaticShape::moving`]), out of the grid: every
+    /// query looks at each where it stands now.
+    moving: Vec<u32>,
     /// Whether each switched group is on.
     switches: Box<[AtomicBool]>,
-    /// Moved on by every switch change, so bodies redo their pairs.
+    /// Each switched group's shapes.
+    groups: Box<[Range<u32>]>,
+    /// Moved on by every switch change and every move of a moving shape,
+    /// so bodies redo their pairs.
     epoch: AtomicU64,
 }
 
@@ -283,9 +335,22 @@ impl ContactWorld {
 
     fn build(shapes: Vec<StaticShape>, groups: usize) -> Result<Self, ContactWorldError> {
         let mut grid = GridBuilder::with_large_limit(HUGE_PROXY_COLUMNS);
+        let mut moving = Vec::new();
+        let mut ranges = vec![0..0; groups];
         for (index, shape) in shapes.iter().enumerate() {
             let id = u32::try_from(index).map_err(|_| ContactWorldError::IndexLimit)?;
-            let Some(bounds) = shape.fat else {
+            if let Some(group) = shape.switch {
+                let range = &mut ranges[group];
+                if range.start == range.end {
+                    *range = id..id;
+                }
+                range.end = id + 1;
+            }
+            if shape.is_moving() {
+                moving.push(id);
+                continue;
+            }
+            let Some(bounds) = shape.placed.fat else {
                 continue;
             };
             let range = columns(bounds.low.map(f64::from), bounds.high.map(f64::from))
@@ -296,7 +361,9 @@ impl ContactWorld {
         Ok(Self {
             shapes,
             grid: grid.build(),
+            moving,
             switches: (0..groups).map(|_| AtomicBool::new(false)).collect(),
+            groups: ranges.into(),
             epoch: AtomicU64::new(0),
         })
     }
@@ -316,6 +383,40 @@ impl ContactWorld {
         Self::build(shapes, count)
     }
 
+    /// The ids of a switched group's shapes, in its order.
+    pub fn group_shapes(&self, group: usize) -> Range<u32> {
+        self.groups[group].clone()
+    }
+
+    /// Put moving shapes ([`StaticShape::moving`]) at new frames; whether
+    /// any moved. Bodies take the new places at their next pair update.
+    pub fn place(
+        &self,
+        moves: impl IntoIterator<Item = (u32, ContactFrame)>,
+    ) -> Result<bool, ContactWorldError> {
+        let mut moved = false;
+        for (id, frame) in moves {
+            let shape = self
+                .shapes
+                .get(id as usize)
+                .ok_or(ContactWorldError::InvalidGeometry)?;
+            let cell = shape
+                .moving
+                .as_ref()
+                .ok_or(ContactWorldError::InvalidGeometry)?;
+            if shape.frame() == Some(frame) {
+                continue;
+            }
+            let placed = Placed::new(&shape.geometry, Some(frame))?;
+            *cell.write().unwrap_or_else(PoisonError::into_inner) = placed;
+            moved = true;
+        }
+        if moved {
+            self.epoch.fetch_add(1, Ordering::AcqRel);
+        }
+        Ok(moved)
+    }
+
     /// Turn a switched group on or off; whether that changed it.
     pub fn switch(&self, group: usize, on: bool) -> bool {
         let changed = self.switches[group].swap(on, Ordering::AcqRel) != on;
@@ -330,7 +431,7 @@ impl ContactWorld {
         self.switches[group].load(Ordering::Acquire)
     }
 
-    /// Counts the switch changes.
+    /// Counts the switch changes and the moves of moving shapes.
     pub(crate) fn epoch(&self) -> u64 {
         self.epoch.load(Ordering::Acquire)
     }
@@ -406,15 +507,29 @@ impl ContactWorld {
         };
         let mut found = Vec::new();
         let mut seen = FastSet::default();
+        let on = |shape: &StaticShape| shape.switch.is_none_or(|group| self.is_on(group));
         self.grid.visit(range.expanded(1), |id| {
             let shape = &self.shapes[id as usize];
-            if shape.fat.is_some_and(|bounds| overlaps(low, high, bounds))
-                && shape.switch.is_none_or(|group| self.is_on(group))
+            if shape
+                .placed
+                .fat
+                .is_some_and(|bounds| overlaps(low, high, bounds))
+                && on(shape)
                 && seen.insert(id)
             {
                 found.push(id);
             }
         });
+        for &id in &self.moving {
+            let shape = &self.shapes[id as usize];
+            if shape
+                .fat_bounds()
+                .is_some_and(|bounds| overlaps(low, high, bounds))
+                && on(shape)
+            {
+                found.push(id);
+            }
+        }
         found.sort_unstable();
         found
     }
@@ -452,6 +567,7 @@ impl ContactWorld {
             if shape.geometry.mask() & probe.category == 0 {
                 continue;
             }
+            let placed = shape.placed();
             let options = CastOptions {
                 translation,
                 max_fraction,
@@ -463,7 +579,7 @@ impl ContactWorld {
                     CastShape {
                         points,
                         radius,
-                        frame: shape.matrix,
+                        frame: placed.matrix,
                     },
                     b,
                     options,
@@ -472,7 +588,7 @@ impl ContactWorld {
             let result = match &shape.geometry {
                 StaticGeometry::Mesh(mesh) => mesh_sweep(
                     mesh,
-                    shape.frame.unwrap_or(ContactFrame::IDENTITY),
+                    placed.frame.unwrap_or(ContactFrame::IDENTITY),
                     probe,
                     max_fraction,
                 )?
@@ -703,6 +819,40 @@ mod tests {
         };
         assert!(!overlaps([0.0; 3], [1.0; 3], zero));
         assert!(overlaps([-0.0, 0.0, 0.0], [1.0; 3], zero));
+    }
+
+    #[test]
+    fn a_moving_shape_is_found_where_it_was_last_placed() {
+        let world = ContactWorld::new(vec![
+            StaticShape::new(sphere([0.0; 3], 0.5, 1), None).unwrap(),
+        ])
+        .unwrap()
+        .with_switched(vec![vec![
+            StaticShape::new(sphere([0.0; 3], 0.5, 1), Some(ContactFrame::IDENTITY))
+                .unwrap()
+                .moving(),
+        ]])
+        .unwrap();
+        world.switch(0, true);
+        let at = |x: f32| ContactBounds {
+            low: [x - 0.1, -0.1, -0.1],
+            high: [x + 0.1, 0.1, 0.1],
+        };
+        assert_eq!(world.group_shapes(0), 1..2);
+        assert_eq!(world.query(at(0.0)), [0, 1]);
+        let epoch = world.epoch();
+        let frame = ContactFrame {
+            translation: [30.0, 0.0, 0.0],
+            ..ContactFrame::IDENTITY
+        };
+        assert!(world.place([(1, frame)]).unwrap());
+        assert_eq!(world.epoch(), epoch + 1);
+        assert_eq!(world.query(at(0.0)), [0]);
+        assert_eq!(world.query(at(30.0)), [1]);
+        // The same place again moves nothing; a fixed shape can't be moved.
+        assert!(!world.place([(1, frame)]).unwrap());
+        assert_eq!(world.epoch(), epoch + 1);
+        assert!(world.place([(0, frame)]).is_err());
     }
 
     #[test]

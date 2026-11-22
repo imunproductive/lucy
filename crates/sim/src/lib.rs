@@ -16,6 +16,7 @@ pub mod egress;
 pub mod hitboxes;
 pub mod hitscan;
 pub mod hurt_feedback;
+pub mod idle_animation;
 pub mod instance;
 pub mod map_areas;
 pub mod match_flow;

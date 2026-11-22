@@ -75,14 +75,14 @@ pub const ARMS_FORWARD: u64 = 0x0280_0000_0000_007F;
 
 /// A bone's transform: rotation (x, y, z, w), scale, translation.
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct Transform {
-    rotation: [f64; 4],
-    scale: Vec3,
-    translation: Vec3,
+pub(crate) struct Transform {
+    pub rotation: [f64; 4],
+    pub scale: Vec3,
+    pub translation: Vec3,
 }
 
 /// q · r, quaternions (x, y, z, w).
-fn multiply(q: [f64; 4], r: [f64; 4]) -> [f64; 4] {
+pub(crate) fn multiply(q: [f64; 4], r: [f64; 4]) -> [f64; 4] {
     let [x1, y1, z1, w1] = q;
     let [x2, y2, z2, w2] = r;
     [
@@ -103,7 +103,7 @@ fn normalised(q: [f64; 4]) -> [f64; 4] {
 }
 
 /// v turned by the quaternion q.
-fn rotate([x, y, z, w]: [f64; 4], [vx, vy, vz]: Vec3) -> Vec3 {
+pub(crate) fn rotate([x, y, z, w]: [f64; 4], [vx, vy, vz]: Vec3) -> Vec3 {
     let (cx, cy, cz) = (y * vz - z * vy, z * vx - x * vz, x * vy - y * vx);
     let (ux, uy, uz) = (w * vx + cx, w * vy + cy, w * vz + cz);
     let (tx, ty, tz) = (y * uz - z * uy, z * ux - x * uz, x * uy - y * ux);
@@ -112,7 +112,7 @@ fn rotate([x, y, z, w]: [f64; 4], [vx, vy, vz]: Vec3) -> Vec3 {
 
 impl Transform {
     /// A point of this frame in its parent's: scaled, turned, moved.
-    fn place(&self, point: Vec3) -> Vec3 {
+    pub(crate) fn place(&self, point: Vec3) -> Vec3 {
         let scaled = std::array::from_fn(|k| point[k] * self.scale[k]);
         let turned = rotate(self.rotation, scaled);
         std::array::from_fn(|k| turned[k] + self.translation[k])
@@ -122,7 +122,7 @@ impl Transform {
     /// parent's scale moves the child but doesn't scale it (the child keeps
     /// its own scale, as the client's hit-test skeleton has it, module
     /// notes).
-    fn then(&self, child: &Self) -> Self {
+    pub(crate) fn then(&self, child: &Self) -> Self {
         Self {
             rotation: multiply(self.rotation, child.rotation),
             scale: child.scale,
@@ -186,8 +186,8 @@ impl Track {
 }
 
 #[derive(Debug)]
-struct Clip {
-    duration: f64,
+pub(crate) struct Clip {
+    pub duration: f64,
     fps: f64,
     /// The last frame the keys index (`frames - 1`).
     last: f64,
@@ -196,7 +196,7 @@ struct Clip {
 
 impl Clip {
     /// The frame at `time` seconds, looping or held at the ends.
-    fn frame(&self, time: f64, looping: bool) -> f64 {
+    pub(crate) fn frame(&self, time: f64, looping: bool) -> f64 {
         let time = if looping && self.duration > 0.0 {
             time.rem_euclid(self.duration)
         } else {
@@ -206,7 +206,7 @@ impl Clip {
     }
 
     /// Replace each keyed channel of its bones at `frame`.
-    fn replace(&self, frame: f64, pose: &mut [Transform]) {
+    pub(crate) fn replace(&self, frame: f64, pose: &mut [Transform]) {
         for track in &self.tracks {
             let bone = &mut pose[track.bone];
             if let Some(position) = track.position(frame) {
@@ -223,7 +223,7 @@ impl Clip {
 
     /// Add each keyed channel of its bones at `frame` (see the module
     /// notes).
-    fn add(&self, frame: f64, pose: &mut [Transform]) {
+    pub(crate) fn add(&self, frame: f64, pose: &mut [Transform]) {
         for track in &self.tracks {
             let bone = &mut pose[track.bone];
             if let Some(delta) = track.position(frame) {
@@ -472,11 +472,34 @@ struct RawRig {
 }
 
 #[derive(Deserialize)]
-struct RawBone {
+pub(crate) struct RawBone {
     parent: Option<usize>,
     rotation: [f64; 4],
     scale: Vec3,
     translation: Vec3,
+}
+
+impl RawBone {
+    /// The bones' parents, each before its children.
+    pub(crate) fn parents(bones: &[Self]) -> io::Result<Vec<Option<usize>>> {
+        if bones
+            .iter()
+            .enumerate()
+            .any(|(index, bone)| bone.parent.is_some_and(|parent| parent >= index))
+        {
+            return Err(invalid("a bone comes before its parent"));
+        }
+        Ok(bones.iter().map(|bone| bone.parent).collect())
+    }
+
+    /// Its transform relative to its parent.
+    pub(crate) fn rest(&self) -> Transform {
+        Transform {
+            rotation: self.rotation,
+            scale: self.scale,
+            translation: self.translation,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -498,11 +521,41 @@ struct RawAnim {
 }
 
 #[derive(Deserialize)]
-struct RawClip {
+pub(crate) struct RawClip {
     duration: f64,
     fps: f64,
     frames: usize,
+    /// Its tracks are deltas to add to the pose.
+    #[serde(default)]
+    pub additive: bool,
     tracks: Vec<RawTrack>,
+}
+
+impl RawClip {
+    /// The clip on a rig of `count` bones.
+    pub(crate) fn clip(self, count: usize) -> io::Result<Clip> {
+        let tracks = self
+            .tracks
+            .into_iter()
+            .map(|track| {
+                if track.bone >= count {
+                    return Err(invalid(format!("track bone {} of {count}", track.bone)));
+                }
+                Ok(Track {
+                    bone: track.bone,
+                    positions: keys(track.positions)?,
+                    rotations: keys(track.rotations)?,
+                    scales: keys(track.scales)?,
+                })
+            })
+            .collect::<io::Result<_>>()?;
+        Ok(Clip {
+            duration: self.duration,
+            fps: self.fps,
+            last: self.frames.saturating_sub(1) as f64,
+            tracks,
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -516,7 +569,7 @@ struct RawTrack {
     scales: Vec<Vec<f64>>,
 }
 
-fn invalid(error: impl Into<String>) -> io::Error {
+pub(crate) fn invalid(error: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error.into())
 }
 
@@ -538,39 +591,12 @@ fn keys<const N: usize>(raw: Vec<Vec<f64>>) -> io::Result<Keys<N>> {
 impl RawRig {
     fn rig(self) -> io::Result<Rig> {
         let count = self.bones.len();
-        if self
-            .bones
-            .iter()
-            .enumerate()
-            .any(|(index, bone)| bone.parent.is_some_and(|parent| parent >= index))
-        {
-            return Err(invalid("a bone comes before its parent"));
-        }
+        let parents = RawBone::parents(&self.bones)?;
         let mut names = Vec::new();
         let mut clips = Vec::new();
         for (name, raw) in self.clips {
-            let tracks = raw
-                .tracks
-                .into_iter()
-                .map(|track| {
-                    if track.bone >= count {
-                        return Err(invalid(format!("track bone {} of {count}", track.bone)));
-                    }
-                    Ok(Track {
-                        bone: track.bone,
-                        positions: keys(track.positions)?,
-                        rotations: keys(track.rotations)?,
-                        scales: keys(track.scales)?,
-                    })
-                })
-                .collect::<io::Result<_>>()?;
             names.push(name);
-            clips.push(Clip {
-                duration: raw.duration,
-                fps: raw.fps,
-                last: raw.frames.saturating_sub(1) as f64,
-                tracks,
-            });
+            clips.push(raw.clip(count)?);
         }
         let clip = |name: &str| {
             names
@@ -610,16 +636,8 @@ impl RawRig {
             })
             .collect::<io::Result<_>>()?;
         Ok(Rig {
-            parents: self.bones.iter().map(|bone| bone.parent).collect(),
-            rest: self
-                .bones
-                .iter()
-                .map(|bone| Transform {
-                    rotation: bone.rotation,
-                    scale: bone.scale,
-                    translation: bone.translation,
-                })
-                .collect(),
+            parents,
+            rest: self.bones.iter().map(RawBone::rest).collect(),
             branches,
             anims,
             clips,

@@ -283,22 +283,40 @@ fn root_model(install: &Install, definition: u64) -> Option<u64> {
         .map(|(model, _)| model)
 }
 
-/// The static physics shapes of a definition's model ([`root_model`]) that
-/// stop `category`, in model space, as a prop's ([`map_shapes`]), each with
-/// the category the client files it under ([`Structured::static_category`]);
-/// none when it has no model. The server-owned placeables use it
-/// (`crate::map_areas`).
+/// One static physics shape of a server placeable's model: the category
+/// the client files it under ([`Structured::static_category`]), the model
+/// node it hangs on, and the shape in model space.
+pub(crate) struct ModelPart {
+    pub category: u16,
+    pub node: Option<u32>,
+    pub shape: Shape,
+}
+
+/// A definition's model ([`root_model`]) and its static physics shapes that
+/// stop `category`, in model space, as a prop's ([`map_shapes`]); none when
+/// it has no model. The server-owned placeables use it (`crate::map_areas`).
 pub(crate) fn definition_shapes(
     install: &Install,
     definition: u64,
     category: u16,
-) -> Result<Vec<(u16, Shape)>> {
+) -> Result<Option<(u64, Vec<ModelPart>)>> {
     let Some(model) = root_model(install, definition) else {
-        return Ok(Vec::new());
+        return Ok(None);
     };
-    read_model(&install.raw(model)?, category)
-        .map(|read| read.categories.into_iter().zip(read.shapes).collect())
-        .map_err(|reason| asset_error(format!("{}: {reason}", guid_name(model))))
+    let read = read_model(&install.raw(model)?, category)
+        .map_err(|reason| asset_error(format!("{}: {reason}", guid_name(model))))?;
+    let parts = read
+        .categories
+        .into_iter()
+        .zip(read.nodes)
+        .zip(read.shapes)
+        .map(|((category, node), shape)| ModelPart {
+            category,
+            node,
+            shape,
+        })
+        .collect();
+    Ok(Some((model, parts)))
 }
 
 /// The entity's STUModelComponent models and whether each is a client-only
@@ -739,6 +757,8 @@ struct Model {
     shapes: Vec<Shape>,
     /// Each shape's category ([`Structured::static_category`]).
     categories: Vec<u16>,
+    /// The model node each shape hangs on (`m_30F925F4`), when it names one.
+    nodes: Vec<Option<u32>>,
     /// Whether the model is a prop's (see [`root_model`]): it has a static
     /// shape that stops the mover, or, the prop catalogue's older test, a
     /// list entry whose motion type isn't 2 has a polytope, capsule or
@@ -751,6 +771,7 @@ fn read_model(data: &[u8], category: u16) -> Result<Model, String> {
     let mut model = Model {
         shapes: Vec::new(),
         categories: Vec::new(),
+        nodes: Vec::new(),
         catalogued: false,
     };
     let Some(payload) = chunk(data, b"MSTU")? else {
@@ -794,10 +815,11 @@ fn read_model(data: &[u8], category: u16) -> Result<Model, String> {
         let Some(shape_category) = stu.static_category(wrapper, holder) else {
             continue;
         };
-        let frame = stu
+        let node = stu
             .instance_raw(wrapper, NODE)
             .filter(|node| node.len() >= 4)
-            .and_then(|node| node_frame(&table, Some(u32_at(node, 0).expect("4 bytes"))));
+            .map(|node| u32_at(node, 0).expect("4 bytes"));
+        let frame = node.and_then(|node| node_frame(&table, Some(node)));
         let mask = stu.mask(holder)?;
         let fields = &stu.fields[shape];
         let made = match kind {
@@ -861,6 +883,7 @@ fn read_model(data: &[u8], category: u16) -> Result<Model, String> {
                 _ => mask & MOVER != 0,
             };
             model.categories.push(shape_category);
+            model.nodes.push(node);
             model.shapes.push(match frame {
                 Some(frame) => at_node(made, frame),
                 None => made,
