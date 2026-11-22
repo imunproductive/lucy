@@ -8,9 +8,9 @@
 //! record name, equals the client's at that frame: the client has nothing
 //! to correct. That holds when the client's datagrams stop for a while
 //! too: the ticks that find the buffer dry run nothing, and a press in the
-//! frames that came late runs at its own frame. A client that stays
-//! silent past the wait gets his last input repeated a few frames, then
-//! neutral frames.
+//! frames that came late runs at its own frame. Past the wait his last
+//! input runs again, which a stall with his keys held matches; a client
+//! that stays silent gets it for half a second, then neutral frames.
 
 use super::*;
 use orpheus_script::snapshot::{ProjectedSnapshot, View};
@@ -270,8 +270,8 @@ fn a_tap_a_long_stall_repeated_still_fires() {
     };
     // Frames 0 to 39 idle, a one-frame tap at 40, idle to 79. Datagrams
     // 37 to 45 come with 46: the tick of 37 runs 36, the one in hand; those
-    // of 38 to 41 wait; those of 42 to 45 repeat 36's input (`MAX_REPEATS`,
-    // 4) for frames 37 to 40, the tap's among them.
+    // of 38 to 41 wait; those of 42 to 45 repeat 36's input (within
+    // `MAX_REPEATS`) for frames 37 to 40, the tap's among them.
     let mut late = Vec::new();
     let mut repeats = Vec::new();
     let mut sent = Vec::new();
@@ -317,8 +317,8 @@ fn a_tap_a_long_stall_repeated_still_fires() {
 /// A client that stops sending while his body walks, fires and jumps:
 /// past the wait the server repeats his last input for `MAX_REPEATS`
 /// frames, then runs a neutral frame each tick, his aim with nothing held.
-/// The body, in the air by then, goes on rising and falls to the ground
-/// (gravity runs every frame), but it no longer walks, jumps or fires.
+/// The body, in the air by then, falls to the ground (gravity runs every
+/// frame), but it no longer walks, jumps or fires.
 #[test]
 #[ignore = "requires a derived 104319 Practice Range pack"]
 fn a_silent_body_keeps_falling_but_holds_nothing_past_the_repeats() {
@@ -329,10 +329,13 @@ fn a_silent_body_keeps_falling_but_holds_nothing_past_the_repeats() {
     let card = PlayerCard::default();
     let mut server = soldier(&scene, &card, true);
     let first = FIRST_TICK + 1;
-    // Idle to 19, walking with fire held from 20, jump held too from 40;
-    // nothing after 44. In a steady stream the tick of 45 runs 44, the one
-    // in hand; those of 46 to 49 wait; those of 50 to 53 repeat 44's input
-    // for frames 45 to 48; from 54 each runs a neutral frame, 49 on.
+    // Idle to 19, walking with fire held from 20, jump pressed too in the
+    // last command, 44; nothing after it. In a steady stream the tick of
+    // 45 runs 44, the one in hand; those of 46 to 49 wait; those of 50 on
+    // repeat 44's input for `MAX_REPEATS` frames (28: 45 to 72), the jump
+    // held through them (it jumps once); then each runs a neutral frame,
+    // 73 on, 29 frames into the jump's 43 in the air (6 m/s up, 17.5 m/s²
+    // down).
     let last = 44;
     // Away from the spawn's facing, where a ledge stands.
     let yaw = 33280;
@@ -340,7 +343,7 @@ fn a_silent_body_keeps_falling_but_holds_nothing_past_the_repeats() {
         frame: first + index,
         forward: if index >= 20 { 127 } else { 0 },
         yaw,
-        buttons: if index >= 20 { FIRE } else { 0 } | if index >= 40 { JUMP } else { 0 },
+        buttons: if index >= 20 { FIRE } else { 0 } | if index >= last { JUMP } else { 0 },
         ..Command::default()
     };
     let ticks = last + 100;
@@ -433,6 +436,103 @@ fn a_silent_body_keeps_falling_but_holds_nothing_past_the_repeats() {
     let end = neutral.last().unwrap();
     assert!((end.position[1] - ground).abs() < 1e-3);
     assert!(end.velocity[0].hypot(end.velocity[2]) < 1e-3, "{end:?}");
+}
+
+/// A client stall with his keys held (game sessions c2, st1 and st2 on a
+/// loaded PC, MapEntities.md "Console slide divergence (MapAnim)"): his
+/// client goes on walking and firing frame by frame but sends nothing for
+/// 24 frames (384 ms), then every command since the server's ack in one
+/// datagram (`MAX_COMMANDS`, 32). The server waits `MAX_WAIT` ticks, then
+/// repeats his last input for the frames his commands stand late for, and
+/// those were the client's input: every frame equals his prediction, as
+/// in a steady stream. With 4 repeats, then neutral frames, the server
+/// stopped his body for the rest of the stall while his client walked on
+/// (c2's 5681-5698 and 5703-5724), and corrected him.
+#[test]
+#[ignore = "requires a derived 104319 Practice Range pack"]
+fn a_stall_with_the_keys_held_runs_as_his_client_predicted_it() {
+    let scene = SceneAssets::load(orpheus_testkit::runtime_dir())
+        .unwrap()
+        .prepare(GameMap::practice_range())
+        .unwrap();
+    let card = PlayerCard::default();
+    let mut server = soldier(&scene, &card, true);
+    let mut client = soldier(&scene, &card, false);
+    let first = FIRST_TICK + 1;
+    // Walking from 30 to 139, fire held from 60 to 119; datagrams 80 to
+    // 103 come with 104's.
+    let command = |index: u32| Command {
+        frame: first + index,
+        forward: if (30..140).contains(&index) { 127 } else { 0 },
+        buttons: if (60..120).contains(&index) { FIRE } else { 0 },
+        ..Command::default()
+    };
+    let stall = 80..104;
+    let frames = 160;
+    let mut predicted = BTreeMap::new();
+    let mut sent = Vec::new();
+    let mut dry = Vec::new();
+    let mut compared = 0;
+    // The ticks after his last command run what the buffer still holds (the
+    // stall left it deeper, and it drains a command per `DRAIN_TICKS`).
+    for index in 0..frames + MAX_BUFFERED as u32 {
+        let tick = FIRST_TICK + 1 + index;
+        if index >= frames && server.body_script.as_ref().unwrap().frame == first + frames - 1 {
+            break;
+        }
+        if index < frames {
+            let made = command(index);
+            client.queue_commands(tick, &[made]);
+            run(&mut client, &scene, &card);
+            let (frame, projected, pose) = state(&client);
+            assert_eq!(frame, made.frame);
+            predicted.insert(frame, (projected, pose));
+            sent.push(made);
+            if !stall.contains(&index) {
+                let acked = server.command_ack(tick);
+                let window: Vec<_> = sent
+                    .iter()
+                    .rev()
+                    .take(usize::from(orpheus_wire::commands::MAX_COMMANDS))
+                    .rev()
+                    .filter(|command| command.frame + 1 >= acked)
+                    .copied()
+                    .collect();
+                server.queue_commands(tick, &window);
+            }
+        }
+        server.release_input(1);
+        if server.input.dry != 0 && index < frames {
+            dry.push(index);
+        }
+        while server.has_input_work() {
+            let before = server.body_script.as_ref().unwrap().frame;
+            server
+                .advance_input(&scene, &viewer(&card), RETAIL_QUANTA, 1, None)
+                .unwrap();
+            let (frame, projected, pose) = state(&server);
+            if frame == before {
+                continue;
+            }
+            let (expected, expected_pose) = &predicted[&frame];
+            assert_eq!(
+                projected, *expected,
+                "frame {frame}: the owner's statescript"
+            );
+            assert_eq!(pose, *expected_pose, "frame {frame}: the body's movement");
+            compared += 1;
+        }
+    }
+    // The tick of 80 ran 79, the one in hand; those of 81 to 84 waited and
+    // those of 85 to 103 repeated his input for 80 to 98 (19 frames, within
+    // `MAX_REPEATS`); 104's datagram refilled the buffer.
+    assert_eq!(dry, (81..=103).collect::<Vec<_>>());
+    assert_eq!(
+        server.body_script.as_ref().unwrap().frame,
+        first + frames - 1
+    );
+    assert_eq!(compared, frames);
+    assert_eq!(ammo(&server), ammo(&client));
 }
 
 /// Widowmaker's Grappling Hook (`005A`) from the Range spawn: the press

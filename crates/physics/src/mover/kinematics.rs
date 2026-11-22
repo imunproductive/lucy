@@ -40,6 +40,13 @@ pub fn repeated(previous: Command, frame: u32) -> Command {
     if frame_distance(frame, previous.frame) > HOLD_INPUT_FRAMES {
         return neutral(previous, frame);
     }
+    held(previous, frame)
+}
+
+/// `previous`'s input for `frame`, however far it is: the movement keys,
+/// the aim and the held buttons, without its one-shot action or sub-frame
+/// click.
+pub fn held(previous: Command, frame: u32) -> Command {
     Command {
         frame,
         buttons: previous.buttons & !SUBFRAME,
