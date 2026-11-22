@@ -70,6 +70,22 @@ target\release\orpheus.exe serve
 
 `serve` runs the Battle.net, lobby, game and dashboard services on this PC, without starting a game. Use it if you start the game yourself. It runs until Ctrl+C. `START_SERVER_LOCAL.cmd` builds and runs `orpheus serve`.
 
+### Relay without the DLL: orpheus_relay.py
+
+A game you start yourself needs the relay too. `tools\relay\orpheus_relay.py` does what `owwfd_relay.dll` does, without loading a DLL into the game. It is one file that needs only 64-bit Python 3.8 or newer, so you can give it to other players as it is.
+
+```powershell
+target\release\orpheus.exe serve
+python tools\relay\orpheus_relay.py D:\Games\Overwatch\Overwatch.exe
+```
+
+- If the game runs, the script attaches to it. Else it starts the game frozen with `--BNetServer=127.0.0.1:1119`, prepares the relay and unfreezes it. Without a path it uses `.\Overwatch.exe`.
+- A game you start yourself needs `--BNetServer=127.0.0.1:1119` too. If it showed "unable to log you in" before the script attached, click **LOGIN**: the new attempt goes through the relay.
+- Keep the script open while you play: it relays each new connection the game makes. A connection it relayed keeps working if you close the script.
+- Arguments after `--` go to the game: `python orpheus_relay.py -- --tank_Locale=enUS`. `--port` and `--host` choose the server's RPC port (default `127.0.0.1:21119`), `--pid` a game when several run, `--log` a log file.
+
+The script writes three small functions (send, receive and "connected") and two copies of the client's vtables into the game's memory, and points the client's Battle.net streams at them. The functions' assembly source is in the script. It changes no code of the game.
+
 ## The banner
 
 After the start, the log shows where the server listens:
