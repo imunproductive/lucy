@@ -450,7 +450,7 @@ impl Picks {
             let snapshot = snapshots
                 .iter()
                 .find(|snapshot| snapshot.id == *id)
-                .expect("the match runs");
+                .expect("the match ended before every game was in it");
             for (slot, wanted) in self.wanted[room].iter().enumerate() {
                 let player = &snapshot.players[slot];
                 if player.state == PlayerState::Playing && player.hero == hero {
@@ -470,23 +470,26 @@ impl Picks {
     }
 }
 
-/// One room's measured span.
-struct Measured {
-    stats: TickStats,
-}
-
-fn timings(server: &GameService, ids: &[MatchId]) -> Vec<TickStats> {
+/// Each match's timing totals now; none for a match that ended (an
+/// overloaded match's games can be sent home).
+fn timings(server: &GameService, ids: &[MatchId]) -> Vec<Option<TickStats>> {
     let snapshots = server.snapshot().unwrap();
     ids.iter()
         .map(|id| {
             snapshots
                 .iter()
                 .find(|snapshot| snapshot.id == *id)
-                .expect("the match runs")
-                .timing
-                .total
-                .clone()
+                .map(|snapshot| snapshot.timing.total.clone())
         })
+        .collect()
+}
+
+/// Each match's measured span: what its totals added from `start` to
+/// `end`.
+fn measured(start: &[Option<TickStats>], end: &[Option<TickStats>]) -> Vec<Option<TickStats>> {
+    end.iter()
+        .zip(start)
+        .map(|(end, start)| Some(end.as_ref()?.since(start.as_ref()?)))
         .collect()
 }
 
@@ -495,7 +498,12 @@ fn match_id(room: usize) -> MatchId {
 }
 
 /// `rooms` matches of `kind` with `players` each on the virtual clock.
-fn virtual_clock(setup: &Setup, kind: Kind, players: usize, rooms: usize) -> (Vec<Measured>, u64) {
+fn virtual_clock(
+    setup: &Setup,
+    kind: Kind,
+    players: usize,
+    rooms: usize,
+) -> (Vec<Option<TickStats>>, u64) {
     let schemas = Arc::new(Schemas::game());
     let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     server
@@ -556,19 +564,20 @@ fn virtual_clock(setup: &Setup, kind: Kind, players: usize, rooms: usize) -> (Ve
     }
     let end = timings(&server, &ids);
     server.stop().unwrap();
-    let measured = end
-        .iter()
-        .zip(&start)
-        .map(|(end, start)| Measured {
-            stats: end.since(start),
-        })
-        .collect();
-    (measured, after.saturating_sub(before) / rooms as u64)
+    (
+        measured(&start, &end),
+        after.saturating_sub(before) / rooms as u64,
+    )
 }
 
 /// `rooms` matches of `kind` with `players` each on the service's own
 /// threads and real UDP, each game on a thread of its own.
-fn real_clock(setup: &Setup, kind: Kind, players: usize, rooms: usize) -> (Vec<Measured>, u64) {
+fn real_clock(
+    setup: &Setup,
+    kind: Kind,
+    players: usize,
+    rooms: usize,
+) -> (Vec<Option<TickStats>>, u64) {
     let schemas = Arc::new(Schemas::game());
     let mut server =
         GameService::bind((Ipv4Addr::LOCALHOST, 0).into(), Arc::clone(&schemas)).unwrap();
@@ -628,23 +637,33 @@ fn real_clock(setup: &Setup, kind: Kind, players: usize, rooms: usize) -> (Vec<M
         thread.join().unwrap();
     }
     server.stop().unwrap();
-    let measured = end
-        .iter()
-        .zip(&start)
-        .map(|(end, start)| Measured {
-            stats: end.since(start),
-        })
-        .collect();
-    (measured, after.saturating_sub(before) / rooms as u64)
+    (
+        measured(&start, &end),
+        after.saturating_sub(before) / rooms as u64,
+    )
 }
 
 const HEADER: &str = "| clock | match | players | rooms | room | ticks/s | skipped | work mean | p99 | max | receive | simulate | ai | script | workshop | replicate | crypto | send | other | late mean | late p99 | late max | MB/room |\n|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|";
 
 /// One table row a room (ms, the phases as their mean a tick).
-fn rows(clock: &str, kind: Kind, players: usize, measured: &[Measured], memory: u64) -> String {
+fn rows(
+    clock: &str,
+    kind: Kind,
+    players: usize,
+    measured: &[Option<TickStats>],
+    memory: u64,
+) -> String {
     let ms = |time: Duration| format!("{:.3}", time.as_secs_f64() * 1000.0);
     let mut table = String::new();
-    for (room, Measured { stats }) in measured.iter().enumerate() {
+    for (room, stats) in measured.iter().enumerate() {
+        let Some(stats) = stats else {
+            table += &format!(
+                "| {clock} | {} | {players} | {} | {room} | ended: its games were sent home |\n",
+                kind.name(),
+                measured.len()
+            );
+            continue;
+        };
         let phases: Vec<String> = Phase::ALL
             .iter()
             .filter(|&&phase| phase != Phase::Other)
@@ -671,6 +690,11 @@ fn rows(clock: &str, kind: Kind, players: usize, measured: &[Measured], memory: 
 }
 
 fn run(kind: Kind, clock: &str, scenarios: &[(usize, usize)]) {
+    // The server's warnings and its rooms' timing windows, as they come.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("warn,lucy::timing=info,lucy_server::game_service=info")
+        .with_writer(std::io::stderr)
+        .try_init();
     let setup = Setup::load(kind);
     let mut table = String::from(HEADER);
     table.push('\n');
@@ -690,11 +714,7 @@ fn run(kind: Kind, clock: &str, scenarios: &[(usize, usize)]) {
 #[test]
 #[ignore = "load: measures C32S2 matches on the virtual clock; requires an Overwatch 1.74 install and the DPK archive (just load <install> <archive>)"]
 fn load_parkour_on_the_virtual_clock() {
-    run(
-        Kind::Parkour,
-        "virtual",
-        &[(1, 1), (4, 1), (8, 1), (12, 1), (12, 3)],
-    );
+    run(Kind::Parkour, "virtual", &[(1, 1), (4, 1), (8, 1), (12, 1)]);
 }
 
 #[test]
@@ -710,11 +730,19 @@ fn load_practice_vs_ai_on_the_virtual_clock() {
 #[test]
 #[ignore = "load: measures concurrent C32S2 matches on the real clock; requires an Overwatch 1.74 install and the DPK archive (just load <install> <archive>)"]
 fn load_parkour_on_the_real_clock() {
-    run(Kind::Parkour, "real", &[(12, 1), (12, 2), (12, 3)]);
+    run(
+        Kind::Parkour,
+        "real",
+        &[(4, 1), (4, 2), (4, 3), (8, 1), (8, 2), (12, 1)],
+    );
 }
 
 #[test]
 #[ignore = "load: measures concurrent Practice vs AI matches on the real clock; requires an Overwatch 1.74 install (just load <install> <archive>)"]
 fn load_practice_vs_ai_on_the_real_clock() {
-    run(Kind::PracticeVsAi, "real", &[(1, 1), (1, 2), (1, 3)]);
+    run(
+        Kind::PracticeVsAi,
+        "real",
+        &[(1, 1), (1, 2), (1, 3), (12, 3)],
+    );
 }

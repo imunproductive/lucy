@@ -7,7 +7,10 @@
 //! The server's match flow feeds it the mode entity's variables (the clock
 //! v1303, the attacking team `2A2B`, ...) and routes the messages it sends.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 use serde_json::Value as Json;
 
@@ -993,36 +996,48 @@ impl ModeScript {
         self.world.foreign.insert((entity, id), value);
     }
 
-    /// Another entity's entity variables now, as the match gives them (a
-    /// map placeable's: the capture point's progress #9866e and owner
+    /// Other entities' entity variables now, as the match gives them (the
+    /// map placeables': the capture point's progress #9866e and owner
     /// #99e, the objective's times #10552e, which `0F4A` reads through
-    /// `#10551.id(...)`): each that changed is set, and the states that
-    /// read it take the change ([`Component::foreign_variable_changed`]);
-    /// one that went reads null.
+    /// `#10551.id(...)`), entity by entity: each variable that changed is
+    /// set, and the states that read it take the change
+    /// ([`Component::foreign_variable_changed`]); one that went reads
+    /// null. The graph settles after each entity, except after one that
+    /// changed nothing right after a settle that changed nothing: that one
+    /// would change nothing either (the same clock, the same entities). A
+    /// Workshop match has dozens of placeables and hundreds of actions, and
+    /// settled for each placeable every tick.
     pub fn set_foreign_variables(
         &mut self,
-        entity: u32,
-        variables: &Variables,
+        entities: &[(u32, Variables)],
     ) -> Result<(), InitFault> {
-        let gone: Vec<u32> = self
-            .world
-            .foreign
-            .range((entity, 0)..=(entity, u32::MAX))
-            .filter(|((_, id), value)| **value != Value::Null && !variables.contains_key(id))
-            .map(|((_, id), _)| *id)
-            .collect();
-        let changed: Vec<(u32, Value)> = variables
-            .iter()
-            .filter(|&(&id, value)| self.world.foreign.get(&(entity, id)) != Some(value))
-            .map(|(&id, value)| (id, value.clone()))
-            .chain(gone.into_iter().map(|id| (id, Value::Null)))
-            .collect();
-        for (id, value) in changed {
-            self.world.foreign.insert((entity, id), value);
-            self.component
-                .foreign_variable_changed(entity, id, &mut self.world)?;
+        let mut quiet = false;
+        for (entity, variables) in entities {
+            let entity = *entity;
+            let gone: Vec<u32> = self
+                .world
+                .foreign
+                .range((entity, 0)..=(entity, u32::MAX))
+                .filter(|((_, id), value)| **value != Value::Null && !variables.contains_key(id))
+                .map(|((_, id), _)| *id)
+                .collect();
+            let changed: Vec<(u32, Value)> = variables
+                .iter()
+                .filter(|&(&id, value)| self.world.foreign.get(&(entity, id)) != Some(value))
+                .map(|(&id, value)| (id, value.clone()))
+                .chain(gone.into_iter().map(|id| (id, Value::Null)))
+                .collect();
+            if changed.is_empty() && quiet {
+                continue;
+            }
+            for (id, value) in changed {
+                self.world.foreign.insert((entity, id), value);
+                self.component
+                    .foreign_variable_changed(entity, id, &mut self.world)?;
+            }
+            quiet = self.settle_quietly()?;
         }
-        self.settle()
+        Ok(())
     }
 
     /// Set Workshop global variable `index`: the mode entity's entity
@@ -1153,22 +1168,36 @@ impl ModeScript {
     /// frames for good, since its ClientOnlySharedVars state never ends
     /// (assumption: retail's lifetime is not known).
     fn settle(&mut self) -> Result<(), InitFault> {
-        self.hand_on()?;
+        self.settle_quietly().map(drop)
+    }
+
+    /// [`Self::settle`]; true when it changed nothing (it handed nothing on
+    /// and retired nothing), so another before anything changes would
+    /// change nothing either.
+    fn settle_quietly(&mut self) -> Result<bool, InitFault> {
+        let moved = self.hand_on()?;
         let now = self.component.now_ms();
         let mut retired = Vec::new();
+        // The scope instances up, each found once a settle (and only if an
+        // action asks), not again for each action.
         let entities = &self.entities;
+        let scoped = std::cell::OnceCell::new();
         let scoped = |instance: u16| {
-            entities.entities().iter().any(|placed| {
-                placed.snapshot().is_some_and(|snapshot| {
-                    snapshot.instances.values().any(|item| {
-                        item.scope.as_ref().is_some_and(|scope| {
-                            scope.source.entity == GAME_MODE_ENTITY
-                                && scope.source.instance == instance
-                        })
-                    })
+            scoped
+                .get_or_init(|| {
+                    entities
+                        .entities()
+                        .iter()
+                        .filter_map(|placed| placed.snapshot())
+                        .flat_map(|snapshot| snapshot.instances.values())
+                        .filter_map(|item| item.scope.as_ref())
+                        .filter(|scope| scope.source.entity == GAME_MODE_ENTITY)
+                        .map(|scope| scope.source.instance)
+                        .collect::<BTreeSet<u16>>()
                 })
-            })
+                .contains(&instance)
         };
+        let openers = std::cell::OnceCell::new();
         self.actions.retain(|&action| {
             if !self
                 .component
@@ -1180,7 +1209,10 @@ impl ModeScript {
                 .component
                 .action_outcome(action.instance, action.start_ms)
                 .is_some()
-                && !self.component.instance_busy(action.instance)
+                && !self.component.instance_busy(
+                    action.instance,
+                    openers.get_or_init(|| self.component.scope_openers()),
+                )
                 && !scoped(action.instance)
                 && self
                     .component
@@ -1194,17 +1226,19 @@ impl ModeScript {
             !done
         });
         if retired.is_empty() {
-            return Ok(());
+            return Ok(!moved);
         }
         for instance in retired {
             self.component.destroy_instance(instance, &mut self.world)?;
         }
-        self.hand_on()
+        self.hand_on()?;
+        Ok(false)
     }
 
     /// [`Self::settle`]'s first part: the made entities, scopes and
-    /// messages handed on.
-    fn hand_on(&mut self) -> Result<(), InitFault> {
+    /// messages handed on; true if anything was.
+    fn hand_on(&mut self) -> Result<bool, InitFault> {
+        let mut any = false;
         for _ in 0..SETTLE_ROUNDS {
             let mut moved = false;
             for made in std::mem::take(&mut self.world.made) {
@@ -1311,8 +1345,9 @@ impl ModeScript {
             if !moved {
                 break;
             }
+            any = true;
         }
-        Ok(())
+        Ok(any)
     }
 
     pub fn snapshot(&self) -> Option<&Snapshot> {

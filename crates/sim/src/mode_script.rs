@@ -447,9 +447,7 @@ impl ModeRunner {
         let Self::Graph { script, .. } = self else {
             return;
         };
-        let result = entities
-            .iter()
-            .try_for_each(|(entity, variables)| script.set_foreign_variables(*entity, variables));
+        let result = script.set_foreign_variables(entities);
         if let Err(error) = result {
             self.stop(&error);
         }

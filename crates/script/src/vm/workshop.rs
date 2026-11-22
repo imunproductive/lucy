@@ -133,14 +133,28 @@ impl Component {
             .is_some_and(|item| item.start_ms == start_ms)
     }
 
+    /// The instances whose scope instances on this entity are up: each
+    /// one's opener, for [`Self::instance_busy`].
+    pub fn scope_openers(&self) -> BTreeSet<u16> {
+        let snapshot = &self.machine.snapshot;
+        snapshot
+            .instances
+            .values()
+            .filter_map(|other| other.scope.as_ref())
+            .filter(|scope| scope.source.entity == snapshot.entity)
+            .map(|scope| scope.source.instance)
+            .collect()
+    }
+
     /// Whether the instance still has work: an active state (a Wait, the
     /// scope of Disable Built-In Game Mode Scoring) other than a
     /// ClientOnlySharedVars ([`SHARED_VARS`]), or a scope instance it
-    /// opened on this entity that is still up: Create HUD Text's scope 31
-    /// holds the text, and a scope instance reads its parameters from this
-    /// one (`1D8A` rid21's `10 1` reads of `#18739`, `#22213`, `#19467`;
+    /// opened on this entity that is still up (it is in `openers`, the
+    /// [`Self::scope_openers`] now): Create HUD Text's scope 31 holds the
+    /// text, and a scope instance reads its parameters from this one
+    /// (`1D8A` rid21's `10 1` reads of `#18739`, `#22213`, `#19467`;
     /// [`Self::set_action_parameters`]).
-    pub fn instance_busy(&self, instance: u16) -> bool {
+    pub fn instance_busy(&self, instance: u16, openers: &BTreeSet<u16>) -> bool {
         let snapshot = &self.machine.snapshot;
         let Some(item) = snapshot.instances.get(&instance) else {
             return false;
@@ -152,12 +166,7 @@ impl Component {
                     .and_then(|graph| graph.state(usize::from(raw)))
                     .is_none_or(|node| !SHARED_VARS.contains(&node.class.as_str()))
         });
-        working
-            || snapshot.instances.values().any(|other| {
-                other.scope.as_ref().is_some_and(|scope| {
-                    scope.source.entity == snapshot.entity && scope.source.instance == instance
-                })
-            })
+        working || openers.contains(&instance)
     }
 
     /// When the instance last ran a networked action the frames carry

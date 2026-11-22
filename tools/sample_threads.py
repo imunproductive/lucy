@@ -156,6 +156,7 @@ class Context:
 kernel32.CreateToolhelp32Snapshot.restype = w.HANDLE
 kernel32.OpenProcess.restype = w.HANDLE
 kernel32.OpenThread.restype = w.HANDLE
+kernel32.QueryFullProcessImageNameW.argtypes = [w.HANDLE, w.DWORD, w.LPWSTR, ctypes.POINTER(w.DWORD)]
 kernel32.SuspendThread.restype = w.DWORD
 kernel32.GetThreadContext.argtypes = [w.HANDLE, ctypes.c_void_p]
 kernel32.GetThreadDescription.argtypes = [w.HANDLE, ctypes.POINTER(w.LPWSTR)]
@@ -255,15 +256,28 @@ class Sampler:
         self.process = kernel32.OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, False, pid)
         if not self.process:
             raise OSError(ctypes.get_last_error(), "OpenProcess")
-        dbghelp.SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES)
-        if not dbghelp.SymInitializeW(self.process, None, True):
-            raise OSError(ctypes.get_last_error(), "SymInitialize")
         self.threads: dict[int, tuple[object, str, int]] = {}
         self.seen: set[int] = set()
         self.context = Context()
         self.stacks: collections.Counter = collections.Counter()
         self.by_thread: collections.Counter = collections.Counter()
         self.idle = 0
+
+    def image(self) -> str:
+        """The full path of the process's executable."""
+        size = w.DWORD(1024)
+        path = ctypes.create_unicode_buffer(1024)
+        kernel32.QueryFullProcessImageNameW(self.process, 0, path, ctypes.byref(size))
+        return path.value
+
+    def load_symbols(self) -> None:
+        """dbghelp for the stack walks and names. The exe's folder is on the
+        search path: cargo's PDB path in the image may point elsewhere."""
+        image = self.image()
+        folder = image.rsplit("\\", 1)[0] if "\\" in image else None
+        dbghelp.SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES)
+        if not dbghelp.SymInitializeW(self.process, folder, True):
+            raise OSError(ctypes.get_last_error(), "SymInitialize")
 
     def refresh(self) -> None:
         for tid in thread_ids(self.pid):
@@ -372,6 +386,7 @@ class Names:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--process", required=True, help="part of the executable's name")
+    parser.add_argument("--path", help="part of the executable's full path (forward slashes)")
     parser.add_argument("--thread", default=".", help="regex on the thread names")
     parser.add_argument("--seconds", type=float, default=30.0)
     parser.add_argument("--interval", type=float, default=1.0, help="ms between samples")
@@ -383,17 +398,30 @@ def main() -> int:
 
     winmm.timeBeginPeriod(1)
     deadline = time.time() + 600
-    while not (found := processes(args.process)):
+    pattern = re.compile(args.thread)
+    sampler = None
+    # The first process of the name may be the wrong one (nextest lists the
+    # tests with a short-lived run of the same binary): take the first that
+    # has a matching thread.
+    while sampler is None:
         if time.time() > deadline:
-            print("no such process", file=sys.stderr)
+            print("no such process or thread", file=sys.stderr)
             return 1
-        time.sleep(0.2)
-    pid, exe = found[0]
-    sampler = Sampler(pid, re.compile(args.thread))
-    sampler.refresh()
-    while args.wait_thread and not sampler.threads:
-        time.sleep(0.2)
-        sampler.refresh()
+        for pid, exe in processes(args.process):
+            try:
+                candidate = Sampler(pid, pattern)
+            except OSError:
+                continue
+            candidate.refresh()
+            # Other checkouts run binaries of the same name.
+            if args.path and args.path.lower() not in candidate.image().lower().replace("\\", "/"):
+                continue
+            if candidate.threads or not args.wait_thread:
+                sampler = candidate
+                break
+        else:
+            time.sleep(0.2)
+    sampler.load_symbols()
     time.sleep(args.delay)
     print(f"sampling {exe} ({pid}): {sorted({n for _, n, _ in sampler.threads.values()})}", file=sys.stderr)
     start = time.perf_counter()

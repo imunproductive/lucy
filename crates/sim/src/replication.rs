@@ -3004,6 +3004,7 @@ impl WorldDelivery {
     /// and icons, [`ModeRunner::created`]) on this client, once its world
     /// started ([`Self::update_made`]).
     pub fn update_mode_entities(&mut self, mode: &ModeRunner) {
+        let _replicate = lucy_core::phase::enter(lucy_core::phase::Phase::Replicate);
         if !self.world_started() {
             return;
         }
@@ -4020,6 +4021,7 @@ impl WorldDelivery {
     /// acknowledged (`mode_view.rs`); false when the client has no mode
     /// entity yet (server.py `queue_mode_frame`).
     pub fn queue_mode_frame(&mut self, frame: ModeFrame<'_>, tick: u32) -> io::Result<bool> {
+        let _replicate = lucy_core::phase::enter(lucy_core::phase::Phase::Replicate);
         if !self.created.contains(&GAME_MODE_ENTITY) {
             return Ok(false);
         }

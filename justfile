@@ -59,8 +59,9 @@ test-affected game:
 # tick by phase, memory per room) and the real clock (tick rate, lateness); prints a table a test.
 # Release code with line tables (profile `profiling`), one test at a time; `filter` picks tests
 # (`load_parkour`, `virtual_clock`). Run it on a quiet PC: the real clock measures the machine.
+# mimalloc gives freed memory back at once, so the process's private bytes measure the matches.
 load game archive filter="load_":
-    $env:LUCY_GAME_DIR = '{{game}}'; $env:LUCY_DPK_ARCHIVE = '{{archive}}'; cargo nextest run -p lucy-server --locked --cargo-profile profiling --run-ignored only --no-capture -E 'test(/(^|::)load_/)' {{filter}}
+    $env:LUCY_GAME_DIR = '{{game}}'; $env:LUCY_DPK_ARCHIVE = '{{archive}}'; $env:MIMALLOC_PURGE_DELAY = 0; cargo nextest run -p lucy-server --locked --cargo-profile profiling --run-ignored only --no-capture -E 'test(/(^|::)load_/)' {{filter}}
 
 # Ignored tests that derive the runtime pack's files from an install and compare them with the pack.
 test-assets game runtime:

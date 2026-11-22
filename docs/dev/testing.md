@@ -57,6 +57,7 @@ Do not run the full game-install suites (`just test-game`, `just test-slow`) for
 | `just test-datatool <install> <dump>` | ignored `datatool` tests of `lucy-stu` | The asset reader against a DataTool export |
 | `just test-dpk <install> <archive>` | ignored `dpk_archive` tests of `lucy-workshop`, `lucy-sim` and `lucy-server`, optimised (`gametest`) | The Workshop parser and engine over the Doomfist parkour scripts; C32S2 in a simulated match and in a hosted one |
 | `just test-windows` | ignored tests of `lucy-launcher` | Loads the relay DLL into a stand-in process |
+| `just load <install> <archive> [filter]` | ignored `load_` tests of `lucy-server`, profile `profiling`, one at a time | The load harness: tick timing by phase in C32S2 and Practice vs AI matches ([load harness](#load-harness)) |
 
 ## Test tiers
 
@@ -128,6 +129,28 @@ The load of other tests stretches real time: a server on the real clock skips th
 - Its `#[ignore]` reason starts with `serial:` and says which timing it depends on.
 
 Do not lengthen such a window to make a test pass in parallel. A wait that only gives something time to happen, with no timing asserted, is not a window: make it longer instead. `just test-named` runs a `serial_` test together with the others its filter matches; give its full name to run it alone.
+
+#### Load harness
+
+The `load_` tests (`crates/server/src/game_service/tests/load.rs`) are measurements, not checks: headless games join a Workshop C32S2 match (the Doomfist parkour of Hanamura, 1 to 12 Doomfists) or a Practice vs AI match (Temple of Anubis, 1 to 12 players, AI heroes filling both teams to six), one or more matches at once, and each match's own tick timing (`game_service/timing.rs`) is read over 30 s after a 10 s warm-up. Each game does what the client does: the handshake, 21602 once the instance came, a hero pick, then one datagram after each frame with its commands (running, turning, jumping and firing in a fixed cycle).
+
+```powershell
+just load C:\Games\Overwatch D:\dfp-archive            # every load_ test
+just load C:\Games\Overwatch D:\dfp-archive virtual_clock
+```
+
+- `load_parkour_on_the_virtual_clock`, `load_practice_vs_ai_on_the_virtual_clock`: on the lockstep, so the work a tick takes is the CPU it needs, by phase, on one thread; memory per room is the process's private bytes after the warm-up less before the matches opened, over the matches.
+- `load_parkour_on_the_real_clock`, `load_practice_vs_ai_on_the_real_clock`: `GameService::bind`, real UDP, each match on its thread and each game on one of its own: the achieved tick rate, the skipped frames and how late each tick began, which depend on the PC.
+
+Each test prints a markdown table, a row per match: ticks a second, skipped frames, work mean, p99 and max, each phase's mean a tick, lateness mean, p99 and max (ms), MB per match. The recipe builds the `profiling` profile (release code with line tables) and runs one test at a time with `--no-capture`. `test-game` and `test-affected` leave the `load_` tests out. Results and their method: `D:/Work/Coding/refs/reports/ServerPerformance.md`.
+
+**Profiling.** ETW profilers (samply, WPR) need an elevated session on Windows. `tools/sample_threads.py` samples a running process without one: it suspends each thread whose name matches, walks its stack with dbghelp and resumes it, keeps only samples where the thread used CPU, and names the frames (with their inlined calls) from the PDB. Run a `load_` test and sample its `lucy-game` thread (the lockstep's rooms) or the `lucy-room-*` threads (real clock):
+
+```powershell
+python tools/sample_threads.py --process lucy_server- --path target --thread lucy-game --wait-thread --delay 40 --seconds 60 --folded research/out/profile.folded
+```
+
+It prints the functions with the most samples of their own and on the stack, and writes folded stacks for a flame graph. `--path` picks the checkout's binary when other checkouts run one of the same name.
 
 ### 3. Assets oracle
 

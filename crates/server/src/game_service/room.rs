@@ -1179,10 +1179,13 @@ impl RoomState {
             let slot = self.seats[&connection];
             let room = &mut self.room;
             if simulate
-                && peer
-                    .update(&self.schemas, room, slot, timers, now, tick)
-                    .is_err()
+                && let Err(error) = peer.update(&self.schemas, room, slot, timers, now, tick)
             {
+                tracing::warn!(
+                    "[game] match {:04X}: {} is sent home: {error}",
+                    self.id[0] & 0xFFFF,
+                    room.players[slot].info.name
+                );
                 peer.leave(&mut self.links, &self.schemas, connection, now);
             }
             if simulate {

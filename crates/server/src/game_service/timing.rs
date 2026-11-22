@@ -88,6 +88,15 @@ impl Spread {
         Duration::from_nanos(self.max)
     }
 
+    /// The upper edge of a bucket, at most the maximum; the last bucket has
+    /// none: the maximum.
+    fn edge(&self, bucket: usize) -> u64 {
+        if bucket == BUCKETS - 1 {
+            return self.max;
+        }
+        ((bucket as u64 + 1) * BUCKET_NS).min(self.max)
+    }
+
     /// The upper edge of the bucket that holds the `q` quantile (at most
     /// the maximum).
     pub fn quantile(&self, q: f64) -> Duration {
@@ -99,8 +108,7 @@ impl Spread {
         for (bucket, &count) in self.counts.iter().enumerate() {
             seen += u64::from(count);
             if seen >= rank {
-                let edge = (bucket as u64 + 1) * BUCKET_NS;
-                return Duration::from_nanos(edge.min(self.max));
+                return Duration::from_nanos(self.edge(bucket));
             }
         }
         self.max()
@@ -118,7 +126,7 @@ impl Spread {
         let max = counts
             .iter()
             .rposition(|&count| count != 0)
-            .map_or(0, |bucket| ((bucket as u64 + 1) * BUCKET_NS).min(self.max));
+            .map_or(0, |bucket| self.edge(bucket));
         Self {
             counts,
             count: self.count - earlier.count,
