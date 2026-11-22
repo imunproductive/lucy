@@ -30,7 +30,12 @@ Goal (2026-11-22): the server hosts a few matches at once (for example two or th
 
 The dashboard (`web/dashboard`, served by `server/src/server/dashboard*`) becomes the host's control panel for live matches. It builds on stage 1's rooms.
 
-1. **Remove** the nameplates test tab (`api/bot_plate.rs` and its page) and the debug chat commands with everything only they use (user, 2026-11-22): `.plate` (with `lucy_sim::bot_plate` and the bot script's plate path), `.hurt` (with `lucy_sim::hurt_feedback`'s live switch; hurt feedback stays on), `.hero` and `.leave` (`server/src/lobby/handlers/chat.rs` `match_command`), and their docs (`docs/user/playing.md`). Done after stage 1 merges, since `game_service.rs` holds their requests.
+1. **Remove** the nameplates test tab (`api/bot_plate.rs` and its page) and every debug control, with everything only they use (user, 2026-11-22):
+   - the debug chat commands `.plate` (with `lucy_sim::bot_plate` and the bot script's plate path), `.hurt` (with `lucy_sim::hurt_feedback`'s live switch; hurt feedback stays on), `.hero` and `.leave` (`server/src/lobby/handlers/chat.rs` `match_command`);
+   - the dashboard's debug API (`dashboard/debug.rs`: `/api/debug/messages`, `/api/debug/send`, `/api/debug/kill`, `LUCY_DEBUG_SEND`) and the other `LUCY_DEBUG_*` switches (`DROP_NOTICES`, `BOT_BODY`, `BOT_PLATE`, `BOTS_IN_ROSTER`, `HELLO_FLAGS`);
+   - the agent tools that call them (`tools/owdbg/msg.py` and the `owdbg` actions, game and watch code that use the debug API), and their docs (`docs/user/playing.md`, `troubleshooting.md`, `client-tools.md`, `architecture.md`, `behavior.md`, `loose-ends.md`).
+
+   Done after stage 1 merges, since `game_service.rs` holds their requests.
 2. **Redesign** the look and layout so it is clearer and easier to use; keep the existing account and profile tools working.
 3. **Live matches:** a list of every running match (mode, map, players, time, state), updated live.
 4. **Global message:** send a message to everyone online (lobby and matches), as the system.
