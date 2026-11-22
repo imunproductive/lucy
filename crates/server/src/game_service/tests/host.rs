@@ -14,12 +14,14 @@ use lucy_sim::{
 /// Two players, one a team, in the Assault graph's assembly. Set Match
 /// Time `1ABC` gives the phase 5 s on `0F4A`'s clock; Pause `1D53` toggles
 /// its `#7898`, so the clock stands and only Unpause is offered; Unpause
-/// lets it run. The host kicks the second player: his game goes home
+/// lets it run. Disable Built-In Game Mode Completion `1ABA` holds the mode
+/// entity's `#18600e`, and Enable `1AB9` lets it go. The host kicks the
+/// second player: his game goes home
 /// (20304), and once it closes its link the first sees "left the game".
 /// Declare Team Victory `1384` for team 0 decides the match on the graph
 /// (`#7525`): the result goes to the lobby, a win for the first player.
 /// Then the host stops the match without waiting for the cards: the first
-/// game goes home at the next tick.
+/// game goes home as soon as its reliable messages before it are through.
 #[test]
 #[ignore = "requires the derived 104319 data and Hanamura's collision (built from LUCY_GAME_DIR when missing)"]
 fn the_host_sets_the_time_pauses_kicks_declares_a_winner_and_stops_an_assault_match() {
@@ -164,6 +166,27 @@ fn the_host_sets_the_time_pauses_kicks_declares_a_winner_and_stops_an_assault_ma
     let running = flow(&server);
     assert!(!running.paused);
     assert!(running.clock < paused.clock - 0.9, "{running:?}");
+
+    // The mode's own end at clock 0: off, then on again; a second "off"
+    // while it is off is refused (`1ABA` would hold `#18600e` twice).
+    server
+        .run_flow(MATCH, FlowAction::Completion(false))
+        .unwrap()
+        .unwrap();
+    server.step();
+    assert!(flow(&server).completion_off);
+    assert_eq!(
+        server
+            .run_flow(MATCH, FlowAction::Completion(false))
+            .unwrap(),
+        Err(FlowRefusal::NotAllowed)
+    );
+    server
+        .run_flow(MATCH, FlowAction::Completion(true))
+        .unwrap()
+        .unwrap();
+    server.step();
+    assert!(!flow(&server).completion_off);
 
     // The kick: 20304 for the second game, "left the game" for the first
     // once it closes its link.

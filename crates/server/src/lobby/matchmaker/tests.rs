@@ -175,19 +175,13 @@ fn one_player_to_start_pops_the_queue_and_hands_the_game_off() {
             HANDOFF_MESSAGE
         ]
     );
-    let joined: Vec<&Value> = received
+    // General at login, then the match's channel and the team's.
+    let joined: Vec<u64> = received
         .iter()
         .filter(|(id, _)| *id == 20402)
-        .map(|(_, fields)| &structure(&fields[&0x78])[&0x10])
+        .map(|(_, fields)| lucy_lobby::social::unsigned(structure(&fields[&0x78]).get(&0x10)))
         .collect();
-    assert_eq!(
-        joined,
-        [
-            &Value::Unsigned(7),
-            &Value::Unsigned(6),
-            &Value::Unsigned(5)
-        ]
-    );
+    assert_eq!(joined, [7, 6, 5]);
     let find = |wanted: u32| &received.iter().find(|(id, _)| *id == wanted).unwrap().1;
     // The role check shows the queue entry in the party state.
     let party_states: Vec<&Fields> = received
