@@ -4,8 +4,9 @@ use lucy_content::maps::PRACTICE_RANGE_MAP;
 use lucy_core::bits::{BitReader, BitWriter};
 use lucy_core::tick::FIRST_TICK;
 use lucy_wire::{
-    link::{FIN, KIND_CONTROL, SYN},
-    messages::{read_channel, write_channel},
+    entity::GAME_MODE_ENTITY,
+    link::{ACK, FIN, KIND_CONTROL, KIND_FRAME, Packet, SYN},
+    messages::{encode, read_channel, write_channel},
 };
 use std::collections::HashSet;
 
@@ -1005,7 +1006,6 @@ fn busy_peers_resume_in_round_robin_order_after_the_global_input_budget() {
 
     let assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
     let scene = assets.prepare(GameMap::practice_range()).unwrap();
-    let mut state = State::new(Arc::new(fixture()));
     // Five synthetic peers share a prepared fixture solely to test the
     // worker scheduler.
     let players: Vec<_> = (0..5)
@@ -1020,9 +1020,23 @@ fn busy_peers_resume_in_round_robin_order_after_the_global_input_budget() {
         scene: Box::new(scene),
         combat: None,
     };
-    state
-        .rooms
-        .insert(MATCH, Room::new(map, players, Some(world)));
+    let opening = Opening {
+        id: MATCH,
+        map,
+        players,
+        world: Some(world),
+        ai: None,
+    };
+    let settings = RoomSettings {
+        schemas: Arc::new(fixture()),
+        timers: Timers::default(),
+        bot_plate: Arc::default(),
+        hurt: HurtFeedback::default(),
+        events: router::Events::nowhere(MATCH),
+    };
+    // The seats take connections 1 to 5, in slot order.
+    let allocate = |count: usize| Ok((1..=count as u32).collect());
+    let (mut state, _) = RoomState::open(opening, settings, Duration::ZERO, allocate).unwrap();
     let first = FIRST_TICK + 1;
     // A tick runs all but the last MAX_BUFFERED (4) of a long input buffer
     // at once (`InputQueue::release`): 36 commands give each peer 32 to run.
@@ -1032,7 +1046,7 @@ fn busy_peers_resume_in_round_robin_order_after_the_global_input_budget() {
             ..Command::default()
         })
         .collect();
-    let room = &state.rooms[&MATCH];
+    let room = &state.room;
     for slot in 0..room.players.len() {
         let connection = slot as u32 + 1;
         let viewer = room.appearance(slot).unwrap();
@@ -1042,10 +1056,9 @@ fn busy_peers_resume_in_round_robin_order_after_the_global_input_budget() {
             .unwrap();
         peer.world.queue_commands(FIRST_TICK, &commands);
         peer.world.release_input(1);
-        state.seats.insert(connection, (MATCH, slot));
         state.peers.insert(connection, peer);
     }
-    let acks = |state: &State| {
+    let acks = |state: &RoomState| {
         state
             .peers
             .values()
@@ -7125,6 +7138,7 @@ fn a_firing_practice_bot_shoots_the_player() {
 
 mod assault;
 mod collision_ready;
+mod rooms;
 mod victims;
 mod workshop;
 

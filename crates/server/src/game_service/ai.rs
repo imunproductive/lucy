@@ -49,7 +49,7 @@ use lucy_sim::{
 use lucy_wire::commands::Command;
 
 use super::{
-    FIRST_AI_CONNECTION, MatchId, MatchPlayer, Peer, Player, PlayerStats, Room, State, invalid,
+    FIRST_AI_CONNECTION, MatchPlayer, Peer, Player, PlayerStats, Room, RoomState, invalid,
     pick_message, player_entity,
 };
 
@@ -320,13 +320,13 @@ impl AiSeat {
     }
 }
 
-impl State {
+impl RoomState {
     /// The AI heroes' seats and peers, once their room is in.
-    pub(super) fn seat_ai(&mut self, id: MatchId, seats: Vec<(usize, AiSeat)>) {
+    pub(super) fn seat_ai(&mut self, seats: Vec<(usize, AiSeat)>) {
         for (slot, seat) in seats {
             let connection = self.next_ai_seat();
-            let entity = self.rooms[&id].players[slot].entity;
-            self.seats.insert(connection, (id, slot));
+            let entity = self.room.players[slot].entity;
+            self.seats.insert(connection, slot);
             self.peers.insert(connection, Peer::ai(entity, seat));
         }
     }
@@ -341,12 +341,12 @@ impl State {
         }
     }
 
-    /// The room is gone with its last player: its AI heroes go too.
-    pub(super) fn unseat_ai(&mut self, id: MatchId) {
+    /// The match is over with its last player: its AI heroes go too.
+    pub(super) fn unseat_ai(&mut self) {
         let seated: Vec<u32> = self
-            .seats
+            .peers
             .iter()
-            .filter(|(_, seat)| seat.0 == id)
+            .filter(|(_, peer)| peer.ai.is_some())
             .map(|(&connection, _)| connection)
             .collect();
         for connection in seated {
@@ -358,11 +358,11 @@ impl State {
     /// The dummy bots the room's placed scripts made or removed
     /// (`STU_FC3921B1`, `STU_C1561031`: the Practice Range's Training
     /// Partner console `265F`), in order.
-    pub(super) fn change_dummies(&mut self, id: MatchId, changes: Vec<DummyChange>) {
+    pub(super) fn change_dummies(&mut self, changes: Vec<DummyChange>) {
         for change in changes {
             match change {
-                DummyChange::Remove { team, slot } => self.remove_dummy(id, team, slot),
-                DummyChange::Create { dummy, next } => self.add_dummy(id, &dummy, next),
+                DummyChange::Remove { team, slot } => self.remove_dummy(team, slot),
+                DummyChange::Create { dummy, next } => self.add_dummy(&dummy, next),
             }
         }
     }
@@ -374,10 +374,8 @@ impl State {
     /// assumption: a dummy's respawns come back there). He is on the
     /// graph's team; his name and card are his hero's (assumption, as an
     /// AI hero's).
-    fn add_dummy(&mut self, id: MatchId, dummy: &DummyBot, next: NextDummy) {
-        let Some(room) = self.rooms.get_mut(&id) else {
-            return;
-        };
+    fn add_dummy(&mut self, dummy: &DummyBot, next: NextDummy) {
+        let room = &mut self.room;
         let hero = room
             .world
             .as_ref()
@@ -426,16 +424,14 @@ impl State {
         let mut peer = Peer::ai(next.player, AiSeat::dummy(slot, hero, yaw));
         peer.world.place_bodies_at(dummy.position, yaw);
         let connection = self.next_ai_seat();
-        self.seats.insert(connection, (id, slot));
+        self.seats.insert(connection, slot);
         self.peers.insert(connection, peer);
     }
 
     /// The dummy bot of a team's slot leaves the room, as a player who
     /// leaves: his peer goes, so the clients lose his body.
-    fn remove_dummy(&mut self, id: MatchId, team: i64, slot: i64) {
-        let Some(room) = self.rooms.get_mut(&id) else {
-            return;
-        };
+    fn remove_dummy(&mut self, team: i64, slot: i64) {
+        let room = &mut self.room;
         let Some(index) = room
             .dummies
             .iter()
@@ -448,7 +444,7 @@ impl State {
         let seated = self
             .seats
             .iter()
-            .find(|&(_, &seat)| seat == (id, player))
+            .find(|&(_, &seat)| seat == player)
             .map(|(&connection, _)| connection);
         if let Some(connection) = seated {
             self.seats.remove(&connection);
@@ -458,10 +454,11 @@ impl State {
 
     /// Tests: every player of the match and his body, in slot order.
     #[cfg(test)]
-    pub(super) fn bodies(&self, id: MatchId) -> Vec<BodyState> {
-        let Some(room) = self.rooms.get(&id) else {
+    pub(super) fn bodies(&self) -> Vec<BodyState> {
+        let room = &self.room;
+        if room.closed() {
             return Vec::new();
-        };
+        }
         let mut bodies: Vec<BodyState> = room
             .players
             .iter()
@@ -489,10 +486,7 @@ impl State {
             })
             .collect();
         for (connection, peer) in &self.peers {
-            let (match_id, slot) = self.seats[connection];
-            if match_id != id {
-                continue;
-            }
+            let slot = self.seats[connection];
             let body = &mut bodies[slot];
             body.hero = peer.world.current_hero();
             body.scripted = peer.world.combat_body_active();
@@ -531,61 +525,53 @@ impl State {
     /// path work of a tick with its bots (`PreparedScene::path_budget`).
     pub(super) fn drive_ai(&mut self, tick: u32, now: Duration) {
         let Self {
-            rooms,
-            seats,
-            peers,
-            ..
+            room, seats, peers, ..
         } = self;
-        for (&id, room) in rooms.iter() {
-            if room.ai.is_none() && room.dummies.is_empty() {
-                continue;
+        if room.ai.is_none() && room.dummies.is_empty() {
+            return;
+        }
+        let Some(world) = &room.world else {
+            return;
+        };
+        let flow = room.flow.as_ref();
+        let scene = &world.scene;
+        let mut seen = Vec::new();
+        for (connection, peer) in peers.iter() {
+            let slot = seats[connection];
+            let team = room.players[slot].info.team;
+            if let Some(target) = peer
+                .world
+                .combat_target(scene, team)
+                .filter(|target| !target.dead)
+            {
+                seen.push(Seen {
+                    slot,
+                    team,
+                    feet: target.pose.feet,
+                    height: target.pose.height,
+                });
             }
-            let Some(world) = &room.world else {
+        }
+        let paths = scene.path_budget();
+        for (connection, peer) in peers.iter_mut() {
+            let slot = seats[connection];
+            let Peer {
+                world: delivery,
+                ai: Some(seat),
+                ..
+            } = peer
+            else {
                 continue;
             };
-            let flow = room.flow.as_ref();
-            let scene = &world.scene;
-            let mut seen = Vec::new();
-            for (connection, peer) in peers.iter() {
-                let (match_id, slot) = seats[connection];
-                if match_id != id {
-                    continue;
-                }
-                let team = room.players[slot].info.team;
-                if let Some(target) = peer
-                    .world
-                    .combat_target(scene, team)
-                    .filter(|target| !target.dead)
-                {
-                    seen.push(Seen {
-                        slot,
-                        team,
-                        feet: target.pose.feet,
-                        height: target.pose.height,
-                    });
-                }
+            if flow.is_none() && matches!(seat.plays, Plays::Ai(_)) {
+                continue;
             }
-            let paths = scene.path_budget();
-            for (connection, peer) in peers.iter_mut() {
-                let (match_id, slot) = seats[connection];
-                let Peer {
-                    world: delivery,
-                    ai: Some(seat),
-                    ..
-                } = peer
-                else {
-                    continue;
-                };
-                if match_id != id || (flow.is_none() && matches!(seat.plays, Plays::Ai(_))) {
-                    continue;
-                }
-                let step = seat.step(delivery, room, scene, flow, slot, &seen, paths, tick, now);
-                if let Err(error) = step {
-                    tracing::warn!(
-                        "[game] AI {} stopped: {error}",
-                        room.players[slot].info.name
-                    );
-                }
+            let step = seat.step(delivery, room, scene, flow, slot, &seen, paths, tick, now);
+            if let Err(error) = step {
+                tracing::warn!(
+                    "[game] AI {} stopped: {error}",
+                    room.players[slot].info.name
+                );
             }
         }
     }
