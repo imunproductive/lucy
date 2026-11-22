@@ -420,6 +420,39 @@ fn set_match_time_gives_the_phase_its_seconds() {
     assert_eq!(run.flow.clock(), 3599.0);
 }
 
+/// The dashboard's Declare Team Victory (`09A3` with team 1) in setup
+/// decides the match at once: its round ends, then the match with the
+/// winner in `0695`. A later declaration changes nothing; Declare Match
+/// Draw (team -1) on another match is a draw for both teams.
+#[test]
+fn a_declared_winner_or_draw_ends_the_match() {
+    let declare = |team: i64| Variables::from([(DECLARED_TEAM, Value::Integer(team))]);
+    let mut run = Run::new(new_flow(&hybrid(), false, Timers::default()).unwrap());
+    run.flow.receive(DECLARE_VICTORY_MESSAGE, &declare(1));
+    run.flow.start();
+    run.phase(40.0, &[], Phase::Setup);
+    run.flow.receive(DECLARE_VICTORY_MESSAGE, &declare(1));
+    run.flow.receive(DECLARE_VICTORY_MESSAGE, &declare(0));
+    run.phase(60.0, &[], Phase::MatchEnd);
+    assert_eq!(run.flow.standing(0, 1), Some(Standing::Won));
+    assert_eq!(run.flow.standing(0, 0), Some(Standing::Lost));
+    let winner = run.events.iter().find_map(|(_, event)| match event {
+        FlowEvent::Message {
+            message: MATCH_END_MESSAGE,
+            parameters,
+        } => Some(parameters[&WINNER].clone()),
+        _ => None,
+    });
+    assert_eq!(winner, Some(Value::Integer(1)));
+
+    let mut run = Run::new(new_flow(&hybrid(), false, Timers::default()).unwrap());
+    run.flow.start();
+    run.flow.receive(DECLARE_VICTORY_MESSAGE, &declare(-1));
+    run.phase(60.0, &[], Phase::MatchEnd);
+    assert_eq!(run.flow.standing(0, 0), Some(Standing::Drew));
+    assert_eq!(run.flow.standing(0, 1), Some(Standing::Drew));
+}
+
 #[test]
 fn the_time_scale_shortens_every_timer_and_capture() {
     let timers = Timers { scale: 0.1 };

@@ -64,7 +64,11 @@ pub fn hello(profile: &Profile, identity: Identity) -> Fields {
     let tag = battle_tag(&profile.player_name, identity.account_lo);
     let session = identity.session.into_iter().map(Unsigned).collect();
     let game_region = u64::from(game_region_number(&profile.game_region));
-    let mut fields = Fields::from([
+    // The six bools of 20500 nobody knows the meaning of (`+0x148`,
+    // `+0x149`, `+0x14A`, `+0x154`, `+0x155`, `+0x156`) stay false, as the
+    // Python reference left them. A lead for the client's hidden admin and
+    // developer features (`refs/reports/AdminMode.md`).
+    Fields::from([
         (0x78, Struct(account.clone())),
         (0x88, Struct(account)),
         (0x98, Struct(Fields::from([(0, Array(session))]))),
@@ -77,28 +81,8 @@ pub fn hello(profile: &Profile, identity: Identity) -> Fields {
         (0x120, Value::String(String::new())),
         (0x14c, Unsigned(game_region)),
         (0x150, Unsigned(game_region)),
-    ]);
-    if *HELLO_FLAGS {
-        fields.extend(UNKNOWN_HELLO_FLAGS.map(|offset| (offset, Value::Bool(true))));
-    }
-    fields
+    ])
 }
-
-/// The six bools of 20500 nobody knows the meaning of (`+0x148`, `+0x149`,
-/// `+0x14A`, `+0x154`, `+0x155`, `+0x156`); the server leaves them false, as
-/// the Python reference did. A lead for the client's hidden admin and
-/// developer features (`refs/reports/AdminMode.md`).
-const UNKNOWN_HELLO_FLAGS: [u32; 6] = [0x148, 0x149, 0x14a, 0x154, 0x155, 0x156];
-
-/// A debugging switch: `LUCY_DEBUG_HELLO_FLAGS=1` sends every one of
-/// [`UNKNOWN_HELLO_FLAGS`] true, to see whether the client unlocks anything.
-static HELLO_FLAGS: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
-    let on = std::env::var("LUCY_DEBUG_HELLO_FLAGS").is_ok_and(|value| value == "1");
-    if on {
-        tracing::warn!("debugging: the hello message (20500) sends its six unknown flags true");
-    }
-    on
-});
 
 pub fn record(profile: &Profile, identity: Identity, portrait_frame: u64, now: u64) -> Fields {
     let account = identity.account();

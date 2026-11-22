@@ -22,11 +22,6 @@ export class ApiError extends Error {
     this.name = 'ApiError';
     this.status = status;
   }
-
-  /** The server has no such route (yet): a feature of a later backend. */
-  get missing(): boolean {
-    return this.status === 404 || this.status === 405;
-  }
 }
 
 export async function request<T>(path: string, body?: object): Promise<T> {

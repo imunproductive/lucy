@@ -31,7 +31,6 @@ use lucy_content::{
 use lucy_lobby::handoff::Handoff;
 use lucy_sim::{
     ai::Random,
-    bot_plate::BotPlate,
     combat::Combat,
     instance::{Instance, Member},
     match_flow::{MatchFlow, Timers},
@@ -48,11 +47,10 @@ use lucy_wire::{
 };
 
 use super::{
-    DebugKill, DebugSeat, FIRST_AI_CONNECTION, LATENCY_STEP, MAX_PONGS, MatchSnapshot, OpenReply,
-    Opening, Peer, Player, PlayerSnapshot, PlayerState, RECEIVE_BATCH, Room, RoomPlate,
-    RoomRequest, RoomSettings, RoomSnapshot, RoomState, RoomWorkshop, Transport, WorldPlayer,
-    WorldStart, ai, check_scene, invalid, leave_message, pick_message, player_entity,
-    router::Inbound, send, spawn_number, take_placeable_removals,
+    FIRST_AI_CONNECTION, LATENCY_STEP, MAX_PONGS, MatchSnapshot, OpenReply, Opening, Peer, Player,
+    PlayerSnapshot, PlayerState, RECEIVE_BATCH, Room, RoomRequest, RoomSettings, RoomSnapshot,
+    RoomState, RoomWorkshop, Transport, WorldPlayer, WorldStart, ai, check_scene, invalid,
+    leave_message, player_entity, router::Inbound, send, spawn_number, take_placeable_removals,
 };
 use crate::{
     clock::{GameClock, Step, next_tick_after},
@@ -267,8 +265,6 @@ impl RoomState {
         let RoomSettings {
             schemas,
             timers,
-            bot_plate,
-            hurt,
             events,
         } = settings;
         let (clock, _) = GameClock::opened(now);
@@ -284,8 +280,6 @@ impl RoomState {
             next_ai_connection: FIRST_AI_CONNECTION,
             next_input_peer: 0,
             timers,
-            bot_plate,
-            hurt,
             events,
             #[cfg(all(test, unwinds))]
             fail: false,
@@ -321,14 +315,6 @@ impl RoomState {
                     let _ = reply.send(snapshot);
                 }
             }
-            Inbound::BotPlate {
-                plate,
-                messages,
-                reply,
-            } => {
-                let _ = reply.send(self.tune_bot_plate(plate, &messages));
-            }
-            Inbound::Hurt(hurt) => self.hurt = hurt,
         }
     }
 
@@ -491,14 +477,22 @@ impl RoomState {
                     };
                     PlayerSnapshot {
                         name: player.info.name.clone(),
+                        account: if player.ai {
+                            0
+                        } else {
+                            player.card.account[0] as u32
+                        },
                         hero: peer
                             .and_then(|peer| peer.world.hero())
                             .unwrap_or(player.hero),
                         team: player.info.team,
                         state,
+                        ai: player.ai,
                     }
                 })
                 .collect(),
+            age: room.started.elapsed(),
+            flow: self.flow_state(),
         };
         Some(RoomSnapshot {
             started: room.started,
@@ -570,11 +564,7 @@ impl RoomState {
             } => {
                 let exists = self.seat(connection, id).is_some();
                 if release && exists {
-                    if self.links.waiting(connection) {
-                        self.take_out_waiting(connection);
-                    } else {
-                        self.send_home(connection, now);
-                    }
+                    self.release(connection, now);
                 }
                 let _ = reply.send(exists);
             }
@@ -595,41 +585,14 @@ impl RoomState {
                 }
                 let _ = reply.send(());
             }
-            RoomRequest::Hero {
-                connection,
-                id,
-                hero,
-                reply,
-            } => {
-                let _ = reply.send(self.switch_hero(connection, id, hero, now));
+            RoomRequest::Flow { action, reply, .. } => {
+                let _ = reply.send(self.run_flow(action));
             }
-            RoomRequest::DebugSeat {
-                connection,
-                id,
-                reply,
-            } => {
-                let _ = reply.send(self.debug_seat(connection, id));
+            RoomRequest::Kick { account, reply, .. } => {
+                let _ = reply.send(self.kick(account, now));
             }
-            RoomRequest::DebugSend {
-                connection,
-                id,
-                messages,
-                reply,
-            } => {
-                let sent = self.debug_seat(connection, id).is_some_and(|_| {
-                    let peer = &mut self.peers[&connection];
-                    messages
-                        .into_iter()
-                        .all(|message| peer.egress.queue_reliable(message).is_ok())
-                });
-                let _ = reply.send(sent);
-            }
-            RoomRequest::DebugKill {
-                connection,
-                id,
-                reply,
-            } => {
-                let _ = reply.send(self.debug_kill(connection, id));
+            RoomRequest::Stop { reply, .. } => {
+                let _ = reply.send(self.stop(now));
             }
         }
     }
@@ -668,127 +631,9 @@ impl RoomState {
         })
     }
 
-    /// The entities of a seat of match `id` whose game is connected.
-    fn debug_seat(&self, connection: u32, id: super::MatchId) -> Option<DebugSeat> {
-        let slot = self.seat(connection, id)?;
-        let peer = self.peers.get(&connection)?;
-        Some(DebugSeat {
-            controller: self.room.players[slot].entity,
-            body: peer.world.current_body(),
-        })
-    }
-
-    /// The environment's kill of a seat's living body ([`DebugKill`]),
-    /// resolved with the next tick's hits.
-    fn debug_kill(&mut self, connection: u32, id: super::MatchId) -> DebugKill {
-        let Some(seat) = self.debug_seat(connection, id) else {
-            return DebugKill::NotConnected;
-        };
-        let Some(body) = seat.body else {
-            return DebugKill::NoBody;
-        };
-        let world = &self.peers[&connection].world;
-        if world.body_dead() {
-            return DebugKill::Dead;
-        }
-        if world.in_spawn_room() == Some(true) {
-            return DebugKill::InSpawnRoom;
-        }
-        let tick = self.clock.frame();
-        let slot = self.seats[&connection];
-        let team = self.room.players[slot].info.team;
-        let Some(world) = self.room.world.as_mut() else {
-            return DebugKill::NotConnected;
-        };
-        world
-            .combat
-            .get_or_insert_with(|| Combat::new(&world.scene))
-            .environment_kill(body, team, tick);
-        DebugKill::Killed(body)
-    }
-
-    /// A pick of the hero, as the client's own pick message (21616) carries
-    /// it, queued with the seat's other game input.
-    fn switch_hero(
-        &mut self,
-        connection: u32,
-        id: super::MatchId,
-        hero: u64,
-        now: Duration,
-    ) -> bool {
-        if self.clock.draining() {
-            return false;
-        }
-        let Some(slot) = self.seat(connection, id) else {
-            return false;
-        };
-        let room = &self.room;
-        let (Some(world), Some(peer)) = (&room.world, self.peers.get_mut(&connection)) else {
-            return false;
-        };
-        if world.scene.heroes().get(hero).is_none() || !peer.world.world_started() {
-            return false;
-        }
-        let pick = pick_message(room.players[slot].entity, hero);
-        peer.world.queue_game_message(self.clock.frame(), now, pick);
-        true
-    }
-
-    /// The live nameplate tool's plate, which the room takes now
-    /// ([`Self::sync_bot_plates`]), and its messages to the live bots: how
-    /// many of the room's took each, and what its first live bot sends now.
-    fn tune_bot_plate(&mut self, plate: Arc<BotPlate>, messages: &[u64]) -> RoomPlate {
-        self.bot_plate = plate;
-        self.sync_bot_plates();
-        let mut world = self.room.world.as_mut();
-        let taken = messages
-            .iter()
-            .map(|&message| {
-                world
-                    .as_mut()
-                    .map_or(0, |world| world.scene.message_bot_plates(message))
-            })
-            .collect();
-        let sample = self.room.world.as_ref().and_then(|world| {
-            let combat = world.combat.as_ref();
-            world
-                .scene
-                .bot_plate_sample(|slot| combat.and_then(|combat| combat.bot_vitals(slot)))
-        });
-        RoomPlate {
-            started: self.room.started,
-            taken,
-            sample,
-        }
-    }
-
-    /// The room takes the live nameplate tool's plate if it hasn't yet: its
-    /// bots' scripts at once, their pools as an update to each of its
-    /// clients.
-    fn sync_bot_plates(&mut self) {
-        let Some(WorldStart { scene, combat }) = &mut self.room.world else {
-            return;
-        };
-        if Arc::ptr_eq(scene.bot_plate(), &self.bot_plate) {
-            return;
-        }
-        let combat = combat.as_ref();
-        let updates = scene.set_bot_plate(Arc::clone(&self.bot_plate), |slot| {
-            combat.and_then(|combat| combat.bot_vitals(slot))
-        });
-        for peer in self.peers.values_mut() {
-            if peer.ai.is_some() {
-                continue;
-            }
-            for update in &updates {
-                peer.world.queue_health(update.clone());
-            }
-        }
-    }
-
     /// A player whose game has not connected leaves the match now; if his
     /// game still connects, it gets only 20304 (server.py `take_out`).
-    fn take_out_waiting(&mut self, connection: u32) {
+    pub(super) fn take_out_waiting(&mut self, connection: u32) {
         let slot = self.seats[&connection];
         let player = &self.room.players[slot];
         tracing::info!(
@@ -1100,11 +945,7 @@ impl RoomState {
         let mut bot_events = Vec::new();
         let mut bot_voices = Vec::new();
         if simulate {
-            // A match that started since takes the live nameplate tool's
-            // plate before its bots' scripts start.
-            self.sync_bot_plates();
             if let Some(world) = &mut self.room.world {
-                world.scene.set_hurt_feedback(self.hurt);
                 world.scene.step_bots(tick);
             }
             self.update_combat(tick, now);

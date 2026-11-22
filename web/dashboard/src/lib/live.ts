@@ -1,7 +1,6 @@
-// The live-match API of stage 3 (refs/reports/Dashboard.md §7). The server
-// does not have these routes yet: each call then fails with an ApiError whose
-// `missing` is true, and the pages say the feature is not available yet.
-import {ApiError, query, request} from './api.ts';
+// The live-match API of stage 3 (refs/reports/Dashboard.md §7; the server's
+// `crates/server/src/server/dashboard/live.rs`).
+import {query, request} from './api.ts';
 import type {Ok} from './types.ts';
 
 export interface OnlinePlayer {
@@ -30,7 +29,6 @@ export type FlowControl =
   | 'round_winner'
   | 'round_draw'
   | 'assemble'
-  | 'restart'
   | 'completion';
 
 export interface LiveMatch {
@@ -41,16 +39,21 @@ export interface LiveMatch {
   /** The mode graph ("0F4A"), null for none. */
   mode_graph: string | null;
   driven: 'graph' | 'flow' | 'none';
-  phase: string;
+  /** "assemble", "setup", "round", "round_end", "match_end", "waiting"; null before the flow starts and in the Range. */
+  phase: string | null;
   /** Seconds on the match clock. */
   clock: number;
   paused: boolean;
   round: number;
+  /** Teams are 0 and 1 ("Team 1", "Team 2"). */
   attackers: number | null;
-  objective: unknown;
+  objective: number;
   overtime: boolean;
   winner: number | null;
-  workshop_rules: unknown;
+  /** The mode's own end at clock 0 is off. */
+  completion_off: boolean;
+  /** A Workshop match's rule count, null for others. */
+  workshop_rules: number | null;
   /** Unix time in seconds. */
   started_at: number;
   ended: boolean;
@@ -74,8 +77,8 @@ export interface ChatLine {
   seq: number;
   /** Unix time in seconds. */
   at: number;
-  kind: 'chat' | 'system' | 'notice' | 'command';
-  channel: ChatChannel;
+  kind: 'chat' | 'system';
+  channel: ChatChannel | 'general';
   from: {account: string; name: string} | null;
   text: string;
 }
@@ -91,13 +94,13 @@ export type FlowAction =
   | {action: 'skip_phase'}
   | {action: 'pause'}
   | {action: 'unpause'}
+  /** Team 0 or 1, or the team of the player with this account. */
   | {action: 'declare_winner'; team: number}
   | {action: 'declare_winner'; account: string}
   | {action: 'draw'}
   | {action: 'round_winner'; team: number}
   | {action: 'round_draw'}
   | {action: 'assemble'}
-  | {action: 'restart'}
   | {action: 'completion'; on: boolean};
 
 export type StopResult = {result: 'winner'; team: number} | {result: 'draw'} | {result: 'none'};
@@ -105,7 +108,6 @@ export type StopResult = {result: 'winner'; team: number} | {result: 'draw'} | {
 export interface Broadcast {
   text: string;
   scope: 'all' | 'lobby' | 'matches';
-  hud?: 'none' | 'small' | 'big';
 }
 
 const match = (id: string) => `/api/matches/${encodeURIComponent(id)}`;
@@ -155,30 +157,17 @@ export function appendChat(lines: ChatLine[], page: ChatPage): ChatLine[] {
   return [...lines, ...page.lines.filter(line => line.seq > last)];
 }
 
-export type Availability<T> = {available: true; value: T} | {available: false};
-
-/** The call's value, or `available: false` when the server lacks the route. Other errors stay errors. */
-export async function ifAvailable<T>(call: Promise<T>): Promise<Availability<T>> {
-  try {
-    return {available: true, value: await call};
-  } catch (error) {
-    if (error instanceof ApiError && error.missing) return {available: false};
-    throw error;
-  }
-}
-
 export interface LivePoll {
   stop(): void;
 }
 
 /**
  * Poll `/api/live` every `interval` ms with the last rev, and call `update`
- * with each new snapshot. Stops by itself once the server lacks the route
- * (`unavailable`); a failed poll calls `failed` and the next one tries again.
+ * with each new snapshot. A failed poll calls `failed` and the next one
+ * tries again.
  */
 export function pollLive(handlers: {
   update(snapshot: LiveSnapshot): void;
-  unavailable?(): void;
   failed?(error: unknown): void;
   interval?: number;
 }): LivePoll {
@@ -194,11 +183,6 @@ export function pollLive(handlers: {
       snapshot = next;
     } catch (error) {
       if (stopped) return;
-      if (error instanceof ApiError && error.missing) {
-        stopped = true;
-        handlers.unavailable?.();
-        return;
-      }
       handlers.failed?.(error);
     }
     if (!stopped) timer = setTimeout(tick, handlers.interval ?? 1000);

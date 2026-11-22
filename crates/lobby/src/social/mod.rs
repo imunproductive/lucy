@@ -7,10 +7,12 @@
 //! client.
 //!
 //! A chat channel is `{+0x0: id, +0x10: type, +0x14: index}`. The types used
-//! here are 4 for a party (the id is the party id), 6 for the players of a
-//! match (the id is the match id) and 7 for General. Whispers use their own
-//! messages. That 6 is the match ("All") chat and 5 the team chat is not
-//! confirmed yet (a guess of the Python reference).
+//! here are 4 for a party (the id is the party id), 5 for a team of a match
+//! (the id is `handoff::team_channel_id`), 6 for the players of a match
+//! (the id is the match id) and 7 for General. Whispers use their own
+//! messages. 5 is the team chat and 6 the match chat: the client's
+//! `STU_7106C356` posts a line with a speaker to his teammates in type 5
+//! (`refs/reports/Dashboard.md` §1.1).
 //!
 //! The state is one [`SocialState`] behind a mutex: a caller locks it for a
 //! whole client request, as the Python handlers ran under one state lock.
@@ -44,6 +46,7 @@ use crate::{
 pub use groups::{group_rating, matches_filters};
 
 pub const CHANNEL_GROUP: u64 = 4;
+pub const CHANNEL_TEAM: u64 = 5;
 pub const CHANNEL_MATCH: u64 = 6;
 pub const CHANNEL_GENERAL: u64 = 7;
 /// Group finder slot types (LFG enum table 0x7FF78B566690).
@@ -274,8 +277,28 @@ pub struct SocialState {
     /// The logged-in accounts, in login order.
     online: IndexMap<u32, Arc<Account>>,
     sessions: HashMap<u32, Session>,
-    /// Account -> the id of its match's chat channel.
-    match_chats: HashMap<u32, PartyId>,
+    /// Account -> its match's chat channels.
+    match_chats: HashMap<u32, MatchChat>,
+}
+
+/// The chat of the match an account plays in: the match's channel and his
+/// team's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MatchChat {
+    pub id: PartyId,
+    pub team: u8,
+}
+
+impl MatchChat {
+    pub fn channels(self) -> [Fields; 2] {
+        [
+            channel(
+                crate::handoff::team_channel_id(self.id, self.team),
+                CHANNEL_TEAM,
+            ),
+            channel(self.id, CHANNEL_MATCH),
+        ]
+    }
 }
 
 #[derive(Default)]
@@ -395,50 +418,72 @@ impl SocialState {
 
     // --- chat ------------------------------------------------------------
 
+    /// Who gets a line said in `channel`: a match's players, his team in
+    /// it, a party's members, else everyone online and the bot.
     pub fn channel_members(&self, channel: &Fields, bot: &Arc<Account>) -> Vec<Arc<Account>> {
         let kind = unsigned(channel.get(&0x10));
         let id = id_of(channel.get(&0));
-        if kind == CHANNEL_MATCH {
-            return self
-                .online
+        let in_chat = |test: &dyn Fn(MatchChat) -> bool| {
+            self.online
                 .values()
                 .filter(|account| {
-                    id.is_some() && self.match_chats.get(&account.account_lo) == id.as_ref()
+                    self.match_chats
+                        .get(&account.account_lo)
+                        .is_some_and(|&chat| test(chat))
                 })
                 .cloned()
-                .collect();
+                .collect()
+        };
+        match (kind, id) {
+            (CHANNEL_MATCH, Some(id)) => in_chat(&|chat| chat.id == id),
+            (CHANNEL_TEAM, Some(id)) => {
+                in_chat(&|chat| crate::handoff::team_channel_id(chat.id, chat.team) == id)
+            }
+            (CHANNEL_MATCH | CHANNEL_TEAM, None) => Vec::new(),
+            (CHANNEL_GROUP, id) => id
+                .and_then(|id| self.party(id))
+                .map_or_else(Vec::new, |party| party.members.clone()),
+            _ => self.online(bot),
         }
-        if kind != CHANNEL_GROUP {
-            return self.online(bot);
-        }
-        id.and_then(|id| self.party(id))
-            .map_or_else(Vec::new, |party| party.members.clone())
     }
 
-    /// Put the account in a match's chat channel, which the in-match chat
-    /// posts to.
-    pub fn open_match_chat(&mut self, match_id: PartyId, account_lo: u32) {
-        self.match_chats.insert(account_lo, match_id);
+    /// Put the account in a match's chat channel and his team's, which the
+    /// in-match chat posts to.
+    pub fn open_match_chat(&mut self, match_id: PartyId, account_lo: u32, team: u8) {
+        self.match_chats
+            .insert(account_lo, MatchChat { id: match_id, team });
     }
 
     pub fn match_chat_of(&self, account_lo: u32) -> Option<PartyId> {
+        self.match_chats.get(&account_lo).map(|chat| chat.id)
+    }
+
+    pub fn match_chat(&self, account_lo: u32) -> Option<MatchChat> {
         self.match_chats.get(&account_lo).copied()
     }
 
-    /// Take the account out of its match's chat and return that channel. With
-    /// a match id, only when the chat is that match's: a later match's chat
-    /// stays.
+    /// The accounts in match `id`'s chat, with their teams.
+    pub fn match_players(&self, id: PartyId) -> impl Iterator<Item = (u32, u8)> + '_ {
+        self.match_chats
+            .iter()
+            .filter(move |(_, chat)| chat.id == id)
+            .map(|(&account, chat)| (account, chat.team))
+    }
+
+    /// Take the account out of its match's chat and return its channels
+    /// (his team's, then the match's). With a match id, only when the chat
+    /// is that match's: a later match's chat stays.
     pub fn leave_match_chat(
         &mut self,
         account_lo: u32,
         match_id: Option<PartyId>,
-    ) -> Option<Fields> {
+    ) -> Option<[Fields; 2]> {
         let current = *self.match_chats.get(&account_lo)?;
-        if match_id.is_some_and(|id| id != current) {
+        if match_id.is_some_and(|id| id != current.id) {
             return None;
         }
         self.match_chats.remove(&account_lo);
-        Some(channel(current, CHANNEL_MATCH))
+        Some(current.channels())
     }
 
     /// Record the seat a session holds now. True when it is a seat the

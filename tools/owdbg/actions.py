@@ -48,10 +48,6 @@ at the first input sample after the server's '[MM] Match found', then after a fi
                                with --foreground-input sent with SendInput
     type TEXT                  type TEXT (the rest of the step, spaces kept; no ';'): WM_CHAR per
                                character (SendInput Unicode events with --foreground-input)
-    die                        Lucy kills our hero (POST /api/debug/kill: the server runs
-                               with LUCY_DEBUG_SEND=1); the respawn follows after the mode's
-                               time. Refused in the spawn room (invulnerable there): in the
-                               Practice Range walk out first (`move forward 4`)
     screenshot [NAME]          PNG of the window into research/out/owdbg/
     click X Y                  left click at (X, Y), fractions of the window's client width and
                                height (posted to the window, no focus needed)
@@ -273,14 +269,12 @@ def prepare(args):
     level = env.get("RUST_LOG", "info")
     if "lucy::owner" not in level:
         env["RUST_LOG"] = level + ",lucy::owner=debug"
-    if any(step[0] == "die" for step in steps):
-        env["LUCY_DEBUG_SEND"] = "1"  # /api/debug/kill
     args.server_env = env
 
 
 def start(s, args):
     """After Session(args), before s.start(): --enter-range and --actions. Returns the Actions or None."""
-    from .msg import RangeEntry
+    from .game import RangeEntry
     rng = RangeEntry(s, _hero(args.hero)[1] if args.hero else None) if args.enter_range else None
     if rng is not None:
         rng.start()
@@ -409,8 +403,6 @@ def parse(text):
             if not text:
                 raise SystemExit("--actions: type TEXT")
             steps.append(("type", text))
-        elif verb == "die":
-            steps.append(("die",))
         elif verb == "poke":
             if len(rest) != 3 or rest[1].lower() not in POKE_TYPES:
                 raise SystemExit(f"--actions: poke ADDRESS TYPE VALUE, TYPE one of {', '.join(POKE_TYPES)}")
@@ -693,7 +685,7 @@ class Actions:
         self.done = False
         self._scan_wait = None
         self._next_track = 0.0
-        self.worker = None  # the thread of a key/type/die step; the next step waits for it
+        self.worker = None  # the thread of a key/type step; the next step waits for it
 
     def log(self, msg):
         self.s.log(f"[actions] t={self.dbg.elapsed:.2f} {msg}")
@@ -717,7 +709,7 @@ class Actions:
             self.log(f"logged in: script starts ({len(self.steps)} steps)")
             return
         if self.match_at is None:
-            from .msg import match_found
+            from .game import match_found
             if match_found(self.s):
                 self.match_at = self.dbg.elapsed
         ready = self.match_at is not None and self.last_sample is not None \
@@ -998,8 +990,6 @@ class Actions:
                 send = (lambda: self.foreground.type(step[1])) if self.foreground else \
                     (lambda: post_text(hwnd, step[1]))
             self._work(send)
-        elif verb == "die":
-            self._work(self._die)
         elif verb == "poke":
             _, addr, kind, data = step
             va = self.game_va(addr)
@@ -1114,8 +1104,7 @@ class Actions:
             return False
         if st["kind"] == "walk":
             return self._walk(st, now)
-        from .game import capture, post_click
-        from .msg import RangeEntry
+        from .game import RangeEntry, capture, post_click
         hwnd = self.s.window()
         if not hwnd:
             return now - st["t"] > 10
@@ -1192,27 +1181,11 @@ class Actions:
         return False
 
     def _work(self, fn):
-        """Run fn on a worker thread (it sleeps between messages or waits for HTTP); the step
-        machine moves on when it is done."""
+        """Run fn on a worker thread (it sleeps between messages); the step machine moves on
+        when it is done."""
         self.worker = threading.Thread(target=fn, daemon=True)
         self.worker.start()
         self.until = self.dbg.elapsed
-
-    def _die(self):
-        """POST /api/debug/kill (a worker thread: the debugger loop keeps running)."""
-        import urllib.error
-        import urllib.request
-        from .msg import DASHBOARD
-        req = urllib.request.Request(f"{DASHBOARD}/api/debug/kill", data=b"{}",
-                                     headers={"Content-Type": "application/json"}, method="POST")
-        try:
-            with urllib.request.urlopen(req, timeout=15) as r:
-                res = r.read().decode(errors="replace")
-        except urllib.error.HTTPError as e:
-            res = f"HTTP {e.code}: {e.read().decode(errors='replace')[:300]}"
-        except Exception as e:
-            res = f"failed: {e}"
-        self.log(f"die: {res}")
 
     def screenshot(self, name):
         from .game import out_path, screenshot

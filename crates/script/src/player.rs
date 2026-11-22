@@ -1600,8 +1600,7 @@ mod tests {
         assert!((rating - 0.0296).abs() < 1e-6, "{rating}");
         assert!(criteria.is_empty(), "{criteria:?}");
         assert_eq!(strength, Some(Value::Float(f64::from(0.4_f32))));
-        // The rocket's message without its tags (`.hurt flinch off`,
-        // `lucy_sim::hurt_feedback`): `004B` rates the amount and `01CA`
+        // The rocket's message without its tags: `004B` rates the amount and `01CA`
         // leaves out only `191F`/`0262`, so the rating and the pain line
         // stay; `02C5` finds no gun tag and no `078D`: no flinch, no
         // knockback.

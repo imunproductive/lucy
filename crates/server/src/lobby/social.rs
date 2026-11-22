@@ -221,17 +221,29 @@ impl<'a> Turn<'a> {
         Ok(())
     }
 
-    /// Back in the menu after a match: out of the match chat (else its
-    /// "Match" channel stays in the menu), into General again, and the party
-    /// state again (`server.py` game_left). Only the first call for a match
-    /// changes the channels.
+    /// Back in the menu after a match: out of the team and match chats
+    /// (else their channels stay in the menu), into General again, the
+    /// host's note for him if any (the reason for a kick), and the party
+    /// state again (`server.py` game_left). Only the first call for a
+    /// match changes the channels.
     pub(crate) fn game_left(&mut self, account_lo: u32, match_id: PartyId) -> io::Result<()> {
         if !self.has_session(account_lo) {
             return Ok(());
         }
-        if let Some(channel) = self.state.leave_match_chat(account_lo, Some(match_id)) {
-            self.to(account_lo, messages::left(channel));
+        if let Some(channels) = self.state.leave_match_chat(account_lo, Some(match_id)) {
+            for channel in channels {
+                self.to(account_lo, messages::left(channel));
+            }
             self.to(account_lo, messages::joined(general_channel()));
+            if let Some(note) = self.lobby.chat_log.take_note(account_lo) {
+                self.to(
+                    account_lo,
+                    super::host::system_message(general_channel(), &note),
+                );
+            }
+            self.lobby
+                .chat_log
+                .prune(&self.state, self.lobby.clock.now());
         }
         // The VERSUS roster's removal (53002) and the match lobby belong to
         // the matchmaker's port.
@@ -384,6 +396,8 @@ pub(crate) fn login_friends(lobby: &Lobby, account: &Account) -> io::Result<[Lob
 pub(crate) fn session_ended(lobby: &Lobby, account: &Arc<Account>) -> io::Result<()> {
     let mut turn = Turn::new(lobby)?;
     turn.state.disconnect(account.account_lo);
+    lobby.chat_log.prune(&turn.state, lobby.clock.now());
+    lobby.chat_log.take_note(account.account_lo);
     if let Some(id) = turn.state.leave(account.account_lo) {
         turn.notify_party(id)?;
     }

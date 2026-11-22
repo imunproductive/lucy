@@ -163,9 +163,9 @@
 //!   44 the body, 75 the bot's hero, and the bot named in the 20300/20301
 //!   roster at that slot. Assumption: the client names and draws a
 //!   controller in the feed only as a participant. Component 75 on a
-//!   stand-in without 74 crashed the game (2026-11-13, the removed
-//!   `.plate hero`); kjs sent 75 with 74 and did not crash, nor did our
-//!   earlier AI-definition stand-in (`1404` with 26/44/75).
+//!   stand-in without 74 crashed the game (2026-11-13); kjs sent 75 with
+//!   74 and did not crash, nor did our earlier AI-definition stand-in
+//!   (`1404` with 26/44/75).
 //! - The stand-in keeps 74 but holds no roster slot (-1), and the roster
 //!   doesn't name the bots: the Tab board's rows are the entities with
 //!   component 44 (`0x7FF7899B6B90` walks that pool) whose 74 holds a slot
@@ -181,7 +181,6 @@ use std::{collections::HashMap, io};
 
 use crate::{
     body::yaw_rotation,
-    bot_plate::BotPlate,
     bots::{BOT_CONTROLLER_ENTITY, BOT_ENTITY, Bot},
     instance::FREE_FOR_ALL_TEAM,
     map_areas::PlacedScript,
@@ -474,13 +473,11 @@ fn random_bits() -> u64 {
         .finish()
 }
 
-/// A bot's create: its body with its full pools, as the live nameplate tool
-/// has them ([`BotPlate::pools`]), its filter bits, and its movement state
-/// at frame 0 ([`FRAME_ZERO_BACK`]).
-pub fn bot_create(bot: &Bot, plate: &BotPlate) -> io::Result<EntityUpdate> {
-    let pools = plate.pools(&Vitals::new(bot.spawn.health, 0.0, 0.0));
-    let body = BOT_BODY.unwrap_or(bot.spawn.body);
-    let mut definition = Create::new(body, vec![pools, bot_filter(bot)?]);
+/// A bot's create: its body with its full pools, its filter bits, and its
+/// movement state at frame 0 ([`FRAME_ZERO_BACK`]).
+pub fn bot_create(bot: &Bot) -> io::Result<EntityUpdate> {
+    let pools = Vitals::new(bot.spawn.health, 0.0, 0.0).component();
+    let mut definition = Create::new(bot.spawn.body, vec![pools, bot_filter(bot)?]);
     definition.position = bot.position.map(|position| position as f32);
     definition.rotation = yaw_rotation(bot.yaw.round_ties_even());
     definition.movement = Some(Movement {
@@ -500,7 +497,6 @@ pub fn initial_world(
     player: &PlayerAppearance<'_>,
     board: Component,
     bots: &[Bot],
-    plate: &BotPlate,
     mode_random: f32,
 ) -> io::Result<Vec<EntityUpdate>> {
     let mut updates = Vec::with_capacity(map.placeables.len() + 2 + 2 * bots.len());
@@ -512,7 +508,7 @@ pub fn initial_world(
     updates.push(player_create(map, player, None, Some(board))?);
     updates.push(mode_create(map.mode_guid, mode_random));
     for (slot, bot) in bots.iter().enumerate() {
-        updates.push(bot_create(bot, plate)?);
+        updates.push(bot_create(bot)?);
         updates.push(bot_controller_create(bot, slot)?);
     }
     Ok(updates)
@@ -669,27 +665,6 @@ pub fn bot_filter(bot: &Bot) -> io::Result<Component> {
     )))
 }
 
-/// A debugging switch: `LUCY_DEBUG_BOT_BODY=<hex GUID>` creates every
-/// training bot with that body definition instead of its own (the server
-/// still runs its own body's scripts and shapes). ow1-preservation's bots,
-/// which took the client's bullets, were `04000000000014D2`; ours are
-/// `1403`/`14ED`, which carry first-person and weapon components that
-/// `14D2` has not.
-pub static BOT_BODY: std::sync::LazyLock<Option<u64>> = std::sync::LazyLock::new(|| {
-    let text = std::env::var("LUCY_DEBUG_BOT_BODY").ok()?;
-    let body = u64::from_str_radix(text.trim().trim_start_matches("0x"), 16);
-    match body {
-        Ok(body) => {
-            tracing::warn!("debugging: training bots created as body {body:016X}");
-            Some(body)
-        }
-        Err(_) => {
-            tracing::warn!("LUCY_DEBUG_BOT_BODY: not a hex GUID: {text:?}");
-            None
-        }
-    }
-});
-
 fn invalid(error: impl std::fmt::Display) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error.to_string())
 }
@@ -753,8 +728,7 @@ mod tests {
         // id class 0 (`bots.rs` module notes). Its mode entity had component
         // 114 field 1 alone; ours adds field 9 ([`mode_create`]). The other
         // records match the Python frame byte for byte.
-        let updates =
-            initial_world(&map, &player, board, &bots, &BotPlate::default(), 0.25).unwrap();
+        let updates = initial_world(&map, &player, board, &bots, 0.25).unwrap();
         const PYTHON_BOT_ENTITY: u32 = 0xc000_1000;
         let controllers = BOT_CONTROLLER_ENTITY..BOT_ENTITY;
         let python: Vec<_> = updates
@@ -947,9 +921,7 @@ mod tests {
     #[test]
     fn a_bot_body_is_a_hero_that_can_be_hit_until_it_dies() {
         let mut bots = fixture_bots();
-        let filter = |bot: &Bot| {
-            created(&bot_create(bot, &BotPlate::default()).unwrap()).components[1].clone()
-        };
+        let filter = |bot: &Bot| created(&bot_create(bot).unwrap()).components[1].clone();
         assert_eq!(
             filter(&bots[0]),
             fields(26, vec![Some(ComponentValue::Id(0x0101_0041))])
@@ -985,13 +957,12 @@ mod tests {
             index: GMP_STATS,
             fields: Vec::new(),
         };
-        let entities: Vec<u32> =
-            initial_world(&map, &player, board, &bots, &BotPlate::default(), 0.5)
-                .unwrap()
-                .iter()
-                .map(|update| update.entity)
-                .skip(map.placeables.len() + 2)
-                .collect();
+        let entities: Vec<u32> = initial_world(&map, &player, board, &bots, 0.5)
+            .unwrap()
+            .iter()
+            .map(|update| update.entity)
+            .skip(map.placeables.len() + 2)
+            .collect();
         assert_eq!(
             entities,
             [

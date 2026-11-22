@@ -40,7 +40,7 @@ use lucy_wire::{
     messages::read_channel,
 };
 
-use super::{Matchmaker, Room, Seat};
+use super::{Home, Matchmaker, Room, Seat};
 use crate::{
     game_service::{
         GameService, MatchPlayer,
@@ -150,6 +150,7 @@ impl Fixture {
             hub: Hub::default(),
             platform: Arc::new(Platform::new(Ipv4Addr::LOCALHOST, String::new(), None)),
             social: Social::default(),
+            chat_log: Default::default(),
             matchmaker: Matchmaker::new(&data, state.path(), 0, None).unwrap(),
             clock: clock.clock(),
         });
@@ -1218,7 +1219,7 @@ mod leaving {
     fn send_home_also_drops_a_game_that_stays() {
         let fixture = Fixture::new();
         let alpha = fixture.log_in("Alpha");
-        let (_, handoffs) = fixture.open_match(&[&alpha]);
+        let (match_id, handoffs) = fixture.open_match(&[&alpha]);
         let mut game = fixture.game(&handoffs[0]);
         game.reliable_until(20300);
         fixture.wait_for("the game joined", |fixture| {
@@ -1229,7 +1230,7 @@ mod leaving {
             fixture
                 .lobby
                 .matchmaker
-                .send_home(&fixture.lobby, Some(alpha.account_lo)),
+                .send_home(&fixture.lobby, Home::Player(match_id, alpha.account_lo)),
             1
         );
         assert_eq!(fixture.seat(&alpha, |seat| seat.going_home), Some(true));
@@ -1294,9 +1295,9 @@ mod game_server_off {
         assert!(fixture.messages(&alpha, MATCH_LOBBY, 53000).is_empty());
         let matchmaker = &fixture.lobby.matchmaker;
         assert_eq!(
-            matchmaker.send_home(&fixture.lobby, Some(alpha.account_lo)),
+            matchmaker.send_home(&fixture.lobby, Home::Player([0, 0], alpha.account_lo)),
             0
         );
-        assert_eq!(matchmaker.send_home(&fixture.lobby, None), 0);
+        assert_eq!(matchmaker.send_home(&fixture.lobby, Home::Every), 0);
     }
 }

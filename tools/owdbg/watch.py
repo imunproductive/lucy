@@ -3,7 +3,6 @@
 usage: python -m tools.owdbg.watch --addr SPEC --size N --access r|w|rw [options]
        python -m tools.owdbg.watch --arm-at SITE --field EXPR:SIZE --access r|w|rw [--arm-count N]
            [--this-vtable X] [--arm-if EXPR=VALUE ...] [options]
-       python -m tools.owdbg.watch --msg ID --field FIELD [--send JSON [--send-every S]] [options]
 options: [--duration 60] [--out FILE.jsonl] [--max-hits 5000] [--arm-delay S] [--stack N] [session options]
 
 --addr: a game global (name, RVA, VA at 0x140000000/0x7FF788F10000) or va:0x... (absolute).
@@ -15,15 +14,6 @@ meet the condition arm (and count for --arm-count), e.g. --this-vtable 0x7FF78B5
 shared begin only for that state class: [rcx] == X. EXPR as in --field (no size: its value, ':N'
 reads N bytes); VALUE a number (a Lucy or IDB VA in the game image is moved to this run's
 base) or a game name. Hits that don't match are counted in the summary ("handler hits not armed").
---msg ID --field FIELD: the same at the message's client handler (tools.owindex), with FIELD a
-message field (#index, +0xOFF, dotted for struct members, optional :SIZE; see tools/owdbg/msg.py)
-of the message object (found per hit by its class vtable: r8 for every dispatcher so far).
---send JSON: Lucy (started with LUCY_DEBUG_SEND=1) sends the message with these fields after
-the login / in a match (msg.py); the handler breakpoint arms only after the first send and only
-for a message whose watched field holds the sent marker. Hits carry "phase" ("handler" until the
-handler returns, then "after"; the watch is removed --linger seconds after the return) and
-"marker" (the watched bytes equal the sent value); the summary lists the instructions that saw
-the marker.
 SIZE up to 32 bytes (split into aligned 8/4/2/1-byte debug registers, at most 4). Access 'r'
 traps reads and writes (x86 has no read-only watch) and keeps reads; 'w' writes; 'rw' both.
 Debug registers are written to every thread (also later ones) after --hw-delay (default 8 s for
@@ -37,14 +27,12 @@ summary per instruction (last line).
 """
 import argparse
 import json
-import os
 import re
 from collections import Counter, defaultdict
 
 from .disasm import access_insn
 from . import actions
 from .game import Session, add_session_args, out_path
-from .msg import Message, Sender, add_msg_args, message_reg
 from .names import IDA_BASE, LUCY_BASE, Expr, field_spec, hx, split_ranges
 
 
@@ -59,27 +47,13 @@ class Watch:
         self.info = {}  # insn va -> dict
         self.samples = defaultdict(list)
         self.threads = defaultdict(Counter)
-        self.marker_counts = Counter()
-        self.phases = defaultdict(Counter)
         self.filtered = 0
         self.hits = 0
         self.arms = 0
-        self.skipped = Counter()  # handler hits that did not arm, by reason
+        self.skipped = Counter()  # arm hits that did not arm, by reason
         self.arm_token = None
-        self.phase = None
-        self.gen = 0
-        self.marker = None  # expected bytes of the watched range
         self._insn_cache = {}
-        self.msg = self.mfield = self.sender = None
-        if args.msg is not None:
-            self.msg = Message(self.names.idx, args.msg, args.msg_link)
-            self.mfield = self.msg.field(args.field)
-            self.field_size = self.mfield["size"]
-            self.arm_site = ("rva", self.msg.handler_rva)
-            if args.send:
-                self.sender = Sender(s, args, self.msg, on_first_send=self.arm)
-                self.marker = self.sender.marker_for(self.mfield["off"], self.field_size)
-        elif args.field:
+        if args.field:
             self.field_expr, self.field_size = field_spec(args.field)
             self.arm_site = self.names.parse(args.arm_at)
         else:
@@ -90,14 +64,6 @@ class Watch:
             self.conditions.append([expr, op, value, None])
 
     def start(self):
-        if self.msg is not None:
-            self.s.log(f"[watch] {self.msg.describe()}")
-            f = self.mfield
-            self.s.log(f"[watch] field {f['path']} = message+0x{f['off']:X}, {f['size']} bytes ({f['type']}"
-                       f"{'[]' if f['array'] else ''})" + (f", marker {self.marker.hex()}" if self.marker else ""))
-            if self.sender is not None:
-                self.sender.start()  # arms at the first send
-                return
         if self.args.field:
             self.arm()
         else:
@@ -151,61 +117,19 @@ class Watch:
         if self.conditions and not self.conditions_hold(hit):
             self.skipped["arm condition false"] += 1
             return
-        if self.msg is not None:
-            reg = message_reg(self.dbg, hit, self.dbg.main.base, self.msg)
-            if reg is None:
-                self.skipped["no message object (other id)"] += 1
-                return
-            va = hit.reg(reg) + self.mfield["off"]
-            if self.marker is not None and self.dbg.try_read(va, len(self.marker)) != self.marker:
-                self.skipped["field without the marker"] += 1
-                return
-        else:
-            reg = None
-            va = self.field_expr.address(hit) if self.field_expr.size else self.field_expr._eval(self.field_expr.tree, hit)
+        va = self.field_expr.address(hit) if self.field_expr.size else self.field_expr._eval(self.field_expr.tree, hit)
         self.arms += 1
-        self.gen += 1
         ret = hit.return_address()
-        rec = {"event": "arm", "t": round(hit.time, 4), "tid": hit.tid, "address": hx(va),
-               "at": self.names.text(hit.va), "caller": self.names.text(ret)}
-        if reg:
-            rec["message_reg"] = reg
-            rec["message"] = hx(hit.reg(reg))
-            self.s.log(f"[watch] t={hit.time:.1f}s message {self.msg.id} at {reg}=0x{hit.reg(reg):X} "
-                       f"(tid {hit.tid}, caller {rec['caller']}): field at 0x{va:X} = "
-                       f"{(self.dbg.try_read(va, self.field_size) or b'').hex()}")
-        self.emit(rec)
+        self.emit({"event": "arm", "t": round(hit.time, 4), "tid": hit.tid, "address": hx(va),
+                   "at": self.names.text(hit.va), "caller": self.names.text(ret)})
         self.set_watch(va, self.field_size)
-        if self.msg is not None:
-            self.phase = "handler"
-            rsp, tid, gen = hit.rsp, hit.tid, self.gen
-            box = {}
-
-            def on_ret(h):
-                if h.tid != tid or h.rsp != rsp + 8:
-                    return
-                self.dbg.remove_bp(box["token"])
-                if gen != self.gen:
-                    return
-                self.phase = "after"
-                self.emit({"event": "handler_return", "t": round(h.time, 4), "tid": h.tid, "rax": hx(h.rax)})
-                self.dbg.after(self.args.linger, lambda: self._expire(gen))
-            box["token"] = self.dbg.add_bp(ret, on_ret)
         if self.arms >= self.arm_count and self.arm_token:
             self.dbg.remove_bp(self.arm_token)
             self.arm_token = None
 
     @property
     def arm_count(self):
-        if self.args.arm_count is not None:
-            return self.args.arm_count
-        return 1000000 if self.sender is not None and self.args.send_every else 1
-
-    def _expire(self, gen):
-        if gen == self.gen and self.slots:
-            self.clear_watch()
-            self.phase = None
-            self.s.log(f"[watch] watch removed {self.args.linger:g} s after the handler returned")
+        return self.args.arm_count if self.args.arm_count is not None else 1
 
     def on_hit(self, hit):
         rip = hit.rip
@@ -236,12 +160,6 @@ class Watch:
         rec = {"event": "hit", "t": round(hit.time, 4), "tid": hit.tid, "thread": hit.thread.name,
                "insn_va": hx(key), "where": self.info[key]["where"], "insn": text, "kind": kind,
                "rip_after": hx(rip), "value": value}
-        if self.phase:
-            rec["phase"] = self.phase
-            self.phases[key][self.phase] += 1
-        if self.marker is not None:
-            rec["marker"] = data == self.marker
-            self.marker_counts[key] += rec["marker"]
         if self.args.stack:
             rec["stack"] = [self.names.text(f[0]) for f in self.dbg.stack(hit.ctx, self.args.stack)[1:]]
         self.emit(rec)
@@ -255,26 +173,12 @@ class Watch:
     def finish(self):
         rows = []
         for key, n in self.counts.most_common():
-            d = dict(self.info[key], hits=n, samples=self.samples[key],
-                     threads=[[str(k), v] for k, v in self.threads[key].most_common(5)])
-            if self.phases[key]:
-                d["phases"] = dict(self.phases[key])
-            if self.marker is not None:
-                d["marker_hits"] = self.marker_counts[key]
-            rows.append(d)
+            rows.append(dict(self.info[key], hits=n, samples=self.samples[key],
+                             threads=[[str(k), v] for k, v in self.threads[key].most_common(5)]))
         summary = {"range": [hx(self.range[0]), self.range[1]] if self.range else None,
                    "access": self.args.access, "hits": self.hits, "filtered_writes": self.filtered,
                    "arms": self.arms, "hw_rewrites": self.dbg.hw_fixes, "instructions": rows,
                    "alive": self.dbg.alive, "duration": round(self.dbg.elapsed, 1)}
-        if self.msg is not None:
-            summary["message"] = {"id": self.msg.id, "link": self.msg.endpoint_link,
-                                  "handler_rva": hx(self.msg.handler_rva), "field": self.mfield["path"],
-                                  "offset": hx(self.mfield["off"]), "size": self.field_size,
-                                  "marker": self.marker.hex() if self.marker else None,
-                                  "skipped_handler_hits": dict(self.skipped)}
-        if self.sender is not None:
-            summary["sends"] = self.sender.history
-            summary["send_errors"] = self.sender.errors
         self.out.write(json.dumps({"summary": summary}) + "\n")
         self.out.close()
         return summary
@@ -293,13 +197,9 @@ def main(argv=None):
     p.add_argument("--addr", help="address to watch (game name/RVA/VA, or va:0x...)")
     p.add_argument("--size", type=int, default=8, help="bytes at --addr (default 8)")
     p.add_argument("--arm-at", help="breakpoint that arms the --field watch")
-    p.add_argument("--field", help="EXPR:SIZE evaluated when --arm-at hits, e.g. rcx+0xA8:8; with --msg a "
-                                    "message field: #index, +0xOFF, #1.#0, optional :SIZE")
-    p.add_argument("--arm-count", type=int, help="re-arm on the first N hits of --arm-at (default 1; "
-                                                 "every send with --send-every)")
+    p.add_argument("--field", help="EXPR:SIZE evaluated when --arm-at hits, e.g. rcx+0xA8:8")
+    p.add_argument("--arm-count", type=int, help="re-arm on the first N hits of --arm-at (default 1)")
     p.add_argument("--access", choices=("r", "w", "rw"), default="rw")
-    p.add_argument("--linger", type=float, default=2.0,
-                   help="with --msg: remove the watch N seconds after the handler returned (default 2)")
     p.add_argument("--arm-delay", type=float, default=0, help="set up N seconds after start instead of at once")
     p.add_argument("--stack", type=int, default=0, help="record N unwound frames per hit")
     p.add_argument("--max-hits", type=int, default=5000, help="remove the watch after N hits")
@@ -308,24 +208,16 @@ def main(argv=None):
     p.add_argument("--this-vtable", action="append", default=[], metavar="X",
                    help="arm only when [rcx] == X (the hit object's vtable), as --arm-if '[rcx]=X'")
     p.add_argument("--out", help="JSONL output (default research/out/owdbg/watch-<time>.jsonl)")
-    add_msg_args(p)
     actions.add_action_args(p)
     add_session_args(p, duration=60)
     args = p.parse_args(argv)
-    if args.msg is not None:
-        if not args.field or args.addr or args.arm_at:
-            p.error("--msg needs --field (and no --addr/--arm-at)")
-    elif bool(args.addr) == bool(args.field) or bool(args.field) != bool(args.arm_at):
-        p.error("give --addr, or --arm-at with --field, or --msg with --field")
-    if args.send and args.msg is None:
-        p.error("--send needs --msg")
+    if bool(args.addr) == bool(args.field) or bool(args.field) != bool(args.arm_at):
+        p.error("give --addr, or --arm-at with --field")
     try:
         for text in args.arm_if + [f"[rcx]={x}" for x in args.this_vtable]:
             parse_condition(text)
     except ValueError as e:
         p.error(str(e))
-    if args.send:
-        args.server_env = dict(os.environ, LUCY_DEBUG_SEND="1")
     args.out = args.out or str(out_path("watch", ".jsonl"))
     actions.prepare(args)
 
@@ -347,20 +239,8 @@ def main(argv=None):
         if wt.skipped:
             s.log(f"[watch] handler hits not armed: {dict(wt.skipped)}")
         for r in summary["instructions"][:30]:
-            extra = ""
-            if "phases" in r:
-                extra += f" {r['phases']}"
-            if "marker_hits" in r:
-                extra += f" marker {r['marker_hits']}/{r['hits']}"
             s.log(f"  {r['hits']:>6}  {r['kind']:<2}{'' if r['verified'] else '?'} {r['insn_va']:>16} "
-                  f"{r['where']:<40} {r['insn']}   samples {r['samples'][:2]}{extra}")
-        if wt.marker is not None:
-            seen = [r for r in summary["instructions"] if r.get("marker_hits")]
-            s.log(f"[watch] instructions that saw the marker {wt.marker.hex()} in {wt.mfield['path']}: {len(seen)}")
-            for r in seen:
-                s.log(f"    {r['rva']} (lucy {r['lucy']}) {r['where']}: {r['insn']}  [{r['kind']}]")
-            if wt.sender is not None and not wt.sender.sent:
-                s.log("[watch] nothing was sent (see [send] lines)")
+                  f"{r['where']:<40} {r['insn']}   samples {r['samples'][:2]}")
 
 
 if __name__ == "__main__":

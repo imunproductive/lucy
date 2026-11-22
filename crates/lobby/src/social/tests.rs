@@ -280,20 +280,40 @@ fn channel_members_are_general_the_party_or_the_match() {
 
     let first = [1, 2];
     let second = [3, 4];
-    state.open_match_chat(first, alpha.account_lo);
-    state.open_match_chat(first, gamma.account_lo);
+    state.open_match_chat(first, alpha.account_lo, 0);
+    state.open_match_chat(first, beta.account_lo, 1);
+    state.open_match_chat(first, gamma.account_lo, 0);
     let matched = channel(first, CHANNEL_MATCH);
     assert_eq!(
         names(state.channel_members(&matched, &bot)),
+        ["Alpha", "Beta", "Gamma"]
+    );
+    // A team's chat reaches his team in the match only, not everyone.
+    let team = crate::handoff::team_channel(first, 0);
+    assert_eq!(
+        names(state.channel_members(&team, &bot)),
         ["Alpha", "Gamma"]
     );
+    assert_eq!(
+        names(state.channel_members(&crate::handoff::team_channel(first, 1), &bot)),
+        ["Beta"]
+    );
+    assert!(
+        state
+            .channel_members(&crate::handoff::team_channel(second, 0), &bot)
+            .is_empty()
+    );
+    state.leave_match_chat(beta.account_lo, None);
 
     // Leaving an old match keeps the chat of a newer one.
-    state.open_match_chat(second, alpha.account_lo);
+    state.open_match_chat(second, alpha.account_lo, 1);
     assert_eq!(state.leave_match_chat(alpha.account_lo, Some(first)), None);
     assert_eq!(
         state.leave_match_chat(alpha.account_lo, Some(second)),
-        Some(channel(second, CHANNEL_MATCH))
+        Some([
+            crate::handoff::team_channel(second, 1),
+            channel(second, CHANNEL_MATCH)
+        ])
     );
     assert_eq!(state.match_chat_of(alpha.account_lo), None);
     assert_eq!(state.leave_match_chat(alpha.account_lo, Some(second)), None);

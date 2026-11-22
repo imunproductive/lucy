@@ -20,14 +20,12 @@ use serde::Deserialize;
 use crate::{
     body_script::{BodyMap, ModeBody, OwnerBodySpawn, PlayerBodyFactory},
     bot_animation::{BotRigCatalog, ScriptAnims},
-    bot_plate::{BotPlate, PlateSample},
     bot_script::{BotEvent, BotScripts, BotShot},
     bots::{Bot, BotCatalog, BotWalk},
     combat::{BodyCombat, BotDeath, RespawnTimes},
     controller::Controller,
     hitboxes::HitboxCatalog,
     hitscan::{PlaceableRays, RAY_PROFILES_FILE, RayProfiles, SceneRays},
-    hurt_feedback::HurtFeedback,
     map_areas::{self, DamageArea, MapAreaData, PlacedScript, SpawnRoom},
     match_flow::{MatchFlow, Mode, Timers},
     messages::Bots,
@@ -70,7 +68,6 @@ use lucy_script::{
     graph::GraphStore,
     map_tags::MapTags,
     placed::{DummyChange, EntityVolumes, NextDummy},
-    vitals::Vitals,
     vm::{
         GameMessage, Hardpoints, MapRays, MessageEnd, ParentWrite, ScopeChange, ScopeSource,
         TargetCandidate, Unknowns,
@@ -258,10 +255,6 @@ pub struct PreparedScene {
     initial_board: Component,
     bots: Vec<Bot>,
     bot_scripts: BotScripts,
-    /// The live nameplate tool's changes to the bots (`bot_plate`).
-    bot_plate: Arc<BotPlate>,
-    /// The live hurt feedback switch (`hurt_feedback`).
-    hurt: HurtFeedback,
     script_anims: Arc<ScriptAnims>,
     movers: Arc<MoverCatalog>,
     eyes: Arc<EyeCatalog>,
@@ -692,8 +685,6 @@ impl SceneAssets {
             initial_board,
             bots,
             bot_scripts,
-            bot_plate: Arc::default(),
-            hurt: HurtFeedback::default(),
             script_anims: Arc::clone(&scripts.script_anims),
             movers: Arc::clone(&self.movers),
             eyes: Arc::clone(&self.eyes),
@@ -1534,8 +1525,7 @@ impl PreparedScene {
     /// ([`crate::bot_animation`]), by what their scripts asked as of their
     /// last run.
     pub fn step_bots(&mut self, tick: u32) {
-        self.bot_scripts
-            .prepare_next(&self.bots, tick, &self.bot_plate);
+        self.bot_scripts.prepare_next(&self.bots, tick);
         let floor = self.ground.triangles();
         for (slot, bot) in self.bots.iter_mut().enumerate() {
             let motions = self.bot_scripts.take_motions(slot, bot.entity);
@@ -1675,97 +1665,7 @@ impl PreparedScene {
 
     /// The respawned bots' new scripts (combat.py `_respawn_bot`).
     pub fn prepare_respawned_bots(&mut self, tick: u32) {
-        self.bot_scripts
-            .prepare_respawned(&self.bots, tick, &self.bot_plate);
-    }
-
-    /// The live nameplate tool's changes in force (`bot_plate`).
-    pub fn bot_plate(&self) -> &Arc<BotPlate> {
-        &self.bot_plate
-    }
-
-    /// The live hurt feedback switch in force (`hurt_feedback`).
-    pub fn hurt_feedback(&self) -> HurtFeedback {
-        self.hurt
-    }
-
-    pub fn set_hurt_feedback(&mut self, hurt: HurtFeedback) {
-        self.hurt = hurt;
-    }
-
-    /// The live nameplate tool's changes from now on: the live bots'
-    /// scripts take its variables at once (their changed frames come with
-    /// the next bot events), and each live bot's pools update comes back,
-    /// for every client of the room. `vitals` gives a bot's pools by slot
-    /// (the match's combat; none: it has its full health).
-    pub fn set_bot_plate<'v>(
-        &mut self,
-        plate: Arc<BotPlate>,
-        vitals: impl Fn(usize) -> Option<&'v Vitals>,
-    ) -> Vec<EntityUpdate> {
-        let previous = std::mem::replace(&mut self.bot_plate, plate);
-        if previous == self.bot_plate {
-            return Vec::new();
-        }
-        self.bot_scripts.apply_plate(&self.bots, &self.bot_plate);
-        self.bots
-            .iter()
-            .enumerate()
-            .filter(|(_, bot)| !bot.dead)
-            .filter_map(|(slot, bot)| {
-                let whole;
-                let vitals = match vitals(slot) {
-                    Some(vitals) => vitals,
-                    None => {
-                        whole = Vitals::new(bot.spawn.health, 0.0, 0.0);
-                        &whole
-                    }
-                };
-                let pools = self.bot_plate.pool_update(&previous, vitals)?;
-                Some(EntityUpdate {
-                    entity: bot.entity,
-                    operation: Some(Operation::Update(vec![pools])),
-                    ..EntityUpdate::default()
-                })
-            })
-            .collect()
-    }
-
-    /// The live nameplate tool's game message to every live bot's
-    /// nameplates; how many took it.
-    pub fn message_bot_plates(&mut self, message: u64) -> usize {
-        self.bot_scripts.message_plates(&self.bots, message)
-    }
-
-    /// The first live bot with a script as the live nameplate tool shows
-    /// it; `vitals` as for [`Self::set_bot_plate`].
-    pub fn bot_plate_sample<'v>(
-        &self,
-        vitals: impl Fn(usize) -> Option<&'v Vitals>,
-    ) -> Option<PlateSample> {
-        self.bots
-            .iter()
-            .enumerate()
-            .filter(|(_, bot)| !bot.dead)
-            .find_map(|(slot, bot)| {
-                let variables = self
-                    .bot_scripts
-                    .plate_variables(bot.entity, &self.bot_plate)?;
-                let whole;
-                let vitals = match vitals(slot) {
-                    Some(vitals) => vitals,
-                    None => {
-                        whole = Vitals::new(bot.spawn.health, 0.0, 0.0);
-                        &whole
-                    }
-                };
-                Some(PlateSample {
-                    entity: bot.entity,
-                    name: bot.spawn.name.clone(),
-                    parts: self.bot_plate.parts(vitals),
-                    variables,
-                })
-            })
+        self.bot_scripts.prepare_respawned(&self.bots, tick);
     }
 
     /// What the bot scripts produced for the clients since the last call.
@@ -1784,7 +1684,6 @@ impl PreparedScene {
             viewer,
             self.initial_board.clone(),
             &self.bots,
-            &self.bot_plate,
             self.mode_random,
         )?;
         for update in &mut updates {
