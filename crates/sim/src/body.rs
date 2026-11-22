@@ -247,7 +247,6 @@ mod tests {
             discontinuity: 3,
             move_to: None,
             turn_rate: None,
-            speed_scale: None,
             nav_path: None,
         };
         let pose = owner_pose(source);

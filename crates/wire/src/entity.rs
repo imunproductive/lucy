@@ -472,10 +472,6 @@ pub struct Movement {
     pub input_throttles: [i8; 2],
     pub air_ticks: u32,
     pub gravity: f64,
-    /// The move-speed scale (`+28`, the mover's mod 0 of the last tick),
-    /// which the owner's client compares exactly (0x7FF789B73E00); `None`
-    /// is the reference's 1.0.
-    pub speed_scale: Option<f64>,
     pub frame: Option<u32>,
     pub crouch_frame: Option<u32>,
     pub spring: [i32; 2],
@@ -668,19 +664,20 @@ fn throttle(out: &mut BitWriter, value: i8) -> Result<(), BitError> {
     Ok(())
 }
 
-/// `scales`: the gravity scale's steps of 1/1024 (from the reference's 0)
-/// and the move-speed scale's (+28, from the reference's 1.0; 0x7FF789B77260
-/// reads both).
 fn input_fields(
     out: &mut BitWriter,
     state: &Movement,
     input_frame: Option<u32>,
-    [gravity, speed]: [i64; 2],
+    gravity: i64,
 ) -> Result<(), BitError> {
     delta(out, i64::from(state.air_ticks), &[4, 10])?;
     out.bit(false); // No timed movement event.
     delta(out, gravity, &[8, 10, 24])?;
-    delta(out, speed, &[8, 10, 24])?;
+    // The move-speed scale (+28) stays the reference's 1.0: the owner's
+    // client predicts 1.0 under every mod 0 (Soldier: 76's sprint, Rocket
+    // Punch's charge), and records saying the mod's scale made it take
+    // corrections (HeroFixes, refs report ReinhardtCharge.md).
+    out.bit(false);
 
     // Equal-to-record frames omit the historical throttles. The client copies
     // the current throttles in that case, and would consume the extras as angles.
@@ -723,7 +720,6 @@ pub fn write_movement(
     }
     let input_frame = state.input_frame.filter(|&value| Some(value) != frame);
     let gravity = quantize(state.gravity)?;
-    let speed_scale = quantize(state.speed_scale.unwrap_or(1.0) - 1.0)?;
     let speed = quantize(state.spring_speed)?;
     let [x, y, z] = state.position.map(quantize);
     let position = [x?, y?, z?];
@@ -766,7 +762,7 @@ pub fn write_movement(
     } else {
         out.bit(false);
     }
-    input_fields(out, state, input_frame, [gravity, speed_scale])?;
+    input_fields(out, state, input_frame, gravity)?;
     let yaw = state.yaw as u16;
     if yaw != 0 {
         selector(out, i64::from(yaw), 2, 16)?;

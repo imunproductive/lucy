@@ -601,7 +601,6 @@ impl Mover {
         self.pose.air_ticks = self.posture.air_ticks;
         self.pose.crouch_frame = self.posture.crouch_end;
         self.pose.gravity = settings.gravity_scale;
-        self.pose.speed_scale = (self.speed_scale != 1.0).then_some(self.speed_scale);
         self.pose.spring = self.posture.spring_steps().map(i32::from);
         self.pose.spring_speed = f64::from(self.posture.spring_speed());
         self.pose.fall = self.posture.fall;
@@ -1155,13 +1154,7 @@ mod tests {
                 mover
                     .step(scene.triangles(), command, 0.016, |mover, pose| {
                         visited += 1;
-                        // Python's records always said the reference's
-                        // speed scale (1.0); the sprint's 1.5 goes out now.
-                        let python = Movement {
-                            speed_scale: None,
-                            ..mover.pose()
-                        };
-                        let record = movement_record(&python, Some(pose.frame + 2)).unwrap();
+                        let record = movement_record(&mover.pose(), Some(pose.frame + 2)).unwrap();
                         digest.update((record.bit_len() as u32).to_le_bytes());
                         digest.update(record.as_bytes());
                         let active = if (12..35).contains(&((pose.frame - first) % 72)) {
