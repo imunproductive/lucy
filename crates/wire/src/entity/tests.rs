@@ -43,6 +43,7 @@ fn moving() -> Movement {
         fall: -3.5,
         discontinuity: 0,
         move_to: None,
+        turn_rate: None,
         nav_path: None,
     }
 }
@@ -265,6 +266,39 @@ fn a_path_walk_record_is_the_sixth_flag_block() {
     assert!(bits.bit().unwrap());
     assert_eq!(bits.f32().unwrap(), 28.25);
     // Then the last three blocks and the rest, as without the record.
+    for _ in at + 1..plain.bit_len() {
+        assert_eq!(bits.bit().unwrap(), rest.bit().unwrap());
+    }
+}
+
+/// A running turn's rate goes as the fifth flag block (flag 0x40,
+/// 0x7FF789B6CBF0): present, no reference, then the float as present and
+/// raw (0x7FF789B71860).
+#[test]
+fn a_turn_rate_is_the_fifth_flag_block() {
+    let still = Movement {
+        position: [1.0, 2.0, 3.0],
+        flags: TURNING,
+        ..Movement::default()
+    };
+    let turning = Movement {
+        turn_rate: Some(-0.067_020_65),
+        ..still
+    };
+    let plain = movement_record(&still, None).unwrap();
+    let record = movement_record(&turning, None).unwrap();
+    assert_eq!(record.bit_len(), plain.bit_len() + 3 + 32);
+    let mut bits = BitReader::new(record.as_bytes());
+    let mut rest = BitReader::new(plain.as_bytes());
+    bits.advance(12).unwrap();
+    rest.advance(12).unwrap();
+    // Everything up to the block's presence bit is the same.
+    let at = (12..plain.bit_len())
+        .find(|_| bits.bit().unwrap() != rest.bit().unwrap())
+        .unwrap();
+    assert!(bits.bit().unwrap(), "no reference");
+    assert!(bits.bit().unwrap() && bits.bit().unwrap(), "a raw float");
+    assert_eq!(bits.f32().unwrap(), -0.067_020_65);
     for _ in at + 1..plain.bit_len() {
         assert_eq!(bits.bit().unwrap(), rest.bit().unwrap());
     }

@@ -33,7 +33,7 @@ use orpheus_core::bits::{BitError, BitWriter};
 use orpheus_physics::static_ray::Vec3;
 use orpheus_wire::entity::{Create, EntityUpdate, Movement, Operation, SkinTheme};
 
-use crate::projectiles::FIELD_ENTITY;
+use crate::{projectiles::FIELD_ENTITY, scene::filter_component};
 
 /// Where a projectile the client did not fly is made, and where a release
 /// whose count is above the client's plays its extra explosion out of sight.
@@ -58,14 +58,21 @@ pub const KEEP_ROTATION: u32 = 0x0100_0000;
 /// ow174/game/projectiles.py). With a parent (the owner's canister) it
 /// carries a movement block at the origin that keeps its own rotation and
 /// names the parent; without one it is placed at `at`. Both take the
-/// caster's skin theme, never the golden flag.
+/// caster's skin theme, never the golden flag. `team_bit` (its caster's,
+/// `scene::player_team_bit`) goes in its filter bits (component 26):
+/// without them the client files the field under no team (component 25
+/// `+0x58` bits 23-27; a create's own word is `0x20000000`, HitPredict.md),
+/// and every client, its caster's included, drew it in the enemy colour.
+/// Python sent none.
 pub fn field_create(
     entity: u32,
     parent: Option<u32>,
     at: [f64; 3],
     skin: SkinTheme,
+    team_bit: Option<u64>,
 ) -> EntityUpdate {
-    let mut create = Create::new(FIELD_ENTITY, Vec::new());
+    let components = team_bit.map(filter_component).into_iter().collect();
+    let mut create = Create::new(FIELD_ENTITY, components);
     create.skin = SkinTheme {
         guid: skin.guid,
         golden: false,
@@ -384,7 +391,7 @@ mod tests {
                 "720f030000000000000000000000000000000000000000000000000000e00f0000e00f0000e00f0000e00f00",
             ),
         ] {
-            let update = field_create(0xa008_0000, parent, at, skin);
+            let update = field_create(0xa008_0000, parent, at, skin, None);
             assert_eq!(update.entity, 0xa008_0000);
             let Some(Operation::Create(definition)) = update.operation else {
                 panic!("field create")
@@ -395,5 +402,21 @@ mod tests {
                 expected,
             );
         }
+        // With its caster's team the field carries that team's filter bits
+        // and is otherwise the same create.
+        let team = crate::scene::team_bit(1).unwrap();
+        let with = |team_bit| match field_create(1, None, [1.0; 3], skin, team_bit).operation {
+            Some(Operation::Create(definition)) => *definition,
+            _ => panic!("field create"),
+        };
+        let (plain, teamed) = (with(None), with(Some(team)));
+        assert_eq!(teamed.components, [filter_component(0x0100_0000)]);
+        assert_eq!(
+            Create {
+                components: Vec::new(),
+                ..teamed
+            },
+            plain
+        );
     }
 }

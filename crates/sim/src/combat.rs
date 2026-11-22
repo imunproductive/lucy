@@ -2549,12 +2549,12 @@ pub fn deliver_projectiles(
 ) {
     let mut events = Vec::new();
     for world in worlds.iter_mut().flatten() {
-        let (owner, skin) = (world.owner(), world.skin());
+        let (owner, caster) = (world.owner(), (world.skin(), world.team_bit()));
         events.extend(
             world
                 .take_projectile_events()
                 .into_iter()
-                .map(|(body, event)| (owner, skin, body, event)),
+                .map(|(body, event)| (owner, caster, body, event)),
         );
     }
     let live: Vec<ShotKey> = worlds
@@ -2565,7 +2565,7 @@ pub fn deliver_projectiles(
     combat.spawned.end_unless(&live);
     let mut opened = Vec::new();
     let mut delivers = Vec::new();
-    for (owner, skin, body, event) in events {
+    for (owner, caster, body, event) in events {
         match event {
             ProjectileEvent::Ended { token, explode } => {
                 for world in worlds.iter_mut().flatten() {
@@ -2584,7 +2584,7 @@ pub fn deliver_projectiles(
                 token,
                 feet,
                 parents,
-            } => delivers.push((owner, skin, (body, token), feet, parents)),
+            } => delivers.push((owner, caster, (body, token), feet, parents)),
         }
     }
     let candidates = combat.target_candidates(scene);
@@ -2620,7 +2620,7 @@ pub fn deliver_projectiles(
             world.set_server_flight_speed(shot, scale);
         }
     }
-    for (owner, skin, shot, feet, parents) in delivers {
+    for (owner, (skin, team_bit), shot, feet, parents) in delivers {
         let Some(frame) = combat.spawned.frame(shot) else {
             continue;
         };
@@ -2636,6 +2636,7 @@ pub fn deliver_projectiles(
                 parents,
                 feet,
                 skin,
+                team_bit,
                 frame,
             };
             world.deliver_field(&field, &mut combat.field_ids);

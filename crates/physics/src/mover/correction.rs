@@ -395,6 +395,7 @@ mod tests {
                 fall: -0.125,
                 discontinuity: 0,
                 move_to: None,
+                turn_rate: None,
                 nav_path: None,
             }));
             let correction = history.candidate(7010, true).unwrap().update();

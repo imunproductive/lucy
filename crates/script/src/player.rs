@@ -729,6 +729,13 @@ impl World for PlayerWorld {
         self.trial.as_ref().map(TrialMove::radius)
     }
 
+    /// The body's own mover's, from its last move's movement state.
+    fn turn_rate(&self, site: Site, entity: u32) -> Option<f32> {
+        (self.is_player_site(site) && entity == self.entity)
+            .then_some(self.movement.turn_rate)
+            .flatten()
+    }
+
     /// A trial move of the body's own capsule from where its mover stands.
     fn trial_turn(
         &mut self,

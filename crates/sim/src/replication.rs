@@ -6003,6 +6003,11 @@ impl WorldDelivery {
         self.body.map(|body| body.skin).unwrap_or_default()
     }
 
+    /// His body's team bit (`scene::player_team_bit`); none without a body.
+    pub(crate) fn team_bit(&self) -> Option<u64> {
+        self.body.map(|body| body.team_bit)
+    }
+
     pub(crate) fn owner(&self) -> u32 {
         self.owner
     }

@@ -77,10 +77,10 @@
 //! floats (0x7FF789B71CE0). After the velocity come nine flag blocks, each
 //! a presence bit (0x7FF789B6C720 and its siblings, in this order: flags
 //! 0x10, 0x1000, 0x400000, 0x80, 0x40, 0x20, 0x40000, 0x100, 0x200); only
-//! [`MoveToRecord`] (flag [`MOVE_TO`]) and [`NavPathRecord`] (flag
-//! [`NAV_PATH`]) are sent. A record's frame counts back
-//! from its base (0x7FF789B76D00: the packet frame on ch3); a create's
-//! movement state counts back from a fixed base (0x7FF78969DD3C).
+//! [`MoveToRecord`] (flag [`MOVE_TO`]), the turn rate (flag [`TURNING`])
+//! and [`NavPathRecord`] (flag [`NAV_PATH`]) are sent. A record's frame
+//! counts back from its base (0x7FF789B76D00: the packet frame on ch3); a
+//! create's movement state counts back from a fixed base (0x7FF78969DD3C).
 
 use std::{borrow::Borrow, error::Error, fmt};
 
@@ -122,6 +122,11 @@ pub const MOVE_TO: u32 = 0x10;
 /// 0x7FF789B53DE0, cleared by its end 0x7FF789B53A40); its record is
 /// [`NavPathRecord`].
 pub const NAV_PATH: u32 = 0x20;
+/// The movement state's flag of a running mover behaviour of kind 7 (the
+/// turn of Reinhardt's Charge `STU_C168636D`, set by its begin
+/// 0x7FF789B53D80, cleared by its end 0x7FF789B53A10); its block is the
+/// turn rate at `+0xD0` ([`Movement::turn_rate`]).
+pub const TURNING: u32 = 0x40;
 /// The most points a [`NavPathRecord`] carries (a path in the query's
 /// window of 5 × 7 × 5 units keeps fewer turns than this).
 pub const NAV_PATH_POINTS: usize = 64;
@@ -482,6 +487,13 @@ pub struct Movement {
     /// The `MoveTo` move's record, present exactly while `flags` has
     /// [`MOVE_TO`].
     pub move_to: Option<MoveToRecord>,
+    /// The turn's rate in radians a second (`+0xD0`), present exactly while
+    /// `flags` has [`TURNING`]. The owner's client compares it exactly
+    /// (0x7FF789B73E00). Its block (0x7FF789B6CBF0): a presence bit, a bit
+    /// that is 1 for no reference, then the float (0x7FF789B71860: a 0 bit
+    /// for the reference's, else a bit that is 1 for a raw f32 and 0 for
+    /// steps of 0.0005 from the reference's).
+    pub turn_rate: Option<f32>,
     /// The path walk's record, present exactly while `flags` has
     /// [`NAV_PATH`].
     pub nav_path: Option<NavPathRecord>,
@@ -661,7 +673,11 @@ fn input_fields(
     delta(out, i64::from(state.air_ticks), &[4, 10])?;
     out.bit(false); // No timed movement event.
     delta(out, gravity, &[8, 10, 24])?;
-    out.bit(false); // Move-speed scale remains 1.
+    // The move-speed scale (+28) stays the reference's 1.0: the owner's
+    // client predicts 1.0 under every mod 0 (Soldier: 76's sprint, Rocket
+    // Punch's charge), and records saying the mod's scale made it take
+    // corrections (HeroFixes, refs report ReinhardtCharge.md).
+    out.bit(false);
 
     // Equal-to-record frames omit the historical throttles. The client copies
     // the current throttles in that case, and would consume the extras as angles.
@@ -772,7 +788,14 @@ pub fn write_movement(
         Some(record) => write_move_to(out, record)?,
         None => out.bit(false),
     }
-    out.bits(0, 4)?; // Flags 0x1000, 0x400000, 0x80, 0x40.
+    out.bits(0, 3)?; // Flags 0x1000, 0x400000, 0x80.
+    out.bit(state.turn_rate.is_some());
+    if let Some(rate) = state.turn_rate {
+        out.bit(true); // Not against the reference state's.
+        out.bit(true);
+        out.bit(true); // A raw float.
+        out.f32(rate);
+    }
     match &state.nav_path {
         Some(record) => write_nav_path(out, record)?,
         None => out.bit(false),

@@ -2102,6 +2102,8 @@ fn state_payload(
             | StateKind::ServerFrames
             | StateKind::MoveTo
             | StateKind::NavPath
+            // The Charge's turn (`STU_C168636D`, reader nullsub).
+            | StateKind::Turn
             | StateKind::Rise
             | StateKind::AiMove
             | StateKind::ModifyHealth { .. }

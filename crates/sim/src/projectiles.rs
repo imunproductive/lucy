@@ -993,6 +993,9 @@ pub(crate) struct FieldDeliver<'a> {
     pub feet: [f64; 3],
     /// The caster's skin theme.
     pub skin: SkinTheme,
+    /// The caster's team bit (`scene::player_team_bit`), for the field's
+    /// filter bits; none when he has no body.
+    pub team_bit: Option<u64>,
     /// The field graph's frame now.
     pub frame: &'a PlacedFrame,
 }
@@ -1025,7 +1028,13 @@ impl FieldCopies {
                 arrived: false,
             });
             out.push((
-                projectile_wire::field_create(entity, parent, field.feet, field.skin),
+                projectile_wire::field_create(
+                    entity,
+                    parent,
+                    field.feet,
+                    field.skin,
+                    field.team_bit,
+                ),
                 FieldDelivery::Create,
             ));
         }
@@ -2422,6 +2431,7 @@ mod tests {
             parents: &[None],
             feet: [1.0, 2.0, 3.0],
             skin: SkinTheme::default(),
+            team_bit: Some(0x0080_0000),
             frame: &plain,
         };
         let created = copies.deliver(&field, &mut ids);
@@ -2432,7 +2442,8 @@ mod tests {
                     FIELD_FIRST,
                     None,
                     [1.0, 2.0, 3.0],
-                    SkinTheme::default()
+                    SkinTheme::default(),
+                    Some(0x0080_0000)
                 ),
                 FieldDelivery::Create
             )]

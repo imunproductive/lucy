@@ -35,6 +35,7 @@ mod statuses;
 mod switches;
 mod targets;
 mod timers;
+mod turn;
 mod view_limits;
 mod volleys;
 mod walls;
@@ -837,6 +838,14 @@ pub trait World {
         None
     }
 
+    /// The rate (radians a second, movement state `+0xD0`) of the turn
+    /// `entity`'s mover runs for a `STU_C168636D` state
+    /// ([`orpheus_physics::mover::turn`]) after its last move; None: no turn
+    /// runs, or unknown here.
+    fn turn_rate(&self, _site: Site, _entity: u32) -> Option<f32> {
+        None
+    }
+
     /// How far the walls turn a move of `entity`'s body along the flat
     /// unit `direction` for `distance`, as the cosine (1: free, 0: stopped)
     /// a wall check's trial in `form` finds (`STU_FBFF5DE7`,
@@ -1577,6 +1586,10 @@ pub enum StateKind {
     /// kind 10, `vm/grapple.rs`): its walk is in
     /// [`Component::move_requests`] while it runs.
     NavPath,
+    /// Reinhardt's Charge's turn (`STU_C168636D`, kind 7, `vm/turn.rs`): its
+    /// block is in [`Component::move_requests`] while it runs, and each
+    /// tick it writes the mover's rate to its output.
+    Turn,
     /// Meteor Strike's flight (`STU_6154B909`, kind 13, `vm/state_kinds.rs`
     /// `rise_block`): its block, evaluated again each frame, is in
     /// [`Component::move_requests`] while it runs.
