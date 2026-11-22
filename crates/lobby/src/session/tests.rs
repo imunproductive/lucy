@@ -182,6 +182,56 @@ fn negotiates_pings_and_accepts_practice_messages_after_login() {
 }
 
 #[test]
+fn a_login_with_a_path_for_a_name_is_refused_without_a_profile() {
+    let temporary = tempfile::tempdir().unwrap();
+    let profiles = temporary.path().join("profiles");
+    let accounts = Accounts::new(&profiles, temporary.path().join("seed")).unwrap();
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let address = listener.local_addr().unwrap();
+    let worker = thread::spawn(move || {
+        let schemas = Schemas::from_json(
+            r#"{"3C7E3468":{
+                "21799":[],
+                "21800":[{"type":12,"off":120,"count":0,"array":false}]
+            }}"#,
+        )
+        .unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        let mut session =
+            LobbySession::accept(stream, 2, &[42; 64], &accounts, &schemas, Clock::wall())
+                .unwrap()
+                .unwrap();
+        let LoginRequest::Rejected { reason } = session
+            .prepare_login(&accounts, || panic!("named login used the local default"))
+            .unwrap()
+        else {
+            panic!("a name with a path was accepted")
+        };
+        assert_eq!(reason, login::NAME_INVALID_CHARACTERS);
+        assert!(accounts.all_saved().unwrap().is_empty());
+    });
+
+    let mut client = TcpStream::connect(address).unwrap();
+    let (mut tx, _) = client_handshake(&mut client);
+    let mut announcement = vec![0, 0, 2, 0, 0, 0];
+    for group in [IN_CONNECT, OUT_CONNECT] {
+        announcement.extend_from_slice(&group.to_le_bytes());
+    }
+    let mut outgoing = Vec::new();
+    for frame in [announcement.as_slice(), b"\x02\x01..\\..\\evil\0"] {
+        framing::send_frame(&mut outgoing, &mut tx, frame).unwrap();
+    }
+    client.write_all(&outgoing).unwrap();
+    worker.join().unwrap();
+    let written: Vec<_> = std::fs::read_dir(temporary.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(written, ["profiles"]);
+    assert_eq!(std::fs::read_dir(profiles).unwrap().count(), 0);
+}
+
+#[test]
 #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn prepared_subset_matches_the_python_login_in_wire_order() {
     let runtime = lucy_testkit::runtime_dir().join("data");

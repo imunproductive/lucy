@@ -169,6 +169,15 @@ impl<'a> LobbySession<'a> {
                     reason: INCOMPATIBLE_CLIENT,
                 });
             }
+            Login::InvalidName { name, error } => {
+                tracing::warn!(
+                    "[lobby] Login from {} refused: {name:?}: {error}",
+                    self.peer
+                );
+                return Ok(LoginRequest::Rejected {
+                    reason: login::invalid_name_reason(error),
+                });
+            }
         };
         let identity = Identity::create(account.account_lo, self.transport.sequence)?;
         self.transport.set_time_limit(None);

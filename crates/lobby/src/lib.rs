@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod account_name;
 pub mod accounts;
 pub mod arcade;
 pub mod battle_tag_query;

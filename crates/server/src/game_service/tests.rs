@@ -1118,7 +1118,7 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
         temporary.path().join("seed"),
     )
     .unwrap();
-    let account = accounts.get("world fixture").unwrap();
+    let account = accounts.get("world_fixture").unwrap();
     let login = PreparedLogin {
         identity: Identity::create(account.account_lo, 1).unwrap(),
         account,

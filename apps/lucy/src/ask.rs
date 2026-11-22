@@ -7,7 +7,7 @@ use std::{
     path::Path,
 };
 
-use lucy_bnet::session_key::MAX_NAME_BYTES;
+use lucy_lobby::account_name;
 
 use crate::settings::Mode;
 
@@ -17,7 +17,6 @@ pub const SERVER_ADDRESS_FILE: &str = "server_address.txt";
 pub const PLAYER_NAME_FILE: &str = "player_name.txt";
 /// The host's public address, asked when hosting.
 pub const PUBLIC_ADDRESS_FILE: &str = "public_address.txt";
-pub const MAX_NAME_LENGTH: usize = 24;
 const MODE_MENU: &str = "
 Which mode?
   1  Play in retail mode (default Overwatch mode)
@@ -125,14 +124,13 @@ pub fn player_name(
     let prompt = format!("Your name on the server{}: ", reuse_hint(&last));
     loop {
         let answer = answer_or(input, output, &prompt, &last)?;
-        if is_player_name(&answer) {
-            remember(saved, &answer)?;
-            return Ok(answer);
+        match account_name::check(&answer) {
+            Ok(()) => {
+                remember(saved, &answer)?;
+                return Ok(answer);
+            }
+            Err(error) => writeln!(output, "That name can't be used: {error}.")?,
         }
-        writeln!(
-            output,
-            "Use 1 to {MAX_NAME_LENGTH} letters, digits, - or _."
-        )?;
     }
 }
 
@@ -158,17 +156,6 @@ pub fn is_server_address(text: &str) -> bool {
             .is_ok_and(|port| (1..65536).contains(&port))
 }
 
-/// A name the Battle.net login key can carry: 1 to 24 letters, digits, `-`
-/// or `_`.
-pub fn is_player_name(text: &str) -> bool {
-    let length = text.chars().count();
-    (1..=MAX_NAME_LENGTH).contains(&length)
-        && text.len() <= MAX_NAME_BYTES
-        && text
-            .chars()
-            .all(|char| char.is_alphanumeric() || matches!(char, '-' | '_'))
-}
-
 pub fn parse_server_address(text: &str) -> Result<String, String> {
     if is_server_address(text) {
         Ok(text.to_owned())
@@ -179,14 +166,11 @@ pub fn parse_server_address(text: &str) -> Result<String, String> {
     }
 }
 
+/// `--name`: a name the account rule accepts ([`account_name::check`]).
 pub fn parse_player_name(text: &str) -> Result<String, String> {
-    if is_player_name(text) {
-        Ok(text.to_owned())
-    } else {
-        Err(format!(
-            "{text} can't be a name. Use 1 to {MAX_NAME_LENGTH} letters, digits, - or _."
-        ))
-    }
+    account_name::check(text)
+        .map(|()| text.to_owned())
+        .map_err(|error| format!("{text:?} can't be a name: {error}."))
 }
 
 fn reuse_hint(last: &str) -> String {
@@ -306,7 +290,7 @@ mod tests {
     }
 
     #[test]
-    fn addresses_and_names_are_checked_like_the_reference() {
+    fn addresses_are_checked_like_the_reference() {
         assert!(is_server_address("1.2.3.4:3724"));
         assert!(is_server_address("host.example:1"));
         for bad in [
@@ -322,15 +306,5 @@ mod tests {
         }
         assert!(is_host_name("1.2.3.4") && is_host_name("my-host.example"));
         assert!(!is_host_name("") && !is_host_name("1.2.3.4:3724"));
-        assert!(is_player_name("Ana_1-x") && is_player_name("Zoë"));
-        assert!(is_player_name(&"a".repeat(MAX_NAME_LENGTH)));
-        assert!(!is_player_name(&"a".repeat(MAX_NAME_LENGTH + 1)));
-        // 20 characters, but more bytes than the login key holds.
-        assert!(!is_player_name(&"测".repeat(20)));
-        assert!(!is_player_name("") && !is_player_name("two words"));
-        assert_eq!(
-            parse_player_name("a b").unwrap_err(),
-            "a b can't be a name. Use 1 to 24 letters, digits, - or _."
-        );
     }
 }
