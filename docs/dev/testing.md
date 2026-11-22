@@ -83,7 +83,7 @@ The `just` recipes build and run the tests with a quarter of the PC's CPU thread
 
 #### Game service tests
 
-The game service's tests (`crates/server/src/game_service/tests.rs`) run it on a virtual clock, with an in-memory network in place of its UDP socket (`game_service/lockstep.rs`). The loop is the real one (`GameLoop::pass`); only its clock and its socket are the test's. The clock moves in lockstep with the test's clients: they send, the service takes their datagrams and runs the next tick exactly when it is due, and they read what it sent. No tick is skipped, so a test's run does not depend on the PC's speed or on the other tests.
+The game service's tests (`crates/server/src/game_service/tests.rs`) run it on a virtual clock, with an in-memory network in place of its UDP socket (`game_service/lockstep.rs`). The router and the rooms are the real ones (`Router`, `RoomLoop::pass`), on one thread instead of a thread each; only their clock and their socket are the test's. The clock moves in lockstep with the test's clients: they send, the service takes their datagrams and runs the next tick exactly when it is due, and they read what it sent. No tick is skipped, so a test's run does not depend on the PC's speed or on the other tests. Every room ticks on the service's tick grid, so a step runs the next tick of every match, numbered alike.
 
 To write one:
 
@@ -93,7 +93,9 @@ To write one:
 - `open_world` prepares the scene on a thread of its own, in real time: call `server.await_scenes()` after it. The clock waits until every match has its scene, so the scene comes at a known tick. A test that holds the preparation back itself (`collision_ready.rs`) calls it after it lets the scene go.
 - Timing is exact. The server sends each client a datagram every tick, and a client sends right after each datagram, so its input arrives at a tick's time, after that tick. Game messages run before the next tick. Commands run one a tick from the player's input buffer, with the next one in hand (`InputQueue` in `replication.rs`): a client that sends one command after each datagram has its first command wait a tick, then each runs the tick after it arrives (the command sent after tick T runs before tick T + 2); a burst runs all but the last 4 at once. An AI player's (an AI hero's, a dummy bot's) command of tick T runs right after tick T, before `step` returns, so a request after the step sees it. What a tick queues goes in that tick's datagram. Derive the expected tick from the rule and write the derivation in a comment, as `a_player_kills_another_who_respawns_after_the_practice_range_delay` does for the respawn (187 ticks after the death notice) and `exercise_loading` for the loading steps. Never give a window for the PC's speed.
 
-A test on the real clock and real UDP only proves the real loop and its sockets: `server::tests::serial_native_server_logs_in_saved_profile_and_loads_practice_over_udp` runs the whole server so. Do not add another for behaviour.
+A test on the real clock and real UDP only proves the real loop and its sockets: `server::tests::serial_native_server_logs_in_saved_profile_and_loads_practice_over_udp` runs the whole server so, and `game_service::tests::rooms::two_matches_run_side_by_side_on_their_threads` the service's own threads (one match's game gets its frames while the other's room is held; nothing it asserts depends on their speed). Do not add another for behaviour.
+
+A room catches a panic only in a build that unwinds (release, `gametest`); the debug build (Cranelift) aborts on one. So the test of a room that panics (`a_match_that_panics_sends_its_game_home_and_the_other_plays_on`) is built only where it can pass: `cfg(unwinds)`, which `crates/server/build.rs` sets for the profiles that inherit `release`. It is ignored, so `just test-game` runs it.
 
 #### Lobby tests
 

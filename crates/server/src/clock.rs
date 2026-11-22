@@ -6,6 +6,11 @@
 //! (0x7FF7896DB296, 0x7FF789AC7140), so a lagging frame number would leave its
 //! commands further ahead with every stall, past its 64 predicted states and
 //! 32 kept commands.
+//!
+//! Each room has its own clock ([`GameClock::opened`]) on the service's tick
+//! grid: a tick every [`TICK_PERIOD`] from the moment the service started,
+//! the one at time 0 numbered `FIRST_TICK + 1`. So the rooms tick at the same
+//! moments and number a moment alike, whichever thread runs them.
 
 use std::time::Duration;
 
@@ -16,6 +21,9 @@ const CLOCK_DRAIN_TICKS: u32 = (HANDOFF_TIME.as_millis() + LEAVE_GRACE.as_millis
     .div_ceil(TICK_PERIOD.as_millis()) as u32
     + 1;
 pub const MAX_SIMULATION_TICK: u32 = MAX_LEASE_FRAME - CLOCK_DRAIN_TICKS;
+/// The grid's frame numbers start again past this many ticks, so a room that
+/// opens has at least half the frame range before it drains (about a year).
+const GRID_WRAP: u32 = (MAX_SIMULATION_TICK - FIRST_TICK) / 2;
 
 /// Skip ticks strictly behind the monotonic clock after processing the current one.
 pub fn next_tick_after(due: Duration, now: Duration) -> Option<(Duration, u64)> {
@@ -58,6 +66,21 @@ impl Default for GameClock {
 }
 
 impl GameClock {
+    /// The clock of a room that opens at `now` (since the service started),
+    /// and when its first tick is due: the grid's next. Until then it reads
+    /// the frame of the grid's last tick, as if the room had run it.
+    pub fn opened(now: Duration) -> (Self, Duration) {
+        let period = TICK_PERIOD.as_nanos();
+        let ticks = now.as_nanos() / period;
+        let frame = FIRST_TICK + 1 + (ticks % u128::from(GRID_WRAP)) as u32;
+        let due = u64::try_from((ticks + 1) * period).map_or(Duration::MAX, Duration::from_nanos);
+        let clock = Self {
+            frame,
+            drain_ticks_left: None,
+        };
+        (clock, due)
+    }
+
     pub fn frame(self) -> u32 {
         self.frame
     }
@@ -91,13 +114,12 @@ impl GameClock {
         }
     }
 
-    /// Reset only when the old connections and their lobby notifications are finished.
-    pub fn renew_if_idle(&mut self, connections_pending: bool, reports_pending: bool) -> bool {
-        if !self.draining() || connections_pending || reports_pending {
-            return false;
-        }
-        *self = Self::default();
-        true
+    /// The room stops simulating: its next ticks drain, as at the end of the
+    /// frame range (a room whose match failed sends its players home).
+    pub fn drain(&mut self) {
+        self.drain_ticks_left.get_or_insert_with(|| {
+            CLOCK_DRAIN_TICKS.min(MAX_LEASE_FRAME.saturating_sub(self.frame))
+        });
     }
 }
 
@@ -143,7 +165,40 @@ mod tests {
     }
 
     #[test]
-    fn drains_one_tick_at_a_time_and_waits_for_the_last_report() {
+    fn a_room_opens_on_the_services_tick_grid() {
+        // The grid's tick at time 0 is FIRST_TICK + 1, the one at 80 ms (the
+        // fifth after it) FIRST_TICK + 6: a room that opens between two
+        // ticks reads the last one's frame, and its first tick is the next.
+        let ms = Duration::from_millis;
+        let opened = |now| {
+            let (clock, due) = GameClock::opened(now);
+            (clock.frame(), due)
+        };
+        assert_eq!(opened(ms(0)), (FIRST_TICK + 1, ms(16)));
+        assert_eq!(opened(ms(80)), (FIRST_TICK + 6, ms(96)));
+        assert_eq!(opened(ms(95)), (FIRST_TICK + 6, ms(96)));
+        let (mut clock, _) = GameClock::opened(ms(80));
+        assert_eq!(
+            clock.step(0, true),
+            Step::Simulate {
+                frame: FIRST_TICK + 7
+            }
+        );
+        // A failed room drains from its next tick on, without the entry
+        // a drain at the end of the frame range makes.
+        clock.drain();
+        assert_eq!(
+            clock.step(0, true),
+            Step::Drain {
+                frame: FIRST_TICK + 8,
+                entered: false,
+                force: false,
+            }
+        );
+    }
+
+    #[test]
+    fn drains_one_tick_at_a_time_until_its_connections_are_gone() {
         let mut clock = GameClock {
             frame: MAX_LEASE_FRAME - 2,
             ..Default::default()
@@ -172,9 +227,5 @@ mod tests {
                 force: true,
             }
         );
-        assert!(!clock.renew_if_idle(true, false));
-        assert!(!clock.renew_if_idle(false, true));
-        assert!(clock.renew_if_idle(false, false));
-        assert_eq!(clock, GameClock::default());
     }
 }

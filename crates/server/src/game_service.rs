@@ -1,4 +1,6 @@
-//! The native UDP match worker. It owns seats, connections and frame timing.
+//! The native UDP match server. A router (`router.rs`) owns the socket and
+//! the lobby's requests; each match is a room on a thread of its own
+//! (`room.rs`), with its seats, its games' links and its frame timing.
 //!
 //! A match on any map of the catalog advances from loading into one world
 //! for all its players, who see each other (ow174/game/match.py). Its scene,
@@ -47,68 +49,49 @@ use std::{
 };
 
 use indexmap::IndexMap;
-use mio::{Events, Interest, Poll, Token, Waker, net::UdpSocket};
+use mio::{Interest, Poll, Token, Waker, net::UdpSocket};
 
 use crate::{
-    clock::{GameClock, Step, next_tick_after},
-    connection::{GameConnections, MAX_CONNECTION_ID, Outgoing, Received, SILENCE_TIME, Timeout},
-    ingress::{GameIngress, MapReadiness, MapReadyStep, MessageKind, WorldReadiness, pong},
+    clock::GameClock,
+    connection::{GameConnections, MAX_CONNECTION_ID, Outgoing},
+    ingress::{GameIngress, MapReadiness},
 };
 use lucy_content::{
     hero_settings,
     heroes::SOLDIER,
     maps::{GameMap, SpawnChoice},
     parameters::{CLIENT_GAME_MESSAGE, PICK_HERO},
-    stats::{BRONZE, GOLD, Medals, PlayerStats, SILVER, StatsCatalog},
+    stats::PlayerStats,
 };
 use lucy_lobby::handoff::Handoff;
-use lucy_script::{
-    mode::ModePlayer,
-    snapshot::ProjectedSnapshot,
-    vm::{AuraChange, GameMessage, PlayRequest, ScopeChange, TrackedStat},
-};
+use lucy_script::{snapshot::ProjectedSnapshot, vm::GameMessage};
 use lucy_sim::{
-    ai::{Difficulty, Random},
-    bot_plate::{BotPlate, PlateChange, PlateView},
-    bot_script::{BotShotKind, SeenRocket},
-    combat::{
-        BotHit, BotReplacement, Combat, CombatPlayer, PlayerEvent, PosedShot, Shooter, ShotContext,
-        apply_player_hits, apply_player_pushes, deliver_projectiles, finish_bot_rockets,
-        show_bot_rockets, show_fired,
-    },
-    egress::{GameEgress, SendError},
+    ai::Difficulty,
+    bot_plate::{BotPlate, PlateChange, PlateSample, PlateView},
+    combat::{BotReplacement, Combat},
+    egress::GameEgress,
     hurt_feedback::HurtFeedback,
-    instance::{FREE_FOR_ALL_TEAM, Instance, Member, RETAIL_QUANTA, TOURNAMENT_QUANTA, ownership},
-    match_flow::{FlowEvent, MatchFlow, Mode, Phase, Standing, Timers},
-    messages::{Backlog, HeldReach, Players, Recipients, deliver, deliver_held, deliver_updates},
+    instance::{RETAIL_QUANTA, TOURNAMENT_QUANTA},
+    match_flow::{MatchFlow, Timers},
+    messages::{Backlog, HeldReach},
     mode_script::ModeRunner,
-    mode_view::ModeFrame,
-    objectives::Participant,
-    projectiles::FiredProjectile,
-    replication::{Record, RoomPlayer, WorldDelivery, blockers, show_players},
+    replication::{Record, WorldDelivery},
     scene::{PlayerAppearance, PlayerCard},
-    scene_assets::{CollisionBuild, CollisionFiles, FellOut, PreparedScene},
-    voice_lines::VoiceLine,
-    workshop::{WorkshopPlayer, WorkshopRun},
+    scene_assets::{CollisionBuild, CollisionFiles, PreparedScene},
+    workshop::WorkshopRun,
 };
-use lucy_wire::entity::Component as WorldComponent;
 use lucy_wire::{
     combat_messages::CombatNotice,
-    entity::{EntityUpdate, GAME_MODE_ENTITY, MAX_PAYLOAD, SkinTheme, frame},
+    entity::{MAX_PAYLOAD, SkinTheme, frame},
     jam::codec::{Fields, Schemas, Value},
-    link::{ACK, KIND_FRAME, Packet},
-    messages::{Message, encode, locate},
+    messages::{Message, locate},
 };
+
+use router::Router;
 
 const GAME_SOCKET: Token = Token(0);
 const REQUESTS: Token = Token(1);
 const RECEIVE_BATCH: usize = 64;
-const INPUT_PER_PEER: usize = 16;
-const INPUT_PER_TURN: usize = 64;
-const MAX_PENDING_COMBAT_NOTICES: usize = 256;
-/// The game mode entity gets a frame with the match flow's clock every
-/// second, and at each phase change (ow174/game/match.py `COUNTDOWN_EVERY`).
-const MODE_FRAME_EVERY: Duration = Duration::from_secs(1);
 /// The AI players' seats (Practice vs AI, `lucy_sim::ai`) take
 /// connection ids no game link has.
 const FIRST_AI_CONNECTION: u32 = MAX_CONNECTION_ID + 1;
@@ -248,8 +231,96 @@ pub struct GameService {
 
 pub type MatchId = [u64; 2];
 
+/// What the lobby, the dashboard, a scene's thread and the tests ask the
+/// game service. The router answers it (`router.rs`), or passes it on to
+/// the room it is for ([`Request::Room`]).
 enum Request {
     Open(Box<OpenRequest>),
+    /// More players for a match that is on (server.py `join_match`).
+    Join {
+        id: MatchId,
+        players: Vec<WorldPlayer>,
+        reply: mpsc::SyncSender<io::Result<Option<Vec<Handoff>>>>,
+    },
+    /// Every room's line of the snapshot comes on the receiver, which ends
+    /// once each room has answered.
+    Snapshot {
+        reply: mpsc::SyncSender<mpsc::Receiver<RoomSnapshot>>,
+    },
+    /// The matches that ended since the last call, oldest first.
+    Results {
+        reply: mpsc::SyncSender<Vec<MatchResult>>,
+    },
+    /// The live nameplate tool: a change, if any, then what it shows.
+    BotPlate {
+        change: Option<PlateChange>,
+        reply: mpsc::SyncSender<Result<PlateAnswers, String>>,
+    },
+    /// The live hurt feedback switch: a change, if any, then what is in
+    /// force.
+    Hurt {
+        change: String,
+        reply: mpsc::SyncSender<Result<HurtFeedback, String>>,
+    },
+    /// Tests: the match flow's timers for the matches that open later.
+    #[cfg(test)]
+    Timers {
+        timers: Timers,
+        reply: mpsc::SyncSender<()>,
+    },
+    /// For the room of a match or of a seat.
+    Room(RoomRequest),
+}
+
+/// What a room answers. The router passes it to the room of its match or
+/// of its seat's connection ([`RoomRequest::target`]), or answers it as a
+/// room without that match or seat would ([`RoomRequest::refuse`]).
+enum RoomRequest {
+    /// More players, with the connections the router gave their seats.
+    Join {
+        id: MatchId,
+        players: Vec<WorldPlayer>,
+        connections: Vec<u32>,
+        reply: mpsc::SyncSender<io::Result<Option<Vec<Handoff>>>>,
+    },
+    /// A match's scene came from its preparation thread.
+    Scene {
+        id: MatchId,
+        scene: io::Result<Box<PreparedScene>>,
+    },
+    /// The Workshop script of the match that just opened.
+    Workshop {
+        id: MatchId,
+        logic: Arc<lucy_workshop::Logic>,
+        catalog: Arc<lucy_workshop::Catalog>,
+        reply: mpsc::SyncSender<bool>,
+    },
+    /// Tests: where every player's body of a match stands.
+    #[cfg(test)]
+    Bodies {
+        id: MatchId,
+        reply: mpsc::SyncSender<Vec<ai::BodyState>>,
+    },
+    /// Tests: what a Workshop match's engine and action graphs met.
+    #[cfg(test)]
+    WorkshopReport {
+        id: MatchId,
+        reply: mpsc::SyncSender<Option<WorkshopReport>>,
+    },
+    /// Tests: the match's next tick panics (a build that unwinds only).
+    #[cfg(all(test, unwinds))]
+    Fail {
+        id: MatchId,
+        reply: mpsc::SyncSender<()>,
+    },
+    /// Tests: the room's thread waits, once it has answered, until
+    /// `release` lets it go (the threads of `GameService::bind` only).
+    #[cfg(test)]
+    Hold {
+        id: MatchId,
+        release: mpsc::Receiver<()>,
+        reply: mpsc::SyncSender<()>,
+    },
     Pending {
         connection: u32,
         reply: mpsc::SyncSender<bool>,
@@ -278,17 +349,6 @@ enum Request {
         hero: u64,
         reply: mpsc::SyncSender<bool>,
     },
-    /// The live nameplate tool: a change, if any, then what it shows.
-    BotPlate {
-        change: Option<PlateChange>,
-        reply: mpsc::SyncSender<Result<PlateView, String>>,
-    },
-    /// The live hurt feedback switch: a change, if any, then what is in
-    /// force.
-    Hurt {
-        change: String,
-        reply: mpsc::SyncSender<Result<HurtFeedback, String>>,
-    },
     /// The marker messages (`LUCY_DEBUG_SEND`): the seat's entities.
     DebugSeat {
         connection: u32,
@@ -309,49 +369,103 @@ enum Request {
         id: MatchId,
         reply: mpsc::SyncSender<DebugKill>,
     },
-    /// More players for a match that is on (server.py `join_match`).
-    Join {
-        id: MatchId,
-        players: Vec<WorldPlayer>,
-        reply: mpsc::SyncSender<io::Result<Option<Vec<Handoff>>>>,
-    },
-    /// A match's scene came from its preparation thread.
-    Scene {
-        id: MatchId,
-        scene: io::Result<Box<PreparedScene>>,
-    },
-    Snapshot {
-        reply: mpsc::SyncSender<Vec<MatchSnapshot>>,
-    },
-    /// The Workshop script of the match that just opened.
-    Workshop {
-        id: MatchId,
-        logic: Arc<lucy_workshop::Logic>,
-        catalog: Arc<lucy_workshop::Catalog>,
-        reply: mpsc::SyncSender<bool>,
-    },
-    /// The matches that ended since the last call, oldest first.
-    Results {
-        reply: mpsc::SyncSender<Vec<MatchResult>>,
-    },
-    /// Tests: the match flow's timers for the matches that start later.
-    #[cfg(test)]
-    Timers {
-        timers: Timers,
-        reply: mpsc::SyncSender<()>,
-    },
-    /// Tests: where every player's body of a match stands.
-    #[cfg(test)]
-    Bodies {
-        id: MatchId,
-        reply: mpsc::SyncSender<Vec<ai::BodyState>>,
-    },
-    /// Tests: what a Workshop match's engine and action graphs met.
-    #[cfg(test)]
-    WorkshopReport {
-        id: MatchId,
-        reply: mpsc::SyncSender<Option<WorkshopReport>>,
-    },
+}
+
+/// The room a [`RoomRequest`] is for.
+enum Target {
+    Match(MatchId),
+    Connection(u32),
+}
+
+impl RoomRequest {
+    fn target(&self) -> Target {
+        match *self {
+            Self::Join { id, .. } | Self::Scene { id, .. } | Self::Workshop { id, .. } => {
+                Target::Match(id)
+            }
+            #[cfg(test)]
+            Self::Bodies { id, .. } | Self::WorkshopReport { id, .. } | Self::Hold { id, .. } => {
+                Target::Match(id)
+            }
+            #[cfg(all(test, unwinds))]
+            Self::Fail { id, .. } => Target::Match(id),
+            Self::Pending { connection, .. }
+            | Self::Cancel { connection, .. }
+            | Self::Seat { connection, .. }
+            | Self::Skin { connection, .. }
+            | Self::Hero { connection, .. }
+            | Self::DebugSeat { connection, .. }
+            | Self::DebugSend { connection, .. }
+            | Self::DebugKill { connection, .. } => Target::Connection(connection),
+        }
+    }
+
+    /// The answer of a room that has no such match or seat: the match has
+    /// ended, the seat is gone.
+    fn refuse(self) {
+        match self {
+            Self::Join { reply, .. } => {
+                let _ = reply.send(Ok(None));
+            }
+            Self::Scene { .. } => {}
+            Self::Workshop { reply, .. }
+            | Self::Pending { reply, .. }
+            | Self::Cancel { reply, .. }
+            | Self::Seat { reply, .. }
+            | Self::Hero { reply, .. }
+            | Self::DebugSend { reply, .. } => {
+                let _ = reply.send(false);
+            }
+            #[cfg(test)]
+            Self::Bodies { reply, .. } => {
+                let _ = reply.send(Vec::new());
+            }
+            #[cfg(test)]
+            Self::WorkshopReport { reply, .. } => {
+                let _ = reply.send(None);
+            }
+            #[cfg(test)]
+            Self::Hold { reply, .. } => {
+                let _ = reply.send(());
+            }
+            #[cfg(all(test, unwinds))]
+            Self::Fail { reply, .. } => {
+                let _ = reply.send(());
+            }
+            Self::Skin { reply, .. } => {
+                let _ = reply.send(());
+            }
+            Self::DebugSeat { reply, .. } => {
+                let _ = reply.send(None);
+            }
+            Self::DebugKill { reply, .. } => {
+                let _ = reply.send(DebugKill::NotConnected);
+            }
+        }
+    }
+}
+
+/// A room's line of the snapshot, with when its match opened: the snapshot
+/// lists the oldest first.
+struct RoomSnapshot {
+    started: Instant,
+    snapshot: MatchSnapshot,
+}
+
+/// The live nameplate tool's answer: the plate's commands, the messages it
+/// sent the live bots, and each room's part on the receiver.
+struct PlateAnswers {
+    commands: Vec<String>,
+    messages: Vec<u64>,
+    rooms: mpsc::Receiver<RoomPlate>,
+}
+
+/// A room's part of the nameplate tool's answer: how many of its live bots
+/// took each message, and what its first live bot sends now.
+struct RoomPlate {
+    started: Instant,
+    taken: Vec<usize>,
+    sample: Option<PlateSample>,
 }
 
 /// Tests: what a Workshop match's rules met so far
@@ -371,13 +485,22 @@ pub(crate) struct WorkshopReport {
 }
 
 struct OpenRequest {
+    opening: Opening,
+    reply: OpenReply,
+}
+
+/// Where the seats of a match that opens go.
+type OpenReply = mpsc::SyncSender<io::Result<Vec<Handoff>>>;
+
+/// A match to open: its map, its players, its world when its scene is
+/// ready, and the level of the AI heroes that fill its teams (Practice vs
+/// AI).
+struct Opening {
     id: MatchId,
     map: GameMap,
     players: Vec<WorldPlayer>,
     world: Option<WorldStart>,
-    /// Fill the teams with AI heroes of this level (Practice vs AI).
     ai: Option<Difficulty>,
-    reply: mpsc::SyncSender<io::Result<Vec<Handoff>>>,
 }
 
 struct WorldStart {
@@ -410,21 +533,37 @@ pub enum DebugKill {
 }
 
 impl GameService {
+    /// The service on a UDP socket at `address`: the router's thread
+    /// (`router.rs`), which starts a thread for each match.
     pub fn bind(address: SocketAddr, schemas: Arc<Schemas>) -> io::Result<Self> {
         check_schemas(&schemas)?;
 
-        let mut socket = UdpSocket::bind(address)?;
+        let socket = std::net::UdpSocket::bind(address)?;
         let address = socket.local_addr()?;
+        socket.set_nonblocking(true)?;
+        // The rooms send through a clone of the socket the router reads.
+        let rooms_socket = Arc::new(socket.try_clone()?);
+        let mut socket = UdpSocket::from_std(socket);
         let poll = Poll::new()?;
         poll.registry()
             .register(&mut socket, GAME_SOCKET, Interest::READABLE)?;
         let wake = Arc::new(Waker::new(poll.registry(), REQUESTS)?);
         let (requests, receiver) = mpsc::sync_channel(RECEIVE_BATCH);
         let stopping = Arc::new(AtomicBool::new(false));
+        let router = Router::new(schemas, Some(Arc::clone(&wake)));
         let worker_stopping = Arc::clone(&stopping);
         let worker = thread::Builder::new()
             .name("lucy-game".into())
-            .spawn(move || run(socket, poll, receiver, worker_stopping, schemas))?;
+            .spawn(move || {
+                router::run(
+                    router,
+                    socket,
+                    rooms_socket,
+                    poll,
+                    receiver,
+                    worker_stopping,
+                )
+            })?;
         Ok(Self {
             address,
             requests,
@@ -452,16 +591,13 @@ impl GameService {
                 hero: SOLDIER,
             })
             .collect();
-        self.request(|reply| {
-            Request::Open(Box::new(OpenRequest {
-                id,
-                map,
-                players,
-                world: None,
-                ai: None,
-                reply,
-            }))
-        })?
+        self.open(Opening {
+            id,
+            map,
+            players,
+            world: None,
+            ai: None,
+        })
     }
 
     /// Open the currently ported world bootstrap for one player. The
@@ -535,31 +671,31 @@ impl GameService {
         ai: Option<Difficulty>,
         prepare: ScenePreparation,
     ) -> io::Result<Vec<Handoff>> {
-        let handoffs = self.request(|reply| {
-            Request::Open(Box::new(OpenRequest {
-                id,
-                map,
-                players,
-                world: None,
-                ai,
-                reply,
-            }))
-        })??;
+        let handoffs = self.open(Opening {
+            id,
+            map,
+            players,
+            world: None,
+            ai,
+        })?;
         let requests = self.requests.clone();
         let wake = Arc::clone(&self.wake);
         let spawned = thread::Builder::new()
             .name("lucy-scene".into())
             .spawn(move || {
                 let scene = prepare().map(Box::new);
-                if requests.send(Request::Scene { id, scene }).is_ok() {
+                if requests
+                    .send(Request::Room(RoomRequest::Scene { id, scene }))
+                    .is_ok()
+                {
                     let _ = wake.wake();
                 }
             });
         if let Err(error) = spawned {
-            let _ = self.requests.try_send(Request::Scene {
+            let _ = self.requests.try_send(Request::Room(RoomRequest::Scene {
                 id,
                 scene: Err(error),
-            });
+            }));
             self.wake.wake()?;
         }
         Ok(handoffs)
@@ -575,19 +711,20 @@ impl GameService {
         let teams: Vec<u8> = players.iter().map(|entry| entry.player.team).collect();
         let cards: Vec<&PlayerCard> = players.iter().map(|entry| &entry.card).collect();
         check_scene(&scene, &map, &teams, &cards)?;
-        self.request(|reply| {
-            Request::Open(Box::new(OpenRequest {
-                id,
-                map,
-                players,
-                world: Some(WorldStart {
-                    scene: Box::new(scene),
-                    combat: None,
-                }),
-                ai: None,
-                reply,
-            }))
-        })?
+        self.open(Opening {
+            id,
+            map,
+            players,
+            world: Some(WorldStart {
+                scene: Box::new(scene),
+                combat: None,
+            }),
+            ai: None,
+        })
+    }
+
+    fn open(&self, opening: Opening) -> io::Result<Vec<Handoff>> {
+        self.request(|reply| Request::Open(Box::new(OpenRequest { opening, reply })))?
     }
 
     /// Seats for more players in a match that is on, in player order
@@ -601,9 +738,13 @@ impl GameService {
         self.request(|reply| Request::Join { id, players, reply })?
     }
 
-    /// Every match with its players (server.py `snapshot`).
+    /// Every match with its players (server.py `snapshot`), the oldest
+    /// first. Each room answers for its own.
     pub fn snapshot(&self) -> io::Result<Vec<MatchSnapshot>> {
-        self.request(|reply| Request::Snapshot { reply })
+        let rooms = self.request(|reply| Request::Snapshot { reply })?;
+        let mut rooms: Vec<RoomSnapshot> = rooms.iter().collect();
+        rooms.sort_by_key(|room| room.started);
+        Ok(rooms.into_iter().map(|room| room.snapshot).collect())
     }
 
     /// Give a match that just opened (before its scene is ready: right
@@ -615,7 +756,7 @@ impl GameService {
         logic: Arc<lucy_workshop::Logic>,
         catalog: Arc<lucy_workshop::Catalog>,
     ) -> io::Result<bool> {
-        self.request(|reply| Request::Workshop {
+        self.room_request(|reply| RoomRequest::Workshop {
             id,
             logic,
             catalog,
@@ -629,7 +770,7 @@ impl GameService {
         self.request(|reply| Request::Results { reply })
     }
 
-    /// Tests: shorten the match flow of the matches that start from now.
+    /// Tests: shorten the match flow of the matches that open from now.
     #[cfg(test)]
     pub(crate) fn set_match_timers(&self, timers: Timers) -> io::Result<()> {
         self.request(|reply| Request::Timers { timers, reply })
@@ -638,22 +779,39 @@ impl GameService {
     /// Tests: every player of the match and his body, in slot order.
     #[cfg(test)]
     pub(crate) fn bodies(&self, id: MatchId) -> io::Result<Vec<ai::BodyState>> {
-        self.request(|reply| Request::Bodies { id, reply })
+        self.room_request(|reply| RoomRequest::Bodies { id, reply })
     }
 
     /// Tests: what a Workshop match's rules met so far; none for another
     /// match.
     #[cfg(test)]
     pub(crate) fn workshop_report(&self, id: MatchId) -> io::Result<Option<WorkshopReport>> {
-        self.request(|reply| Request::WorkshopReport { id, reply })
+        self.room_request(|reply| RoomRequest::WorkshopReport { id, reply })
+    }
+
+    /// Tests: the match's next tick panics, as a bug in its simulation
+    /// would (`RoomLoop::fail`).
+    #[cfg(all(test, unwinds))]
+    pub(crate) fn fail_match(&self, id: MatchId) -> io::Result<()> {
+        self.room_request(|reply| RoomRequest::Fail { id, reply })
+    }
+
+    /// Tests: the thread of the match's room waits until the sender this
+    /// gives is used or dropped (the threads of [`Self::bind`] only: the
+    /// lockstep's one thread would wait for good).
+    #[cfg(test)]
+    pub(crate) fn hold_match(&self, id: MatchId) -> io::Result<mpsc::Sender<()>> {
+        let (hold, release) = mpsc::channel();
+        self.room_request(|reply| RoomRequest::Hold { id, release, reply })?;
+        Ok(hold)
     }
 
     pub fn handoff_pending(&self, connection: u32) -> io::Result<bool> {
-        self.request(|reply| Request::Pending { connection, reply })
+        self.room_request(|reply| RoomRequest::Pending { connection, reply })
     }
 
     pub fn cancel_handoff(&self, connection: u32) -> io::Result<bool> {
-        self.request(|reply| Request::Cancel { connection, reply })
+        self.room_request(|reply| RoomRequest::Cancel { connection, reply })
     }
 
     pub fn seat_exists(&self, handoff: &Handoff) -> io::Result<bool> {
@@ -674,7 +832,7 @@ impl GameService {
         hero: u64,
         skin: SkinTheme,
     ) -> io::Result<()> {
-        self.request(|reply| Request::Skin {
+        self.room_request(|reply| RoomRequest::Skin {
             connection: handoff.conn,
             id: handoff.match_id,
             hero,
@@ -687,7 +845,7 @@ impl GameService {
     /// screen does (`ow174/game/server.py` switch_hero for the lobby's `.hero`
     /// command). False when the seat's game is not in the match's world.
     pub(crate) fn switch_hero(&self, handoff: &Handoff, hero: u64) -> io::Result<bool> {
-        self.request(|reply| Request::Hero {
+        self.room_request(|reply| RoomRequest::Hero {
             connection: handoff.conn,
             id: handoff.match_id,
             hero,
@@ -698,9 +856,26 @@ impl GameService {
     /// The live nameplate tool (`lucy_sim::bot_plate`): apply a change,
     /// if any, to every match's training bots at once, and show the changes
     /// in force with what the first live bot sends now. A change the tool
-    /// refuses comes back as its reason.
+    /// refuses comes back as its reason, as does a message no live bot of
+    /// any match took.
     pub fn bot_plate(&self, change: Option<PlateChange>) -> io::Result<Result<PlateView, String>> {
-        self.request(|reply| Request::BotPlate { change, reply })
+        let answers = match self.request(|reply| Request::BotPlate { change, reply })? {
+            Ok(answers) => answers,
+            Err(reason) => return Ok(Err(reason)),
+        };
+        let mut rooms: Vec<RoomPlate> = answers.rooms.iter().collect();
+        rooms.sort_by_key(|room| room.started);
+        for (index, message) in answers.messages.iter().enumerate() {
+            if rooms.iter().all(|room| room.taken[index] == 0) {
+                return Ok(Err(format!(
+                    "No live training bot took message {message:016X}."
+                )));
+            }
+        }
+        Ok(Ok(PlateView {
+            commands: answers.commands,
+            bot: rooms.into_iter().find_map(|room| room.sample),
+        }))
     }
 
     /// The live hurt feedback switch (`lucy_sim::hurt_feedback`): apply
@@ -715,7 +890,7 @@ impl GameService {
     /// The marker messages (`LUCY_DEBUG_SEND`): the seat's controller and
     /// body, or none when its game is not connected to the match.
     pub(crate) fn debug_seat(&self, handoff: &Handoff) -> io::Result<Option<DebugSeat>> {
-        self.request(|reply| Request::DebugSeat {
+        self.room_request(|reply| RoomRequest::DebugSeat {
             connection: handoff.conn,
             id: handoff.match_id,
             reply,
@@ -726,7 +901,7 @@ impl GameService {
     /// as reliable messages, in order. False when its game is not connected
     /// to the match.
     pub(crate) fn debug_send(&self, handoff: &Handoff, messages: Vec<Vec<u8>>) -> io::Result<bool> {
-        self.request(|reply| Request::DebugSend {
+        self.room_request(|reply| RoomRequest::DebugSend {
             connection: handoff.conn,
             id: handoff.match_id,
             messages,
@@ -738,7 +913,7 @@ impl GameService {
     /// as the map's catch floor does ([`Combat::environment_kill`]): the
     /// hit goes the normal way (death message, board, respawn).
     pub(crate) fn debug_kill(&self, handoff: &Handoff) -> io::Result<DebugKill> {
-        self.request(|reply| Request::DebugKill {
+        self.room_request(|reply| RoomRequest::DebugKill {
             connection: handoff.conn,
             id: handoff.match_id,
             reply,
@@ -746,12 +921,19 @@ impl GameService {
     }
 
     fn seat(&self, handoff: &Handoff, release: bool) -> io::Result<bool> {
-        self.request(|reply| Request::Seat {
+        self.room_request(|reply| RoomRequest::Seat {
             connection: handoff.conn,
             id: handoff.match_id,
             release,
             reply,
         })
+    }
+
+    fn room_request<T>(
+        &self,
+        request: impl FnOnce(mpsc::SyncSender<T>) -> RoomRequest,
+    ) -> io::Result<T> {
+        self.request(|reply| Request::Room(request(reply)))
     }
 
     fn request<T>(&self, request: impl FnOnce(mpsc::SyncSender<T>) -> Request) -> io::Result<T> {
@@ -853,7 +1035,8 @@ struct Room {
     graph_frame: Option<Arc<ProjectedSnapshot>>,
     /// Hero select closed this tick: the heroes are assembled.
     assembled: bool,
-    /// Its collision failed: it takes nobody more (match.py `ended`).
+    /// Its collision failed, its match is over, or the match failed: it
+    /// takes nobody more (match.py `ended`).
     ended: bool,
     /// When the match opened: the snapshot lists the oldest first.
     started: Instant,
@@ -872,235 +1055,6 @@ struct RoomWorkshop {
     catalog: Arc<lucy_workshop::Catalog>,
     /// Runs from the mode's start (`Room::begin_flow`).
     run: Option<WorkshopRun>,
-}
-
-impl Room {
-    fn new(map: GameMap, players: Vec<WorldPlayer>, world: Option<WorldStart>) -> Self {
-        let mut room = Self {
-            map,
-            players: Vec::with_capacity(players.len()),
-            remaining: 0,
-            world,
-            flow: None,
-            mode: None,
-            mail: Vec::new(),
-            held_reach: HeldReach::default(),
-            backlog: Backlog::default(),
-            flow_at: Duration::ZERO,
-            flow_tick: 0,
-            mode_frame: None,
-            next_mode_frame: Duration::ZERO,
-            graph_frame: None,
-            assembled: false,
-            ended: false,
-            started: Instant::now(),
-            ai: None,
-            dummies: Vec::new(),
-            workshop: None,
-        };
-        room.add(players);
-        room
-    }
-
-    /// The players after those already in the match, each in the next slot
-    /// (match.py `add_player`).
-    fn add(&mut self, players: Vec<WorldPlayer>) {
-        self.remaining += players.len();
-        for WorldPlayer { player, card, hero } in players {
-            let slot = self.players.len();
-            self.players.push(Player {
-                info: player,
-                card,
-                hero: if hero == 0 { SOLDIER } else { hero },
-                entity: player_entity(slot),
-                gone: false,
-                stats: PlayerStats::default(),
-                ai: false,
-                dummy: false,
-            });
-        }
-    }
-
-    fn assembling(&self) -> bool {
-        self.flow.as_ref().is_some_and(MatchFlow::assembling)
-    }
-
-    /// Whether the mode's own graph drives the match (`MatchFlow::follow`).
-    fn follows_graph(&self) -> bool {
-        self.flow.as_ref().is_some_and(MatchFlow::follows_graph)
-    }
-
-    /// The mode entity's first frame for a client: the mode graph's newest
-    /// while it drives the mode entity, else the scene's hand-built one.
-    fn first_mode_frame<'a>(&'a self, scene: &'a PreparedScene) -> ModeFrame<'a> {
-        self.graph_mode_frame()
-            .unwrap_or(ModeFrame::Full(scene.mode_ui()))
-    }
-
-    /// The mode entity's frame every client gets this tick: the hand-built
-    /// one when due, else the mode graph's while it drives the mode entity.
-    fn mode_frame_now(&self) -> Option<ModeFrame<'_>> {
-        match &self.mode_frame {
-            Some(frame) => Some(ModeFrame::Full(frame)),
-            None => self.graph_mode_frame(),
-        }
-    }
-
-    fn graph_mode_frame(&self) -> Option<ModeFrame<'_>> {
-        Some(ModeFrame::Graph {
-            encoder: self.mode.as_ref()?.encoder()?,
-            projected: self.graph_frame.as_ref()?,
-        })
-    }
-
-    /// The mode entity's graph starts with the room's first tick, before
-    /// its placed scripts' first, as the map's entities start with the mode
-    /// entity in retail: the placed scripts find its held `0724` as they
-    /// start, and the mode graph takes the objectives' `0813` (`0F4C`, sent
-    /// once as they start). A Workshop match runs its actions on the mode
-    /// entity, so a graph must drive it (`ModeRunner::workshop`). The mode
-    /// graph removes placeables as it starts (`0CBB` st34, the health
-    /// packs), before any world reaches a client.
-    fn begin_mode(&mut self, tick: u32) {
-        let Some(world) = &mut self.world else {
-            return;
-        };
-        if self.mode.is_some() {
-            return;
-        }
-        let mode = if self.workshop.is_some() {
-            ModeRunner::workshop(&world.scene, tick, Vec::new())
-        } else {
-            Some(ModeRunner::start(&world.scene, tick, Vec::new()))
-        };
-        if let Some(mode) = mode {
-            take_placeable_removals(self.mode.insert(mode), &mut world.scene);
-        }
-    }
-
-    /// The players are in a PvP world: the match starts. Where the mode's
-    /// own graph drives the match (`ModeRunner::holds_rooms`) the server
-    /// starts it (`ModeRunner::start_match`) and the flow follows the
-    /// graph; else the flow starts with "assemble your team".
-    fn begin_flow(&mut self, scene: &mut PreparedScene, timers: Timers, now: Duration, tick: u32) {
-        if self.flow.is_some() {
-            return;
-        }
-        let competitive = self.players.iter().any(|player| player.info.ranked);
-        let graph_values = scene.mode_graph_values();
-        let rules = scene.mode_rules();
-        let objectives = scene.map_objectives();
-        // A PvP mode without a flow of its own (a brawl) keeps the
-        // assemble phase and plays on like Skirmish.
-        let skirmish = || {
-            let map = GameMap {
-                mode_guid: lucy_sim::match_flow::SKIRMISH,
-                ..self.map.clone()
-            };
-            MatchFlow::new(
-                &map,
-                competitive,
-                graph_values,
-                rules,
-                Arc::clone(&objectives),
-                timers,
-            )
-        };
-        let Some(mut flow) = MatchFlow::new(
-            &self.map,
-            competitive,
-            graph_values,
-            rules,
-            Arc::clone(&objectives),
-            timers,
-        )
-        .or_else(skirmish) else {
-            return;
-        };
-        if self.mode.is_none() {
-            let mode = self.mode.insert(ModeRunner::start(scene, tick, Vec::new()));
-            // The mode graph removes placeables as it starts (`0CBB` st34,
-            // the health packs): before the world that just started
-            // reaches the client, so their creates never go.
-            take_placeable_removals(mode, scene);
-        }
-        match self.mode.as_mut() {
-            Some(mode) if mode.holds_rooms() => mode.start_match(),
-            // Nothing stands in for a mode its graph drives: the match
-            // waits, and says why.
-            mode if flow.mode().graph_driven() => tracing::error!(
-                "[game] {}: {:?} plays only on its mode graph, which doesn't run here: {:?}",
-                self.map.name,
-                flow.mode(),
-                mode.and_then(|mode| mode.gaps())
-            ),
-            _ => flow.start(),
-        }
-        tracing::info!(
-            "[game] {}: {:?} match flow, assemble your team",
-            self.map.name,
-            flow.mode()
-        );
-        self.flow = Some(flow);
-        // The players reach the graph with the next tick's flow
-        // (`update_flows`), as they join. A Workshop match's graph started
-        // with the room (`Self::begin_mode`); its rules start now, against
-        // the players in the world.
-        if let (Some(workshop), true) = (
-            self.workshop.as_mut(),
-            self.mode.as_ref().is_some_and(ModeRunner::graph_driven),
-        ) {
-            workshop.run = Some(WorkshopRun::new(
-                &workshop.logic,
-                Arc::clone(&workshop.catalog),
-                u64::from(tick),
-            ));
-        }
-        self.flow_at = now;
-        self.flow_tick = tick;
-        self.next_mode_frame = now;
-    }
-
-    fn appearance(&self, slot: usize) -> Option<PlayerAppearance<'_>> {
-        let player = &self.players[slot];
-        let team = player.info.team;
-        let earlier = self.players[..slot].iter().map(|player| player.info.team);
-        Some(PlayerAppearance {
-            entity: player.entity,
-            slot: i8::try_from(slot).ok()?,
-            team,
-            spawn: spawn_number(&self.map, earlier, team),
-            room: self
-                .flow
-                .as_ref()
-                .map_or(SpawnChoice::First, |flow| flow.spawn_choice(team)),
-            card: &player.card,
-        })
-    }
-
-    fn message(&self, slot: usize, initial: bool) -> Message {
-        let members: Vec<_> = self
-            .players
-            .iter()
-            .map(|player| Member {
-                entity: player.entity,
-                name: &player.info.name,
-                team: player.info.team,
-                gone: player.gone,
-                ranked: player.info.ranked,
-            })
-            .collect();
-        let instance = Instance {
-            map: &self.map,
-            members: &members,
-        };
-        let player = &self.players[slot];
-        if initial {
-            instance.load(player.entity, player.quanta())
-        } else {
-            instance.update(player.entity)
-        }
-    }
 }
 
 struct Peer {
@@ -1224,120 +1178,6 @@ fn pick_message(entity: u32, hero: u64) -> Message {
     }
 }
 
-/// A hit on a bot reaches its script (combat.py `_damage`): for a killing
-/// hit its damage message `0011.025` with the kill's fields, then the death
-/// message (`_bot_died`, [`PreparedScene::bot_died`]), else its new health
-/// (`_sync_body_health`) and, for damage, the damage message `0011.025`
-/// (its flinch and pain line).
-fn bot_hit_script(scene: &mut PreparedScene, hit: &BotHit) {
-    match hit.death {
-        Some(death) => scene.bot_died(&death),
-        None => {
-            scene.bot_health(hit.bot, hit.remaining);
-            if let Some(damage) = &hit.damage {
-                scene.bot_hurt(hit.bot, damage);
-            }
-        }
-    }
-}
-
-/// The connected players of a room, by slot.
-fn room_peers<'p>(
-    peers: &'p mut IndexMap<u32, Peer>,
-    seats: &HashMap<u32, (MatchId, usize)>,
-    id: MatchId,
-    players: usize,
-) -> Vec<Option<&'p mut Peer>> {
-    let mut room: Vec<_> = (0..players).map(|_| None).collect();
-    for (connection, peer) in peers.iter_mut() {
-        let (match_id, slot) = seats[connection];
-        if match_id == id {
-            room[slot] = Some(peer);
-        }
-    }
-    room
-}
-
-/// The stats a player's graphs counted (TrackStat, TrackStatTime;
-/// `lucy_script::vm` `stats`) go to the stat table of each target's
-/// player, as the catalog keeps each ([`StatsCatalog::credit`]: a "Best"
-/// stat its best single amount): the target is a player's controller or
-/// one of his bodies (the body ids share the controller's high bits). A
-/// target outside the room's players (a Training Bot, an entity of the
-/// map) keeps no stats.
-fn credit_tracked_stats(players: &mut [Player], catalog: &StatsCatalog, tracked: Vec<TrackedStat>) {
-    for stat in tracked {
-        for target in stat.targets {
-            let Some(player) = players
-                .iter_mut()
-                .find(|player| player.entity == target & !0xff)
-            else {
-                continue;
-            };
-            for &counted in &stat.stats {
-                catalog.credit(&mut player.stats, counted, stat.amount);
-            }
-        }
-    }
-}
-
-/// match.py `_board`: the player's board numbers, with their medals among
-/// his teammates (every player in a free-for-all) and his hero's stats.
-fn board(room: &Room, slot: usize, scene: &PreparedScene, hero: Option<u64>) -> WorldComponent {
-    let mode = room.map.mode_guid;
-    let medals = team_medals(
-        &room.players,
-        room.map.free_for_all,
-        mode,
-        slot,
-        scene.stats(),
-    );
-    scene
-        .stats()
-        .component(&room.players[slot].stats, mode, hero, Some(&medals))
-}
-
-/// The player's medals among his teammates still in the match (every
-/// player in a free-for-all), as the Tab board shows them.
-fn team_medals(
-    players: &[Player],
-    free_for_all: bool,
-    mode: u64,
-    slot: usize,
-    catalog: &StatsCatalog,
-) -> Medals {
-    let me = &players[slot];
-    let mut team: Vec<usize> = (0..players.len())
-        .filter(|&other| {
-            let player = &players[other];
-            !player.gone && (free_for_all || player.info.team == me.info.team)
-        })
-        .collect();
-    if !team.contains(&slot) {
-        team.push(slot);
-    }
-    let stats: Vec<_> = team.iter().map(|&other| &players[other].stats).collect();
-    let index = team
-        .iter()
-        .position(|&other| other == slot)
-        .expect("the player is on his team");
-    catalog.medals(&stats, mode).swap_remove(index)
-}
-
-/// Medals counted by tier: gold, silver, bronze.
-fn medal_counts(medals: &Medals) -> [u32; 3] {
-    let mut counts = [0; 3];
-    for &medal in medals.values() {
-        match medal {
-            GOLD => counts[0] += 1,
-            SILVER => counts[1] += 1,
-            BRONZE => counts[2] += 1,
-            _ => {}
-        }
-    }
-    counts
-}
-
 /// The n-th player of a team takes the team's n-th spawn point; in a
 /// free-for-all the n-th player of the match (ow174/game/match.py Player).
 fn spawn_number(map: &GameMap, earlier: impl Iterator<Item = u8>, team: u8) -> usize {
@@ -1346,2598 +1186,48 @@ fn spawn_number(map: &GameMap, earlier: impl Iterator<Item = u8>, team: u8) -> u
         .count()
 }
 
-impl Peer {
-    fn new(owner: u32) -> Self {
-        Self {
-            ingress: GameIngress::default(),
-            egress: GameEgress::default(),
-            loading: MapReadiness::default(),
-            ownership: None,
-            open: false,
-            world: WorldDelivery::new(owner),
-            combat_ui: CombatUi::default(),
-            presented: false,
-            ai: None,
-            reported_latency: None,
-            hero_settings: hero_settings::SentList::default(),
-            send_failure: None,
-        }
-    }
-
-    /// An AI player's peer: a world no client receives, whose bodies his AI
-    /// entity possesses, and the controller that plays it.
-    fn ai(owner: u32, seat: ai::AiSeat) -> Self {
-        Self {
-            world: WorldDelivery::headless(owner, seat.entity, seat.difficulty),
-            ai: Some(Box::new(seat)),
-            ..Self::new(owner)
-        }
-    }
-
-    fn clear_world(&mut self) {
-        self.world.clear();
-        self.combat_ui = CombatUi::default();
-        self.presented = false;
-    }
-
-    /// A hit's notices for this client (the shooter's).
-    fn notice(&mut self, notice: CombatNotice) {
-        if self.ai.is_some() {
-            return;
-        }
-        let Some(notice) = DROPPED_NOTICES.filter(notice) else {
-            return;
-        };
-        if self.combat_ui.notices.len() == MAX_PENDING_COMBAT_NOTICES {
-            self.combat_ui.notices.pop_front();
-        }
-        self.combat_ui.notices.push_back(notice);
-    }
-
-    fn flush_combat(&mut self, schemas: &Schemas, now: Duration) {
-        for _ in 0..self.combat_ui.notices.len() {
-            let notice = self
-                .combat_ui
-                .notices
-                .pop_front()
-                .expect("pending combat notice");
-            let entity = notice.required_identity();
-            if entity.is_some_and(|entity| !self.world.combat_identity_ready(entity))
-                || (notice.needs_mode_ui() && !self.world.mode_ready())
-            {
-                self.combat_ui.notices.push_back(notice);
-                continue;
-            }
-            let notice = match notice {
-                CombatNotice::Hit {
-                    target,
-                    dealt,
-                    critical,
-                    killed,
-                    shot_frame,
-                } => {
-                    let shot_frame = shot_frame.max(self.combat_ui.last_hit_frame);
-                    self.combat_ui.last_hit_frame = shot_frame;
-                    CombatNotice::Hit {
-                        target,
-                        dealt,
-                        critical,
-                        killed,
-                        shot_frame,
-                    }
-                }
-                notice => notice,
-            };
-            if let Ok(bytes) = notice.encode(schemas) {
-                if let (Ok(ordinal), Some(entity)) = (self.egress.queue_reliable(bytes), entity) {
-                    self.combat_ui.last_notice_by_entity.insert(entity, ordinal);
-                }
-            }
-        }
-        for _ in 0..self.combat_ui.replacements.len() {
-            let (expires, replacement) = self
-                .combat_ui
-                .replacements
-                .pop_front()
-                .expect("pending bot replacement");
-            let entity = replacement.retired;
-            let has_notice = self
-                .combat_ui
-                .notices
-                .iter()
-                .any(|notice| notice.required_identity() == Some(entity));
-            let waiting_for_reliable = self
-                .combat_ui
-                .last_notice_by_entity
-                .get(&entity)
-                .is_some_and(|&ordinal| !self.egress.delivered_through(ordinal));
-            if now < expires
-                && (has_notice
-                    || waiting_for_reliable
-                    || self.world.health_pending(entity)
-                    || self.world.bot_frames_pending(entity))
-            {
-                self.world.hold_bot_destroy(entity);
-                self.combat_ui
-                    .replacements
-                    .push_back((expires, replacement));
-            } else {
-                self.combat_ui
-                    .notices
-                    .retain(|notice| notice.required_identity() != Some(entity));
-                self.combat_ui.last_notice_by_entity.remove(&entity);
-                self.world.replace_bot(replacement);
-            }
-        }
-    }
-
-    fn reliable(&mut self, schemas: &Schemas, message: Message) -> io::Result<u32> {
-        let bytes = encode(schemas, message.id, &message.fields).map_err(invalid)?;
-        let ordinal = self.egress.queue_reliable(bytes).map_err(invalid)?;
-        tracing::debug!(
-            target: "lucy::join",
-            id = message.id,
-            ordinal,
-            "reliable message queued"
-        );
-        Ok(ordinal)
-    }
-
-    /// This tick's frame over the peer's link: the queued reliable messages
-    /// and world records, with these movements. A frame that can't be made
-    /// (a record that doesn't encode or fit) is logged when its reason
-    /// changes.
-    fn send_frame(
-        &mut self,
-        links: &mut GameConnections,
-        socket: &impl Transport,
-        connection: u32,
-        tick: u32,
-        movements: Vec<EntityUpdate>,
-        reliable_only: bool,
-    ) {
-        let sent = self.world.send_frame(
-            tick,
-            movements,
-            reliable_only,
-            &mut self.egress,
-            |payload| {
-                let packet = Packet {
-                    conn: connection,
-                    kind: KIND_FRAME,
-                    flags: ACK,
-                    payload,
-                    ..Packet::default()
-                };
-                let outgoing = links
-                    .transmit(packet)
-                    .map_err(|error| io::Error::other(format!("game link: {error:?}")))?;
-                send(socket, outgoing)
-            },
-        );
-        let failure = match sent {
-            Err(SendError::Select(error)) => Some(error.to_string()),
-            _ => None,
-        };
-        if failure.is_some() && failure != self.send_failure {
-            tracing::warn!(
-                connection,
-                tick,
-                error = failure.as_deref().unwrap_or_default(),
-                "the game frame can't be made; no records go until it can"
-            );
-        }
-        self.send_failure = failure;
-    }
-
-    /// The due spawn steps; true when this one put the player in the world.
-    fn advance_loading(
-        &mut self,
-        schemas: &Schemas,
-        room: &Room,
-        slot: usize,
-        now: Duration,
-        tick: u32,
-    ) -> io::Result<bool> {
-        let mut spawned = false;
-        let player = &room.players[slot];
-        let ready = WorldReadiness {
-            ownership_delivered: self
-                .ownership
-                .is_some_and(|id| self.egress.delivered_through(id)),
-            collision_ready: room.world.is_some(),
-            bot_scripts_ready: room
-                .world
-                .as_ref()
-                .is_some_and(|world| world.scene.bot_scripts_ready()),
-        };
-        while let Some(step) = self.loading.take_due(now, ready) {
-            match step {
-                MapReadyStep::Ownership => {
-                    self.ownership = Some(self.reliable(schemas, ownership(player.entity))?);
-                }
-                MapReadyStep::Game => {
-                    self.reliable(schemas, room.message(slot, false))?;
-                }
-                MapReadyStep::World => {
-                    let world = room.world.as_ref().expect("map-entry prerequisites");
-                    let viewer = room.appearance(slot).expect("prepared player");
-                    self.world.start(&world.scene, &viewer, tick)?;
-                    spawned = true;
-                }
-                MapReadyStep::Controller => {
-                    self.world.presentation_due = true;
-                    self.presented = true;
-                }
-            }
-        }
-        if self.world.presentation_due {
-            let world = room.world.as_ref().expect("world started");
-            let first = room.first_mode_frame(&world.scene);
-            self.world.present(&world.scene, first, tick)?;
-        }
-        Ok(spawned)
-    }
-
-    /// This tick's steps of the player (match.py `update`): the mode
-    /// entity's frame and the end of "assemble your team", then the spawn
-    /// steps. The first spawn in a PvP mode starts the match flow
-    /// (`_spawn_steps`).
-    fn update(
-        &mut self,
-        schemas: &Schemas,
-        room: &mut Room,
-        slot: usize,
-        timers: Timers,
-        now: Duration,
-        tick: u32,
-    ) -> io::Result<()> {
-        if let (true, Some(frame)) = (self.presented, room.mode_frame_now()) {
-            self.world.queue_mode_frame(frame, tick)?;
-        }
-        // The entities the mode entity's graphs made (the Workshop's
-        // effects and icons), after the mode frame that names them.
-        if let (true, Some(mode)) = (self.presented, room.mode.as_ref()) {
-            self.world.update_mode_entities(mode);
-        }
-        if let (true, Some(world)) = (room.assembled && self.presented, &room.world) {
-            self.world.end_assemble(&world.scene, tick)?;
-        }
-        self.world.set_assembling(room.assembling());
-        self.world.set_mode_graph(room.follows_graph());
-        self.world
-            .set_mode_held(room.mode.as_ref().map_or(&[], ModeRunner::held));
-        let spawned = self.advance_loading(schemas, room, slot, now, tick)?;
-        if let Some(mut world) = room.world.take() {
-            if spawned && !world.scene.controller().practice() {
-                room.begin_flow(&mut world.scene, timers, now, tick);
-            }
-            room.world = Some(world);
-        }
-        Ok(())
-    }
-}
-
-struct State {
+/// A room: its match, the seats of its players and the links of their
+/// games, on the room's own clock. Its thread (`router.rs`), or the tests'
+/// lockstep, runs it (`room.rs`); nothing in it is shared with another
+/// room.
+struct RoomState {
+    id: MatchId,
     schemas: Arc<Schemas>,
     clock: GameClock,
     links: GameConnections,
-    rooms: HashMap<MatchId, Room>,
-    seats: HashMap<u32, (MatchId, usize)>,
+    room: Room,
+    /// Each seat's slot in the match, by connection (the AI players' too).
+    seats: HashMap<u32, usize>,
     peers: IndexMap<u32, Peer>,
     /// Games taken out of their match before they connected (server.py
     /// `take_out`): the player has left, but the handoff stays reserved until
     /// its deadline, so a game that still connects is admitted and gets only
     /// 20304 (server.py `_datagram`, `Client.received`).
     homeward: HashMap<u32, Peer>,
-    next_connection: u32,
     /// The next AI player's seat id ([`FIRST_AI_CONNECTION`] and up).
     next_ai_connection: u32,
     next_input_peer: usize,
-    /// Matches that ended by their rules, until the lobby takes them.
-    results: Vec<MatchResult>,
     /// The match flow's timers (tests shorten them).
     timers: Timers,
-    /// The live nameplate tool's changes, which every match takes.
+    /// The live nameplate tool's changes.
     bot_plate: Arc<BotPlate>,
-    /// The live hurt feedback switch, which every match takes.
+    /// The live hurt feedback switch.
     hurt: HurtFeedback,
+    /// What the router learns from the room.
+    events: router::Events,
+    /// Tests: the next tick panics ([`GameService::fail_match`]).
+    #[cfg(all(test, unwinds))]
+    fail: bool,
 }
 
-impl State {
-    fn new(schemas: Arc<Schemas>) -> Self {
-        Self {
-            schemas,
-            clock: GameClock::default(),
-            links: GameConnections::default(),
-            rooms: HashMap::new(),
-            seats: HashMap::new(),
-            peers: IndexMap::new(),
-            homeward: HashMap::new(),
-            next_connection: 1,
-            next_ai_connection: FIRST_AI_CONNECTION,
-            next_input_peer: 0,
-            results: Vec::new(),
-            timers: Timers::default(),
-            bot_plate: Arc::default(),
-            hurt: HurtFeedback::default(),
-        }
-    }
-
-    fn open_match(
-        &mut self,
-        id: MatchId,
-        map: GameMap,
-        players: Vec<WorldPlayer>,
-        world: Option<WorldStart>,
-        ai: Option<Difficulty>,
-        now: Duration,
-    ) -> io::Result<Vec<Handoff>> {
-        let remaining = players.len();
-        if self.clock.draining() {
-            return Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "game clock is draining",
-            ));
-        }
-        if self.rooms.contains_key(&id) {
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                "match already exists",
-            ));
-        }
-        if remaining == 0 || remaining > usize::from(u8::MAX) {
-            return Err(invalid("invalid match roster size"));
-        }
-        let mut room = Room::new(map, players, world);
-        let seats = ai.map_or_else(Vec::new, |difficulty| {
-            let mut random = Random::new(ai::seed());
-            room.add_ai(difficulty, &mut random)
-        });
-        self.check_roster(&room)?;
-        let tickets = self.reserve(id, 0..remaining, now)?;
-        self.rooms.insert(id, room);
-        self.seat_ai(id, seats);
-        Ok(tickets)
-    }
-
-    /// More players for a match that is on, in the next slots (server.py
-    /// `join_match`); `None` once it has ended or while the clock drains.
-    fn join_match(
-        &mut self,
-        id: MatchId,
-        players: Vec<WorldPlayer>,
-        now: Duration,
-    ) -> io::Result<Option<Vec<Handoff>>> {
-        if self.clock.draining() || self.rooms.get(&id).is_none_or(|room| room.ended) {
-            return Ok(None);
-        }
-        let room = self.rooms.get_mut(&id).expect("running match");
-        let first = room.players.len();
-        if players.is_empty() || first + players.len() > usize::from(u8::MAX) {
-            return Err(invalid("invalid match roster size"));
-        }
-        room.add(players);
-        let room = &self.rooms[&id];
-        let checked = self.check_roster(room).and_then(|()| {
-            let Some(world) = &room.world else {
-                return Ok(());
-            };
-            let teams: Vec<u8> = room.players.iter().map(|player| player.info.team).collect();
-            let cards: Vec<&PlayerCard> = room.players.iter().map(|player| &player.card).collect();
-            check_scene(&world.scene, &room.map, &teams, &cards)
-        });
-        let count = room.players.len();
-        let reserved = checked.and_then(|()| self.reserve(id, first..count, now));
-        if reserved.is_err() {
-            let room = self.rooms.get_mut(&id).expect("running match");
-            room.players.truncate(first);
-            room.remaining -= count - first;
-        }
-        reserved.map(Some)
-    }
-
-    /// The roster's 20300 fits a datagram.
-    fn check_roster(&self, room: &Room) -> io::Result<()> {
-        let initial = room.message(0, true);
-        let bytes = encode(&self.schemas, initial.id, &initial.fields).map_err(invalid)?;
-        let payload = frame(u32::MAX, u32::MAX, 0, &[(0, bytes)], &[], &[]).map_err(invalid)?;
-        if payload.len() > MAX_PAYLOAD {
-            return Err(invalid("match roster exceeds the game datagram budget"));
-        }
-        Ok(())
-    }
-
-    /// A seat for each of these slots of the match.
-    fn reserve(
-        &mut self,
-        id: MatchId,
-        slots: std::ops::Range<usize>,
-        now: Duration,
-    ) -> io::Result<Vec<Handoff>> {
-        let mut tickets = Vec::with_capacity(slots.len());
-        for _ in slots.clone() {
-            let connection = self.next_connection;
-            self.next_connection = self.next_connection % MAX_CONNECTION_ID + 1;
-            if self.seats.contains_key(&connection) || self.homeward.contains_key(&connection) {
-                return Err(io::Error::new(
-                    io::ErrorKind::WouldBlock,
-                    "game seat ID is still in use",
-                ));
-            }
-            tickets.push(Handoff::new(connection, id)?);
-        }
-        for (slot, ticket) in slots.zip(&tickets) {
-            let reserved = self
-                .links
-                .reserve_handoff(ticket, u64::from(ticket.conn), now);
-            assert!(reserved, "seat and connection tables are in sync");
-            self.seats.insert(ticket.conn, (id, slot));
-        }
-        Ok(tickets)
-    }
-
-    /// The match's scene is ready, or its collision failed: then every game
-    /// goes back to the menu, those not connected yet lose their seats, and
-    /// the match takes nobody more (match.py `_collision_failure`).
-    fn scene_ready(&mut self, id: MatchId, scene: io::Result<Box<PreparedScene>>, now: Duration) {
-        let Some(room) = self.rooms.get_mut(&id) else {
-            return;
-        };
-        let scene = scene.and_then(|scene| {
-            let teams: Vec<u8> = room.players.iter().map(|player| player.info.team).collect();
-            let cards: Vec<&PlayerCard> = room.players.iter().map(|player| &player.card).collect();
-            check_scene(&scene, &room.map, &teams, &cards)?;
-            Ok(scene)
-        });
-        let error = match scene {
-            Ok(scene) => {
-                room.world = Some(WorldStart {
-                    scene,
-                    combat: None,
-                });
-                return;
-            }
-            Err(error) => error,
-        };
-        tracing::error!(
-            "[game] match {:04X} on {}: collision unavailable: {error}",
-            id[0] & 0xFFFF,
-            room.map.name
-        );
-        room.ended = true;
-        let seated: Vec<u32> = self
-            .seats
-            .iter()
-            .filter(|(_, seat)| seat.0 == id)
-            .map(|(&connection, _)| connection)
-            .collect();
-        for connection in seated {
-            if !self.links.cancel_handoff(connection) && self.peers.contains_key(&connection) {
-                self.send_home(connection, now);
-            }
-        }
-    }
-
-    /// Every match with its players and their state (match.py `snapshot`).
-    fn snapshot(&self) -> Vec<MatchSnapshot> {
-        let mut peers: HashMap<MatchId, HashMap<usize, &Peer>> = HashMap::new();
-        for (connection, peer) in &self.peers {
-            let (id, slot) = self.seats[connection];
-            peers.entry(id).or_default().insert(slot, peer);
-        }
-        let mut rooms: Vec<_> = self.rooms.iter().collect();
-        rooms.sort_by_key(|(_, room)| room.started);
-        rooms
-            .into_iter()
-            .map(|(&id, room)| MatchSnapshot {
-                id,
-                map: room.map.name.clone(),
-                mode: room.map.mode_name.clone(),
-                workshop_rules: room
-                    .workshop
-                    .as_ref()
-                    .map(|workshop| workshop.logic.rules.len()),
-                waiting: room
-                    .flow
-                    .as_ref()
-                    .is_none_or(|flow| flow.phase() <= Phase::Assemble),
-                players: room
-                    .players
-                    .iter()
-                    .enumerate()
-                    .map(|(slot, player)| {
-                        let peer = peers.get(&id).and_then(|peers| peers.get(&slot));
-                        let state = match peer {
-                            _ if player.gone => PlayerState::Waiting,
-                            Some(peer) if peer.world.world_started() => PlayerState::Playing,
-                            Some(_) => PlayerState::Loading,
-                            None => PlayerState::Waiting,
-                        };
-                        PlayerSnapshot {
-                            name: player.info.name.clone(),
-                            hero: peer
-                                .and_then(|peer| peer.world.hero())
-                                .unwrap_or(player.hero),
-                            team: player.info.team,
-                            state,
-                        }
-                    })
-                    .collect(),
-            })
-            .collect()
-    }
-
-    fn handle_request(&mut self, request: Request, now: Duration) {
-        match request {
-            Request::Open(request) => {
-                let OpenRequest {
-                    id,
-                    map,
-                    players,
-                    world,
-                    ai,
-                    reply,
-                } = *request;
-                let result = self.open_match(id, map, players, world, ai, now);
-                if let Err(mpsc::SendError(Ok(tickets))) = reply.send(result) {
-                    for ticket in tickets {
-                        self.links.cancel_handoff(ticket.conn);
-                    }
-                }
-            }
-            Request::Join { id, players, reply } => {
-                let result = self.join_match(id, players, now);
-                if let Err(mpsc::SendError(Ok(Some(tickets)))) = reply.send(result) {
-                    for ticket in tickets {
-                        self.links.cancel_handoff(ticket.conn);
-                    }
-                }
-            }
-            Request::Scene { id, scene } => self.scene_ready(id, scene, now),
-            Request::Snapshot { reply } => {
-                let _ = reply.send(self.snapshot());
-            }
-            Request::Workshop {
-                id,
-                logic,
-                catalog,
-                reply,
-            } => {
-                let room = self.rooms.get_mut(&id);
-                let found = room.is_some();
-                if let Some(room) = room {
-                    room.workshop = Some(RoomWorkshop {
-                        logic,
-                        catalog,
-                        run: None,
-                    });
-                }
-                let _ = reply.send(found);
-            }
-            Request::Results { reply } => {
-                let _ = reply.send(std::mem::take(&mut self.results));
-            }
-            #[cfg(test)]
-            Request::Timers { timers, reply } => {
-                self.timers = timers;
-                let _ = reply.send(());
-            }
-            #[cfg(test)]
-            Request::Bodies { id, reply } => {
-                let _ = reply.send(self.bodies(id));
-            }
-            #[cfg(test)]
-            Request::WorkshopReport { id, reply } => {
-                let report = self.rooms.get_mut(&id).and_then(|room| {
-                    let workshop = room.workshop.as_ref()?;
-                    let run = workshop.run.as_ref();
-                    Some(WorkshopReport {
-                        running: run.is_some(),
-                        unsupported: run
-                            .map(|run| run.engine().unsupported())
-                            .unwrap_or_default(),
-                        faults: run
-                            .map(|run| run.engine().faults().to_vec())
-                            .unwrap_or_default(),
-                        gaps: room
-                            .mode
-                            .as_mut()
-                            .and_then(ModeRunner::script_mut)
-                            .map(|script| script.gaps().into_iter().collect())
-                            .unwrap_or_default(),
-                    })
-                });
-                let _ = reply.send(report);
-            }
-            Request::Pending { connection, reply } => {
-                let _ = reply.send(self.links.handoff_pending(connection, now));
-            }
-            Request::Cancel { connection, reply } => {
-                let _ = reply.send(self.links.cancel_handoff(connection));
-            }
-            Request::Seat {
-                connection,
-                id,
-                release,
-                reply,
-            } => {
-                let exists = self
-                    .seats
-                    .get(&connection)
-                    .is_some_and(|&(match_id, _)| match_id == id);
-                if release && exists {
-                    if self.links.waiting(connection) {
-                        self.take_out_waiting(connection);
-                    } else {
-                        self.send_home(connection, now);
-                    }
-                }
-                let _ = reply.send(exists);
-            }
-            Request::Skin {
-                connection,
-                id,
-                hero,
-                skin,
-                reply,
-            } => {
-                if let Some(&(_, slot)) = self.seats.get(&connection).filter(|seat| seat.0 == id) {
-                    let room = self.rooms.get_mut(&id).expect("reserved match");
-                    if room.world.is_some() {
-                        room.players[slot].card.skins.insert(hero, skin);
-                        if let Some(peer) = self.peers.get_mut(&connection) {
-                            peer.world.queue_skin(hero, self.clock.frame(), now);
-                        }
-                    }
-                }
-                let _ = reply.send(());
-            }
-            Request::Hero {
-                connection,
-                id,
-                hero,
-                reply,
-            } => {
-                let _ = reply.send(self.switch_hero(connection, id, hero, now));
-            }
-            Request::BotPlate { change, reply } => {
-                let _ = reply.send(self.tune_bot_plate(change));
-            }
-            Request::Hurt { change, reply } => {
-                let mut hurt = self.hurt;
-                let changed = hurt.change(&change).map(|()| {
-                    self.hurt = hurt;
-                    hurt
-                });
-                let _ = reply.send(changed);
-            }
-            Request::DebugSeat {
-                connection,
-                id,
-                reply,
-            } => {
-                let _ = reply.send(self.debug_seat(connection, id));
-            }
-            Request::DebugSend {
-                connection,
-                id,
-                messages,
-                reply,
-            } => {
-                let sent = self.debug_seat(connection, id).is_some_and(|_| {
-                    let peer = &mut self.peers[&connection];
-                    messages
-                        .into_iter()
-                        .all(|message| peer.egress.queue_reliable(message).is_ok())
-                });
-                let _ = reply.send(sent);
-            }
-            Request::DebugKill {
-                connection,
-                id,
-                reply,
-            } => {
-                let _ = reply.send(self.debug_kill(connection, id));
-            }
-        }
-    }
-
-    /// The entities of a seat of match `id` whose game is connected.
-    fn debug_seat(&self, connection: u32, id: MatchId) -> Option<DebugSeat> {
-        let &(match_id, slot) = self.seats.get(&connection).filter(|seat| seat.0 == id)?;
-        let peer = self.peers.get(&connection)?;
-        Some(DebugSeat {
-            controller: self.rooms.get(&match_id)?.players[slot].entity,
-            body: peer.world.current_body(),
-        })
-    }
-
-    /// The environment's kill of a seat's living body ([`DebugKill`]),
-    /// resolved with the next tick's hits.
-    fn debug_kill(&mut self, connection: u32, id: MatchId) -> DebugKill {
-        let Some(seat) = self.debug_seat(connection, id) else {
-            return DebugKill::NotConnected;
-        };
-        let Some(body) = seat.body else {
-            return DebugKill::NoBody;
-        };
-        let world = &self.peers[&connection].world;
-        if world.body_dead() {
-            return DebugKill::Dead;
-        }
-        if world.in_spawn_room() == Some(true) {
-            return DebugKill::InSpawnRoom;
-        }
-        let tick = self.clock.frame();
-        let slot = self.seats[&connection].1;
-        let room = self.rooms.get_mut(&id).expect("seated match");
-        let team = room.players[slot].info.team;
-        let Some(world) = room.world.as_mut() else {
-            return DebugKill::NotConnected;
-        };
-        world
-            .combat
-            .get_or_insert_with(|| Combat::new(&world.scene))
-            .environment_kill(body, team, tick);
-        DebugKill::Killed(body)
-    }
-
-    /// A pick of the hero, as the client's own pick message (21616) carries
-    /// it, queued with the seat's other game input.
-    fn switch_hero(&mut self, connection: u32, id: MatchId, hero: u64, now: Duration) -> bool {
-        if self.clock.draining() || !self.seats.get(&connection).is_some_and(|seat| seat.0 == id) {
-            return false;
-        }
-        let (_, slot) = self.seats[&connection];
-        let room = &self.rooms[&id];
-        let (Some(world), Some(peer)) = (&room.world, self.peers.get_mut(&connection)) else {
-            return false;
-        };
-        if world.scene.heroes().get(hero).is_none() || !peer.world.world_started() {
-            return false;
-        }
-        let pick = pick_message(room.players[slot].entity, hero);
-        peer.world.queue_game_message(self.clock.frame(), now, pick);
-        true
-    }
-
-    /// The live nameplate tool's change: the plate every match takes now
-    /// ([`Self::sync_bot_plates`]), then the game messages it names to the
-    /// live bots.
-    fn tune_bot_plate(&mut self, change: Option<PlateChange>) -> Result<PlateView, String> {
-        if let Some(change) = change {
-            let messages = change.messages();
-            let mut plate = (*self.bot_plate).clone();
-            plate.change(change)?;
-            if plate != *self.bot_plate {
-                self.bot_plate = Arc::new(plate);
-                self.sync_bot_plates();
-            }
-            for message in messages {
-                let taken: usize = self
-                    .rooms
-                    .values_mut()
-                    .filter_map(|room| room.world.as_mut())
-                    .map(|world| world.scene.message_bot_plates(message))
-                    .sum();
-                if taken == 0 {
-                    return Err(format!("No live training bot took message {message:016X}."));
-                }
-            }
-        }
-        let bot = self
-            .rooms
-            .values()
-            .filter_map(|room| room.world.as_ref())
-            .find_map(|world| {
-                let combat = world.combat.as_ref();
-                world
-                    .scene
-                    .bot_plate_sample(|slot| combat.and_then(|combat| combat.bot_vitals(slot)))
-            });
-        Ok(PlateView {
-            commands: self.bot_plate.commands(),
-            bot,
-        })
-    }
-
-    /// Every match that hasn't taken the live nameplate tool's plate yet
-    /// takes it: its bots' scripts at once, their pools as an update to
-    /// each of its clients.
-    fn sync_bot_plates(&mut self) {
-        let Self {
-            rooms,
-            peers,
-            seats,
-            bot_plate,
-            ..
-        } = self;
-        for (id, room) in rooms.iter_mut() {
-            let Some(WorldStart { scene, combat }) = &mut room.world else {
-                continue;
-            };
-            if Arc::ptr_eq(scene.bot_plate(), bot_plate) {
-                continue;
-            }
-            let combat = combat.as_ref();
-            let updates = scene.set_bot_plate(Arc::clone(bot_plate), |slot| {
-                combat.and_then(|combat| combat.bot_vitals(slot))
-            });
-            for (connection, peer) in peers.iter_mut() {
-                if peer.ai.is_some() || seats.get(connection).is_none_or(|seat| seat.0 != *id) {
-                    continue;
-                }
-                for update in &updates {
-                    peer.world.queue_health(update.clone());
-                }
-            }
-        }
-    }
-
-    /// A player whose game has not connected leaves the match now; if his
-    /// game still connects, it gets only 20304 (server.py `take_out`).
-    fn take_out_waiting(&mut self, connection: u32) {
-        let (id, slot) = self.seats[&connection];
-        let player = &self.rooms[&id].players[slot];
-        tracing::info!(
-            "[game] match {:04X}: {} left before his game connected",
-            id[0] & 0xFFFF,
-            player.info.name
-        );
-        let peer = Peer::new(player.entity);
-        self.retire(connection);
-        self.homeward.insert(connection, peer);
-    }
-
-    /// Logs why a seated player's link ends (a silent drop once looked
-    /// like a stopped match).
-    fn report_leave(&self, connection: u32, why: &str) {
-        let Some(&(id, slot)) = self.seats.get(&connection) else {
-            return;
-        };
-        tracing::info!(
-            "[game] match {:04X}: {} left: {why}",
-            id[0] & 0xFFFF,
-            self.rooms[&id].players[slot].info.name
-        );
-    }
-
-    fn retire(&mut self, connection: u32) {
-        self.homeward.remove(&connection);
-        self.peers.shift_remove(&connection);
-        if let Some((id, slot)) = self.seats.remove(&connection) {
-            let room = self.rooms.get_mut(&id).expect("reserved match");
-            room.players[slot].gone = true;
-            room.remaining -= 1;
-            if room.remaining == 0 {
-                self.rooms.remove(&id);
-                self.unseat_ai(id);
-            }
-        }
-    }
-
-    fn receive(
-        &mut self,
-        socket: &impl Transport,
-        bytes: &[u8],
-        address: SocketAddr,
-        now: Duration,
-    ) {
-        let Ok(received) = self.links.receive(bytes, address, now) else {
-            return;
-        };
-        let connection = received.connection;
-        if self.homeward.contains_key(&connection) {
-            self.receive_homeward(socket, received, now);
-            return;
-        }
-        let (id, slot) = self.seats[&connection];
-        if received.admitted {
-            self.peers
-                .insert(connection, Peer::new(self.rooms[&id].players[slot].entity));
-        }
-        let peer = self.peers.get_mut(&connection).expect("admitted peer");
-        if let Some((ack, bits)) = received.ack {
-            let report = peer.egress.acknowledge(ack, bits);
-            if !self.clock.draining() {
-                peer.world.acknowledge(report, now);
-                peer.world.acknowledge_movement(ack, bits);
-            }
-        }
-        if let Some(Ok(control)) = received.control {
-            let _ = send(socket, control);
-        }
-        if received.closed {
-            self.report_leave(connection, "his game closed its link");
-            self.retire(connection);
-            return;
-        }
-        peer.open |= received.opened;
-        if self.clock.draining() {
-            if received.admitted {
-                self.send_home(connection, now);
-            }
-            return;
-        }
-        let room = &self.rooms[&id];
-        if received.opened {
-            let _ = peer.reliable(&self.schemas, room.message(slot, true));
-        }
-        if let Some(payload) = received.payload {
-            let Peer {
-                ingress,
-                egress,
-                loading,
-                world,
-                reported_latency,
-                hero_settings: sent_settings,
-                ..
-            } = peer;
-            let incoming = ingress.receive(&self.schemas, &payload, |message| {
-                match MessageKind::from(message.id) {
-                    MessageKind::Ping => {
-                        let received = wall_nanoseconds();
-                        if let Ok(pong) = pong(&message.fields, received, wall_nanoseconds()) {
-                            if let Ok(bytes) = encode(&self.schemas, pong.id, &pong.fields) {
-                                let _ = egress.queue_reliable(bytes);
-                            }
-                        }
-                    }
-                    MessageKind::MapLoaded => {
-                        loading.mark_loaded(now);
-                    }
-                    MessageKind::GameMessage | MessageKind::CommunicationAction
-                        if room.world.is_some() =>
-                    {
-                        world.queue_game_message(self.clock.frame(), now, message);
-                    }
-                    MessageKind::HeroSettings => {
-                        let name = &room.players[slot].info.name;
-                        match hero_settings::read(&message) {
-                            Some(part) => {
-                                let listed: Vec<_> = part
-                                    .entries
-                                    .iter()
-                                    .map(|entry| {
-                                        format!(
-                                            "{:X}/{:X}={:X}",
-                                            entry.hero, entry.setting, entry.value
-                                        )
-                                    })
-                                    .collect();
-                                tracing::info!(
-                                    "[game] hero settings of {name} (hero/setting=value; first {}, last {}): {}",
-                                    part.first,
-                                    part.last,
-                                    listed.join(" ")
-                                );
-                                if let Some(entries) = sent_settings.take(part) {
-                                    world.update_hero_settings(&entries);
-                                }
-                            }
-                            None => tracing::info!(
-                                "[game] unreadable hero settings of {name}: {:?}",
-                                message.fields
-                            ),
-                        }
-                    }
-                    _ => {}
-                }
-            });
-            if let Ok(input) = incoming {
-                if let Some(latency) = input.latency.filter(|&latency| {
-                    reported_latency.is_none_or(|last| last.abs_diff(latency) >= LATENCY_STEP)
-                }) {
-                    *reported_latency = Some(latency);
-                    let view_delay = input.commands.last().map(|command| command.extra);
-                    tracing::info!(
-                        target: "lucy::latency",
-                        "[game] {} reports a {latency} ms round trip (view delay {view_delay:?} ms)",
-                        room.players[slot].info.name
-                    );
-                }
-                if room.world.is_some() {
-                    world.queue_commands(self.clock.frame(), &input.commands);
-                }
-            }
-        }
-    }
-
-    /// A datagram of a game whose player was taken out before it connected:
-    /// once its link opens it goes back to the menu (20304), and nothing it
-    /// sends reaches a match (server.py `Client.received`, `player.gone`).
-    /// While the clock drains it is sent home at its SYN (`_datagram`).
-    fn receive_homeward(&mut self, socket: &impl Transport, received: Received, now: Duration) {
-        let connection = received.connection;
-        let peer = self.homeward.get_mut(&connection).expect("homeward peer");
-        if let Some((ack, bits)) = received.ack {
-            let _ = peer.egress.acknowledge(ack, bits);
-        }
-        if let Some(Ok(control)) = received.control {
-            let _ = send(socket, control);
-        }
-        if received.closed {
-            self.homeward.remove(&connection);
-            return;
-        }
-        peer.open |= received.opened;
-        if received.opened || (received.admitted && self.clock.draining()) {
-            self.send_home(connection, now);
-        }
-    }
-
-    /// The commands of the tick that is due, `ticks` of them with the ones
-    /// the clock skipped: one a player, from his input buffer
-    /// (`WorldDelivery::release_input`). An AI player's run as he gives
-    /// them.
-    fn release_input(&mut self, ticks: u32) {
-        if self.clock.draining() {
-            return;
-        }
-        for peer in self.peers.values_mut() {
-            peer.world.release_input(ticks);
-        }
-    }
-
-    /// Bounded round-robin input work between receive batches and tick checks.
-    /// A busy peer cannot consume the next peer's whole turn.
-    fn advance_input(&mut self, now: Duration) -> bool {
-        let count = self.peers.len();
-        if count == 0 || self.clock.draining() {
-            return false;
-        }
-        let start = self.next_input_peer % count;
-        let tick = self.clock.frame();
-        let mut remaining = INPUT_PER_TURN;
-        let mut struck = Vec::new();
-        let mut fired = Vec::new();
-        for offset in 0..count {
-            let index = (start + offset) % count;
-            let (&connection, peer) = self.peers.get_index(index).expect("active peer index");
-            if !peer.world.has_input_work() {
-                continue;
-            }
-            let (id, slot) = self.seats[&connection];
-            let retained = self.retained_elsewhere(connection, now);
-            // The living enemy bodies of his room, the other players' and
-            // the training bots', block his body's moves.
-            let blocking = {
-                let room = &self.rooms[&id];
-                let world = room.world.as_ref().expect("prepared world with input");
-                let others = self.peers.iter().filter_map(|(&other, other_peer)| {
-                    let (match_id, other_slot) = self.seats[&other];
-                    (other != connection && match_id == id)
-                        .then(|| (room.players[other_slot].info.team, &other_peer.world))
-                });
-                blockers(&world.scene, room.players[slot].info.team, others)
-            };
-            let (_, peer) = self.peers.get_index_mut(index).expect("active peer index");
-            peer.world.retain_elsewhere(retained);
-            peer.world.set_blockers(blocking);
-            let room = self.rooms.get_mut(&id).expect("prepared room with input");
-            let world = room.world.as_ref().expect("prepared world with input");
-            let viewer = room.appearance(slot).expect("prepared player");
-            let team = viewer.team;
-            let context = ShotContext {
-                quanta: room.players[slot].quanta(),
-                tick,
-                now,
-            };
-            let budget = remaining.min(INPUT_PER_PEER);
-            // His body's searches that rewind see the bodies by the room's
-            // history, as his shots do.
-            let combat = world.combat.as_ref();
-            let (used, leave) = peer
-                .world
-                .advance_input(&world.scene, &viewer, context.quanta, budget, combat)
-                .unwrap_or((budget, true));
-            remaining -= used;
-            self.next_input_peer = (index + 1) % count;
-            let shots = peer.world.take_shots();
-            let projectiles = peer.world.take_fired();
-            if !projectiles.is_empty() {
-                fired.push((id, projectiles));
-            }
-            if (!leave && peer.world.combat_body_active()) || !shots.is_empty() {
-                let world = room.world.as_mut().expect("prepared world with combat");
-                let combat = world
-                    .combat
-                    .get_or_insert_with(|| Combat::new(&world.scene));
-                // combat.py `Combat.command`: the shots, then the graphs'
-                // health changes (quick melee).
-                let mut hits = Vec::new();
-                for shot in shots {
-                    match shot {
-                        PosedShot::Hitscan(shot) => {
-                            let frame = shot.command.frame;
-                            let visible = |entity| peer.world.bot_shown(entity, frame);
-                            let shooter = Shooter {
-                                source: shot.source,
-                                team,
-                                bot: false,
-                            };
-                            if let Ok(Some(hit)) =
-                                combat.hitscan(&mut world.scene, shot, shooter, context, visible)
-                            {
-                                hits.push(hit);
-                            }
-                        }
-                        PosedShot::Health(change) => {
-                            let frame = change.frame;
-                            let visible = |entity| peer.world.bot_shown(entity, frame);
-                            hits.extend(combat.modify_health(
-                                &mut world.scene,
-                                &change,
-                                context,
-                                visible,
-                            ));
-                        }
-                        PosedShot::Projectile(_) => {}
-                    }
-                }
-                struck.push((id, Some(connection), hits));
-            }
-            if leave {
-                peer.clear_world();
-                peer.loading = MapReadiness::default();
-                if self.links.begin_leaving(connection, now) {
-                    let _ = peer.reliable(&self.schemas, leave_message());
-                }
-            }
-            if remaining == 0 {
-                break;
-            }
-        }
-        for (id, projectiles) in fired {
-            self.show_fired(id, &projectiles, tick);
-        }
-        for (id, shooter, hits) in struck {
-            self.deliver_bot_hits(id, shooter, hits);
-            self.resolve_player_hits(id, tick, now);
-        }
-        self.input_waits()
-    }
-
-    /// Input in hand that [`State::advance_input`] runs: the next pass of
-    /// the loop runs at once.
-    fn input_waits(&self) -> bool {
-        !self.clock.draining() && self.peers.values().any(|peer| peer.world.has_input_work())
-    }
-
-    /// projectiles.py `_show_others`: the other clients of the room see the
-    /// projectiles a player fired.
-    fn show_fired(&mut self, id: MatchId, projectiles: &[FiredProjectile], tick: u32) {
-        let Some(Room { players, world, .. }) = self.rooms.get_mut(&id) else {
-            return;
-        };
-        let Some(world) = world.as_mut() else {
-            return;
-        };
-        let combat = world
-            .combat
-            .get_or_insert_with(|| Combat::new(&world.scene));
-        let mut peers = room_peers(&mut self.peers, &self.seats, id, players.len());
-        let mut worlds: Vec<_> = peers
-            .iter_mut()
-            .map(|peer| peer.as_deref_mut().map(|peer| &mut peer.world))
-            .collect();
-        show_fired(combat, projectiles, &mut worlds, tick);
-    }
-
-    /// The room's combat and its clients' worlds, by slot, for the bots'
-    /// rocket copies (projectiles.py `_show_others`, `flown`).
-    fn bot_rockets(
-        &mut self,
-        id: MatchId,
-        tick: u32,
-        apply: impl FnOnce(&mut Combat, &mut [Option<&mut WorldDelivery>], u32),
-    ) {
-        let Some(Room { players, world, .. }) = self.rooms.get_mut(&id) else {
-            return;
-        };
-        let Some(combat) = world.as_mut().and_then(|world| world.combat.as_mut()) else {
-            return;
-        };
-        let mut peers = room_peers(&mut self.peers, &self.seats, id, players.len());
-        let mut worlds: Vec<_> = peers
-            .iter_mut()
-            .map(|peer| peer.as_deref_mut().map(|peer| &mut peer.world))
-            .collect();
-        apply(combat, &mut worlds, tick);
-    }
-
-    /// The bodies of the player's ring another client of the room still
-    /// holds: a new body takes none of them (ow174/game/match.py
-    /// `_next_body_id`).
-    fn retained_elsewhere(&self, connection: u32, now: Duration) -> Vec<u32> {
-        let (id, slot) = self.seats[&connection];
-        let owner = player_entity(slot);
-        self.peers
-            .iter()
-            .filter(|&(&other, _)| other != connection && self.seats[&other].0 == id)
-            .flat_map(|(_, other)| other.world.retained_bodies(owner, now))
-            .collect()
-    }
-
-    /// combat.py `_damage` for bots and `_send_health`: the shooter's
-    /// client gets the notices, every client of the room the bot's pools.
-    /// The shooter's ultimate charges for the damage (assumption: training
-    /// bots charge it as heroes do) and for the healing of allied bots
-    /// (combat.py `_heal`); his board counts both with the room's other
-    /// native stats (`Combat::take_tracked_stats`). A bot he kills counts
-    /// for his multikills, in the Practice Range too
-    /// (`lucy_sim::announcer`).
-    fn deliver_bot_hits(&mut self, id: MatchId, shooter: Option<u32>, hits: Vec<BotHit>) {
-        if let Some(world) = self.rooms.get_mut(&id).and_then(|room| room.world.as_mut()) {
-            for hit in &hits {
-                bot_hit_script(&mut world.scene, hit);
-            }
-        }
-        // Each hit to the shooter's body as damage dealt or healing done:
-        // its `0B8B` charges the ultimate.
-        let scene = self
-            .rooms
-            .get(&id)
-            .and_then(|room| room.world.as_ref())
-            .map(|world| &world.scene);
-        if let (Some(scene), Some(peer)) = (
-            scene,
-            shooter.and_then(|shooter| self.peers.get_mut(&shooter)),
-        ) {
-            let graphs = scene.shared_graphs();
-            for hit in &hits {
-                let body = scene
-                    .bots()
-                    .iter()
-                    .find(|bot| bot.entity == hit.bot)
-                    .map(|bot| bot.spawn.body);
-                for notice in hit.notices.iter().flatten() {
-                    if let CombatNotice::Hit { dealt, .. } = notice {
-                        peer.world
-                            .dealt(&graphs, hit.bot, body, *dealt, &hit.tags, false);
-                        if let Some(source) = hit.source {
-                            peer.world
-                                .source_dealt(source, hit.bot, *dealt, &hit.tags, false);
-                        }
-                    }
-                }
-                peer.world
-                    .dealt(&graphs, hit.bot, body, hit.healed, &hit.tags, true);
-                if let Some(source) = hit.source {
-                    peer.world
-                        .source_dealt(source, hit.bot, hit.healed, &hit.tags, true);
-                }
-            }
-        }
-        let scene = self
-            .rooms
-            .get(&id)
-            .and_then(|room| room.world.as_ref())
-            .map(|world| &world.scene);
-        let graphs = scene.map(|scene| scene.shared_graphs());
-        for hit in hits {
-            for (&connection, peer) in &mut self.peers {
-                if self.seats[&connection].0 != id || peer.ai.is_some() {
-                    continue;
-                }
-                peer.world.queue_health(hit.health.clone());
-                if shooter == Some(connection) {
-                    if let (Some(death), Some(scene), Some(graphs)) = (hit.death, scene, &graphs) {
-                        let body = scene
-                            .bots()
-                            .iter()
-                            .find(|bot| bot.entity == death.bot)
-                            .map(|bot| bot.spawn.body);
-                        peer.world.eliminated(
-                            graphs,
-                            death.tick,
-                            death.bot,
-                            body,
-                            &death.tags,
-                            true,
-                        );
-                    }
-                    for notice in hit.notices.into_iter().flatten() {
-                        peer.notice(notice);
-                    }
-                }
-            }
-        }
-    }
-
-    /// The hits on players' bodies of a room (combat.py `_damage`, `_died`).
-    /// What they did between the players goes to the room's Workshop rules
-    /// (`WorkshopRun::player_events`).
-    fn resolve_player_hits(&mut self, id: MatchId, tick: u32, now: Duration) {
-        let Some(Room {
-            players,
-            world,
-            flow,
-            workshop,
-            ..
-        }) = self.rooms.get_mut(&id)
-        else {
-            return;
-        };
-        let Some(WorldStart {
-            scene,
-            combat: Some(combat),
-        }) = world.as_mut()
-        else {
-            return;
-        };
-        let hits = combat.take_player_hits();
-        let pushes = combat.take_player_pushes();
-        let teams: Vec<u8> = players.iter().map(|player| player.info.team).collect();
-        let mut peers = room_peers(&mut self.peers, &self.seats, id, players.len());
-        let notices = {
-            let mut room: Vec<_> = players
-                .iter_mut()
-                .zip(peers.iter_mut())
-                .map(|(player, peer)| CombatPlayer {
-                    entity: player.entity,
-                    world: peer.as_deref_mut().map(|peer| &mut peer.world),
-                    stats: &mut player.stats,
-                })
-                .collect();
-            combat.apply_environment_credits(scene, &mut room, now);
-            let (notices, mut events) = apply_player_hits(scene, hits, &mut room, tick, now);
-            events.extend(apply_player_pushes(pushes, &mut room, now));
-            if let Some(run) = workshop.as_mut().and_then(|workshop| workshop.run.as_mut()) {
-                run.player_events(&events);
-            }
-            notices
-        };
-        // The kills count for the match flow's score (Deathmatch, Team
-        // Deathmatch): the victim's death notice names the killer's body.
-        if let Some(flow) = flow {
-            for (victim, notices) in notices.iter().enumerate() {
-                for notice in notices {
-                    if let CombatNotice::Death { source, killed_by } = *notice {
-                        let killer = killed_by
-                            .then(|| {
-                                players
-                                    .iter()
-                                    .position(|player| player.entity == source & !0xff)
-                            })
-                            .flatten();
-                        flow.kill(
-                            killer.map(|slot| (slot, teams[slot])),
-                            (victim, teams[victim]),
-                        );
-                    }
-                }
-            }
-        }
-        // Each victim's hurt notices (25000) first: a killing hit's goes
-        // before his death notice.
-        for (peer, notices) in peers.into_iter().zip(notices) {
-            if let Some(peer) = peer {
-                for notice in peer.world.take_hurt_notices().into_iter().chain(notices) {
-                    peer.notice(notice);
-                }
-            }
-        }
-    }
-
-    /// The auras the tick's hits put on bodies (Biotic Grenade's explosion,
-    /// `lucy_script::vm` `auras`) and the auras the bodies' ApplyAura
-    /// states put on bodies or took off: each to its body's script, a
-    /// bot's or a player's. Then the health changes the bots' graphs made
-    /// (their auras' heals and damage), applied as hits by their
-    /// instigators.
-    fn apply_auras(&mut self, id: MatchId, tick: u32, now: Duration) {
-        let Some(room) = self.rooms.get_mut(&id) else {
-            return;
-        };
-        let players = room.players.len();
-        let Some(world) = room.world.as_mut() else {
-            return;
-        };
-        let combat = world
-            .combat
-            .get_or_insert_with(|| Combat::new(&world.scene));
-        let mut peers = room_peers(&mut self.peers, &self.seats, id, players);
-        let mut changes: Vec<AuraChange> = combat
-            .take_auras()
-            .into_iter()
-            .map(|aura| AuraChange::Apply {
-                source: None,
-                target: aura.body,
-                aura: aura.aura,
-                instigator: aura.instigator,
-                creator: aura.instigator,
-                parameters: Vec::new(),
-            })
-            .collect();
-        for peer in peers.iter_mut().flatten() {
-            changes.extend(peer.world.take_body_aura_changes());
-        }
-        changes.extend(world.scene.take_bot_aura_changes());
-        changes.extend(world.scene.take_placed_aura_changes());
-        changes.extend(combat.take_field_auras());
-        for change in &changes {
-            let target = change.target();
-            if world.scene.bots().iter().any(|bot| bot.entity == target) {
-                world.scene.change_bot_aura(change, tick);
-            } else if let Some(peer) = peers
-                .iter_mut()
-                .flatten()
-                .find(|peer| peer.world.current_body() == Some(target))
-            {
-                peer.world.change_aura(change);
-            }
-        }
-        let context = ShotContext {
-            quanta: RETAIL_QUANTA,
-            tick,
-            now,
-        };
-        let mut struck: Vec<(Option<u32>, BotHit)> = Vec::new();
-        // The bots' graphs' changes, the server placeables' (a health
-        // pack heals the body that walked onto it, `0046` st0) and the mode
-        // entity's (the Workshop's Kill `1482`).
-        let mut changes = world.scene.take_bot_health_changes();
-        changes.extend(world.scene.take_placed_health_changes());
-        if let Some(script) = room.mode.as_mut().and_then(ModeRunner::script_mut) {
-            changes.extend(script.take_health_changes());
-        }
-        for change in changes {
-            let shooter = self
-                .seats
-                .iter()
-                .find(|(connection, (match_id, _))| {
-                    *match_id == id
-                        && self.peers.get(*connection).is_some_and(|peer| {
-                            peer.world.current_body() == Some(change.instigator)
-                        })
-                })
-                .map(|(&connection, _)| connection);
-            if let Some(hit) = combat.modify_health(&mut world.scene, &change, context, |_| true) {
-                struck.push((shooter, hit));
-            }
-        }
-        for (shooter, hit) in struck {
-            self.deliver_bot_hits(id, shooter, vec![hit]);
-        }
-    }
-
-    /// combat.py `Combat.update` for every room with a world: where the
-    /// bodies are, the bots' rockets, the players' projectiles and what they
-    /// ask of the room (projectiles.py `Projectiles.update`), the hits on
-    /// players, the Biotic Fields' heals and the messages between bodies,
-    /// then the players' respawns.
-    fn update_combat(&mut self, tick: u32, now: Duration) {
-        let ids: Vec<MatchId> = self
-            .rooms
-            .iter()
-            .filter(|(_, room)| room.world.is_some())
-            .map(|(&id, _)| id)
-            .collect();
-        for id in ids {
-            let bot_hits = {
-                let Room { players, world, .. } = self.rooms.get_mut(&id).expect("room");
-                let world = world.as_mut().expect("room with a world");
-                let targets: Vec<_> = room_peers(&mut self.peers, &self.seats, id, players.len())
-                    .into_iter()
-                    .enumerate()
-                    .filter_map(|(slot, peer)| {
-                        peer?
-                            .world
-                            .combat_target(&world.scene, players[slot].info.team)
-                    })
-                    .collect();
-                let combat = world
-                    .combat
-                    .get_or_insert_with(|| Combat::new(&world.scene));
-                combat.record_poses(&world.scene, &targets, tick);
-                // The bodies the statescript's target searches (`TrackTargets`)
-                // find until the next update, as placed this tick.
-                let candidates = combat.target_candidates(&world.scene);
-                world.scene.set_bot_target_candidates(&candidates);
-                world.scene.set_placed_target_candidates(&candidates);
-                // The health packs the bodies' searches find (`0033` st11),
-                // and the placeables' entity variables their graphs read.
-                let pickups = world.scene.pickups();
-                let map_variables: Arc<[(u32, lucy_script::wire::Variables)]> =
-                    world.scene.placed_scripts().entity_variables().into();
-                for peer in room_peers(&mut self.peers, &self.seats, id, players.len())
-                    .into_iter()
-                    .flatten()
-                {
-                    peer.world.set_target_candidates(&candidates);
-                    peer.world.set_pickups(&pickups);
-                    peer.world.set_map_variables(&map_variables);
-                }
-                let context = ShotContext {
-                    quanta: RETAIL_QUANTA,
-                    tick,
-                    now,
-                };
-                combat
-                    .step_bot_projectiles(&mut world.scene, context)
-                    .unwrap_or_default()
-            };
-            self.deliver_bot_hits(id, None, bot_hits);
-            // projectiles.py `flown`: the copies of the rockets that landed.
-            self.bot_rockets(id, tick, finish_bot_rockets);
-            // combat.py `_bot_weapons`: the firing bots' scripts after the
-            // rockets flew; their shots at the players and the other team's
-            // bots.
-            let (bot_hits, rockets) = {
-                let world = self
-                    .rooms
-                    .get_mut(&id)
-                    .and_then(|room| room.world.as_mut())
-                    .expect("room with a world");
-                let combat = world
-                    .combat
-                    .get_or_insert_with(|| Combat::new(&world.scene));
-                let mut hits = Vec::new();
-                let mut rockets = Vec::new();
-                for shot in world.scene.bot_weapons(tick) {
-                    let shooter = Shooter {
-                        source: shot.source,
-                        team: shot.team,
-                        bot: true,
-                    };
-                    let seen = SeenRocket::of(0, &shot);
-                    match shot.kind {
-                        BotShotKind::Projectile(projectile) => {
-                            let fired = combat.fire_bot_projectile(shooter, projectile, shot.tick);
-                            if let Some((rocket, mut seen)) = fired.zip(seen) {
-                                seen.rocket = rocket;
-                                rockets.push(seen);
-                            }
-                        }
-                        BotShotKind::Hitscan {
-                            origin,
-                            direction,
-                            reach,
-                            hit,
-                            ray_profile,
-                            ..
-                        } => {
-                            let context = ShotContext {
-                                quanta: RETAIL_QUANTA,
-                                tick: shot.tick,
-                                now,
-                            };
-                            if let Ok(Some(hit)) = combat.bot_hitscan(
-                                &mut world.scene,
-                                shooter,
-                                origin,
-                                direction,
-                                reach,
-                                hit,
-                                ray_profile,
-                                context,
-                            ) {
-                                hits.push(hit);
-                            }
-                        }
-                    }
-                }
-                (hits, rockets)
-            };
-            self.deliver_bot_hits(id, None, bot_hits);
-            self.bot_rockets(id, tick, |combat, worlds, tick| {
-                show_bot_rockets(combat, &rockets, worlds, tick);
-            });
-            let mut struck = Vec::new();
-            for (&connection, peer) in &mut self.peers {
-                let (match_id, slot) = self.seats[&connection];
-                if match_id != id {
-                    continue;
-                }
-                let room = self.rooms.get_mut(&id).expect("room");
-                let player = &room.players[slot];
-                let team = player.info.team;
-                let context = ShotContext {
-                    quanta: player.quanta(),
-                    tick,
-                    now,
-                };
-                let world = room.world.as_mut().expect("room with a world");
-                let mut hits = Vec::new();
-                let _ = peer.world.advance_projectiles(tick, |source, flight| {
-                    let combat = world
-                        .combat
-                        .get_or_insert_with(|| Combat::new(&world.scene));
-                    let shooter = Shooter {
-                        source,
-                        team,
-                        bot: false,
-                    };
-                    combat.step_projectile(&mut world.scene, shooter, flight, context, &mut hits)
-                });
-                struck.push((connection, hits));
-            }
-            for (connection, hits) in struck {
-                self.deliver_bot_hits(id, Some(connection), hits);
-            }
-            self.apply_auras(id, tick, now);
-            // The environment kills a living body whose capsule centre is in
-            // a death zone (`lucy_sim::map_areas`), with the tick's hits.
-            {
-                let Room { players, world, .. } = self.rooms.get_mut(&id).expect("room");
-                let world = world.as_mut().expect("room with a world");
-                let combat = world
-                    .combat
-                    .get_or_insert_with(|| Combat::new(&world.scene));
-                for (slot, peer) in room_peers(&mut self.peers, &self.seats, id, players.len())
-                    .into_iter()
-                    .enumerate()
-                {
-                    let Some(peer) = peer else { continue };
-                    if peer.world.body_dead() {
-                        continue;
-                    }
-                    let fell = peer.world.body_centre().and_then(|(centre, above_feet)| {
-                        let fell = world.scene.fell_out(centre, above_feet)?;
-                        if fell == FellOut::BelowMap {
-                            tracing::warn!(
-                                "[game] a body fell {} m below {} ({:#x}) at {centre:?}: \
-                                 the map's data has no volume that kills there",
-                                lucy_sim::map_areas::FALL_LIMIT,
-                                world.scene.map().name,
-                                world.scene.map().map_guid,
-                            );
-                        }
-                        Some(fell)
-                    });
-                    if let Some(body) = peer.world.current_body().filter(|_| fell.is_some()) {
-                        combat.environment_kill(body, players[slot].info.team, tick);
-                    }
-                }
-            }
-            self.deliver_projectiles(id, tick);
-            self.resolve_player_hits(id, tick, now);
-            let connections: Vec<u32> = self
-                .peers
-                .keys()
-                .copied()
-                .filter(|connection| self.seats[connection].0 == id)
-                .collect();
-            for connection in connections {
-                let retained = self.retained_elsewhere(connection, now);
-                let slot = self.seats[&connection].1;
-                let room = &self.rooms[&id];
-                let world = room.world.as_ref().expect("room with a world");
-                let viewer = room.appearance(slot).expect("seated player");
-                let peer = self.peers.get_mut(&connection).expect("room peer");
-                peer.world.retain_elsewhere(retained);
-                // The match flow holds the dead within an Elimination round
-                // and once the match is decided.
-                let respawns = room.flow.as_ref().is_none_or(MatchFlow::respawns);
-                if let Err(error) = respawns
-                    .then(|| {
-                        peer.world.respawn_due(
-                            &world.scene,
-                            &viewer,
-                            tick,
-                            now,
-                            room.players[slot].quanta(),
-                        )
-                    })
-                    .transpose()
-                {
-                    eprintln!("{:08X} could not respawn ({error})", viewer.entity);
-                }
-                // A hero the controller's graph forced on him (the
-                // Workshop's Start Forcing Player To Be Hero).
-                if let Err(error) = peer.world.change_to_forced_hero(
-                    &world.scene,
-                    &viewer,
-                    tick,
-                    now,
-                    room.players[slot].quanta(),
-                ) {
-                    eprintln!("{:08X} could not change hero ({error})", viewer.entity);
-                }
-                peer.world.area_step(&world.scene, &viewer);
-            }
-        }
-    }
-
-    /// projectiles.py `Projectiles.update` for a room once its players'
-    /// shots stepped: the other clients' copies and the Biotic Fields
-    /// (`lucy_sim::spawned`).
-    fn deliver_projectiles(&mut self, id: MatchId, tick: u32) {
-        let Some(Room { players, world, .. }) = self.rooms.get_mut(&id) else {
-            return;
-        };
-        let Some(world) = world.as_mut() else {
-            return;
-        };
-        let combat = world
-            .combat
-            .get_or_insert_with(|| Combat::new(&world.scene));
-        let mut peers = room_peers(&mut self.peers, &self.seats, id, players.len());
-        let mut worlds: Vec<_> = peers
-            .iter_mut()
-            .map(|peer| peer.as_deref_mut().map(|peer| &mut peer.world))
-            .collect();
-        deliver_projectiles(&world.scene, combat, &mut worlds, tick);
-    }
-
-    fn send_home(&mut self, connection: u32, now: Duration) {
-        if self.links.begin_leaving(connection, now) {
-            let peer = self
-                .peers
-                .get_mut(&connection)
-                .or_else(|| self.homeward.get_mut(&connection))
-                .expect("admitted peer");
-            let _ = peer.reliable(&self.schemas, leave_message());
-        }
-    }
-
-    /// Every PvP room's match flow this tick (lucy_sim::match_flow): it
-    /// advances with where the players' bodies stand, the game mode
-    /// entity's frame is made when due, hero select closes once the heroes
-    /// are assembled, the phase messages and the mode graph's go to the
-    /// players' bodies, a new side, Control round or Elimination round puts
-    /// everyone back in spawn, overtime lengthens respawns, a
-    /// decided match goes to the lobby's results, and once its end is over
-    /// everyone goes home.
-    fn update_flows(&mut self, tick: u32, now: Duration) {
-        let mut home = Vec::new();
-        let mut dummies = Vec::new();
-        for (&id, room) in &mut self.rooms {
-            room.assembled = false;
-            room.mode_frame = None;
-            let mut connections: Vec<(u32, usize)> = self
-                .seats
-                .iter()
-                .filter(|(connection, seat)| seat.0 == id && self.peers.contains_key(*connection))
-                .map(|(&connection, &(_, slot))| (connection, slot))
-                .collect();
-            connections.sort_by_key(|&(_, slot)| slot);
-            // The mode graph's players: those in the world, each with his
-            // controller, body and team (a free-for-all's players are on
-            // its one team, as their filter bits say).
-            let players: Vec<ModePlayer> = connections
-                .iter()
-                .filter(|&&(connection, slot)| {
-                    !room.players[slot].gone && self.peers[&connection].world.world_started()
-                })
-                .map(|&(connection, slot)| ModePlayer {
-                    controller: room.players[slot].entity,
-                    body: self.peers[&connection].world.current_body(),
-                    hero: self.peers[&connection].world.current_hero(),
-                    team: if room.map.free_for_all {
-                        i64::from(FREE_FOR_ALL_TEAM)
-                    } else {
-                        i64::from(room.players[slot].info.team)
-                    },
-                })
-                .collect();
-            // The mode graph reads its objectives' entity variables (their
-            // times, a point's progress and owner) as they stand now.
-            if let (Some(mode), Some(world)) = (room.mode.as_mut(), room.world.as_ref()) {
-                mode.set_map_variables(&world.scene.placed_scripts().entity_variables());
-            }
-            // The Range (no match flow): its graph advances with the room,
-            // and its frame goes to every client each tick, as what changed
-            // since the frame he acknowledged (`lucy_sim::mode_view`):
-            // `0CBB` st58's timed ChaseVar (#19530e toward 99999) changes it
-            // every tick, and the whole frame (about 920 bytes) crowded the
-            // movement records out of the datagrams.
-            if room.flow.is_none() {
-                if let (Some(mode), Some(_)) = (room.mode.as_mut(), room.world.as_ref()) {
-                    let variables = lucy_script::wire::Variables::new();
-                    room.mail.extend(mode.advance(tick, &variables, players));
-                    room.graph_frame = graph_frame(mode, room.graph_frame.take());
-                    // No flow stands in for the graph's own entries here.
-                    if let Some(script) = mode.script_mut() {
-                        script.take_own_messages();
-                    }
-                }
-                continue;
-            }
-            // The player the next dummy bot a Workshop action makes gets.
-            let next_dummy = room.next_dummy();
-            let (Some(flow), Some(world)) = (room.flow.as_mut(), room.world.as_ref()) else {
-                continue;
-            };
-            let participants: Vec<Participant> = connections
-                .iter()
-                .filter(|&&(_, slot)| !room.players[slot].gone)
-                .map(|&(connection, slot)| Participant {
-                    slot,
-                    team: room.players[slot].info.team,
-                    position: self.peers[&connection].world.body_position(),
-                })
-                .collect();
-            let seconds = now.saturating_sub(room.flow_at).as_secs_f64();
-            room.flow_at = now;
-            let was = flow.phase();
-            // The mode's own graph drives the match (`ModeRunner::holds_rooms`):
-            // it keeps its phase, clock, banner, sides and objective name
-            // itself and holds its phase messages to every entity, so the
-            // flow only follows its phase and clock (`MatchFlow::follow`).
-            // Else the flow drives, and its variables go into the graph.
-            let mut messages;
-            let events;
-            match room.mode.as_mut() {
-                Some(mode) if mode.holds_rooms() => {
-                    let variables = lucy_script::wire::Variables::new();
-                    messages = mode.advance(tick, &variables, players);
-                    events = match mode.match_state() {
-                        Some(state) => flow.follow(state),
-                        None => Vec::new(),
-                    };
-                }
-                mode => {
-                    events = flow.advance(seconds, &participants);
-                    let variables = flow.variables();
-                    messages =
-                        mode.map_or_else(Vec::new, |mode| mode.advance(tick, &variables, players));
-                }
-            }
-            // The Workshop's rules after the mode entity's frame, against
-            // the players in the world. The dummy bots its actions make or
-            // remove are AI players of the room (`ai.rs`).
-            if let (Some(run), Some(mode)) = (
-                room.workshop
-                    .as_mut()
-                    .and_then(|workshop| workshop.run.as_mut()),
-                room.mode.as_mut(),
-            ) {
-                let mut players: Vec<WorkshopPlayer<'_>> = self
-                    .peers
-                    .iter_mut()
-                    .filter_map(|(connection, peer)| {
-                        let &(_, slot) = connections
-                            .iter()
-                            .find(|(seated, _)| seated == connection)?;
-                        let player = &room.players[slot];
-                        // The Workshop's slots count within a team (Players
-                        // In Slot(0, Team 2) is Team 2's first player); a
-                        // dummy bot is in the slot he was made for.
-                        let dummy = room
-                            .dummies
-                            .iter()
-                            .find(|dummy| dummy.player == slot)
-                            .and_then(|dummy| usize::try_from(dummy.slot).ok());
-                        let team_slot = dummy.unwrap_or_else(|| {
-                            room.players[..slot]
-                                .iter()
-                                .filter(|other| other.info.team == player.info.team)
-                                .count()
-                        });
-                        (!player.gone && peer.world.world_started()).then_some(WorkshopPlayer {
-                            controller: player.entity,
-                            slot: team_slot,
-                            team: player.info.team,
-                            world: &mut peer.world,
-                        })
-                    })
-                    .collect();
-                if let Some(script) = mode.script_mut() {
-                    script.set_next_dummy(Some(next_dummy));
-                }
-                run.step(tick, &world.scene, mode, &mut players);
-                if let Some(script) = mode.script_mut() {
-                    script.set_next_dummy(None);
-                    dummies.push((id, script.take_dummy_changes()));
-                }
-            }
-            // The flow stands in for the mode graph's entries: what the
-            // mode entity's graphs sent it (the Workshop's Set Match Time),
-            // unless the mode's own graph took them itself, or has no such
-            // entry (Lúcioball's `0F9D`).
-            if let Some(mode) = room.mode.as_mut() {
-                let stand_in = !mode.holds_rooms()
-                    && lucy_sim::mode_script::takes_set_match_time(room.map.mode_guid);
-                if let Some(script) = mode.script_mut() {
-                    for message in script.take_own_messages() {
-                        if stand_in {
-                            flow.receive(message.message, &message.parameters);
-                        }
-                    }
-                }
-            }
-            let changed = events
-                .iter()
-                .any(|event| matches!(event, FlowEvent::Phase(_)));
-            // A graph that drives the mode entity gives its frame each tick
-            // (`lucy_sim::mode_view`); else the hand-built one goes once a
-            // second and at each phase.
-            match room.mode.as_mut() {
-                Some(mode) if mode.graph_driven() => {
-                    room.graph_frame = graph_frame(mode, room.graph_frame.take());
-                }
-                mode => {
-                    room.graph_frame = None;
-                    if changed || now >= room.next_mode_frame {
-                        if mode.is_some() {
-                            match world.scene.mode_frame(&flow.variables()) {
-                                Ok(frame) => room.mode_frame = Some(frame),
-                                Err(error) => tracing::warn!("[game] no game mode frame: {error}"),
-                            }
-                        }
-                        room.next_mode_frame = now.saturating_add(MODE_FRAME_EVERY);
-                    }
-                }
-            }
-            // The end of the assembly closes hero select by the server's
-            // hand only where the flow drives the match: the mode graph's
-            // close is its own (`0F4A` st9's `0692` ends, `288B` st36's stack
-            // with it).
-            room.assembled =
-                !flow.follows_graph() && was == Phase::Assemble && flow.phase() != Phase::Assemble;
-            let mut respawn = None;
-            for event in &events {
-                match event {
-                    FlowEvent::Phase(phase) => {
-                        tracing::info!(
-                            "[game] match {:04X}: {phase:?}, {:.1} s",
-                            id[0] & 0xFFFF,
-                            flow.clock()
-                        );
-                        // A new side (after the first) puts everyone back in
-                        // his side's spawn room and reopens hero select there
-                        // (the mode graph's assembly reopens it itself); a
-                        // new Control round after the first and every
-                        // Elimination round put everyone back in spawn.
-                        let sided = flow.attackers().is_some();
-                        match phase {
-                            Phase::Assemble if sided && flow.round() > 0 => {
-                                respawn = Some(!flow.follows_graph());
-                            }
-                            Phase::Round
-                                if flow.mode() == Mode::Elimination
-                                    || (flow.mode() == Mode::Control && flow.round() > 1) =>
-                            {
-                                respawn = Some(false);
-                            }
-                            _ => {}
-                        }
-                    }
-                    FlowEvent::Message {
-                        message,
-                        parameters,
-                    } => messages.extend(connections.iter().filter_map(|(connection, _)| {
-                        Some(GameMessage {
-                            sender: GAME_MODE_ENTITY,
-                            target: self.peers[connection].world.current_body()?,
-                            message: *message,
-                            parameters: parameters.clone(),
-                        })
-                    })),
-                    FlowEvent::Objective(objective) => tracing::info!(
-                        "[game] match {:04X}: objective {objective} taken",
-                        id[0] & 0xFFFF
-                    ),
-                    FlowEvent::Overtime(on) => {
-                        tracing::info!("[game] match {:04X}: overtime {on}", id[0] & 0xFFFF)
-                    }
-                    FlowEvent::RoundOver(winner) => tracing::info!(
-                        "[game] match {:04X}: round {} won by {winner:?}",
-                        id[0] & 0xFFFF,
-                        flow.round()
-                    ),
-                    FlowEvent::MatchOver => {
-                        room.ended = true;
-                        // The AI heroes get no result: the slots of the
-                        // result count the players (the matchmaker's seats)
-                        // only.
-                        let players = room
-                            .players
-                            .iter()
-                            .enumerate()
-                            .filter(|(_, player)| !player.ai)
-                            .enumerate()
-                            .map(|(seat, (slot, player))| PlayerResult {
-                                slot: seat,
-                                name: player.info.name.clone(),
-                                account: player.card.account,
-                                team: player.info.team,
-                                outcome: match flow.standing(slot, player.info.team) {
-                                    Some(Standing::Won) => Outcome::Win,
-                                    Some(Standing::Drew) => Outcome::Draw,
-                                    _ => Outcome::Loss,
-                                },
-                                finished: !player.gone
-                                    && connections.iter().any(|&(_, seated)| seated == slot),
-                                medals: medal_counts(&team_medals(
-                                    &room.players,
-                                    room.map.free_for_all,
-                                    room.map.mode_guid,
-                                    slot,
-                                    world.scene.stats(),
-                                )),
-                            })
-                            .collect();
-                        tracing::info!("[game] match {:04X} is over", id[0] & 0xFFFF);
-                        self.results.push(MatchResult {
-                            id,
-                            map: room.map.map_guid,
-                            mode: room.map.mode_guid,
-                            players,
-                        });
-                    }
-                    FlowEvent::Finished => {
-                        home.extend(connections.iter().map(|&(connection, _)| connection));
-                    }
-                }
-            }
-            let overtime = flow.in_overtime();
-            room.mail.extend(messages);
-            if let Some(select) = respawn {
-                let world = room.world.as_ref().expect("room with a world");
-                for &(connection, slot) in &connections {
-                    let viewer = room.appearance(slot).expect("seated player");
-                    let peer = self.peers.get_mut(&connection).expect("room peer");
-                    if let Err(error) = peer.world.spawn_again(
-                        &world.scene,
-                        &viewer,
-                        tick,
-                        now,
-                        room.players[slot].quanta(),
-                        select,
-                    ) {
-                        eprintln!("{:08X} could not respawn ({error})", viewer.entity);
-                    }
-                }
-            }
-            for (connection, _) in &connections {
-                if let Some(peer) = self.peers.get_mut(connection) {
-                    peer.world.set_overtime(overtime);
-                }
-            }
-        }
-        for (id, changes) in dummies {
-            self.change_dummies(id, changes);
-        }
-        for connection in home {
-            if !self.links.cancel_handoff(connection) && self.peers.contains_key(&connection) {
-                self.send_home(connection, now);
-            }
-        }
-    }
-
-    /// The game messages every room's entities sent since the last tick
-    /// (`lucy_sim::messages`): from the players' and AI heroes' bodies
-    /// and controllers, the mode graph and the match flow in its place
-    /// (`Room::mail`), the placed scripts, the hits' modifier notices
-    /// (`Combat::take_messages`) and the Biotic Fields, to the entity each
-    /// names or to every entity that runs graphs, the Training Bots too.
-    /// After the players' steps, so a pick's hero limit broadcasts reach
-    /// the other controllers in its tick.
-    fn route_messages(&mut self, tick: u32) {
-        let mut dummies = Vec::new();
-        let mut scopes = Vec::new();
-        let mut plays = Vec::new();
-        for (&id, room) in &mut self.rooms {
-            let next = room.next_dummy();
-            let Some(world) = &mut room.world else {
-                continue;
-            };
-            world.scene.set_next_dummy(Some(next));
-            let mut peers = room_peers(&mut self.peers, &self.seats, id, room.players.len());
-            let mut worlds: Vec<&mut WorldDelivery> = peers
-                .iter_mut()
-                .flatten()
-                .map(|peer| &mut peer.world)
-                .collect();
-            // The Training Partner console's scope 12 on a player's body
-            // makes the re-picked dummy there (`265F` node 30).
-            for world in &mut worlds {
-                world.set_next_dummy(Some(next));
-            }
-            let mut players = Players::new(&mut worlds, tick);
-            let mut messages = players.take_messages();
-            let player_ends = players.take_message_ends();
-            let mut updates = players.take_message_updates();
-            messages.append(&mut room.mail);
-            let (placed, mut ends) = world.scene.take_placed_messages();
-            messages.extend(placed);
-            ends.extend(player_ends);
-            if let Some(mode) = &mut room.mode {
-                ends.extend(mode.take_message_ends());
-                updates.extend(mode.take_message_updates());
-            }
-            if let Some(combat) = &mut world.combat {
-                messages.extend(combat.take_messages());
-            }
-            let mut spawned = world.combat.as_mut().map(Combat::spawned_mut);
-            if let Some(spawned) = &mut spawned {
-                let (sent, ended) = spawned.take_messages();
-                messages.extend(sent);
-                ends.extend(ended);
-            }
-            // The mode entity's variables the placeables read (the spawn
-            // walls' `0FA8` st5 the attacking team #10795e), as the mode's
-            // graph left them this tick, before its messages reach them.
-            if let Some(variables) = room.mode.as_ref().and_then(ModeRunner::entity_variables) {
-                world.scene.set_placed_mode_variables(variables);
-            }
-            let held = lucy_sim::mode_script::held(room.mode.as_ref());
-            let (mut bots, placed) = world.scene.message_recipients(tick);
-            let mut recipients: Vec<&mut dyn Recipients> = vec![&mut players, &mut bots, placed];
-            if let Some(spawned) = spawned {
-                recipients.push(spawned);
-            }
-            if let Some(mode) = &mut room.mode {
-                recipients.push(mode);
-            }
-            deliver_held(&held, &mut room.held_reach, &mut recipients);
-            deliver(&mut room.backlog, messages, ends, &mut recipients);
-            deliver_updates(&updates, &mut recipients);
-            let mut changes = world.scene.take_dummy_changes();
-            drop(players);
-            let mut opened = Vec::new();
-            let mut writes = Vec::new();
-            let mut played = Vec::new();
-            for player in &mut worlds {
-                changes.extend(player.take_dummy_changes());
-                opened.extend(player.take_scope_changes());
-                writes.extend(player.take_parent_writes());
-                played.extend(player.take_body_play_requests());
-            }
-            // A body's scope instance sets its console's variables
-            // (`STU_D49BBD03`: the console's `#940` on a re-pick).
-            for write in &writes {
-                world.scene.set_parent_variable(write);
-            }
-            dummies.push((id, changes));
-            scopes.push((id, opened));
-            plays.push((id, played));
-        }
-        for (id, changes) in dummies {
-            self.change_dummies(id, changes);
-        }
-        // The players' bodies' scope states (the console's scope 197 from
-        // its scope 12 on a body, on the dummy a re-pick made), after the
-        // dummies came.
-        for (id, changes) in scopes {
-            self.change_scopes(id, tick, changes);
-        }
-        // A hero ability's victim graphs on the bodies it struck (Rocket
-        // Punch's `0D07`), after the room's messages.
-        for (id, requests) in plays {
-            self.play_scripts(id, tick, requests);
-        }
-    }
-
-    /// The graphs the players' ability graphs played on other bodies
-    /// (`lucy_script` `vm/play.rs` `Plays::Others`: Rocket Punch's
-    /// `0D07`, Soundwave's `0ECA`) play in the struck player's body script
-    /// or the struck bot's; a target nobody runs gets none. Then the
-    /// knockbacks the bodies' graphs reported (`STU_AFBB59E9`, `0D07`
-    /// rid63) between the room's players go to its Workshop rules
-    /// (Player Dealt / Received Knockback); a bot's are dropped.
-    fn play_scripts(&mut self, id: MatchId, tick: u32, requests: Vec<PlayRequest>) {
-        let Some(room) = self.rooms.get_mut(&id) else {
-            return;
-        };
-        let Some(world) = &mut room.world else {
-            return;
-        };
-        let mut peers = room_peers(&mut self.peers, &self.seats, id, room.players.len());
-        for request in requests {
-            let player = peers
-                .iter_mut()
-                .flatten()
-                .find(|peer| peer.world.runs(request.target));
-            match player {
-                Some(player) => {
-                    player.world.play_on_body(&request);
-                }
-                None => {
-                    world.scene.play_on_bot(&request, tick);
-                }
-            }
-        }
-        world.scene.take_bot_knockbacks();
-        let bodies: Vec<Option<u32>> = peers
-            .iter()
-            .map(|peer| peer.as_ref().and_then(|peer| peer.world.current_body()))
-            .collect();
-        let player_of = |body: u32| {
-            bodies
-                .iter()
-                .position(|&current| current == Some(body))
-                .map(|slot| room.players[slot].entity)
-        };
-        let mut events = Vec::new();
-        for peer in peers.iter_mut().flatten() {
-            for knockback in peer.world.take_knockbacks() {
-                let (Some(attacker), Some(victim)) =
-                    (player_of(knockback.attacker), player_of(knockback.victim))
-                else {
-                    continue;
-                };
-                events.push(PlayerEvent::Knockback {
-                    attacker,
-                    victim,
-                    push: knockback.direction,
-                    loadout: knockback.loadout,
-                });
-            }
-        }
-        if let Some(run) = room
-            .workshop
-            .as_mut()
-            .and_then(|workshop| workshop.run.as_mut())
-        {
-            run.player_events(&events);
-        }
-    }
-
-    /// The scope instances of the placed scripts' and the players' bodies'
-    /// scope states (`lucy_script` `vm/scopes.rs`: the Training Partner
-    /// console's scope 12 on the bodies near it, scope 126 on every
-    /// controller, scope 197 from a body's scope 12 on a re-picked dummy)
-    /// open or close in the target's player's scripts; an opened one goes
-    /// back to its scope state for its frame record. A target no player
-    /// runs gets none.
-    fn change_scopes(&mut self, id: MatchId, tick: u32, changes: Vec<ScopeChange>) {
-        let Some(room) = self.rooms.get_mut(&id) else {
-            return;
-        };
-        let Some(world) = &mut room.world else {
-            return;
-        };
-        let mut peers = room_peers(&mut self.peers, &self.seats, id, room.players.len());
-        for change in changes {
-            let target = change.target();
-            let Some(player) = peers
-                .iter_mut()
-                .flatten()
-                .find(|peer| peer.world.runs(target))
-            else {
-                continue;
-            };
-            let (Some(instance), ScopeChange::Open { source, .. }) =
-                (player.world.change_scope(tick, &change), &change)
-            else {
-                continue;
-            };
-            if world.scene.placed_scripts().runs(source.entity) {
-                world.scene.scope_opened(*source, target, instance);
-            } else if let Some(owner) = peers
-                .iter_mut()
-                .flatten()
-                .find(|peer| peer.world.runs(source.entity))
-            {
-                owner.world.scope_opened(*source, target, instance);
-            }
-        }
-    }
-
-    /// Every client of a room learns about the other players this tick
-    /// (ow174/game/match.py `update`); their cards go reliably.
-    fn show_players(&mut self, tick: u32, now: Duration) {
-        for (&id, room) in &self.rooms {
-            let Some(world) = &room.world else {
-                continue;
-            };
-            let mut connections = vec![None; room.players.len()];
-            let mut players: Vec<_> = (0..room.players.len())
-                .map(|slot| RoomPlayer {
-                    appearance: room.appearance(slot).expect("seated player"),
-                    world: None,
-                    dummy: room.players[slot].dummy,
-                })
-                .collect();
-            for (&connection, peer) in &mut self.peers {
-                let (match_id, slot) = self.seats[&connection];
-                if match_id == id {
-                    connections[slot] = Some(connection);
-                    players[slot].world = Some(&mut peer.world);
-                }
-            }
-            if connections.iter().all(Option::is_none) {
-                continue;
-            }
-            let cards = show_players(&world.scene, &mut players, tick, now);
-            drop(players);
-            for (connection, messages) in connections.into_iter().zip(cards) {
-                let Some(peer) = connection.and_then(|connection| self.peers.get_mut(&connection))
-                else {
-                    continue;
-                };
-                for message in messages {
-                    let _ = peer.reliable(&self.schemas, message);
-                }
-            }
-        }
-    }
-
-    fn tick(&mut self, socket: &impl Transport, now: Duration, missed: u64) {
-        let step = self.clock.step(missed, self.connections_pending());
-        let (tick, drain, force) = match step {
-            Step::Simulate { frame } => (frame, false, false),
-            Step::Drain {
-                frame,
-                entered,
-                force,
-            } => {
-                if entered {
-                    for (&connection, peer) in self.peers.iter_mut().chain(&mut self.homeward) {
-                        peer.clear_world();
-                        if self.links.begin_leaving(connection, now) {
-                            let _ = peer.reliable(&self.schemas, leave_message());
-                        }
-                    }
-                }
-                (frame, true, force)
-            }
-        };
-        for expired in self.links.expire(now, force) {
-            let why = match expired.reason {
-                Timeout::Handoff => "his game did not connect in time",
-                Timeout::Silence => "nothing from his game for 10 s",
-                Timeout::LeaveGrace => "his game did not close its link after the leave",
-                Timeout::Drain => "the server is draining",
-            };
-            self.report_leave(expired.connection, why);
-            self.retire(expired.connection);
-        }
-        let mut spawned = HashMap::new();
-        let mut bot_events = HashMap::new();
-        let mut bot_voices = HashMap::new();
-        if !drain {
-            // A match that started since takes the live nameplate tool's
-            // plate before its bots' scripts start.
-            self.sync_bot_plates();
-            for room in self.rooms.values_mut() {
-                if let Some(world) = &mut room.world {
-                    world.scene.set_hurt_feedback(self.hurt);
-                    world.scene.step_bots(tick);
-                }
-            }
-            self.update_combat(tick, now);
-            let mut dummies = Vec::new();
-            let mut scopes = Vec::new();
-            for (&id, room) in &mut self.rooms {
-                let next = room.next_dummy();
-                if let Some(world) = &mut room.world {
-                    // combat.py `update`: the dead bots' death scripts, then
-                    // the respawns with new scripts.
-                    world.scene.advance_bot_deaths(tick);
-                    // The live bots' reactions to their hits, and the voice
-                    // lines they call for.
-                    world.scene.advance_live_bots(tick);
-                    // The server placeables' scripts (placed_script.rs); their
-                    // messages (the spawn rooms' `0723`) go with the others
-                    // (`route_messages`). A mode graph that drives the mode
-                    // entity holds the spawn rooms' `0724` itself; else the
-                    // rooms the match flow's spawns hold get it here, from
-                    // the tick after the mode started (the placeables run
-                    // their first tick before it). The scripts' dummy bots
-                    // (the Training Partner) are AI players of the room
-                    // (`ai.rs`).
-                    let holds = match room.mode.as_ref() {
-                        None => Vec::new(),
-                        Some(mode) if mode.holds_rooms() => Vec::new(),
-                        Some(_) => {
-                            let flow = room.flow.as_ref();
-                            world.scene.room_holds(|team| {
-                                flow.map_or(SpawnChoice::First, |flow| flow.spawn_choice(team))
-                            })
-                        }
-                    };
-                    world.scene.set_next_dummy(Some(next));
-                    // The placeables the mode entity's graphs removed (`0CBB`
-                    // st34: the health packs, when the ruleset turns them
-                    // off) go before their scripts run again.
-                    if let Some(mode) = room.mode.as_mut() {
-                        take_placeable_removals(mode, &mut world.scene);
-                    }
-                    world.scene.advance_placed(tick, &holds);
-                    dummies.push((id, world.scene.take_dummy_changes()));
-                    scopes.push((id, world.scene.take_scope_changes()));
-                    bot_voices.insert(id, world.scene.take_bot_voices());
-                    if let Some(combat) = &mut world.combat {
-                        if let Ok(replacements) = combat.respawn_due(&mut world.scene, tick, now) {
-                            if !replacements.is_empty() {
-                                world.scene.prepare_respawned_bots(tick);
-                                spawned.insert(id, replacements);
-                            }
-                        }
-                    }
-                    bot_events.insert(id, world.scene.take_bot_events());
-                }
-                // The mode starts after the placeables' first tick, with
-                // what they reported (`mode_script::reported_objectives`).
-                room.begin_mode(tick);
-            }
-            for (id, changes) in dummies {
-                self.change_dummies(id, changes);
-            }
-            for (id, changes) in scopes {
-                self.change_scopes(id, tick, changes);
-            }
-        }
-        // match.py `update`: the countdown (now the match flow) runs before
-        // the players' steps.
-        if !drain {
-            self.update_flows(tick, now);
-            // The AI heroes' input for this tick (ai.rs).
-            self.drive_ai(tick, now);
-        }
-        // What every player's graphs counted (the AI heroes' too), what the
-        // entities they spawned counted for them (the Biotic Field's `0258`
-        // rid14) and what the room counts natively (shots, the training
-        // bots' damage, heals and kills) go to the stat tables before the
-        // boards go out.
-        for (connection, peer) in &mut self.peers {
-            let tracked = peer.world.take_tracked_stats();
-            if let Some(Room {
-                players,
-                world: Some(world),
-                ..
-            }) = self
-                .seats
-                .get(connection)
-                .and_then(|(id, _)| self.rooms.get_mut(id))
-            {
-                credit_tracked_stats(players, world.scene.stats(), tracked);
-            }
-        }
-        for room in self.rooms.values_mut() {
-            if let Some(world) = &mut room.world {
-                let tracked = world
-                    .combat
-                    .as_mut()
-                    .map(Combat::take_tracked_stats)
-                    .unwrap_or_default();
-                credit_tracked_stats(&mut room.players, world.scene.stats(), tracked);
-            }
-        }
-        let timers = self.timers;
-        for (&connection, peer) in &mut self.peers {
-            if peer.ai.is_some() {
-                continue;
-            }
-            let (id, slot) = self.seats[&connection];
-            let room = self.rooms.get_mut(&id).expect("admitted room");
-            if !drain
-                && peer
-                    .update(&self.schemas, room, slot, timers, now, tick)
-                    .is_err()
-            {
-                peer.clear_world();
-                peer.loading = MapReadiness::default();
-                if self.links.begin_leaving(connection, now) {
-                    let _ = peer.reliable(&self.schemas, leave_message());
-                }
-            }
-            if !drain {
-                if let Some(world) = &room.world {
-                    let events = bot_events.get(&id).map_or(&[][..], Vec::as_slice);
-                    peer.world.update_bots(&world.scene, events, tick);
-                    peer.world.update_placed(&world.scene);
-                }
-                // ClientInVoice 27500: each bot line to every client of the
-                // room whose body hears it: its audience lists the body
-                // (a pain line's: the bot and its attacker), within the
-                // stimulus's radius of the bot (voice_lines.rs).
-                if let (Some(body), Some(position)) =
-                    (peer.world.current_body(), peer.world.hearing_position())
-                {
-                    for (voice, speaker) in bot_voices.get(&id).into_iter().flatten() {
-                        if voice.heard(body, *speaker, position) {
-                            peer.notice(voice.notice(body));
-                        }
-                    }
-                }
-            }
-            if let Some(replacements) = spawned.get(&id).filter(|_| peer.world.world_started()) {
-                peer.combat_ui.replacements.extend(
-                    replacements
-                        .iter()
-                        .cloned()
-                        .map(|bot| (now.saturating_add(SILENCE_TIME), bot)),
-                );
-            }
-            if let Some(world) = room.world.as_ref().filter(|_| !drain) {
-                let hero = peer.world.current_hero();
-                peer.world
-                    .send_board(now, || board(room, slot, &world.scene, hero));
-            }
-        }
-        if !drain {
-            self.say_player_lines(tick);
-            self.route_messages(tick);
-            self.show_players(tick, now);
-        }
-        for (&connection, peer) in &mut self.peers {
-            if peer.ai.is_some() {
-                // What a client would get arrives at once (ai.rs).
-                if !drain {
-                    peer.world.deliver_locally(tick, now);
-                }
-                continue;
-            }
-            let (id, _) = self.seats[&connection];
-            let room = &self.rooms[&id];
-            // Each tick sends every client a datagram (62.5 a second, as
-            // retail's PC default); the forced last drain step only retires.
-            if !force && peer.open {
-                if !drain {
-                    if let Some(view) = peer.world.take_spawn_view() {
-                        peer.notice(view);
-                    }
-                    peer.flush_combat(&self.schemas, now);
-                }
-                let movements = if drain {
-                    Vec::new()
-                } else {
-                    room.world
-                        .as_ref()
-                        .map_or_else(Vec::new, |world| peer.world.movement(&world.scene, tick))
-                };
-                peer.send_frame(&mut self.links, socket, connection, tick, movements, drain);
-            }
-        }
-        // Games taken out before they connected get nothing but their 20304
-        // (server.py `_tick`, `Client.send_frame`).
-        for (&connection, peer) in &mut self.homeward {
-            if !force && peer.open {
-                peer.send_frame(&mut self.links, socket, connection, tick, Vec::new(), true);
-            }
-        }
-        self.clock.renew_if_idle(self.connections_pending(), false);
-    }
-
-    /// ClientInVoice 27500 for the lines the players' bodies said this tick
-    /// (the communication wheel's and the pain lines,
-    /// `lucy_sim::voice_lines`): each goes to every client of the room
-    /// whose body its audience lists (all for the wheel's; the hurt body
-    /// and its attacker for a pain line) and is within the stimulus's
-    /// radius of the speaker's (35 m for both), the speaker's own client
-    /// too. Assumption: the client doesn't apply the radius itself; the
-    /// bots' lines go out the same way.
-    fn say_player_lines(&mut self, tick: u32) {
-        let mut said: HashMap<MatchId, Vec<(VoiceLine, [f64; 3])>> = HashMap::new();
-        for (connection, peer) in &mut self.peers {
-            let Some(&(id, _)) = self.seats.get(connection) else {
-                continue;
-            };
-            let Some(world) = self.rooms.get(&id).and_then(|room| room.world.as_ref()) else {
-                continue;
-            };
-            let lines = peer.world.take_voice_lines(&world.scene, tick);
-            if let Some(position) = peer.world.hearing_position() {
-                said.entry(id)
-                    .or_default()
-                    .extend(lines.into_iter().map(|line| (line, position)));
-            }
-        }
-        if said.is_empty() {
-            return;
-        }
-        for (connection, peer) in &mut self.peers {
-            if peer.ai.is_some() {
-                continue;
-            }
-            let Some(lines) = self.seats.get(connection).and_then(|(id, _)| said.get(id)) else {
-                continue;
-            };
-            let (Some(body), Some(position)) =
-                (peer.world.current_body(), peer.world.hearing_position())
-            else {
-                continue;
-            };
-            for (line, speaker) in lines {
-                if line.heard(body, *speaker, position) {
-                    peer.notice(line.notice(body));
-                }
-            }
-        }
-    }
-
-    /// Seats and games still connected or awaited keep the clock from
-    /// renewing (server.py `_drain_clock`: `self.clients or self.handoffs`).
-    fn connections_pending(&self) -> bool {
-        !self.seats.is_empty() || !self.homeward.is_empty()
-    }
+/// What a new room takes from the service: the schemas, and the settings
+/// in force.
+struct RoomSettings {
+    schemas: Arc<Schemas>,
+    timers: Timers,
+    bot_plate: Arc<BotPlate>,
+    hurt: HurtFeedback,
+    events: router::Events,
 }
 
 fn leave_message() -> Message {
@@ -3962,20 +1252,16 @@ fn wall_nanoseconds() -> u64 {
     u64::try_from(now.as_nanos()).unwrap_or(u64::MAX)
 }
 
-/// Where the game's datagrams go and come from: the UDP socket, or in tests
-/// an in-memory network on a virtual clock (`lockstep.rs`).
+/// Where a room's datagrams go: the UDP socket, or in tests an in-memory
+/// network on a virtual clock (`lockstep.rs`). The router reads what comes
+/// (`router.rs`).
 trait Transport {
     fn send_to(&self, datagram: &[u8], address: SocketAddr) -> io::Result<usize>;
-    fn recv_from(&self, buffer: &mut [u8]) -> io::Result<(usize, SocketAddr)>;
 }
 
-impl Transport for UdpSocket {
+impl Transport for std::net::UdpSocket {
     fn send_to(&self, datagram: &[u8], address: SocketAddr) -> io::Result<usize> {
-        UdpSocket::send_to(self, datagram, address)
-    }
-
-    fn recv_from(&self, buffer: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
-        UdpSocket::recv_from(self, buffer)
+        std::net::UdpSocket::send_to(self, datagram, address)
     }
 }
 
@@ -3990,198 +1276,14 @@ fn send(socket: &impl Transport, outgoing: Outgoing) -> io::Result<u32> {
     Ok(outgoing.sequence)
 }
 
-/// The game thread's loop: the matches and when the next tick is due.
-struct GameLoop {
-    state: State,
-    due: Duration,
-    /// An oversized datagram must never be accepted as a truncated valid one.
-    buffer: [u8; 65_536],
-}
-
-/// What one pass of the loop left waiting.
-struct Pass {
-    handled: usize,
-    socket_ready: bool,
-    input_ready: bool,
-}
-
-impl Pass {
-    /// More waits than one pass took: the next pass runs at once.
-    fn busy(&self) -> bool {
-        self.socket_ready || self.input_ready || self.handled == RECEIVE_BATCH
-    }
-}
-
-impl GameLoop {
-    fn new(schemas: Arc<Schemas>) -> Self {
-        Self {
-            state: State::new(schemas),
-            due: Duration::ZERO,
-            buffer: [0; 65_536],
-        }
-    }
-
-    /// One pass of the loop: a batch of requests, a batch of datagrams if
-    /// the socket is readable, the queued input, then the tick if it is
-    /// due. The input the tick gave (the AI players' commands, `drive_ai`)
-    /// makes the pass busy, so they run in the next pass, at once. `clock`
-    /// reads the time since the loop started; the real loop (`run`) reads
-    /// the wall clock, the tests a virtual one (`lockstep.rs`).
-    fn pass(
-        &mut self,
-        socket: &impl Transport,
-        requests: &mpsc::Receiver<Request>,
-        mut socket_ready: bool,
-        clock: impl Fn() -> Duration,
-    ) -> io::Result<Pass> {
-        let mut handled = 0;
-        for request in requests.try_iter().take(RECEIVE_BATCH) {
-            self.state.handle_request(request, clock());
-            handled += 1;
-        }
-        if socket_ready {
-            for _ in 0..RECEIVE_BATCH {
-                match socket.recv_from(&mut self.buffer) {
-                    Ok((count, address)) => {
-                        self.state
-                            .receive(socket, &self.buffer[..count], address, clock());
-                    }
-                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                        socket_ready = false;
-                        break;
-                    }
-                    Err(error)
-                        if matches!(
-                            error.kind(),
-                            io::ErrorKind::Interrupted
-                                | io::ErrorKind::ConnectionReset
-                                | io::ErrorKind::ConnectionRefused
-                        ) =>
-                    {
-                        continue;
-                    }
-                    Err(error) => return Err(error),
-                }
-            }
-        }
-        let now = clock();
-        // The tick that is due runs each player's command of its own
-        // (`State::release_input`) before it simulates and sends.
-        let due = if now >= self.due {
-            let (next, missed) = next_tick_after(self.due, now)
-                .ok_or_else(|| io::Error::other("game tick clock exhausted"))?;
-            self.due = next;
-            let ticks = u32::try_from(missed).unwrap_or(u32::MAX).saturating_add(1);
-            self.state.release_input(ticks);
-            Some(missed)
-        } else {
-            None
-        };
-        let mut input_ready = self.state.advance_input(now);
-        if let Some(missed) = due {
-            self.state.tick(socket, now, missed);
-            // An AI player's command runs right after the tick that gave
-            // it, before whatever comes in next: not when the next
-            // datagram, request or tick wakes the loop.
-            input_ready = self.state.input_waits();
-        }
-        Ok(Pass {
-            handled,
-            socket_ready,
-            input_ready,
-        })
-    }
-}
-
-fn run(
-    socket: UdpSocket,
-    mut poll: Poll,
-    requests: mpsc::Receiver<Request>,
-    stopping: Arc<AtomicBool>,
-    schemas: Arc<Schemas>,
-) -> io::Result<()> {
-    let mut game = GameLoop::new(schemas);
-    let start = Instant::now();
-    let mut events = Events::with_capacity(2);
-    let mut socket_ready = false;
-    while !stopping.load(Ordering::Acquire) {
-        let pass = game.pass(&socket, &requests, socket_ready, || start.elapsed())?;
-        socket_ready = pass.socket_ready;
-        let timeout = if pass.busy() {
-            Duration::ZERO
-        } else {
-            game.due.saturating_sub(start.elapsed())
-        };
-        match poll.poll(&mut events, Some(timeout)) {
-            Ok(()) => {
-                socket_ready |= events.iter().any(|event| event.token() == GAME_SOCKET);
-            }
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-            Err(error) => return Err(error),
-        }
-    }
-    Ok(())
-}
-
-/// A debugging switch: `LUCY_DEBUG_DROP_NOTICES` lists combat notices the
-/// server leaves out (`hit`, `kill-flag` (25001 sent without its kill bit),
-/// `elimination` (25005), `death` (25004)), to find which one stalls the
-/// client's own body after a kill (leafall903/ORPHEUS issue 14).
-#[derive(Default)]
-struct DroppedNotices {
-    hit: bool,
-    kill_flag: bool,
-    elimination: bool,
-    death: bool,
-}
-
-static DROPPED_NOTICES: std::sync::LazyLock<DroppedNotices> = std::sync::LazyLock::new(|| {
-    let Ok(list) = std::env::var("LUCY_DEBUG_DROP_NOTICES") else {
-        return DroppedNotices::default();
-    };
-    let mut dropped = DroppedNotices::default();
-    for item in list
-        .split(',')
-        .map(str::trim)
-        .filter(|item| !item.is_empty())
-    {
-        match item {
-            "hit" => dropped.hit = true,
-            "kill-flag" => dropped.kill_flag = true,
-            "elimination" => dropped.elimination = true,
-            "death" => dropped.death = true,
-            other => tracing::warn!("LUCY_DEBUG_DROP_NOTICES: unknown notice {other:?}"),
-        }
-    }
-    tracing::warn!("debugging: dropping combat notices {list:?}");
-    dropped
-});
-
-impl DroppedNotices {
-    fn filter(&self, notice: CombatNotice) -> Option<CombatNotice> {
-        match notice {
-            CombatNotice::Hit { .. } if self.hit => None,
-            CombatNotice::Hit {
-                target,
-                dealt,
-                critical,
-                shot_frame,
-                ..
-            } if self.kill_flag => Some(CombatNotice::Hit {
-                target,
-                dealt,
-                critical,
-                killed: false,
-                shot_frame,
-            }),
-            CombatNotice::Elimination { .. } if self.elimination => None,
-            CombatNotice::Death { .. } if self.death => None,
-            notice => Some(notice),
-        }
-    }
-}
-
 mod ai;
+mod combat;
+mod flow;
+mod messages;
+mod peer;
+mod room;
+mod router;
+
 #[cfg(test)]
 pub(crate) mod lockstep;
 
