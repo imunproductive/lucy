@@ -47,7 +47,8 @@ Do not run the full game-install suites (`just test-game`, `just test-slow`) for
 | `just fmt-check` | `cargo fmt --all --check` | Fails on unformatted code |
 | `just lint` | `cargo clippy --workspace --all-targets --locked -- -D warnings` | Clippy; every warning is an error |
 | `just test` | `cargo nextest run --workspace --locked`, then the doc tests | The public tests |
-| `just dashboard-test` | `node --test web/tests/test_dashboard_client.mjs` | The dashboard JavaScript test |
+| `just dashboard-test` | in `web/dashboard`: `npm test`, `npm run check`, `npm run verify-dist` | The dashboard's API client tests, its type check, and a check that the committed `dist/` is a fresh build |
+| `just dashboard-build` | in `web/dashboard`: `npm run build` | Builds the dashboard into `web/dashboard/dist/`, which the server embeds |
 | `just build` | `cargo build --workspace --release --locked` | Release build of `lucy.exe` and `owwfd_relay.dll` |
 | `just test-game <install>` | ignored tests with `LUCY_GAME_DIR`, optimised, without the slow group, side by side; then the `serial_` tests one at a time | Tests that read the install; the integrator runs them after a batch of merges |
 | `just test-slow <install>` | ignored `slow_` tests, optimised | The game-install tests that play a whole match or run over a minute; the integrator runs them with `test-game` |
@@ -161,7 +162,13 @@ This sets `LUCY_DPK_ARCHIVE` (`testkit::dpk_archive()`) and runs the `dpk_archiv
 
 ### 6. Dashboard
 
-`just dashboard-test` runs `web/tests/test_dashboard_client.mjs` with Node's test runner. It is part of `just check`.
+`just dashboard-test` runs, in `web/dashboard`:
+
+- `npm test`: the API client tests (`src/**/*.test.ts`) with Node's test runner, which runs TypeScript as it is. They cover the typed client of every route the page calls, the stage-3 client (`live.ts`) and its polling, the server-sent events helper (`sse.ts`), and the routes, forms and formatters.
+- `npm run check`: `svelte-check`, the TypeScript and Svelte check; a warning fails it.
+- `npm run verify-dist`: builds into a temporary folder and compares it, file by file, with the committed `dist/`. The build is deterministic, so a difference means the source changed without `just dashboard-build`.
+
+It installs the npm packages (`npm ci`) the first time. It is part of `just check`. The server's own tests (`lucy-server`, `server::dashboard`) check what it serves: the page, its hashed files with their cache headers and MIME types, and `index.html` for the page's routes.
 
 ### 7. Windows relay
 
