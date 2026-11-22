@@ -30,7 +30,7 @@ Goal (2026-11-22): the server hosts a few matches at once (for example two or th
 
 The dashboard (`web/dashboard`, served by `server/src/server/dashboard*`) becomes the host's control panel for live matches. It builds on stage 1's rooms.
 
-1. **Remove** the nameplates test tab (`api/bot_plate.rs` and its page) and anything only it uses.
+1. **Remove** the nameplates test tab (`api/bot_plate.rs` and its page) and the debug chat commands with everything only they use (user, 2026-11-22): `.plate` (with `lucy_sim::bot_plate` and the bot script's plate path), `.hurt` (with `lucy_sim::hurt_feedback`'s live switch; hurt feedback stays on), `.hero` and `.leave` (`server/src/lobby/handlers/chat.rs` `match_command`), and their docs (`docs/user/playing.md`). Done after stage 1 merges, since `game_service.rs` holds their requests.
 2. **Redesign** the look and layout so it is clearer and easier to use; keep the existing account and profile tools working.
 3. **Live matches:** a list of every running match (mode, map, players, time, state), updated live.
 4. **Global message:** send a message to everyone online (lobby and matches), as the system.
