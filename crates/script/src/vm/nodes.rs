@@ -81,10 +81,14 @@ const SERVER_NO_OPS: &[&str] = &[
     // `m_1AF7DD3E`, the map's objective name, the attackers, each team's
     // progress, time bank and score, the winner `m_9870F4ED` = #7525) for
     // a server-only action (no registration of its own: the base action's
-    // run, `python tools/stu.py STU_86A2C83C`). The server keeps the
-    // match's result itself from #7525 (`orpheus_sim::match_flow`
-    // `MatchFlow::follow`) for the lobby.
+    // run, `python tools/stu.py STU_86A2C83C`). Likewise `STU_88DE7AD3`,
+    // the winner `m_F97A13C6` = #7525 alone as each mode graph's match
+    // end begins (`0F4A` rid57, `0D0B`, `0D76`, `0EC2`, `0F60`; no
+    // registration of its own, `python tools/stu.py STU_88DE7AD3`). The
+    // server keeps the match's result itself from #7525
+    // (`orpheus_sim::match_flow` `MatchFlow::follow`) for the lobby.
     "STU_86A2C83C",
+    "STU_88DE7AD3",
     // A SendGameMessage of its own (`Action_STU_1470EF32` 0x7FF7898164B0,
     // parent `STU_473D3BBD`): `180A` rid39 and `0281`/`0282`/`0EC2` send
     // `07F1` with it, which only client-only entries take (`0D57` rid141,
@@ -155,13 +159,10 @@ const ASSUMED_NO_OPS: &[&str] = &[
     // Mode actions with no registration of their own (the base action's
     // run 0x7FF78AA7EBA0: the client follows m_outPlug; leafall903/ORPHEUS
     // (MIT) `rust` `vm/nodes.rs`, the 104319 class registry, checked with
-    // `tools/stu.py`). Server-only meaning unknown: STU_88DE7AD3 (one
-    // dynamic m_F97A13C6; the phase handoff of 0D0B, 0D76, 0EC2, 0F4A
-    // rid57, 0F60), STU_147B34C6 (no fields; 0D76, 180A rid17's phase
-    // cleanup), STU_7947FBE4 (no fields; 181D), STU_5B025A5D and
-    // STU_8A8255AF (an integer m_5FAC4660, the latter a float m_5CF63914;
-    // 0D94).
-    "STU_88DE7AD3",
+    // `tools/stu.py`). Server-only meaning unknown: STU_147B34C6 (no
+    // fields; 0D76, 180A rid17's phase cleanup), STU_7947FBE4 (no fields;
+    // 181D), STU_5B025A5D and STU_8A8255AF (an integer m_5FAC4660, the
+    // latter a float m_5CF63914; 0D94).
     "STU_147B34C6",
     "STU_7947FBE4",
     "STU_5B025A5D",
@@ -194,9 +195,7 @@ const ASSUMED_INERT_STATES: &[&str] = &[
 /// (st46-st49, no fields, under the phase stacks #19528e setup, #12113e
 /// round, #19527e round end, #19526e match end) and `STU_54BBC96C` (st35,
 /// no fields, 12 s after a round's end while #8078e is false). What the
-/// retail server did with them is not known. Server-only too: the mode
-/// graphs' `STU_0FAD550D` (`m_41F2FA6C`, a bool; `0F4A` st34 as a round
-/// starts, false, before the ForCodeSynced st33 rows `2271`/`226F`/`2270`).
+/// retail server did with them is not known.
 ///
 /// Meteor Strike's (`0C51`, Doomfist.md §24): `STU_3BC72DE1` (st26, the
 /// view: its begin and end `0x7FF7898267C0` set component 43's camera
@@ -222,7 +221,6 @@ const ASSUMED_PLAIN_STATES: &[&str] = &[
     "STUStatescriptStateHero",
     "STU_7F488C3E",
     "STU_54BBC96C",
-    "STU_0FAD550D",
     "STU_3BC72DE1",
     "STU_582E0D5F",
     "STU_D07EBF01",
@@ -984,6 +982,14 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
             // base state, `python tools/stu.py STU_7F5C3F95`), so the
             // client runs it plain.
             "STU_7F5C3F95" => StateKind::Plain,
+            // The mode graphs' `STU_0FAD550D` (`m_41F2FA6C`, a bool):
+            // `0F4A` st34 as a round starts (false, before the
+            // ForCodeSynced st33 rows `2271`/`226F`/`2270`), Skirmish's
+            // `0D76` rid35 under its `0CBB` from the match's start. No
+            // registration of its own (the base state, codec none:
+            // `python tools/stu.py STU_0FAD550D`), so the client runs it
+            // plain; what the retail server did with it is not in the data.
+            "STU_0FAD550D" => StateKind::Plain,
             // A UX presenter of the match's end (`180A` st19, remote 11:
             // the cards' fades `m_AD8C28BA`/`m_D7ED647E`/`m_C69C2A73`).
             // The client shows it; its block is one bit (`+0x470`, set by
