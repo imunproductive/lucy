@@ -57,6 +57,7 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
             }
             StateKind::SubScript { child: Some(child) } => self.destroy(child)?,
             StateKind::MessageIdle => {
+                self.machine.collected.remove(&key);
                 self.exit_subgraph(id, node, "m_33DA5163", depth + 1)?;
                 self.exit_subgraph(id, node, "m_452862E6", depth + 1)?;
             }
@@ -123,6 +124,7 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
             }
             StateKind::Assist => self.end_assist(key, node),
             StateKind::ApplyAura => self.end_auras(key),
+            StateKind::FilterArray => self.end_filter_array(key, node)?,
             StateKind::Scope => self.end_scopes(key),
             StateKind::CreateEntity {
                 entity: Some(entity),
@@ -347,6 +349,7 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
             self.machine.joins.remove(&id);
             self.machine.movements.retain(|key, _| key.instance != id);
             self.machine.grapples.retain(|key, _| key.instance != id);
+            self.machine.collected.retain(|key, _| key.instance != id);
             self.machine
                 .hero_selects
                 .retain(|key, _| key.instance != id);

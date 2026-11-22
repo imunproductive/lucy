@@ -11,6 +11,7 @@ mod auras;
 mod death_cam;
 mod entities;
 mod flow;
+mod messages;
 mod motions;
 mod rays;
 
@@ -4634,6 +4635,11 @@ fn filter_array_keeps_its_output_the_candidates_that_pass() {
         fn has_target_tag(&self, _site: Site, entity: u32, tag: u64) -> Option<bool> {
             Some(tag == TAG && entity == ENTITIES[1])
         }
+        /// A body of team 0, one of team 1 and a placeable.
+        fn entity_filter_flags(&self, _site: Site, entity: u32) -> Option<u64> {
+            let word = [0x0080_0001, 0x0100_0001, 0];
+            Some(word[ENTITIES.iter().position(|&known| known == entity)?])
+        }
     }
     let tag = |tag: u64| json!({"$":"STU_357DABBB","m_7D7C86A1":format!("0x{tag:016X}"),"m_resourceKey":null});
     let filter = |flags: u64, extra: Json| {
@@ -4685,8 +4691,15 @@ fn filter_array_keeps_its_output_the_candidates_that_pass() {
                 filter(0, json!({"m_9C7BD8B8":tag(TAG)})),
                 92,
             ),
-            // A filter on entity flags (melee `0043` st63) stays inert.
-            filter_array(3, 2, var(90, true), filter(128, json!({})), 93),
+            // `0E8E` st2: the team 0 bodies of a list (the masks of
+            // `ScriptHost_EntityPassesFilter` against the filter words).
+            filter_array(
+                3,
+                2,
+                json!({"$":"STU_EB216A0B","m_9C7BD8B8":tag(ROOM)}),
+                filter(0x0080_0000, json!({})),
+                93,
+            ),
             // `0F4A` rid280: a tag still unset lists no tag (the list
             // builder 0x7FF789CC2C10 leaves a null one out), and an empty
             // any-of list passes every entity.
@@ -4717,20 +4730,16 @@ fn filter_array_keeps_its_output_the_candidates_that_pass() {
         snapshot.variables[&92],
         Value::Array(vec![Value::Entity(ENTITIES[1])])
     );
-    assert!(!snapshot.variables.contains_key(&93));
+    assert_eq!(
+        snapshot.variables[&93],
+        Value::Array(vec![Value::Entity(ENTITIES[0])])
+    );
     assert_eq!(
         snapshot.variables[&95],
         Value::Array(ENTITIES.into_iter().map(Value::Entity).collect())
     );
     assert_eq!(snapshot.variables[&96], numbers(&[2, 3]));
-    assert_eq!(
-        snapshot
-            .assumptions
-            .iter()
-            .map(|assumption| (assumption.site.node, assumption.class.as_str()))
-            .collect::<Vec<_>>(),
-        [(Some(3), "STU_0A6BE10E")]
-    );
+    assert!(snapshot.assumptions.is_empty());
     // A change of the source filters again.
     component
         .set_entity_variable(90, numbers(&[5, 0]), &mut Rooms)

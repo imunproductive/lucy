@@ -19,14 +19,14 @@ use crate::{
     expr::{EntityRelation, native_shape, team_from_filter, valid_entity},
     graph::GraphStore,
     map_tags::{MapTags, TaggedEntity},
-    placed::{DummyChange, NextDummy},
+    placed::{DummyChange, EntityVolumes, NextDummy},
     target_tags::{TargetTagLists, TargetTags},
     vitals::{PoolKind, Vitals},
     vm::{
         AssistLink, AuraChange, BodyEffects, CombatMod, DEAD_FILTER_BIT, DummyBot,
-        EnvironmentCredit, GameMessage, HealthChange, Knockback, MapRays, ParentWrite, Pickup,
-        PlayRequest, RaisedCriteria, ScopeChange, SeenBodies, SeenBody, Site, TargetCandidate,
-        TargetTagEffect, TrackedStat, Unknowns, VoiceRequest, World,
+        EnvironmentCredit, GameMessage, HealthChange, Knockback, MapRays, MessageEnd, ParentWrite,
+        Pickup, PlayRequest, RaisedCriteria, ScopeChange, SeenBodies, SeenBody, Site,
+        TargetCandidate, TargetTagEffect, TrackedStat, Unknowns, VoiceRequest, World,
     },
     wheel::{Cosmetic, Cosmetics},
     wire::{Value, Variables},
@@ -125,6 +125,14 @@ pub struct PlayerWorld {
     /// The map's tagged placeables the scene tag queries find; none: no
     /// map.
     pub map_tags: Option<Arc<MapTags>>,
+    /// The areas of the map's entities that have one (spawn rooms, capture
+    /// points), for `STU_73E1C5F0` and the area residency of `0F00`; none:
+    /// no map.
+    pub volumes: Option<Arc<dyn EntityVolumes>>,
+    /// The map placeables' entity variables as the match gave them this
+    /// tick (the capture point's owner #99e that its area aura's `0F00`
+    /// reads); none: unknown.
+    pub map_variables: Option<Arc<[(u32, Variables)]>>,
     /// How the body treats graph content the VM doesn't implement; by
     /// default as every script does ([`Unknowns::for_build`]).
     pub unknowns: Unknowns,
@@ -134,6 +142,12 @@ pub struct PlayerWorld {
     pub cosmetics: Cosmetics,
     /// Game messages to other entities, for the match to route.
     outbox: Vec<GameMessage>,
+    /// The ends of its persistent sends to other entities, for the match
+    /// to route ([`Self::take_message_ends`]).
+    ends: Vec<MessageEnd>,
+    /// Its persistent sends' new parameters for the entities that hold
+    /// them, for the match to route ([`Self::take_message_updates`]).
+    updates: Vec<GameMessage>,
     /// The criteria the body's graphs raised on it or its controller, for
     /// the match to answer with the body's voice lines.
     criteria: Vec<RaisedCriteria>,
@@ -245,6 +259,34 @@ impl World for PlayerWorld {
             parameters: parameters.clone(),
         });
         true
+    }
+
+    /// A persistent send to another entity ended for it (`0F00`'s `08AE`
+    /// to the capture point the body left): the match routes the end.
+    fn end_message(&mut self, source: Site, target: u32, message: u64) -> bool {
+        if source.entity != self.entity || target == crate::mode::EVERY_ENTITY {
+            return false;
+        }
+        self.ends.push(MessageEnd {
+            sender: self.entity,
+            target,
+            message,
+        });
+        true
+    }
+
+    /// A persistent send's new parameters go to the match, which hands
+    /// them to the target's receivers.
+    fn update_message(&mut self, source: Site, target: u32, message: u64, parameters: &Variables) {
+        if source.entity != self.entity {
+            return;
+        }
+        self.updates.push(GameMessage {
+            sender: self.entity,
+            target,
+            message,
+            parameters: parameters.clone(),
+        });
     }
 
     /// A message to every entity (`STU_57692020`, a primary channel's
@@ -434,9 +476,16 @@ impl World for PlayerWorld {
         self.is_player_site(site) && self.effects.assist(site, link, now_ms)
     }
 
+    /// The mode entity's variables (its mode's, and overtime); a map
+    /// placeable's as the match gave them ([`Self::map_variables`]).
     fn entity_variable(&mut self, entity: u32, id: u32) -> Value {
         if entity != GAME_MODE_ENTITY {
-            return Value::Null;
+            return self
+                .map_variables
+                .as_deref()
+                .and_then(|map| map.iter().find(|(placed, _)| *placed == entity))
+                .and_then(|(_, variables)| variables.get(&id).cloned())
+                .unwrap_or(Value::Null);
         }
         if id == MODE_OVERTIME && self.mode_overtime {
             return Value::Bool(true);
@@ -711,6 +760,12 @@ impl World for PlayerWorld {
         self.trial.as_ref()?.landing(category, search).ok()
     }
 
+    /// The map's areas ([`Self::volumes`]): the capture area aura's `0F00`
+    /// asks whether the body stands in its point's (`vm/residency.rs`).
+    fn in_entity_volume(&self, _site: Site, entity: u32, position: [f64; 3]) -> Option<bool> {
+        self.volumes.as_ref()?.contains(entity, position)
+    }
+
     /// The walk in the body's own world.
     fn ground_walk(
         &self,
@@ -938,6 +993,8 @@ impl PlayerWorld {
             target_tag_effects: TargetTags::default(),
             map_rays: None,
             map_tags: None,
+            volumes: None,
+            map_variables: None,
             controller_on_fire: false,
             targets: None,
             seen: None,
@@ -946,6 +1003,8 @@ impl PlayerWorld {
             unknowns: Unknowns::for_build(),
             cosmetics: Cosmetics::default(),
             outbox: Vec::new(),
+            ends: Vec::new(),
+            updates: Vec::new(),
             criteria: Vec::new(),
             voices: Vec::new(),
             health_changes: Vec::new(),
@@ -1033,6 +1092,17 @@ impl PlayerWorld {
     /// recipient takes each with `Component::receive_message`.
     pub fn take_messages(&mut self) -> Vec<GameMessage> {
         std::mem::take(&mut self.outbox)
+    }
+
+    /// The ends of the body's persistent sends to other entities since the
+    /// last call, in order, for the match to route with its messages.
+    pub fn take_message_ends(&mut self) -> Vec<MessageEnd> {
+        std::mem::take(&mut self.ends)
+    }
+
+    /// The body's persistent sends' new parameters since the last call.
+    pub fn take_message_updates(&mut self) -> Vec<GameMessage> {
+        std::mem::take(&mut self.updates)
     }
 
     /// The criteria the body's graphs raised on it or its controller since

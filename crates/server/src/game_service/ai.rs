@@ -236,6 +236,7 @@ impl AiSeat {
             delivery.deliver_locally(tick, now);
         }
         delivery.set_assembling(room.assembling());
+        delivery.set_mode_graph(room.follows_graph());
         if room.assembled {
             delivery.end_assemble(scene, tick)?;
         }
@@ -473,6 +474,8 @@ impl State {
                 position: None,
                 health: None,
                 spawn_room: None,
+                room_heal: false,
+                room_hurt: false,
                 support_tag_given: false,
                 support_tag_delivered: (false, orpheus_script::wire::Value::Null),
                 picker: None,
@@ -496,6 +499,8 @@ impl State {
             body.position = peer.world.body_position();
             body.health = peer.world.health_share();
             body.spawn_room = peer.world.in_spawn_room();
+            body.room_heal = peer.world.body_state_active(0x0c8e, 13);
+            body.room_hurt = peer.world.body_state_active(0x0c8e, 45);
             body.support_tag_given = peer.world.body_state_active(0x01cf, 117);
             body.support_tag_delivered = peer.world.body_delivered(
                 0x01cf,
@@ -602,6 +607,11 @@ pub(crate) struct BodyState {
     /// His living body stands in his team's spawn room (the server's
     /// component 74 field 6 flag), if the map has one.
     pub spawn_room: Option<bool>,
+    /// His body's mode body graph `0C8E` heals him in his team's spawn
+    /// room (st13, on the room's `0723`) and hurts him in the other
+    /// team's (st45, on its `0B7B`).
+    pub room_heal: bool,
+    pub room_hurt: bool,
     /// His body's `01CF` st117 is active: ALLIED HEALTH BARS at ALWAYS gave
     /// it the support tag (`orpheus_content::hero_settings`).
     pub support_tag_given: bool,

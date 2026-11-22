@@ -80,7 +80,7 @@ use orpheus_sim::{
     hurt_feedback::HurtFeedback,
     instance::{FREE_FOR_ALL_TEAM, Instance, Member, RETAIL_QUANTA, TOURNAMENT_QUANTA, ownership},
     match_flow::{FlowEvent, MatchFlow, Mode, Phase, Standing, Timers},
-    messages::{Backlog, HeldReach, Players, Recipients, deliver, deliver_held},
+    messages::{Backlog, HeldReach, Players, Recipients, deliver, deliver_held, deliver_updates},
     mode_script::ModeRunner,
     mode_view::ModeFrame,
     objectives::Participant,
@@ -925,6 +925,11 @@ impl Room {
         self.flow.as_ref().is_some_and(MatchFlow::assembling)
     }
 
+    /// Whether the mode's own graph drives the match (`MatchFlow::follow`).
+    fn follows_graph(&self) -> bool {
+        self.flow.as_ref().is_some_and(MatchFlow::follows_graph)
+    }
+
     /// The mode entity's first frame for a client: the mode graph's newest
     /// while it drives the mode entity, else the scene's hand-built one.
     fn first_mode_frame<'a>(&'a self, scene: &'a PreparedScene) -> ModeFrame<'a> {
@@ -948,15 +953,14 @@ impl Room {
         })
     }
 
-    /// The Practice Range, which has no match flow, and a Workshop match
-    /// start their mode entity's graph with the room's first tick, before
+    /// The mode entity's graph starts with the room's first tick, before
     /// its placed scripts' first, as the map's entities start with the mode
     /// entity in retail: the placed scripts find its held `0724` as they
-    /// start (`mode_script::without_flow`), and the mode graph takes the
-    /// objectives' `0813` (`0F4C`, sent once as they start). A Workshop
-    /// match runs its actions on the mode entity, so a graph must drive it
-    /// (`ModeRunner::workshop`); its graph removes placeables as it starts
-    /// (`0CBB` st34, the health packs), before any world reaches a client.
+    /// start, and the mode graph takes the objectives' `0813` (`0F4C`, sent
+    /// once as they start). A Workshop match runs its actions on the mode
+    /// entity, so a graph must drive it (`ModeRunner::workshop`). The mode
+    /// graph removes placeables as it starts (`0CBB` st34, the health
+    /// packs), before any world reaches a client.
     fn begin_mode(&mut self, tick: u32) {
         let Some(world) = &mut self.world else {
             return;
@@ -964,18 +968,20 @@ impl Room {
         if self.mode.is_some() {
             return;
         }
-        if orpheus_sim::mode_script::without_flow(self.map.mode_guid) {
-            self.mode = Some(ModeRunner::start(&world.scene, tick, Vec::new()));
-        } else if self.workshop.is_some()
-            && let Some(mode) = ModeRunner::workshop(&world.scene, tick, Vec::new())
-        {
+        let mode = if self.workshop.is_some() {
+            ModeRunner::workshop(&world.scene, tick, Vec::new())
+        } else {
+            Some(ModeRunner::start(&world.scene, tick, Vec::new()))
+        };
+        if let Some(mode) = mode {
             take_placeable_removals(self.mode.insert(mode), &mut world.scene);
         }
     }
 
-    /// The players are in a PvP world: the flow starts with "assemble your
-    /// team", and the mode graph once to see whether it can drive the mode
-    /// entity (`mode_script.rs`).
+    /// The players are in a PvP world: the match starts. Where the mode's
+    /// own graph drives the match (`ModeRunner::holds_rooms`) the server
+    /// starts it (`ModeRunner::start_match`) and the flow follows the
+    /// graph; else the flow starts with "assemble your team".
     fn begin_flow(&mut self, scene: &mut PreparedScene, timers: Timers, now: Duration, tick: u32) {
         if self.flow.is_some() {
             return;
@@ -1011,7 +1017,25 @@ impl Room {
         .or_else(skirmish) else {
             return;
         };
-        flow.start();
+        if self.mode.is_none() {
+            let mode = self.mode.insert(ModeRunner::start(scene, tick, Vec::new()));
+            // The mode graph removes placeables as it starts (`0CBB` st34,
+            // the health packs): before the world that just started
+            // reaches the client, so their creates never go.
+            take_placeable_removals(mode, scene);
+        }
+        match self.mode.as_mut() {
+            Some(mode) if mode.holds_rooms() => mode.start_match(),
+            // Nothing stands in for a mode its graph drives: the match
+            // waits, and says why.
+            mode if flow.mode().graph_driven() => tracing::error!(
+                "[game] {}: {:?} plays only on its mode graph, which doesn't run here: {:?}",
+                self.map.name,
+                flow.mode(),
+                mode.and_then(|mode| mode.gaps())
+            ),
+            _ => flow.start(),
+        }
         tracing::info!(
             "[game] {}: {:?} match flow, assemble your team",
             self.map.name,
@@ -1031,13 +1055,6 @@ impl Room {
                 Arc::clone(&workshop.catalog),
                 u64::from(tick),
             ));
-        }
-        if self.mode.is_none() {
-            let mode = self.mode.insert(ModeRunner::start(scene, tick, Vec::new()));
-            // The mode graph removes placeables as it starts (`0CBB` st34,
-            // the health packs): before the world that just started
-            // reaches the client, so their creates never go.
-            take_placeable_removals(mode, scene);
         }
         self.flow_at = now;
         self.flow_tick = tick;
@@ -1587,6 +1604,7 @@ impl Peer {
             self.world.end_assemble(&world.scene, tick)?;
         }
         self.world.set_assembling(room.assembling());
+        self.world.set_mode_graph(room.follows_graph());
         self.world
             .set_mode_held(room.mode.as_ref().map_or(&[], ModeRunner::held));
         let spawned = self.advance_loading(schemas, room, slot, now, tick)?;
@@ -2737,6 +2755,7 @@ impl State {
             changes.extend(peer.world.take_body_aura_changes());
         }
         changes.extend(world.scene.take_bot_aura_changes());
+        changes.extend(world.scene.take_placed_aura_changes());
         changes.extend(combat.take_field_auras());
         for change in &changes {
             let target = change.target();
@@ -2818,14 +2837,18 @@ impl State {
                 let candidates = combat.target_candidates(&world.scene);
                 world.scene.set_bot_target_candidates(&candidates);
                 world.scene.set_placed_target_candidates(&candidates);
-                // The health packs the bodies' searches find (`0033` st11).
+                // The health packs the bodies' searches find (`0033` st11),
+                // and the placeables' entity variables their graphs read.
                 let pickups = world.scene.pickups();
+                let map_variables: Arc<[(u32, orpheus_script::wire::Variables)]> =
+                    world.scene.placed_scripts().entity_variables().into();
                 for peer in room_peers(&mut self.peers, &self.seats, id, players.len())
                     .into_iter()
                     .flatten()
                 {
                     peer.world.set_target_candidates(&candidates);
                     peer.world.set_pickups(&pickups);
+                    peer.world.set_map_variables(&map_variables);
                 }
                 let context = ShotContext {
                     quanta: RETAIL_QUANTA,
@@ -3090,6 +3113,11 @@ impl State {
                     },
                 })
                 .collect();
+            // The mode graph reads its objectives' entity variables (their
+            // times, a point's progress and owner) as they stand now.
+            if let (Some(mode), Some(world)) = (room.mode.as_mut(), room.world.as_ref()) {
+                mode.set_map_variables(&world.scene.placed_scripts().entity_variables());
+            }
             // The Range (no match flow): its graph advances with the room,
             // and its frame goes to every client each tick, as what changed
             // since the frame he acknowledged (`orpheus_sim::mode_view`):
@@ -3137,7 +3165,7 @@ impl State {
                     let variables = orpheus_script::wire::Variables::new();
                     messages = mode.advance(tick, &variables, players);
                     events = match mode.match_state() {
-                        Some(state) => flow.follow(seconds, state.phase, state.clock, state.winner),
+                        Some(state) => flow.follow(seconds, state),
                         None => Vec::new(),
                     };
                 }
@@ -3232,7 +3260,12 @@ impl State {
                     }
                 }
             }
-            room.assembled = was == Phase::Assemble && flow.phase() != Phase::Assemble;
+            // The end of the assembly closes hero select by the server's
+            // hand only where the flow drives the match: the mode graph's
+            // close is its own (`0F4A` st9's `0692` ends, `288B` st36's stack
+            // with it).
+            room.assembled =
+                !flow.follows_graph() && was == Phase::Assemble && flow.phase() != Phase::Assemble;
             let mut respawn = None;
             for event in &events {
                 match event {
@@ -3242,14 +3275,15 @@ impl State {
                             id[0] & 0xFFFF,
                             flow.clock()
                         );
-                        // A new side (after the first) reopens hero select
-                        // in its spawn rooms; a new Control round after the
-                        // first and every Elimination round put everyone
-                        // back in spawn.
+                        // A new side (after the first) puts everyone back in
+                        // his side's spawn room and reopens hero select there
+                        // (the mode graph's assembly reopens it itself); a
+                        // new Control round after the first and every
+                        // Elimination round put everyone back in spawn.
                         let sided = flow.attackers().is_some();
                         match phase {
                             Phase::Assemble if sided && flow.round() > 0 => {
-                                respawn = Some(true);
+                                respawn = Some(!flow.follows_graph());
                             }
                             Phase::Round
                                 if flow.mode() == Mode::Elimination
@@ -3394,9 +3428,16 @@ impl State {
             }
             let mut players = Players::new(&mut worlds, tick);
             let mut messages = players.take_messages();
+            let player_ends = players.take_message_ends();
+            let mut updates = players.take_message_updates();
             messages.append(&mut room.mail);
             let (placed, mut ends) = world.scene.take_placed_messages();
             messages.extend(placed);
+            ends.extend(player_ends);
+            if let Some(mode) = &mut room.mode {
+                ends.extend(mode.take_message_ends());
+                updates.extend(mode.take_message_updates());
+            }
             if let Some(combat) = &mut world.combat {
                 messages.extend(combat.take_messages());
             }
@@ -3405,6 +3446,12 @@ impl State {
                 let (sent, ended) = spawned.take_messages();
                 messages.extend(sent);
                 ends.extend(ended);
+            }
+            // The mode entity's variables the placeables read (the spawn
+            // walls' `0FA8` st5 the attacking team #10795e), as the mode's
+            // graph left them this tick, before its messages reach them.
+            if let Some(variables) = room.mode.as_ref().and_then(ModeRunner::entity_variables) {
+                world.scene.set_placed_mode_variables(variables);
             }
             let held = orpheus_sim::mode_script::held(room.mode.as_ref());
             let (mut bots, placed) = world.scene.message_recipients(tick);
@@ -3417,6 +3464,7 @@ impl State {
             }
             deliver_held(&held, &mut room.held_reach, &mut recipients);
             deliver(&mut room.backlog, messages, ends, &mut recipients);
+            deliver_updates(&updates, &mut recipients);
             let mut changes = world.scene.take_dummy_changes();
             drop(players);
             let mut opened = Vec::new();
@@ -3645,7 +3693,6 @@ impl State {
             let mut dummies = Vec::new();
             let mut scopes = Vec::new();
             for (&id, room) in &mut self.rooms {
-                room.begin_mode(tick);
                 let next = room.next_dummy();
                 if let Some(world) = &mut room.world {
                     // combat.py `update`: the dead bots' death scripts, then
@@ -3658,16 +3705,20 @@ impl State {
                     // messages (the spawn rooms' `0723`) go with the others
                     // (`route_messages`). A mode graph that drives the mode
                     // entity holds the spawn rooms' `0724` itself; else the
-                    // rooms the match flow's spawns hold get it here. The
-                    // scripts' dummy bots (the Training Partner) are AI
-                    // players of the room (`ai.rs`).
-                    let holds = if room.mode.as_ref().is_some_and(ModeRunner::holds_rooms) {
-                        Vec::new()
-                    } else {
-                        let flow = room.flow.as_ref();
-                        world.scene.room_holds(|team| {
-                            flow.map_or(SpawnChoice::First, |flow| flow.spawn_choice(team))
-                        })
+                    // rooms the match flow's spawns hold get it here, from
+                    // the tick after the mode started (the placeables run
+                    // their first tick before it). The scripts' dummy bots
+                    // (the Training Partner) are AI players of the room
+                    // (`ai.rs`).
+                    let holds = match room.mode.as_ref() {
+                        None => Vec::new(),
+                        Some(mode) if mode.holds_rooms() => Vec::new(),
+                        Some(_) => {
+                            let flow = room.flow.as_ref();
+                            world.scene.room_holds(|team| {
+                                flow.map_or(SpawnChoice::First, |flow| flow.spawn_choice(team))
+                            })
+                        }
                     };
                     world.scene.set_next_dummy(Some(next));
                     // The placeables the mode entity's graphs removed (`0CBB`
@@ -3690,6 +3741,9 @@ impl State {
                     }
                     bot_events.insert(id, world.scene.take_bot_events());
                 }
+                // The mode starts after the placeables' first tick, with
+                // what they reported (`mode_script::reported_objectives`).
+                room.begin_mode(tick);
             }
             for (id, changes) in dummies {
                 self.change_dummies(id, changes);
