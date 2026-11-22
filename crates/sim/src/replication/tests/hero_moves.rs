@@ -1107,6 +1107,103 @@ fn doomfists_tapped_airborne_slam_flies_from_the_press_frame() {
     assert_eq!(hit, Some(7558));
 }
 
+/// C32S2 on Hanamura, game session car4 (`D:/Temp/ma/car4`, refs
+/// `MapEntities.md` "MapAnim"): Doomfist stands 2 m from the car 80000380
+/// (`03B7`, idle-animated: its body bobs on bone 1 of clip `11B3`) and
+/// walks into it (3481-3574), then stands against it. The car's 0x1000
+/// hulls stop him where his client did (3505; without them he walked on
+/// through the car) and push him on as they bob. Each command poses the
+/// car at its view time (the logged `extra`; the client's comp27 clock
+/// matched it to within a frame). This replay equals the live server's
+/// poses on all 242 frames; the client's own samples equal them on 69 of
+/// 95, the others one 1/1024 m step apart (3516-3583, 3611-3664, the same
+/// with the car posed 8-24 ms later or earlier; not traced), listed here
+/// where they are equal.
+#[test]
+#[ignore = "requires the derived 104319 data and the install (Hanamura's collision)"]
+fn doomfist_walks_into_a_hanamura_car_and_stops_where_his_client_did() {
+    const FEET: [f64; 3] = [38.228_515_625, 0.095_703_125, -7.752_929_687_5];
+    const YAW: i32 = -20857;
+    // (first frame, the command's extra) in the server's log.
+    const EXTRA: &[(u32, u16)] = &[
+        (3450, 202),
+        (3456, 203),
+        (3484, 202),
+        (3486, 203),
+        (3488, 194),
+        (3493, 193),
+        (3519, 192),
+        (3526, 189),
+        (3528, 185),
+        (3530, 181),
+        (3534, 178),
+        (3537, 177),
+        (3548, 176),
+        (3554, 175),
+        (3562, 174),
+        (3568, 173),
+        (3578, 172),
+        (3597, 171),
+        (3605, 170),
+        (3621, 169),
+        (3624, 166),
+        (3628, 161),
+        (3633, 158),
+        (3637, 157),
+        (3646, 156),
+        (3653, 155),
+        (3655, 154),
+        (3658, 153),
+        (3662, 151),
+        (3675, 152),
+        (3678, 155),
+        (3687, 156),
+    ];
+    let mut doomfist = Player::on_hanamura(DOOMFIST, FEET, YAW);
+    let view = Command {
+        yaw: YAW,
+        ..Command::default()
+    };
+    while doomfist.frame < 3449 {
+        doomfist.step(view);
+    }
+    assert_eq!(doomfist.position(), FEET);
+    let mut feet = std::collections::BTreeMap::new();
+    for frame in 3450..=3691 {
+        let extra = EXTRA
+            .iter()
+            .rev()
+            .find(|(first, _)| *first <= frame)
+            .unwrap()
+            .1;
+        doomfist.step(Command {
+            forward: if (3481..3575).contains(&frame) {
+                127
+            } else {
+                0
+            },
+            extra,
+            ..view
+        });
+        feet.insert(frame, doomfist.position());
+    }
+    let client = [
+        (3487, [37.712_890_625, -0.064_453_125, -7.986_328_125]),
+        (3505, [36.293_945_312_5, -0.027_343_75, -8.627_929_687_5]),
+        (3507, [36.293_945_312_5, -0.024_414_062_5, -8.629_882_812_5]),
+        (3514, [36.296_875, -0.024_414_062_5, -8.636_718_75]),
+        (3520, [36.298_828_125, -0.023_437_5, -8.642_578_125]),
+        (3540, [36.306_640_625, -0.023_437_5, -8.662_109_375]),
+        (3574, [36.316_406_25, -0.021_484_375, -8.695_312_5]),
+        (3627, [36.320_312_5, -0.030_273_437_5, -8.693_359_375]),
+        (3650, [36.321_289_062_5, -0.030_273_437_5, -8.693_359_375]),
+        (3686, [36.322_265_625, -0.030_273_437_5, -8.693_359_375]),
+    ];
+    for (frame, client) in client {
+        assert_eq!(feet[&frame], client, "frame {frame}");
+    }
+}
+
 /// Rocket Punch (graph `0D06`) on the server: the charge (st11) while
 /// secondary fire is held, then at the release the dash, a server-only
 /// MovementMod (st42: forward throttle 1 at 8.18 times the run speed,
