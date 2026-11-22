@@ -22,10 +22,11 @@
 //! objective's attackers' or defenders' rooms (they move forward as the
 //! objectives fall, and swap with the sides), in Control the stage's, in
 //! Assault the mode graph's objective's.
-//! Spawn doors: the map data names no door entities (the doors run graph
-//! 0D32, related-projects.md, but the `game_maps` derivation doesn't list
-//! them), so the server opens none. Assumption: the doors are map entities
-//! the client drives itself; nothing holds the attackers in during setup.
+//! Spawn doors: the doors are server placeables that run `0D32` (map
+//! entities stage A); the mode graph holds them open with `0702`. Where
+//! the flow drives, no `0702` goes, and the server's mover has no door
+//! collision either way (docs/dev/loose-ends.md, refs `ModeGraphGaps.md`
+//! "ModeGraph4"): nothing holds a human attacker in during setup.
 
 use std::{collections::VecDeque, sync::Arc};
 
@@ -752,8 +753,17 @@ impl MatchFlow {
     /// The players are in: hero select opens (match.py `_spawn_steps`
     /// starts "assemble your team" at the first spawn). A mode its graph
     /// drives starts with the graph (`ModeRunner::start_match`), not here.
+    /// Skirmish has no assembly: its graph `0D76` never sets a phase and
+    /// counts its clock from its start, and Lúcioball's `0F9D`, the brawl
+    /// the flow plays as Skirmish, goes from waiting to its setup (#59 = 2)
+    /// without one; so its round begins at once.
     pub fn start(&mut self) {
-        if self.phase == Phase::Waiting && !self.mode.graph_driven() {
+        if self.phase != Phase::Waiting || self.mode.graph_driven() {
+            return;
+        }
+        if self.mode == Mode::Skirmish {
+            self.begin_round();
+        } else {
             let seconds = self.rules.assemble;
             self.enter(Phase::Assemble, seconds);
         }

@@ -98,7 +98,7 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
                 button,
                 pressed: false,
             })?,
-            StateKind::MoveTo | StateKind::NavPath => {
+            StateKind::MoveTo | StateKind::NavPath | StateKind::Rise => {
                 self.machine.movements.remove(&key);
             }
             StateKind::GrappleCast => {

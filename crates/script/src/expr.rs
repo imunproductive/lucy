@@ -339,6 +339,12 @@ pub trait Context {
         None
     }
 
+    /// Whether a ray from `start` down to `end`, stopped by the map, enters
+    /// a zone that kills (`STU_88687E54`); None: unknown.
+    fn fatal_drop(&mut self, _start: [f64; 3], _end: [f64; 3]) -> Option<bool> {
+        None
+    }
+
     /// The map point a ray from `origin` along unit `direction` meets
     /// within `reach` (a cast without a ray profile); Some(None) when it
     /// meets none, None when this world has no map.
@@ -3226,6 +3232,29 @@ impl Evaluator<'_> {
                 let radius = context.body_radius(entity).ok_or_else(unsupported)?;
                 let scale = context.body_scale(entity).ok_or_else(unsupported)?;
                 Value::Float(f64::from(radius as f32 * (scale as f32).max(0.35)))
+            }
+            // Whether falling from a point would kill (`Eval_STU_88687E54`
+            // 0x7FF789BFE570): a ray from `m_A8D12F28` (a vector, else the
+            // origin) down `m_83C99CE5` metres (unset or no number: 20) by
+            // `0x7FF789B2F280`, which stops at the map and answers whether
+            // the rest enters the kill height or a damage area. Meteor
+            // Strike's floor (`0C51` st59: from 0.2 m over his feet, 50 m).
+            "STU_88687E54" if native_fields(config, &["m_A8D12F28", "m_83C99CE5"]) => {
+                let unsupported = || EvalError::UnsupportedConfig(class.into());
+                let start = match self.config(child(config, "m_A8D12F28"), context, nested)? {
+                    Value::Vector(point) => point,
+                    _ => [0.0; 3],
+                };
+                let depth = match child(config, "m_83C99CE5") {
+                    depth if depth.is_null() => 20.0,
+                    depth => match self.config(depth, context, nested)? {
+                        Value::Float(depth) => f64::from(depth as f32),
+                        Value::Integer(depth) => depth as f64,
+                        _ => 20.0,
+                    },
+                };
+                let end = [start[0], f64::from((start[1] - depth) as f32), start[2]];
+                Value::Bool(context.fatal_drop(start, end).ok_or_else(unsupported)?)
             }
             // GetGameRulesetValue (`Eval_STU_3832D36C` 0x7FF789BDFAC0,
             // GameSettings.md 15.2): `m_value` first, and a value wins (an

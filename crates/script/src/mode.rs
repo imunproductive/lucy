@@ -16,10 +16,11 @@ use crate::{
     graph::GraphStore,
     map_tags::MapTags,
     placed::{DummyChange, Gaps, MapEntityWorld, NextDummy, PlacedEntity},
+    target_tags::TargetTags,
     vm::{
         ACTION_PARAMETERS, ActionOutcome, Component, DummyBot, EntityCreation, GameMessage,
         HealthChange, InitFault, MAX_INIT_WORK, MapRays, MessageEnd, PlayRequest, Root,
-        ScopeChange, ScopeSource, Site, Snapshot, Unknowns, World,
+        ScopeChange, ScopeSource, Site, Snapshot, TargetTagEffect, Unknowns, World,
     },
     wire::{Value, Variables},
 };
@@ -132,6 +133,12 @@ pub struct ModeWorld {
     /// Where the map's server placeables stand (the objectives `0F4A`
     /// places its `0C49` over, `STU_71A87E92(#10551)`).
     pub placeables: BTreeMap<u32, [f64; 3]>,
+    /// The tags the graphs' target tag states add to and suppress on map
+    /// placeables (Skirmish's `0D76` rid5/rid6/rid8 and Control's `0EC2`
+    /// rid221-224 give the entity of tag `0405`/`0406`/`0407` the tag
+    /// `034D`, which only the Elimination controller's client-only `0D5E`
+    /// reads).
+    placeable_tags: BTreeMap<u32, TargetTags>,
     /// Mode entity variables that hold before the root graph starts, over
     /// the mode's: what the map's placeables reported before it (the
     /// objectives' `0813`, `orpheus_sim::mode_script`).
@@ -204,6 +211,7 @@ impl ModeWorld {
             map_rays: None,
             heroes: None,
             placeables: BTreeMap::new(),
+            placeable_tags: BTreeMap::new(),
             start_variables: Variables::new(),
             foreign: BTreeMap::new(),
             variable_writes: Vec::new(),
@@ -363,10 +371,13 @@ impl World for ModeWorld {
         Some(entities)
     }
 
-    /// A map placeable's tags; a player's body's are its definition's
-    /// (the bundle's `bodies`), as the victim's tags at a kill
-    /// (`orpheus_sim::replication`). Assumption: its states add or remove
-    /// none the mode graph asks about.
+    /// A map placeable's tags: those the graphs' states hold on it, else
+    /// its authored ones (none for a server placeable the map lists no tag
+    /// of: Workshop Chamber's capture point, whose `07CB` Skirmish's
+    /// `0D76` rid33 asks for tag `041B`); a player's body's are its
+    /// definition's (the bundle's `bodies`), as the victim's tags at a kill
+    /// (`orpheus_sim::replication`). Assumption: a body's states add or
+    /// remove none the mode graph asks about.
     fn has_target_tag(&self, site: Site, entity: u32, tag: u64) -> Option<bool> {
         if let Some(player) = self.player_of(entity)
             && player.body == Some(entity)
@@ -380,8 +391,45 @@ impl World for ModeWorld {
                 .as_ref()?;
             return Some(tags.contains(&tag));
         }
-        let placed = self.map_tags.as_ref()?.get(entity)?;
-        Some(placed.tags.contains(&tag))
+        if let Some(held) = self
+            .placeable_tags
+            .get(&entity)
+            .and_then(|tags| tags.has(tag))
+        {
+            return Some(held);
+        }
+        match self.map_tags.as_ref()?.get(entity) {
+            Some(placed) => Some(placed.tags.contains(&tag)),
+            None => self.placeables.contains_key(&entity).then_some(false),
+        }
+    }
+
+    /// A target tag state on a map placeable. Only the mode entity's
+    /// graphs see it: the placeables' component 76 isn't sent, and their
+    /// own scripts read their authored tags (as `crate::placed`'s world
+    /// keeps its own entity's). One on no entity (a tag query that found
+    /// none: Workshop Chamber has no `0405`) tags nothing.
+    fn set_target_tag_effect(
+        &mut self,
+        _site: Site,
+        effect: TargetTagEffect,
+        active: bool,
+    ) -> bool {
+        if effect.entity == 0 {
+            return true;
+        }
+        if self
+            .map_tags
+            .as_ref()
+            .and_then(|tags| tags.get(effect.entity))
+            .is_none()
+        {
+            return false;
+        }
+        self.placeable_tags
+            .entry(effect.entity)
+            .or_default()
+            .set(effect, active)
     }
 
     /// The mode entity, the players' controllers and bodies, the map's
