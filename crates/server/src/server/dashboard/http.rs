@@ -7,6 +7,7 @@
 //! dashboard page, `fetch` and the client tools send nothing else.
 
 use std::{
+    borrow::Cow,
     io::{self, Read, Write},
     net::{SocketAddr, TcpListener},
     sync::{Arc, mpsc},
@@ -58,7 +59,8 @@ impl Request {
 pub(super) struct Response {
     pub status: u16,
     pub headers: Vec<(&'static str, String)>,
-    pub body: Vec<u8>,
+    /// The page's embedded files are sent from the binary as they are.
+    pub body: Cow<'static, [u8]>,
 }
 
 type Handler = dyn Fn(Request) -> Response + Send + Sync;
@@ -289,7 +291,7 @@ fn refuse(stream: &mut PeerStream, status: u16, message: &str) -> io::Result<boo
     let response = Response {
         status,
         headers: vec![("Content-Type", "application/json; charset=utf-8".to_owned())],
-        body: json!({ "error": message }).to_string().into_bytes(),
+        body: json!({ "error": message }).to_string().into_bytes().into(),
     };
     write_response(stream, &response, false)?;
     Ok(false)
@@ -359,7 +361,9 @@ mod tests {
         |request| Response {
             status: 200,
             headers: vec![("Content-Type", "text/plain".to_owned())],
-            body: [request.url.as_bytes(), b" ", &request.body].concat(),
+            body: [request.url.as_bytes(), b" ", &request.body]
+                .concat()
+                .into(),
         }
     }
 

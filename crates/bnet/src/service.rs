@@ -277,23 +277,35 @@ fn rpc_config() -> WebSocketConfig {
 }
 
 /// The WebSocket upgrade must end by the stream's accept deadline
-/// ([`HANDSHAKE_TIMEOUT`]).
+/// ([`HANDSHAKE_TIMEOUT`]). The link's logon deadline and first ping count
+/// from the upgrade: the time read while answering it, before the client
+/// has its answer.
 fn serve_rpc(socket: PeerStream, address: SocketAddr, endpoint: &RpcEndpoint) {
-    let Ok(mut websocket) = accept_hdr_with_config(socket, negotiate, Some(rpc_config())) else {
+    let mut upgraded = Duration::ZERO;
+    // The handshake callback must return tungstenite's response type.
+    #[allow(clippy::result_large_err)]
+    let answer = |request: &Request, response| {
+        upgraded = (endpoint.now)();
+        negotiate(request, response)
+    };
+    let Ok(mut websocket) = accept_hdr_with_config(socket, answer, Some(rpc_config())) else {
         return;
     };
     websocket.get_mut().set_time_limit(None);
-    let _ = run_rpc(&mut websocket, address, endpoint);
+    let _ = run_rpc(&mut websocket, address, endpoint, upgraded);
 }
 
+/// Each wake checks the logon deadline before the ping: when both are due,
+/// the link closes without a ping.
 fn run_rpc(
     websocket: &mut WebSocket<PeerStream>,
     address: SocketAddr,
     endpoint: &RpcEndpoint,
+    upgraded: Duration,
 ) -> Result<(), Error> {
     let mut session = RpcSession::new();
-    let logon_by = (endpoint.now)() + LOGON_TIMEOUT;
-    let mut next_ping = (endpoint.now)() + PING_INTERVAL;
+    let logon_by = upgraded + LOGON_TIMEOUT;
+    let mut next_ping = upgraded + PING_INTERVAL;
     let mut ping_number = 0u32;
     let mut pending_ping = None;
     loop {
@@ -542,13 +554,16 @@ mod tests {
         let (mut quiet, _) = client(request(address, Some(SUBPROTOCOL)), tcp(address)).unwrap();
         settle("the links are served", || service.peers() == 3);
 
-        // At 10 s the half-sent upgrade closes.
+        // The quiet link's deadlines count from its upgrade, at 0 s
+        // (`serve_rpc`). At 10 s the half-sent upgrade closes.
         advance(HANDSHAKE_TIMEOUT);
         assert!(closed(&mut upgrading));
-        // At 30 s the link that never logged on is closed, before the ping
-        // due at 20 s.
+        // The clock jumps to 30 s: the logon deadline and the ping due at
+        // 20 s come at one wake, and the deadline goes first (`run_rpc`):
+        // the link closes with no ping. (A ping first would leave the
+        // client's pong unread when the server closes.)
         advance(LOGON_TIMEOUT - HANDSHAKE_TIMEOUT);
-        assert!(matches!(quiet.read(), Ok(Message::Close(None))));
+        assert_eq!(quiet.read().unwrap(), Message::Close(None));
         settle("the closed links' threads end", || service.peers() == 1);
         // The game's dial stays.
         stall
