@@ -49,7 +49,7 @@ use mio::{Events as Readiness, Poll, Waker, net::UdpSocket};
 use super::{
     GAME_SOCKET, MatchId, MatchResult, OpenRequest, PlateAnswers, RECEIVE_BATCH, Request,
     RoomPlate, RoomRequest, RoomSettings, RoomSnapshot, RoomState, Target, WorldPlayer,
-    room::RoomLoop,
+    room::RoomLoop, timer,
 };
 use crate::connection::MAX_CONNECTION_ID;
 use lucy_lobby::handoff::Handoff;
@@ -95,6 +95,10 @@ impl Inbound {
 pub(super) struct Datagram {
     pub(super) bytes: Vec<u8>,
     pub(super) from: SocketAddr,
+    /// When the router read it, on the service's clock: a ping's receive
+    /// stamp, which a room busy with its tick takes later
+    /// (`ingress::Pong`).
+    pub(super) arrived: Duration,
     queued: Arc<AtomicUsize>,
 }
 
@@ -260,11 +264,11 @@ impl Router {
         None
     }
 
-    /// A datagram from `from` goes to the room that has its connection. It
-    /// is dropped here when it can't be a game's, when no room has its
-    /// connection (its match closed), and while its game has
+    /// A datagram from `from`, read at `now`, goes to the room that has its
+    /// connection. It is dropped here when it can't be a game's, when no
+    /// room has its connection (its match closed), and while its game has
     /// [`PEER_DATAGRAMS`] waiting.
-    pub(super) fn route(&self, datagram: &[u8], from: SocketAddr) {
+    pub(super) fn route(&self, datagram: &[u8], from: SocketAddr, now: Duration) {
         if datagram.len() > MAX_DATAGRAM {
             return;
         }
@@ -282,6 +286,7 @@ impl Router {
         let _ = room.send(Inbound::Datagram(Datagram {
             bytes: datagram.to_vec(),
             from,
+            arrived: now,
             queued: Arc::clone(&route.queued),
         }));
     }
@@ -556,7 +561,7 @@ fn route_until_stopped(
         if socket_ready {
             for _ in 0..RECEIVE_BATCH {
                 match socket.recv_from(&mut buffer) {
-                    Ok((count, from)) => router.route(&buffer[..count], from),
+                    Ok((count, from)) => router.route(&buffer[..count], from, start.elapsed()),
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                         socket_ready = false;
                         break;
@@ -613,7 +618,8 @@ fn start_room(
 /// A room's thread: its loop on the service's clock, woken by what comes in
 /// (so a datagram is taken as it arrives) or by its next tick. It ends once
 /// its room has finished (its last game left, or its match failed twice),
-/// or when the service stops.
+/// or when the service stops. While it runs the process keeps the 1 ms
+/// system timer (`timer.rs`), so its waits end on time.
 fn run_room(
     mut game: RoomLoop,
     socket: &std::net::UdpSocket,
@@ -621,6 +627,7 @@ fn run_room(
     start: Instant,
     ended: Ended,
 ) {
+    let _timer = timer::Resolution::one_ms();
     let mut next = None;
     loop {
         let inbound = next.take().into_iter().chain(inbox.try_iter());
@@ -655,9 +662,10 @@ enum Woken {
 }
 
 /// A room's wait for what comes in, until `due` on the service's clock
-/// (`start`). Every room's wait for its next tick goes through here, so a
-/// precise timer belongs here: on Windows a plain wait rounds up to the
-/// system timer's 15.6 ms (`refs/reports/Latency.md`).
+/// (`start`). Every room's wait for its next tick goes through here. With
+/// the 1 ms timer its thread holds (`timer.rs`) the wait ends within about
+/// a millisecond of `due`; the channel rounds the timeout up to whole
+/// milliseconds, so a tick starts up to 1-2 ms late, never early.
 fn wait_until(inbox: &mpsc::Receiver<Inbound>, start: Instant, due: Duration) -> Woken {
     match inbox.recv_timeout(due.saturating_sub(start.elapsed())) {
         Ok(inbound) => Woken::Inbound(inbound),
