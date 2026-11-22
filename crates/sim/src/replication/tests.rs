@@ -572,13 +572,15 @@ fn a_dry_tick_waits_and_the_late_commands_run_as_the_client_made_them() {
 
 /// Past `MAX_WAIT` dry ticks the client's last input runs again for the
 /// next frame each tick, `MAX_REPEATS` frames since his last datagram, so
-/// his body goes on through a short gap (walking with fire held here);
-/// later dry ticks run neutral frames, his aim with nothing held, so a
-/// silent body neither walks nor fires. The clock asks for four times as
-/// fast all along. A client that sends again, though only frames already
-/// run, is not silent: the next dry tick repeats his newest input. When
-/// his commands catch up, those of frames run without them are late: a
-/// release and a press they had go with the next command run.
+/// his body goes on through a stall (walking with fire held here); later
+/// dry ticks run neutral frames, his aim with nothing held, so a silent
+/// body neither walks nor fires. The clock asks for four times as fast all
+/// along. A client that sends again, though only frames already run, is
+/// not silent: the next dry tick holds his newest input, however far
+/// behind the frames run it is (a stalling client falls 30 frames and
+/// more behind and walks on). When his commands catch up, those of frames
+/// run without them are late: a release and a press they had go with the
+/// next command run.
 #[test]
 fn past_the_wait_a_dry_tick_repeats_the_last_input_then_runs_neutral_frames() {
     let fire = |frame| Command {
@@ -604,9 +606,9 @@ fn past_the_wait_a_dry_tick_repeats_the_last_input_then_runs_neutral_frames() {
     input.release(1, true);
     input.release(1, true);
     assert_eq!(released(&mut input), [(100, FIRE), (101, FIRE)]);
-    // The client goes silent: 4 ticks wait, 4 repeat 101's input for 102
-    // to 105, the next run neutral frames.
-    for tick in 1..=10_u32 {
+    // The client goes silent: 4 ticks wait, `MAX_REPEATS` repeat 101's
+    // input from 102 on, the next run neutral frames.
+    for tick in 1..=MAX_WAIT + MAX_REPEATS + 6 {
         input.release(1, true);
         assert_eq!(
             input.clock,
@@ -629,35 +631,53 @@ fn past_the_wait_a_dry_tick_repeats_the_last_input_then_runs_neutral_frames() {
         assert_eq!(drain(&mut input), expected, "dry tick {tick}");
     }
     // Ticks the clock skipped run a neutral frame each.
+    let last = 109 + MAX_REPEATS;
     input.release(2, true);
-    assert_eq!(released(&mut input), [(108, 0), (109, 0)]);
-    // The client is back, behind: his datagram has 102 to 109, all run
-    // (104 released fire, 105 pressed it again). The next dry tick repeats
-    // his newest, 109's, for 110.
-    let mut commands: Vec<_> = (102..=109).map(fire).collect();
+    assert_eq!(released(&mut input), [(last - 1, 0), (last, 0)]);
+    // The client is back, far behind: his datagram ends at 104 (fire
+    // released), more than a held input's horizon before the next frame.
+    // The next dry tick holds that input (walking, no fire), not a neutral
+    // frame.
+    assert!(last + 1 - 104 > HOLD_INPUT_FRAMES);
+    input.commands(last + 1, &[fire(102), fire(103), forward(104)]);
+    input.release(1, true);
+    assert_eq!(
+        drain(&mut input),
+        [Command {
+            frame: last + 1,
+            ..forward(104)
+        }]
+    );
+    // Then 102 to `last` + 1, all run (104 released fire, 105 pressed it
+    // again): the next dry tick repeats his newest, fire held.
+    let mut commands: Vec<_> = (102..=last + 1).map(fire).collect();
     commands[2] = forward(104);
-    input.commands(110, &commands);
+    input.commands(last + 2, &commands);
     input.release(1, true);
-    assert_eq!(drain(&mut input), [fire(110)]);
-    // He catches up: 111 and 112 run as he made them (fire held).
-    input.commands(111, &(110..=112).map(fire).collect::<Vec<_>>());
+    assert_eq!(drain(&mut input), [fire(last + 2)]);
+    // He catches up: the next two run as he made them (fire held).
+    input.commands(
+        last + 3,
+        &(last + 2..=last + 4).map(fire).collect::<Vec<_>>(),
+    );
     input.release(1, true);
     input.release(1, true);
-    assert_eq!(released(&mut input), [(111, FIRE), (112, FIRE)]);
+    assert_eq!(released(&mut input), [(last + 3, FIRE), (last + 4, FIRE)]);
     assert_eq!(input.dry, 0);
-    // Silent again for 6 ticks: 4 wait, 2 repeat 112's fire for 113 and
-    // 114. His commands then come: 113 released fire and 114 pressed it
-    // again; 115 runs released (the repeats held fire), 116 presses it.
+    // Silent again for 6 ticks: 4 wait, 2 repeat his fire. His commands
+    // then come: the first repeated frame's released fire and the second's
+    // pressed it again; the next runs released (the repeats held fire),
+    // the one after presses it.
     for _ in 0..6 {
         input.release(1, true);
     }
-    assert_eq!(released(&mut input), [(113, FIRE), (114, FIRE)]);
-    let mut commands: Vec<_> = (113..=116).map(fire).collect();
-    commands[0] = forward(113);
-    input.commands(117, &commands);
+    assert_eq!(released(&mut input), [(last + 5, FIRE), (last + 6, FIRE)]);
+    let mut commands: Vec<_> = (last + 5..=last + 8).map(fire).collect();
+    commands[0] = forward(last + 5);
+    input.commands(last + 9, &commands);
     input.release(1, true);
     input.release(1, true);
-    assert_eq!(released(&mut input), [(115, 0), (116, FIRE)]);
+    assert_eq!(released(&mut input), [(last + 7, 0), (last + 8, FIRE)]);
     assert_eq!(input.dry, 0);
 }
 
