@@ -393,6 +393,8 @@ impl Found {
 /// A line of sight's rays as evaluated now (see the module notes).
 pub(super) struct Sight {
     pub(super) origin: [f64; 3],
+    /// The searching entity, whose own model doesn't block its sight.
+    caster: u32,
     profile: u64,
     sides: bool,
 }
@@ -491,7 +493,13 @@ impl Sight {
             return Some(true);
         }
         let direction = offset.map(|value| value / reach);
-        let hit = map.cast(from, direction, reach, Some(self.profile))?;
+        let hit = map.cast(
+            Some(self.caster),
+            from,
+            direction,
+            reach,
+            Some(self.profile),
+        )?;
         Some(hit.is_none_or(|hit| hit.distance >= reach))
     }
 }
@@ -1060,6 +1068,7 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
         };
         Ok(Sight {
             origin,
+            caster: self.site(id, node).entity,
             profile: profile.unwrap_or(SIGHT_PROFILE),
             sides: is_set(field(fields, SIGHT_SIDES)),
         })

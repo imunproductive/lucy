@@ -945,7 +945,18 @@ fn gibraltars_team_walls_stand_while_their_scripts_run_state_3() {
         )
         .unwrap();
     let mut scene = assets.prepare(map).unwrap();
-    let walls: Vec<u32> = scene.team_walls().map(|(entity, _)| entity).collect();
+    // The team walls among the placeables' models, and whether each stands.
+    let team_walls = |scene: &PreparedScene| -> Vec<(u32, bool)> {
+        scene
+            .placeable_bodies()
+            .filter(|&(_, team_wall, _)| team_wall)
+            .map(|(entity, _, on)| (entity, on))
+            .collect()
+    };
+    let walls: Vec<u32> = team_walls(&scene)
+        .iter()
+        .map(|&(entity, _)| entity)
+        .collect();
     assert_eq!(walls.len(), 26);
     let mut tick = FIRST_TICK;
     for _ in 0..5 {
@@ -991,7 +1002,7 @@ fn gibraltars_team_walls_stand_while_their_scripts_run_state_3() {
             placed.entity()
         );
     }
-    assert!(scene.team_walls().all(|(_, on)| !on));
+    assert!(team_walls(&scene).iter().all(|&(_, on)| !on));
     {
         let (_, placed) = scene.message_recipients(tick);
         for &entity in &walls {
@@ -1005,13 +1016,13 @@ fn gibraltars_team_walls_stand_while_their_scripts_run_state_3() {
     }
     scene.advance_placed(tick, &[]);
     let mut begun = 0;
-    for (entity, on) in scene.team_walls().collect::<Vec<_>>() {
+    for (entity, on) in team_walls(&scene) {
         let (_, state_3, complete) = wall_state(&scene, entity);
         begun += usize::from(state_3);
         assert_eq!(on, state_3 && complete, "{entity:X}");
     }
     assert_eq!(begun, 13);
-    assert_eq!(scene.team_walls().filter(|&(_, on)| on).count(), 13);
+    assert_eq!(team_walls(&scene).iter().filter(|&&(_, on)| on).count(), 13);
 }
 
 /// A pick while dead waits for the respawn, which plays the new hero, his

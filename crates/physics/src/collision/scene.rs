@@ -123,6 +123,27 @@ impl CollisionScene {
         Self::build(cache, identifiers, true)
     }
 
+    /// The expanded static ray view of one model placed in the world, as a
+    /// ray cache's prop placement is ([`Self::expanded_rays`]).
+    pub fn placed_model(model: &[Shape], placement: Placement) -> Result<Self, SceneError> {
+        let mut triangles = Vec::new();
+        let mut round_props = Vec::new();
+        let analytic = analytic_scale(placement.scale, true);
+        let local = model_triangles(model, true, analytic)?;
+        append_placed(
+            &mut triangles,
+            &mut round_props,
+            model,
+            &local,
+            placement,
+            analytic,
+        )?;
+        Ok(Self {
+            triangles: TriangleIndex::new(triangles)?,
+            round_props,
+        })
+    }
+
     fn build(
         cache: &CollisionCache,
         identifiers: &BTreeSet<u64>,
@@ -149,28 +170,19 @@ impl CollisionScene {
                     .ok_or(SceneError::InvalidGeometry(
                         "placement model index out of range",
                     ))?;
-            let transform = Transform::from(*placement);
-            let [sx, sy, sz] = transform.scale;
-            let analytic = expanded && sx > 0.0 && sx == sy && sx == sz && sx.is_finite();
+            let analytic = analytic_scale(placement.scale, expanded);
             let local = match local_models.entry((placement.model, analytic)) {
                 Entry::Occupied(entry) => entry.into_mut(),
                 Entry::Vacant(entry) => entry.insert(model_triangles(model, expanded, analytic)?),
             };
-            if triangles.len() + local.len() > MAX_SCENE_SHAPES {
-                return Err(SceneError::ExpansionLimit);
-            }
-            triangles.extend(local.iter().map(|triangle| SceneTriangle {
-                vertices: triangle.vertices.map(|point| transform.place(point)),
-                ..*triangle
-            }));
-            if analytic {
-                for shape in model.iter().filter_map(RoundProp::from_shape) {
-                    if round_props.len() >= MAX_SCENE_SHAPES {
-                        return Err(SceneError::ExpansionLimit);
-                    }
-                    round_props.push(shape.placed(transform));
-                }
-            }
+            append_placed(
+                &mut triangles,
+                &mut round_props,
+                model,
+                local,
+                *placement,
+                analytic,
+            )?;
         }
         Ok(Self {
             triangles: TriangleIndex::new(triangles)?,
@@ -215,6 +227,42 @@ impl CollisionScene {
         }
         Ok(hit)
     }
+}
+
+/// Whether a placement's capsules and spheres stay analytic in the expanded
+/// ray view: a positive, uniform, finite scale.
+fn analytic_scale([sx, sy, sz]: [f32; 3], expanded: bool) -> bool {
+    let [sx, sy, sz] = [sx, sy, sz].map(f64::from);
+    expanded && sx > 0.0 && sx == sy && sx == sz && sx.is_finite()
+}
+
+/// A model's local triangles (and its round shapes when `analytic`) placed
+/// in the world.
+fn append_placed(
+    triangles: &mut Vec<SceneTriangle>,
+    round_props: &mut Vec<RoundProp>,
+    model: &[Shape],
+    local: &[SceneTriangle],
+    placement: Placement,
+    analytic: bool,
+) -> Result<(), SceneError> {
+    let transform = Transform::from(placement);
+    if triangles.len() + local.len() > MAX_SCENE_SHAPES {
+        return Err(SceneError::ExpansionLimit);
+    }
+    triangles.extend(local.iter().map(|triangle| SceneTriangle {
+        vertices: triangle.vertices.map(|point| transform.place(point)),
+        ..*triangle
+    }));
+    if analytic {
+        for shape in model.iter().filter_map(RoundProp::from_shape) {
+            if round_props.len() >= MAX_SCENE_SHAPES {
+                return Err(SceneError::ExpansionLimit);
+            }
+            round_props.push(shape.placed(transform));
+        }
+    }
+    Ok(())
 }
 
 fn model_triangles(

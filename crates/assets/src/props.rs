@@ -284,19 +284,20 @@ fn root_model(install: &Install, definition: u64) -> Option<u64> {
 }
 
 /// The static physics shapes of a definition's model ([`root_model`]) that
-/// stop `category`, in model space, as a prop's ([`map_shapes`]); none when
-/// it has no model. The server-owned placeables' team walls use it
+/// stop `category`, in model space, as a prop's ([`map_shapes`]), each with
+/// the category the client files it under ([`Structured::static_category`]);
+/// none when it has no model. The server-owned placeables use it
 /// (`crate::map_areas`).
 pub(crate) fn definition_shapes(
     install: &Install,
     definition: u64,
     category: u16,
-) -> Result<Vec<Shape>> {
+) -> Result<Vec<(u16, Shape)>> {
     let Some(model) = root_model(install, definition) else {
         return Ok(Vec::new());
     };
     read_model(&install.raw(model)?, category)
-        .map(|read| read.shapes)
+        .map(|read| read.categories.into_iter().zip(read.shapes).collect())
         .map_err(|reason| asset_error(format!("{}: {reason}", guid_name(model))))
 }
 
@@ -547,24 +548,33 @@ impl<'a> Structured<'a> {
         }))
     }
 
-    /// Whether the client makes a model's list entry a static shape
-    /// (category 1, 0x80 or 0x1000), the only ones the character mover meets
-    /// (see the module notes).
-    fn static_part(&self, wrapper: usize, holder: Option<usize>) -> bool {
+    /// The category of a model's list entry when the client makes it a
+    /// static shape (1, 0x80 or 0x1000), the only ones the character mover
+    /// meets (see the module notes); `None` otherwise. The builders pick
+    /// 0x80 (motion type 2) or 1 (type 4) when the entry's enum that makes
+    /// it is 3, else 0x1000 (`0x7FF78A9CC460` @`0x7FF78A9CDC39`,
+    /// `0x7FF78AA31B80` @`0x7FF78AA3153C`); type 0 picks 1, or 0x1000 when
+    /// a flag of the model at +177 is set (`0x7FF78A9FD400`
+    /// @`0x7FF78A9FDBEA`; what sets it was not read, taken as unset).
+    fn static_category(&self, wrapper: usize, holder: Option<usize>) -> Option<u16> {
         let motion = self.byte(&self.fields[wrapper], MOTION, 0);
-        let Some((_, holder_class, made, static_default)) =
-            BUILDERS.iter().find(|builder| builder.0 == motion)
-        else {
-            return false;
-        };
-        let Some(holder) = holder.filter(|holder| self.hashes[*holder] == *holder_class) else {
-            return false;
-        };
+        let (_, holder_class, made, static_default) =
+            BUILDERS.iter().find(|builder| builder.0 == motion)?;
+        let holder = holder.filter(|holder| self.hashes[*holder] == *holder_class)?;
         let fields = &self.fields[holder];
-        if self.byte(fields, *made, 3) == 0 || self.byte(fields, STATIC, *static_default) == 0 {
-            return false;
+        let made = self.byte(fields, *made, 3);
+        if made == 0 || self.byte(fields, STATIC, *static_default) == 0 {
+            return None;
         }
-        !(*holder_class == 0x897B_ADC9 && self.byte(fields, SENSOR, 0) != 0)
+        if *holder_class == 0x897B_ADC9 && self.byte(fields, SENSOR, 0) != 0 {
+            return None;
+        }
+        Some(match (motion, made) {
+            (0, _) => 1,
+            (2, 3) => 0x80,
+            (4, 3) => 1,
+            _ => 0x1000,
+        })
     }
 
     /// The model's nodes: number -> (translation, rotation xyzw, parent).
@@ -727,6 +737,8 @@ struct Model {
     /// place in the model. A mesh's triangles carry their own masks; the
     /// other shapes the holder's.
     shapes: Vec<Shape>,
+    /// Each shape's category ([`Structured::static_category`]).
+    categories: Vec<u16>,
     /// Whether the model is a prop's (see [`root_model`]): it has a static
     /// shape that stops the mover, or, the prop catalogue's older test, a
     /// list entry whose motion type isn't 2 has a polytope, capsule or
@@ -738,6 +750,7 @@ struct Model {
 fn read_model(data: &[u8], category: u16) -> Result<Model, String> {
     let mut model = Model {
         shapes: Vec::new(),
+        categories: Vec::new(),
         catalogued: false,
     };
     let Some(payload) = chunk(data, b"MSTU")? else {
@@ -778,9 +791,9 @@ fn read_model(data: &[u8], category: u16) -> Result<Model, String> {
                 _ => false,
             };
         }
-        if !stu.static_part(wrapper, holder) {
+        let Some(shape_category) = stu.static_category(wrapper, holder) else {
             continue;
-        }
+        };
         let frame = stu
             .instance_raw(wrapper, NODE)
             .filter(|node| node.len() >= 4)
@@ -847,6 +860,7 @@ fn read_model(data: &[u8], category: u16) -> Result<Model, String> {
                 Shape::Mesh(_, _, records) => records.iter().any(|record| record.1 & MOVER != 0),
                 _ => mask & MOVER != 0,
             };
+            model.categories.push(shape_category);
             model.shapes.push(match frame {
                 Some(frame) => at_node(made, frame),
                 None => made,

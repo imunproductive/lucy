@@ -59,6 +59,7 @@ impl World for Range {
 impl MapRays for Range {
     fn cast(
         &self,
+        _caster: Option<u32>,
         origin: [f64; 3],
         direction: [f64; 3],
         reach: f64,

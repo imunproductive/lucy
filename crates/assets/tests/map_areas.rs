@@ -18,6 +18,7 @@ const WALL_TEAM: &str = "0x0D800000000006F1";
 #[ignore = "requires an Overwatch 1.74 install (just test-game <install>)"]
 fn team_walls_stop_the_team_their_definition_and_script_name() {
     let table = orpheus_testkit::runtime_json("data/game_map_areas_174.json");
+    let models = table["models"].as_object().unwrap();
     let mut walls: BTreeMap<&str, usize> = BTreeMap::new();
     let mut maps = 0;
     for (key, map) in table["maps"].as_object().unwrap() {
@@ -31,25 +32,29 @@ fn team_walls_stop_the_team_their_definition_and_script_name() {
                     .flatten()
                     .any(|binding| binding["graph"] == 0x0FA8)
             });
-            let Some(collision) = placeable["collision"].as_array() else {
-                assert!(!runs_wall_graph, "{key}: {definition} without collision");
+            let collision = models.get(definition).and_then(|shapes| shapes.as_array());
+            assert_eq!(
+                collision.is_some(),
+                placeable["rotation"].is_array() && placeable["scale"].is_array(),
+                "{key}: {definition}"
+            );
+            if !runs_wall_graph {
                 continue;
-            };
-            assert!(runs_wall_graph, "{key}: {definition}");
+            }
             let (team, mask) = match definition {
                 "0x0400000000001C90" => (0, 0x88),
                 "0x0400000000001C91" => (1, 0x90),
                 _ => panic!("{key}: team wall {definition}"),
             };
             *on_map.entry(definition).or_insert(0) += 1;
-            let [mesh] = &collision[..] else {
-                panic!("{key}: {definition}: {} shapes", collision.len());
+            let Some([mesh]) = collision.map(Vec::as_slice) else {
+                panic!("{key}: {definition}: {collision:?}");
             };
+            assert_eq!(mesh["kind"], "mesh");
             assert_eq!(mesh["mask"], mask);
             let triangles = mesh["triangles"].as_array().unwrap();
             assert_eq!(triangles.len(), 12);
             assert!(triangles.iter().all(|triangle| triangle[6] == mask));
-            assert!(placeable["rotation"].is_array() && placeable["scale"].is_array());
             for binding in placeable["script"]["overrides"].as_array().unwrap() {
                 for entry in binding["m_1EB5A024"].as_array().into_iter().flatten() {
                     if entry["m_0D09D2D9"] == WALL_TEAM {

@@ -845,7 +845,7 @@ impl World for Host<'_, '_> {
         }
         self.scene
             .map_rays()
-            .cast(view.feet, [0.0, -1.0, 0.0], 1000.0, None)
+            .cast(None, view.feet, [0.0, -1.0, 0.0], 1000.0, None)
             .flatten()
             .map_or(1000.0, |hit| hit.distance)
     }
@@ -950,7 +950,7 @@ impl World for Host<'_, '_> {
         match self
             .scene
             .map_rays()
-            .cast(start, direction, reach, None)
+            .cast(None, start, direction, reach, None)
             .flatten()
         {
             Some(hit) => RayHit {

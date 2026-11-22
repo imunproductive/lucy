@@ -364,7 +364,13 @@ impl<W: World + ?Sized> Vm<'_, '_, '_, W> {
         let map_rays = self.world.map_rays().ok_or(RayGap::NoMap)?;
         let meets_bodies = map_rays.meets_bodies(ray.profile);
         let map = map_rays
-            .cast(ray.origin, ray.direction, ray.reach, ray.profile)
+            .cast(
+                Some(site.entity),
+                ray.origin,
+                ray.direction,
+                ray.reach,
+                ray.profile,
+            )
             .ok_or(RayGap::NoMap)?;
         let map_hit = map.map(|hit| Hit {
             entity: None,

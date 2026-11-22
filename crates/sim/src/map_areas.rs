@@ -98,7 +98,37 @@
 //! statescript instance data, [`PlacedScript`]) run on the server in
 //! `crate::placed_script`.
 //!
-//! Team walls (`server_placeables` with `collision`): the server placeables
+//! Placeable bodies ([`PlaceableBody`]): the client builds the static
+//! physics shapes of every server placeable's model when the server
+//! creates it, as it builds a client-made prop's, so they stop his mover
+//! (and his shots) though the movement cache, which holds the client-made
+//! props only, leaves them out. The server puts them in the movers' world
+//! as switched groups (`orpheus_physics` `ContactWorld::with_switched`),
+//! on while the placeable stands (until a script or the mode removes it).
+//! Where the client puts each shape (game checks 2026-11-22, the client's
+//! physics world on the Practice Range and Hanamura, refs `MapEntities.md`
+//! "MapCollision") depends on what poses the model ([`ModelPose`]):
+//! - nothing: every shape at the placeable's place times its scale (the
+//!   Range's Training Partner console `3963`, one 0x80 mesh, its box within
+//!   0.01 m of the client's; Hanamura's `0428`);
+//! - an animation component (component 39, `STU_496257B5`, whose mirrored
+//!   state the server never sends; the spawn doors of graph `0D32`, the
+//!   Range's `1793` and `230A`, Hanamura's `292C`, `292B`, `25D7`): the whole
+//!   model at the world origin, unscaled, its static frame mesh too;
+//! - an idle animation (`STUMirroredIdleAnimComponent`): the static parts
+//!   (category 1 or 0x80) at the placeable's place (Hanamura's `13C7`), the
+//!   animated ones (category 0x1000) where the animation puts their bones:
+//!   the Range's platforms `0516` circle at y 6.5, Hanamura's cars `03B6`
+//!   and `03B7` stand 0.35 m off their bind pose and bob by centimetres,
+//!   its truck `03B4` holds another pose. The server doesn't play these
+//!   animations, so it leaves the animated parts out (loose end).
+//!
+//! The shots meet a standing body's shapes of category 1 or 0x80, the
+//! categories the client's world ray asks for
+//! (`crate::hitscan::PlaceableRays`); a team wall's, which the client takes
+//! for one team's viewers only, they don't.
+//!
+//! Team walls (placeable bodies running `0FA8`): the server placeables
 //! running graph `0FA8` (definitions `1C90`, `1C91`) stand in pairs in the
 //! PvP spawn doorways, and their models' meshes stop one team's mover each
 //! (masks 0x88, 0x90; `orpheus_assets` `map_areas`). `0FA8` turns a wall on
@@ -136,13 +166,14 @@ use std::{
 use orpheus_content::maps::{GameMap, SpawnChoice};
 use orpheus_physics::{
     collision::{
-        cache::{Mesh, Triangle},
+        cache::{HalfEdge, Hull, Mesh, Placement as CachePlacement, Shape, Triangle},
         index::SceneTriangle,
+        scene::{CollisionScene, SceneError},
     },
     contact::{
         math::ContactFrame,
         mesh::ContactMesh,
-        world::{ContactWorldError, StaticGeometry, StaticShape},
+        world::{ContactWorldError, StaticGeometry, StaticShape, scaled_solid},
     },
 };
 use orpheus_script::{
@@ -377,33 +408,144 @@ impl PlacedScript {
     }
 }
 
-/// A team wall (see the module notes): its placeable and its model's
-/// meshes (each with its holder mask) where the map puts it.
+/// A server placeable whose definition's model has physics shapes that stop
+/// the mover (see the module notes): its placeable, where the map puts it,
+/// its model's shapes and what keeps it in the movers' world.
 #[derive(Debug)]
-pub struct TeamWall {
+pub struct PlaceableBody {
     pub placeable: MapPlaceable,
     frame: ContactFrame,
     scale: [f32; 3],
-    meshes: Vec<(u16, Arc<Mesh>)>,
+    model: Arc<[ModelShape]>,
+    /// A team wall (graph `0FA8`): its script turns it on
+    /// ([`team_wall_on`]); any other body stands while its placeable does.
+    pub team_wall: bool,
+    /// What poses its model on the clients.
+    pose: ModelPose,
 }
 
-impl TeamWall {
+/// What poses a placeable's model on the clients, and so its physics
+/// (see the module notes).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ModelPose {
+    /// Nothing: the model stands where the map puts it.
+    Placed,
+    /// Its animation component (component 39, `STU_496257B5`), whose state
+    /// the server never sends: the model stays at the world origin,
+    /// unscaled.
+    Origin,
+    /// Its idle animation (`STUMirroredIdleAnimComponent`,
+    /// [`PlacedScript::moving`]): its animated parts follow the animation,
+    /// which the server doesn't play, the rest stands where the map puts
+    /// it.
+    Idle,
+}
+
+/// One physics shape of a placeable's model, in model space, with the
+/// category the client files it under.
+#[derive(Debug)]
+struct ModelShape {
+    category: u16,
+    geometry: ModelGeometry,
+}
+
+/// A model shape's geometry; a mesh shared by every placement of the model.
+#[derive(Debug)]
+enum ModelGeometry {
+    Mesh(u16, Arc<Mesh>),
+    Solid(Shape),
+}
+
+/// The category of a model's animated parts: the client places them where
+/// the model's animation puts their bones (see the module notes).
+const ANIMATED: u16 = 0x1000;
+/// The categories the client's world ray meets: a shot's body mask & 0x81
+/// (refs `WeaponRays.md`).
+const RAY_CATEGORIES: u16 = 0x81;
+
+impl ModelPose {
+    /// Where the client puts a shape of `category` of a model that the map
+    /// puts at `frame` times `scale`; `None` for an animated part of an
+    /// idle animation.
+    fn place(
+        self,
+        category: u16,
+        frame: ContactFrame,
+        scale: [f32; 3],
+    ) -> Option<(ContactFrame, [f32; 3])> {
+        match self {
+            Self::Origin => Some((ContactFrame::IDENTITY, [1.0; 3])),
+            Self::Idle if category == ANIMATED => None,
+            Self::Placed | Self::Idle => Some((frame, scale)),
+        }
+    }
+}
+
+impl PlaceableBody {
     /// The entity the client makes of it ([`PlacedScript::entity`]).
     pub fn entity(&self) -> u32 {
         0x8000_0000 | self.placeable.placeable
     }
 
-    /// Its shapes in the world, as the movement cache places a prop's
-    /// (`ContactWorld::from_movement_cache`): each mesh in the placeable's
-    /// frame times its scale.
+    /// Its shapes in the world as the client places them
+    /// ([`ModelPose::place`]), each in its frame times its scale as the
+    /// movement cache places a prop's (`ContactWorld::from_movement_cache`).
     pub fn shapes(&self) -> Result<Vec<StaticShape>, ContactWorldError> {
-        self.meshes
+        self.model
             .iter()
-            .map(|(mask, mesh)| {
-                let mesh = ContactMesh::new(Arc::clone(mesh), self.scale, *mask)?;
-                StaticShape::new(StaticGeometry::Mesh(Arc::new(mesh)), Some(self.frame))
+            .filter_map(|shape| {
+                let placed = self.pose.place(shape.category, self.frame, self.scale)?;
+                Some((shape, placed))
+            })
+            .map(|(shape, (frame, scale))| {
+                let geometry = match &shape.geometry {
+                    ModelGeometry::Mesh(mask, mesh) => StaticGeometry::Mesh(Arc::new(
+                        ContactMesh::new(Arc::clone(mesh), scale, *mask)?,
+                    )),
+                    ModelGeometry::Solid(solid) => {
+                        scaled_solid(solid, scale).ok_or(ContactWorldError::InvalidGeometry)?
+                    }
+                };
+                StaticShape::new(geometry, Some(frame))
             })
             .collect()
+    }
+
+    /// Its shapes that the client's shots meet (categories 1 and 0x80,
+    /// [`RAY_CATEGORIES`]; none of them animated), placed as
+    /// [`Self::shapes`] and as the ray cache places a prop's; `None` when it
+    /// has none, and for a team wall, which the client takes for one team's
+    /// viewers only (see the module notes).
+    pub fn ray_scene(&self) -> Result<Option<CollisionScene>, SceneError> {
+        if self.team_wall {
+            return Ok(None);
+        }
+        let model: Vec<Shape> = self
+            .model
+            .iter()
+            .filter(|shape| shape.category & RAY_CATEGORIES != 0)
+            .map(|shape| match &shape.geometry {
+                ModelGeometry::Mesh(mask, mesh) => Shape::Mesh {
+                    mask: *mask,
+                    mesh: Mesh::clone(mesh),
+                },
+                ModelGeometry::Solid(solid) => solid.clone(),
+            })
+            .collect();
+        let Some((frame, scale)) = self.pose.place(RAY_CATEGORIES, self.frame, self.scale) else {
+            return Ok(None);
+        };
+        if model.is_empty() {
+            return Ok(None);
+        }
+        let placement = CachePlacement {
+            model: 0,
+            group: 0,
+            translation: frame.translation,
+            scale,
+            rotation: frame.rotation,
+        };
+        CollisionScene::placed_model(&model, placement).map(Some)
     }
 }
 
@@ -434,8 +576,9 @@ struct MapAreas {
     server_placeables: Vec<MapPlaceable>,
     /// The server placeables' script data, in the same order.
     scripts: Vec<Arc<PlacedScript>>,
-    /// The server placeables that are team walls, in placeable order.
-    walls: Vec<TeamWall>,
+    /// The server placeables whose models stop the mover, in placeable
+    /// order.
+    bodies: Vec<PlaceableBody>,
     kill_volumes: Arc<[CaptureBox]>,
     /// The entities with target tags, with the placeable each is.
     tagged: Vec<(MapPlaceable, TaggedEntity)>,
@@ -451,6 +594,10 @@ pub struct MapAreaData {
 #[derive(Deserialize)]
 struct RawFile {
     maps: HashMap<String, RawMap>,
+    /// Each server placeable definition's physics shapes that stop the
+    /// mover, in model space, by definition.
+    #[serde(default)]
+    models: HashMap<String, Vec<RawModelShape>>,
 }
 
 #[derive(Deserialize)]
@@ -501,53 +648,157 @@ struct RawServerPlaceable {
     script: RawScript,
     #[serde(default)]
     moving: bool,
+    /// Its model has the animation component the server mirrors
+    /// (component 39; [`ModelPose::Origin`]).
+    #[serde(default)]
+    posed: bool,
     #[serde(default)]
     second_identifier: Option<String>,
-    /// A team wall's rotation, scale and model meshes.
+    /// Its rotation and scale, when its definition has `models` shapes.
     #[serde(default)]
     rotation: Option<[f32; 4]>,
     #[serde(default)]
     scale: Option<[f32; 3]>,
-    #[serde(default)]
-    collision: Vec<RawMesh>,
 }
 
-/// A team wall's mesh: its holder mask, vertices and triangles (corners,
-/// wings, mask, surface).
+/// A model's physics shape with the category the client files it under.
 #[derive(Deserialize)]
-struct RawMesh {
-    mask: u16,
-    vertices: Vec<[f32; 3]>,
-    triangles: Vec<[i32; 8]>,
+struct RawModelShape {
+    category: u16,
+    #[serde(flatten)]
+    shape: RawShape,
 }
 
-impl RawMesh {
-    fn read(self) -> Result<(u16, Arc<Mesh>), &'static str> {
-        let count = self.vertices.len();
-        let vertex = |index: i32| usize::try_from(index).is_ok_and(|index| index < count);
-        let triangles = self
-            .triangles
-            .into_iter()
-            .map(|[a, b, c, wa, wb, wc, mask, surface]| {
-                let (corners, wings) = ([a, b, c], [wa, wb, wc]);
-                if !corners.into_iter().all(vertex)
-                    || !wings.into_iter().all(|wing| wing == -1 || vertex(wing))
+/// A model's physics shape: a mesh's holder mask, vertices and triangles
+/// (corners, wings, mask, surface); a polytope's mask, centroid, vertices,
+/// planes, faces and half edges (twin, origin, face, next); a capsule's or
+/// a sphere's mask and geometry.
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+enum RawShape {
+    Mesh {
+        mask: u16,
+        vertices: Vec<[f32; 3]>,
+        triangles: Vec<[i32; 8]>,
+    },
+    Hull {
+        mask: u16,
+        centroid: [f32; 3],
+        vertices: Vec<[f32; 3]>,
+        planes: Vec<[f32; 4]>,
+        faces: Vec<u8>,
+        half_edges: Vec<[i16; 4]>,
+    },
+    Capsule {
+        mask: u16,
+        a: [f32; 3],
+        b: [f32; 3],
+        radius: f32,
+    },
+    Sphere {
+        mask: u16,
+        center: [f32; 3],
+        radius: f32,
+    },
+}
+
+impl RawShape {
+    fn read(self) -> Result<ModelGeometry, &'static str> {
+        Ok(match self {
+            Self::Mesh {
+                mask,
+                vertices,
+                triangles,
+            } => {
+                let count = vertices.len();
+                let vertex = |index: i32| usize::try_from(index).is_ok_and(|index| index < count);
+                let triangles = triangles
+                    .into_iter()
+                    .map(|[a, b, c, wa, wb, wc, mask, surface]| {
+                        let (corners, wings) = ([a, b, c], [wa, wb, wc]);
+                        if !corners.into_iter().all(vertex)
+                            || !wings.into_iter().all(|wing| wing == -1 || vertex(wing))
+                        {
+                            return Err("a triangle's vertex is out of range");
+                        }
+                        Ok(Triangle {
+                            corners,
+                            wings,
+                            mask: u16::try_from(mask).map_err(|_| "a triangle's mask")?,
+                            surface: u16::try_from(surface).map_err(|_| "a triangle's surface")?,
+                        })
+                    })
+                    .collect::<Result<_, _>>()?;
+                ModelGeometry::Mesh(
+                    mask,
+                    Arc::new(Mesh {
+                        vertices,
+                        triangles,
+                    }),
+                )
+            }
+            Self::Hull {
+                mask,
+                centroid,
+                vertices,
+                planes,
+                faces,
+                half_edges,
+            } => {
+                let half_edges = half_edges
+                    .into_iter()
+                    .map(|[twin, origin, face, next]| {
+                        let index = |value: i16, count: usize| {
+                            u8::try_from(value)
+                                .ok()
+                                .filter(|value| usize::from(*value) < count)
+                        };
+                        match (
+                            i8::try_from(twin),
+                            index(origin, vertices.len()),
+                            index(face, planes.len()),
+                            index(next, 256),
+                        ) {
+                            (Ok(twin), Some(origin), Some(face), Some(next)) => Ok(HalfEdge {
+                                twin,
+                                origin,
+                                face,
+                                next,
+                            }),
+                            _ => Err("a polytope's edge is out of range"),
+                        }
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                if faces.len() != planes.len()
+                    || faces
+                        .iter()
+                        .chain(half_edges.iter().map(|edge| &edge.next))
+                        .any(|&edge| usize::from(edge) >= half_edges.len())
                 {
-                    return Err("a triangle's vertex is out of range");
+                    return Err("a polytope's face or edge is out of range");
                 }
-                Ok(Triangle {
-                    corners,
-                    wings,
-                    mask: u16::try_from(mask).map_err(|_| "a triangle's mask")?,
-                    surface: u16::try_from(surface).map_err(|_| "a triangle's surface")?,
-                })
-            })
-            .collect::<Result<_, _>>()?;
-        let mesh = Mesh {
-            vertices: self.vertices,
-            triangles,
-        };
-        Ok((self.mask, Arc::new(mesh)))
+                ModelGeometry::Solid(Shape::Hull(Hull {
+                    mask,
+                    centroid,
+                    vertices,
+                    planes,
+                    faces,
+                    half_edges,
+                }))
+            }
+            Self::Capsule { mask, a, b, radius } => {
+                ModelGeometry::Solid(Shape::Capsule { mask, a, b, radius })
+            }
+            Self::Sphere {
+                mask,
+                center,
+                radius,
+            } => ModelGeometry::Solid(Shape::Sphere {
+                mask,
+                center,
+                radius,
+            }),
+        })
     }
 }
 
@@ -608,6 +859,22 @@ impl MapAreaData {
 
     pub fn read(bytes: &[u8]) -> io::Result<Self> {
         let file: RawFile = serde_json::from_slice(bytes).map_err(invalid)?;
+        let mut models = HashMap::new();
+        for (key, shapes) in file.models {
+            let definition = u64::from_str_radix(key.trim_start_matches("0x"), 16)
+                .map_err(|_| invalid(format!("{FILE}: model key {key}")))?;
+            let shapes = shapes
+                .into_iter()
+                .map(|raw| {
+                    Ok(ModelShape {
+                        category: raw.category,
+                        geometry: raw.shape.read()?,
+                    })
+                })
+                .collect::<Result<Arc<[ModelShape]>, &str>>()
+                .map_err(|error| invalid(format!("{FILE}: model {key}: {error}")))?;
+            models.insert(definition, shapes);
+        }
         let mut maps = HashMap::new();
         for (key, raw) in file.maps {
             let guid = u64::from_str_radix(key.trim_start_matches("0x"), 16)
@@ -643,7 +910,7 @@ impl MapAreaData {
                 .collect::<io::Result<_>>()?;
             let mut server_placeables = Vec::new();
             let mut scripts = Vec::new();
-            let mut walls = Vec::new();
+            let mut bodies = Vec::new();
             for raw in raw.server_placeables {
                 let placeable = raw.placeable.read(&key)?;
                 let guid = |what: &str, text: Option<String>| {
@@ -659,30 +926,33 @@ impl MapAreaData {
                 };
                 let definition = guid("definition", raw.definition)?.unwrap_or_default();
                 let second_identifier = guid("second identifier", raw.second_identifier)?;
-                if !raw.collision.is_empty() {
-                    let wall_error = |what: &str| {
-                        invalid(format!(
-                            "{FILE}: map {key}: team wall {}: {what}",
-                            placeable.placeable
-                        ))
-                    };
+                if let Some(model) = models.get(&definition) {
                     let (Some(rotation), Some(scale)) = (raw.rotation, raw.scale) else {
-                        return Err(wall_error("no rotation or scale"));
+                        return Err(invalid(format!(
+                            "{FILE}: map {key}: placeable {}: shapes without rotation or scale",
+                            placeable.placeable
+                        )));
                     };
-                    let meshes = raw
-                        .collision
-                        .into_iter()
-                        .map(RawMesh::read)
-                        .collect::<Result<_, _>>()
-                        .map_err(wall_error)?;
-                    walls.push(TeamWall {
+                    let team_wall = raw
+                        .script
+                        .overrides
+                        .iter()
+                        .chain(&raw.script.extra)
+                        .any(|binding| binding.graph == Some(TEAM_WALL_GRAPH));
+                    bodies.push(PlaceableBody {
                         placeable,
                         frame: ContactFrame {
                             translation: raw.position.map(|axis| axis as f32),
                             rotation,
                         },
                         scale,
-                        meshes,
+                        model: Arc::clone(model),
+                        team_wall,
+                        pose: match (raw.posed, raw.moving) {
+                            (true, _) => ModelPose::Origin,
+                            (false, true) => ModelPose::Idle,
+                            (false, false) => ModelPose::Placed,
+                        },
                     });
                 }
                 scripts.push(Arc::new(PlacedScript {
@@ -729,7 +999,7 @@ impl MapAreaData {
                     damage_areas,
                     server_placeables,
                     scripts,
-                    walls,
+                    bodies,
                     kill_volumes: raw.kill_volumes.into(),
                     tagged,
                 },
@@ -795,16 +1065,21 @@ impl MapAreaData {
             .unwrap_or_default()
     }
 
-    /// The map's team walls that exist in a mode that lists `identifiers`,
-    /// in placeable order (see the module notes).
-    pub fn team_walls(&self, map: &GameMap, identifiers: &BTreeSet<u64>) -> Vec<&TeamWall> {
+    /// The map's server placeables whose models stop the mover that exist
+    /// in a mode that lists `identifiers`, in placeable order (see the
+    /// module notes).
+    pub fn placeable_bodies(
+        &self,
+        map: &GameMap,
+        identifiers: &BTreeSet<u64>,
+    ) -> Vec<&PlaceableBody> {
         self.maps
             .get(&map.map_guid)
             .map(|areas| {
                 areas
-                    .walls
+                    .bodies
                     .iter()
-                    .filter(|wall| wall.placeable.in_mode(identifiers))
+                    .filter(|body| body.placeable.in_mode(identifiers))
                     .collect()
             })
             .unwrap_or_default()
