@@ -1155,7 +1155,13 @@ mod tests {
                 mover
                     .step(scene.triangles(), command, 0.016, |mover, pose| {
                         visited += 1;
-                        let record = movement_record(&mover.pose(), Some(pose.frame + 2)).unwrap();
+                        // Python's records always said the reference's
+                        // speed scale (1.0); the sprint's 1.5 goes out now.
+                        let python = Movement {
+                            speed_scale: None,
+                            ..mover.pose()
+                        };
+                        let record = movement_record(&python, Some(pose.frame + 2)).unwrap();
                         digest.update((record.bit_len() as u32).to_le_bytes());
                         digest.update(record.as_bytes());
                         let active = if (12..35).contains(&((pose.frame - first) % 72)) {
