@@ -382,8 +382,6 @@ mod tests {
                 velocity: [0.25, 0.75, -2.125],
                 yaw: 12_000,
                 pitch: -3000,
-                euler_pitch: 0,
-                euler_roll: 0,
                 flags: 0x0400_0002,
                 air_ticks: 11,
                 gravity: 0.875,

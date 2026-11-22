@@ -1106,7 +1106,7 @@ fn the_server_placeables_follow_the_player_and_the_mode() {
     let creates: Vec<(u32, &Vec<orpheus_wire::entity::Component>)> = updates
         .iter()
         .filter_map(|update| match &update.operation {
-            Some(Operation::Placeable(_, components, _)) => {
+            Some(Operation::Placeable(_, components)) => {
                 Some((update.entity & 0x7FFF_FFFF, components))
             }
             _ => None,

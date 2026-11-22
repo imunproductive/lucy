@@ -173,7 +173,7 @@ its damage (m_B81F7395) and its boxes; its server placeables: every entity place
 whose definition (003) has neither component 0x737C5C41 nor 0xCA1FB0B8 (those are on the loading \
 list), with its definition, its first identifier and its second identifier (body +16), and when its \
 definition's model has static physics shapes that stop the team proxies 0x18 (STUModel m_CB4D298D) \
-or its definition has STU_496257B5 (then also posed: true) its rotation x y z w and scale; when its \
+its rotation x y z w and scale; when its definition has STU_496257B5, posed: true; when its \
 definition has STUMirroredIdleAnimComponent, moving: true, \
 and its STU_5AD3B86B instance data's idle start (s32 +12, 30 fps frames) and rate (f32 +8); its \
 models: each such definition's shapes in model space with the \
@@ -499,7 +499,7 @@ fn server_placeables(
         // path puts it, which the server doesn't play: its idle animation
         // alone doesn't place its animated parts.
         let idle = moving && !found.is_some_and(|found| found.contains(&PATH_FOLLOWER));
-        if placeable_shapes(install, models, entity.definition, idle)? || posed {
+        if placeable_shapes(install, models, entity.definition, idle)? {
             entry.insert("rotation".into(), json!(entity.rotation.map(short)));
             entry.insert("scale".into(), json!(entity.scale.map(short)));
         }

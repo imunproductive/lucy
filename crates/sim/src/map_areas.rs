@@ -114,11 +114,11 @@
 //! - an animation component (component 39, `STU_496257B5`; the spawn doors
 //!   of graph `0D32`, the Range's `1793` and `230A`, Hanamura's `292C`,
 //!   `292B`, `25D7`): component 39 brings component 28, whose movement
-//!   state gives the entity's transform; a create without one leaves the
-//!   whole model at the world origin, unscaled. The server's create carries
-//!   the map's place as that state ([`Posed`]: the position on the
-//!   1/1024 m grid, the turn as three 16-bit angles), and the shapes stand
-//!   there;
+//!   state gives the entity's transform; the server's create carries none,
+//!   so the whole model stays at the world origin, unscaled, its static
+//!   frame mesh too (a create with the map's place as that state stands
+//!   the doors in their doorways, but closed: they shut the Practice
+//!   Range's spawn in; refs `MapEntities.md` "MapAnim", loose end);
 //! - an idle animation (`STUMirroredIdleAnimComponent`): the static parts
 //!   (category 1 or 0x80) at the placeable's place (Hanamura's `13C7`), the
 //!   animated ones (category 0x1000) where the animation puts their bones:
@@ -398,9 +398,6 @@ pub struct PlacedScript {
     /// Its second identifier, by which a mode graph removes it
     /// (`STU_A3DC6A25`: Hanamura's health packs carry `2AB0.01C`).
     pub second_identifier: Option<u64>,
-    /// Its model has the animation component 39 (the spawn doors `0D32`):
-    /// its create carries this place ([`Posed`]).
-    pub posed: Option<Posed>,
 }
 
 impl PlacedScript {
@@ -416,64 +413,6 @@ impl PlacedScript {
             position: self.position,
             overrides: &self.overrides,
             extra: &self.extra,
-        }
-    }
-}
-
-/// Where a placeable with component 39 stands: the map's place as the
-/// movement state of its create carries it, the position on the 1/1024 m
-/// grid and the turn as three 16-bit angles (see the module notes).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Posed {
-    /// Metres, on the grid.
-    pub position: [f64; 3],
-    /// The turn `Ry(yaw) · Rx(pitch) · Rz(roll)` (refs `Payloads.md`
-    /// "ModeGraph5 payload position" §2: yaw 0 along +z, 16384 along +x;
-    /// a positive pitch puts the nose down), each angle a 16-bit word.
-    pub yaw: i32,
-    pub pitch: i32,
-    pub roll: i32,
-}
-
-impl Posed {
-    /// The place of a placeable the map puts at `position`, turned by
-    /// `rotation` (x, y, z, w).
-    pub fn new(position: [f64; 3], rotation: [f32; 4]) -> Self {
-        let [x, y, z, w] = rotation.map(f64::from);
-        // The turn's matrix entries: forward (column z) and column x's y.
-        let forward = [
-            2.0 * (x * z + w * y),
-            2.0 * (y * z - w * x),
-            1.0 - 2.0 * (x * x + y * y),
-        ];
-        let (right_y, up_y) = (2.0 * (x * y + w * z), 1.0 - 2.0 * (x * x + z * z));
-        let word = |angle: f64| {
-            let steps = (angle * 32768.0 / std::f64::consts::PI).round() as i64;
-            i32::from(steps as u16 as i16)
-        };
-        Self {
-            position: position.map(|axis| (axis * 1024.0).round_ties_even() / 1024.0),
-            yaw: word(forward[0].atan2(forward[2])),
-            pitch: word((-forward[1]).clamp(-1.0, 1.0).asin()),
-            roll: word(right_y.atan2(up_y)),
-        }
-    }
-
-    /// Its frame as the client builds it from the state: each angle word
-    /// times 2π/65536 in float (`0x7FF7895AE980`), `Ry · Rx · Rz`.
-    pub fn frame(&self) -> ContactFrame {
-        let half = |word: i32| f64::from(f32::from(word as u16) * 9.587_38e-5_f32) * 0.5;
-        let (yaw, pitch, roll) = (half(self.yaw), half(self.pitch), half(self.roll));
-        let turn = multiply(
-            multiply(
-                [0.0, yaw.sin(), 0.0, yaw.cos()],
-                [pitch.sin(), 0.0, 0.0, pitch.cos()],
-            ),
-            [0.0, 0.0, roll.sin(), roll.cos()],
-        );
-        ContactFrame {
-            translation: self.position.map(|axis| axis as f32),
-            rotation: turn.map(|v| v as f32),
         }
     }
 }
@@ -498,9 +437,12 @@ pub struct PlaceableBody {
 /// (see the module notes).
 #[derive(Clone, Debug)]
 enum ModelPose {
-    /// Nothing but where it stands: the map's place, or a placeable with
-    /// component 39's as its create carries it ([`Posed`]).
+    /// Nothing: the model stands where the map puts it.
     Placed,
+    /// Its animation component (component 39, `STU_496257B5`), whose
+    /// movement state the server's create doesn't carry: the model stays
+    /// at the world origin, unscaled.
+    Origin,
     /// Its idle animation (`STUMirroredIdleAnimComponent`,
     /// [`PlacedScript::moving`]): its animated parts follow the animation
     /// ([`IdleBody`]; none without the definition's idle animation), the
@@ -552,6 +494,7 @@ impl ModelPose {
         scale: [f32; 3],
     ) -> Option<ShapePlace> {
         match self {
+            Self::Origin => Some(ShapePlace::Fixed(ContactFrame::IDENTITY, [1.0; 3])),
             Self::Idle(motion) if shape.category == ANIMATED => {
                 motion.as_ref().and(shape.bone).map(ShapePlace::Bone)
             }
@@ -672,7 +615,10 @@ impl PlaceableBody {
             .filter(|shape| shape.category & RAY_CATEGORIES != 0)
             .map(ModelShape::cache_shape)
             .collect();
-        let (frame, scale) = (self.frame, self.scale);
+        let (frame, scale) = match self.pose {
+            ModelPose::Origin => (ContactFrame::IDENTITY, [1.0; 3]),
+            ModelPose::Placed | ModelPose::Idle(_) => (self.frame, self.scale),
+        };
         if model.is_empty() {
             return Ok(None);
         }
@@ -828,8 +774,8 @@ struct RawServerPlaceable {
     script: RawScript,
     #[serde(default)]
     moving: bool,
-    /// Its model has the animation component 39, whose create carries its
-    /// place ([`Posed`]).
+    /// Its model has the animation component the server mirrors
+    /// (component 39; [`ModelPose::Origin`]).
     #[serde(default)]
     posed: bool,
     #[serde(default)]
@@ -1135,16 +1081,6 @@ impl MapAreaData {
                 };
                 let definition = guid("definition", raw.definition)?.unwrap_or_default();
                 let second_identifier = guid("second identifier", raw.second_identifier)?;
-                let posed = match (raw.posed, raw.rotation) {
-                    (false, _) => None,
-                    (true, Some(rotation)) => Some(Posed::new(raw.position, rotation)),
-                    (true, None) => {
-                        return Err(invalid(format!(
-                            "{FILE}: map {key}: placeable {}: posed without rotation",
-                            placeable.placeable
-                        )));
-                    }
-                };
                 if let Some(model) = models.get(&definition) {
                     let (Some(rotation), Some(scale)) = (raw.rotation, raw.scale) else {
                         return Err(invalid(format!(
@@ -1160,20 +1096,15 @@ impl MapAreaData {
                         .any(|binding| binding.graph == Some(TEAM_WALL_GRAPH));
                     bodies.push(PlaceableBody {
                         placeable,
-                        frame: posed.map_or(
-                            ContactFrame {
-                                translation: raw.position.map(|axis| axis as f32),
-                                rotation,
-                            },
-                            |posed| posed.frame(),
-                        ),
-                        // The movement state carries no scale: the client
-                        // keeps a posed model unscaled (Anubis's door 971,
-                        // scale 0.5 on the map).
-                        scale: if posed.is_some() { [1.0; 3] } else { scale },
+                        frame: ContactFrame {
+                            translation: raw.position.map(|axis| axis as f32),
+                            rotation,
+                        },
+                        scale,
                         model: Arc::clone(model),
                         team_wall,
                         pose: match rigs.get(&definition).filter(|_| raw.moving) {
+                            _ if raw.posed => ModelPose::Origin,
                             Some(rig) => {
                                 let start = raw.idle.as_ref();
                                 ModelPose::Idle(Some(IdleMotion {
@@ -1195,7 +1126,6 @@ impl MapAreaData {
                     extra: raw.script.extra,
                     moving: raw.moving,
                     second_identifier,
-                    posed,
                 }));
                 server_placeables.push(placeable);
             }

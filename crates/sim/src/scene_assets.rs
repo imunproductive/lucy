@@ -41,7 +41,7 @@ use crate::{
     pools::PoolCatalog,
     projectile_flight::WallHit,
     replication::OwnerBodyRuntime,
-    scene::{PlayerAppearance, initial_world, mode_ui, placeable_components, placeable_movement},
+    scene::{PlayerAppearance, initial_world, mode_ui, placeable_components},
     spawned::SpawnGraphs,
 };
 use orpheus_content::{
@@ -1798,7 +1798,6 @@ impl PreparedScene {
                 operation: Some(Operation::Placeable(
                     placed.placeable,
                     placeable_components(placed),
-                    placeable_movement(placed),
                 )),
                 ..EntityUpdate::default()
             }),

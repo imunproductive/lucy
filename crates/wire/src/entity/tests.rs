@@ -29,8 +29,6 @@ fn moving() -> Movement {
         position: [1.5, -2.25, 3.0],
         yaw: 33067,
         pitch: -32769,
-        euler_pitch: 0,
-        euler_roll: 0,
         velocity: [0.5, 2.0, -1.25],
         flags: 0x8010_0405,
         throttles: [-128, 73],
@@ -52,7 +50,7 @@ fn moving() -> Movement {
 #[test]
 fn placeable_create_and_pose_match_python() {
     // The fixtures in tests/test_game_world.py, emitted by Python world.py.
-    let item = entity(0x8000_0088, Operation::Placeable(0x88, Vec::new(), None));
+    let item = entity(0x8000_0088, Operation::Placeable(0x88, Vec::new()));
     assert_eq!(
         frame(1234, 1234, 0, &[], &[], &[&item]).unwrap(),
         hex("a509509a005000884b5301220200000000")
@@ -71,29 +69,6 @@ fn placeable_create_and_pose_match_python() {
         pose.as_bytes(),
         hex("94000024ba2139a40d9000040079890a000000")
     );
-    // With a movement state (a posed placeable): the bit after the index
-    // set, then the state at frame 0 as a bot create writes it.
-    let state = Movement {
-        position: [54.56507, 1.0, 42.14788],
-        yaw: -31000,
-        ..Movement::default()
-    };
-    let placed = create_placeable(0, 0x88, &[], Some(&state)).unwrap();
-    let mut expected = BitWriter::new();
-    expected.bit(true);
-    expected.bits(0x88, 32).unwrap();
-    expected.bit(true);
-    write_movement(
-        &mut expected,
-        &state,
-        Some(FRAME_ZERO_BACK),
-        Some(CREATE_BASE),
-        None,
-    )
-    .unwrap();
-    write_components(&mut expected, 0, &[]).unwrap();
-    assert_eq!(placed.as_bytes(), expected.as_bytes());
-    assert_eq!(placed.bit_len(), expected.bit_len());
 }
 
 #[test]
@@ -478,10 +453,7 @@ fn mixed_frame_matches_python_at_every_component_and_channel_boundary() {
 fn budget_reuses_trimmed_space_and_only_displaces_remote_movement() {
     let reliable = [(1, vec![0; 720]), (2, vec![0; 700])];
     let unreliable = [vec![0; 300], vec![0; 200]];
-    let queued = [entity(
-        0x8000_0077,
-        Operation::Placeable(0x77, Vec::new(), None),
-    )];
+    let queued = [entity(0x8000_0077, Operation::Placeable(0x77, Vec::new()))];
     let mut chunk = BitWriter::new();
     chunk.raw(&[0; 180]);
     let movements = [
