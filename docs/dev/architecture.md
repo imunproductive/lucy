@@ -9,8 +9,7 @@ Lucy/
 ├─ Cargo.toml          workspace only
 ├─ crates/             the libraries (below)
 ├─ apps/lucy/       the lucy program: command line, doctor, modes
-├─ web/dashboard/      dashboard front end (JavaScript), embedded into the binary
-├─ web/tests/          the dashboard JavaScript test
+├─ web/dashboard/      the dashboard (Vite, Svelte, TypeScript): src/, and its build in dist/, which is committed and embedded into the binary
 ├─ research/ida/       the IDA script that extracted the statescript codecs
 ├─ tools/              the client tools (Python): index, game database, debugger (docs/dev/client-tools.md)
 ├─ docs/user/          for players and hosts
@@ -166,7 +165,16 @@ So a debug build can stop a hero that a release build plays. Use a release build
 
 ### Dashboard
 
-The dashboard backend is in `server` and serves the files of `web/dashboard`, which are embedded into the binary. It shows the server state and the saved profiles and can change them. It can also start a second game for another account. Its HTTP/1.1 server (`dashboard/http.rs`) is the shared TCP model above; it handles the requests one at a time, whichever connection they come on.
+The dashboard backend is in `server` and serves the dashboard's build. It shows the server state and the saved profiles and can change them. It can also start a second game for another account. Its HTTP/1.1 server (`dashboard/http.rs`) is the shared TCP model above; it handles the requests one at a time, whichever connection they come on.
+
+The front end is in `web/dashboard`: a Svelte 5 and TypeScript single-page app that Vite builds into `web/dashboard/dist/` (`just dashboard-build`). The build is committed, so `cargo build` needs no Node. While you work on it, `npm run dev` there serves the page with hot reload and sends `/api` to a running `lucy serve` (port 3725, or the address in `LUCY_DASHBOARD`). `server/build.rs` lists the files of `dist/` and embeds them with `include_bytes!`, with their MIME types. The server answers a GET this way:
+
+- `/api/...`: the JSON API (`dashboard/api*.rs`).
+- A file of the build: the scripts and styles under `/assets/` have a content hash in their names and are cached for a year (`immutable`). `index.html` and `favicon.svg` are sent with `no-cache`.
+- `/assets/boxes/*.png` and `/assets/previews/*.webp`: optional pictures from the assets folder.
+- Any other path without a file extension: `index.html`. The page routes itself (`/events`, `/matches/<id>` and so on, `src/lib/routes.ts`).
+
+In the front end, `src/lib/api.ts` is the typed client of the API and `src/lib/types.ts` holds the reply types. `src/lib/live.ts` is the client of the live-match API that stage 3 adds ([server-architecture-plan.md](server-architecture-plan.md)); `src/lib/sse.ts` reads the server-sent events planned for `/api/events`. The pages that need them show "Not available yet" while the server answers their routes with 404. The page reads `/api/state` every 10 s while it is visible.
 
 With `LUCY_DEBUG_SEND=1` it also has the debug routes (`server/dashboard/debug.rs`, [troubleshooting](../user/troubleshooting.md#marker-messages)). The marker message routes encode a message with the schema encoder and send it on the normal paths: a game link message goes to the game service as a request (`GameService::debug_send`), which queues it on the seat's reliable channel like the server's own messages; a lobby message is posted to the account's session through the hub. `POST /api/debug/kill` asks the game service to kill an account's hero through the normal death path (`Combat::environment_kill`); the client tools' `die` action uses it.
 

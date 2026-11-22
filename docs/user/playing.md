@@ -103,33 +103,28 @@ OVERWATCH 1.74 LOBBY SERVER
 
 ## The dashboard
 
-While the server runs, open <http://127.0.0.1:3725> in a browser. The dashboard shows the server status, the matches and the saved accounts. With it you can:
+While the server runs, open <http://127.0.0.1:3725> in a browser. The account list at the top picks the account that the pages show and change. It is also the account that a game logs in as next. The pages are:
 
-- edit a profile, and apply a change to all profiles;
-- give loot boxes, open them, buy items and give skins;
-- choose the portrait frame;
-- choose the default account and the account a game plays;
-- change the matchmaking and mode settings and the map;
-- end the running matches;
-- start a second game in a window for another account;
-- change the training bots' health bar and nameplate while a match runs (the **Bot plate** page, below).
+| Page | Address | What you can do |
+|---|---|---|
+| **Profile** | `/` | Edit the profile: nickname, regions, level and portrait frame, currencies, competitive ratings, priority passes, lobby hero, server date and options. |
+| **Events** | `/events` | Choose the lobby event and the hero challenge, for this account or for all accounts. |
+| **Loot boxes** | `/boxes` | Give loot boxes, or open all of them at once. |
+| **Collection** | `/collection` | Buy or unlock items, remove unlocked items, choose the portrait frame. |
+| **Server** | `/server` | See the server status. Change the matchmaking, the mode settings, the map and the Workshop script. End the running matches. Choose the default account and the account the game plays. Start a second game for another account. Use the group finder bot. |
+| **Live matches** | `/matches` | Not available yet: the server does not report live matches yet. |
+
+The button with the sun or moon in the top bar changes between the light and the dark theme. The page keeps your choice. On a narrow window, the menu button opens the page list.
 
 The second game plays the account you choose. The local Battle.net tells the two games apart by the process that owns each connection.
 
 `--dashboard-port 0` (or `dashboard = 0` in `config.toml`) turns the dashboard off.
 
-### Bot plate
+### Bot plate (chat command)
 
-The **Bot plate** page is a debugging tool. It looks for the input that makes our Training Bot's health bar look unlike retail's: black outlines around the segments and a small bar (`▌`) before the name. It changes what the server sends about every training bot, in every running match. A change reaches the games at once as an update. Nothing respawns, and you don't restart anything. A bot that respawns gets the changes too. The changes stay until you reset them or stop the server.
+`.plate` is a debugging tool. It looks for the input that makes our Training Bot's health bar look unlike retail's: black outlines around the segments and a small bar (`▌`) before the name. It changes what the server sends about every training bot, in every running match. A change reaches the games at once as an update. Nothing respawns, and you don't restart anything. A bot that respawns gets the changes too. The changes stay until you reset them or stop the server.
 
-In a match you can type the same commands in any chat: `.plate <command>`. The bot in the chat answers with what is in force and with the first live bot's pool parts. `.plate` alone (or `.plate show`) only shows them.
-
-The page shows:
-
-- **Command**: a box for one or more commands, separated by `;`. **Reset** takes back every change.
-- **Pool parts**: component 51 (the health pools) as the first live bot sends it now. Change a value and press Enter. An empty box takes that change back. Changed parts are in bold.
-- **Nameplate variables**: the inputs of the nameplate graph `0D24`, what each reads now on that bot, and what the graph does with it. Change one the same way.
-- **Messages**: a button that sends `0C3C` (the plate on) to every live bot's nameplate. It is the only message the server can send to `0D24`: the graph waits for its other messages only on the client.
+In a match, type `.plate <command>` in any chat. Separate commands with `;`. The bot in the chat answers with what is in force and with the first live bot's pool parts: component 51 (the health pools) as the bot sends it now. `.plate` alone (or `.plate show`) only shows them. The only message the server can send to the nameplate graph `0D24` is `0C3C` (the plate on): the graph waits for its other messages only on the client.
 
 The commands:
 

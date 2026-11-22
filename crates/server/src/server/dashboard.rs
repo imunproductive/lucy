@@ -1,6 +1,11 @@
 //! The dashboard's loopback HTTP server: the embedded page and its JSON API.
 //! The connections are served in parallel (`http.rs`); the requests one at a
 //! time.
+//!
+//! The page is the build of `web/dashboard` (Svelte), committed in its
+//! `dist/` and embedded by `build.rs`. Its scripts and styles have content
+//! hashes in their names, so browsers keep them; `index.html` answers every
+//! path outside `/api/` and `/assets/`, where the page routes itself.
 
 mod api;
 mod bot_group;
@@ -11,6 +16,7 @@ mod http;
 pub(super) use debug::enabled as debug_send_enabled;
 
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, HashMap},
     io,
     net::{Ipv4Addr, SocketAddr, TcpListener},
@@ -31,27 +37,14 @@ use lucy_lobby::{
 use crate::lobby::services::Services;
 use crate::platform::Platform;
 
-/// URL path, embedded file and MIME type.
-const PAGES: [(&str, &[u8], &str); 5] = [
-    ("/", INDEX, "text/html"),
-    ("/index.html", INDEX, "text/html"),
-    (
-        "/assets/dashboard.css",
-        include_bytes!("../../../../web/dashboard/dashboard.css"),
-        "text/css",
-    ),
-    (
-        "/assets/dashboard-api.mjs",
-        include_bytes!("../../../../web/dashboard/dashboard-api.mjs"),
-        "text/javascript",
-    ),
-    (
-        "/assets/dashboard.js",
-        include_bytes!("../../../../web/dashboard/dashboard.js"),
-        "text/javascript",
-    ),
-];
-const INDEX: &[u8] = include_bytes!("../../../../web/dashboard/index.html");
+mod files {
+    include!(concat!(env!("OUT_DIR"), "/dashboard_files.rs"));
+}
+
+/// How long a browser keeps the page's hashed files (a year: a new build has
+/// new names).
+const IMMUTABLE: &str = "public, max-age=31536000, immutable";
+
 pub struct Dashboard {
     http: HttpServer,
 }
@@ -146,16 +139,8 @@ fn handle(
     }
     let (path, query) = request.url.split_once('?').unwrap_or((&request.url, ""));
     match request.method {
+        Method::Get if !path.starts_with("/api/") => page(api.assets, path),
         Method::Get => {
-            if let Some((_, body, mime)) = PAGES.iter().find(|(page, _, _)| *page == path) {
-                return reply(200, body.to_vec(), mime);
-            }
-            if let Some((file, mime)) = picture(api.assets, path) {
-                return match std::fs::read(file) {
-                    Ok(body) => reply(200, body, mime),
-                    Err(_) => json_reply(Err(not_found())),
-                };
-            }
             let query = parse_query(query);
             let account = query.get("account").map(String::as_str);
             json_reply(match path {
@@ -240,6 +225,41 @@ fn read_body(body: &[u8]) -> Result<Map<String, Json>, ApiError> {
     }
 }
 
+/// A GET outside the API: a file of the page, a picture from the assets
+/// folder, or the page itself for the paths it routes (`/matches/<id>`).
+fn page(assets: &Path, path: &str) -> Response {
+    let path = if path == "/" { "/index.html" } else { path };
+    if let Some(&(_, body, mime)) = files::FILES.iter().find(|(url, _, _)| *url == path) {
+        // The built scripts and styles have content hashes in their names.
+        let cache = if path.starts_with("/assets/") {
+            IMMUTABLE
+        } else {
+            "no-cache"
+        };
+        return reply(200, Cow::Borrowed(body), mime, cache);
+    }
+    if let Some((file, mime)) = picture(assets, path) {
+        return match std::fs::read(file) {
+            Ok(body) => reply(200, body.into(), mime, "no-store"),
+            Err(_) => json_reply(Err(not_found())),
+        };
+    }
+    // A missing file (a name with an extension) stays missing.
+    let file = path.starts_with("/assets/")
+        || path
+            .rsplit('/')
+            .next()
+            .is_some_and(|name| name.contains('.'));
+    if file {
+        return json_reply(Err(not_found()));
+    }
+    let &(_, index, mime) = files::FILES
+        .iter()
+        .find(|(url, _, _)| *url == "/index.html")
+        .expect("build.rs checks that the page has index.html");
+    reply(200, Cow::Borrowed(index), mime, "no-cache")
+}
+
 /// A picture inside the assets folder: `boxes/<a-z0-9_>.png` or
 /// `previews/<16 upper-case hex digits>.webp`.
 fn picture(assets: &Path, path: &str) -> Option<(PathBuf, &'static str)> {
@@ -277,10 +297,15 @@ fn json_reply(result: ApiResult) -> Response {
         Ok(value) => (200, value),
         Err(error) => (error.status, json!({"error": error.message})),
     };
-    reply(status, value.to_string().into_bytes(), "application/json")
+    reply(
+        status,
+        value.to_string().into_bytes().into(),
+        "application/json",
+        "no-store",
+    )
 }
 
-fn reply(status: u16, body: Vec<u8>, mime: &str) -> Response {
+fn reply(status: u16, body: Cow<'static, [u8]>, mime: &str, cache: &str) -> Response {
     let text = mime.starts_with("text/") || mime == "application/json";
     let content_type = if text {
         format!("{mime}; charset=utf-8")
@@ -291,7 +316,7 @@ fn reply(status: u16, body: Vec<u8>, mime: &str) -> Response {
         status,
         headers: vec![
             ("Content-Type", content_type),
-            ("Cache-Control", "no-store".to_owned()),
+            ("Cache-Control", cache.to_owned()),
             ("X-Content-Type-Options", "nosniff".to_owned()),
         ],
         body,
@@ -364,6 +389,23 @@ mod tests {
         content_type: &str,
         body: &str,
     ) -> (u16, String) {
+        let (status, _, body) = exchange(addr, method, path, host, content_type, body);
+        (status, body)
+    }
+
+    /// A GET: status, head and body.
+    fn get(addr: SocketAddr, path: &str) -> (u16, String, String) {
+        exchange(addr, "GET", path, &addr.to_string(), "text/plain", "")
+    }
+
+    fn exchange(
+        addr: SocketAddr,
+        method: &str,
+        path: &str,
+        host: &str,
+        content_type: &str,
+        body: &str,
+    ) -> (u16, String, String) {
         let mut stream = TcpStream::connect(addr).unwrap();
         write!(
             stream,
@@ -374,8 +416,8 @@ mod tests {
         let mut reply = String::new();
         stream.read_to_string(&mut reply).unwrap();
         let status = reply[9..12].parse().unwrap();
-        let body = reply.split_once("\r\n\r\n").unwrap().1.to_owned();
-        (status, body)
+        let (head, body) = reply.split_once("\r\n\r\n").unwrap();
+        (status, head.to_owned(), body.to_owned())
     }
 
     fn parts(state: &Path, debug_send: bool) -> DashboardParts {
@@ -442,14 +484,73 @@ mod tests {
     }
 
     #[test]
-    fn serves_the_page_the_api_and_refuses_unported_actions() {
+    fn serves_the_built_page_its_files_and_its_routes() {
         let state = tempfile::tempdir().unwrap();
         let mut dashboard = Dashboard::start(0, parts(state.path(), false)).unwrap();
         let addr = dashboard.addr();
 
-        let (status, page) = request(addr, "GET", "/", "");
+        let (status, head, index) = get(addr, "/");
         assert_eq!(status, 200);
-        assert!(page.contains("dashboard.js"));
+        assert!(
+            head.contains("Content-Type: text/html; charset=utf-8"),
+            "{head}"
+        );
+        assert!(head.contains("Cache-Control: no-cache"), "{head}");
+        assert!(index.contains("<title>Lucy</title>"));
+        // The page names its script and style by content hash: browsers keep them.
+        for (attribute, mime) in [
+            ("src=\"", "text/javascript; charset=utf-8"),
+            ("href=\"", "text/css; charset=utf-8"),
+        ] {
+            let start = index
+                .find(&format!("{attribute}/assets/"))
+                .unwrap_or_else(|| panic!("{attribute}/assets/ in {index}"))
+                + attribute.len();
+            let url = &index[start..start + index[start..].find('"').unwrap()];
+            let (status, head, _) = get(addr, url);
+            assert_eq!(status, 200, "{url}");
+            assert!(
+                head.contains(&format!("Content-Type: {mime}")),
+                "{url}: {head}"
+            );
+            assert!(
+                head.contains(&format!("Cache-Control: {IMMUTABLE}")),
+                "{url}: {head}"
+            );
+        }
+        let (status, head, _) = get(addr, "/favicon.svg");
+        assert_eq!(status, 200);
+        assert!(head.contains("Content-Type: image/svg+xml"), "{head}");
+        // The page's own routes load the page, which routes itself.
+        for route in [
+            "/index.html",
+            "/matches",
+            "/matches/0123abcd",
+            "/collection?kind=skins",
+        ] {
+            let (status, _, page) = get(addr, route);
+            assert_eq!((status, page == index), (200, true), "{route}");
+        }
+        // Missing files and API routes stay missing.
+        for missing in [
+            "/assets/index-missing.js",
+            "/robots.txt",
+            "/api/live",
+            "/assets/boxes/golden.png",
+        ] {
+            let (status, head, _) = get(addr, missing);
+            assert_eq!(status, 404, "{missing}");
+            assert!(head.contains("application/json"), "{missing}: {head}");
+        }
+        dashboard.stop();
+    }
+
+    #[test]
+    fn serves_the_api_and_refuses_unported_actions() {
+        let state = tempfile::tempdir().unwrap();
+        let mut dashboard = Dashboard::start(0, parts(state.path(), false)).unwrap();
+        let addr = dashboard.addr();
+
         let (status, state) = request(addr, "GET", "/api/state?account=alpha", "");
         assert_eq!(status, 200);
         let state: Json = serde_json::from_str(&state).unwrap();
