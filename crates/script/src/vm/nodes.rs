@@ -1241,7 +1241,9 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
             class if ASSUMED_PLAIN_STATES.contains(&class) => StateKind::Plain,
             class if ASSUMED_INERT_STATES.contains(&class) => StateKind::Plain,
             "STU_77E13026" => StateKind::HitList,
-            "STU_550D0C5C" => StateKind::Scope,
+            // `STU_CB4905E9` plays its graph on its targets as the scope
+            // state opens its scopes (`vm/scopes.rs`).
+            "STU_550D0C5C" | "STU_CB4905E9" => StateKind::Scope,
             "STUStatescriptStateWeaponVolley" => StateKind::WeaponVolley {
                 volleys: 1,
                 offset_ms: 0,

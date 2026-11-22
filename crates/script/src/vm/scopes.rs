@@ -57,6 +57,20 @@
 //! instance variables when it opens: its parent reads see them as they
 //! were then (assumption; the client reads the parent live: `265F` reads
 //! its parent only at the scope's begin).
+//!
+//! `STU_CB4905E9` (state record #208, runtime vtable 0x7FF78B583E00) plays
+//! another graph on its targets the same way: its after-begin
+//! (`0x7FF789C5C080`) takes the graph of `m_69F4B52C` (a graph with
+//! overrides, `STU_9DB46B98`; empty in every use) or else `m_script`,
+//! lists the valid entities of `m_targets` and hands the list to
+//! `0x7FF789C61200`/`0x7FF789C60870`, which play the graph on each new
+//! target and stop it on those that left; its end (`0x7FF789C5CA80`)
+//! stops them all. So it runs as a scope state whose targets get a root
+//! instance of that graph with `m_params` as a PlayScript's
+//! ([`ScopeChange::Open`] `played`). Not modelled: its event slot
+//! (`0x7FF789C5CCC0`) finishes it, or follows `m_9DD3E3F1` when
+//! `m_8C797956` holds, once every played instance has ended (`1225`'s
+//! `1246` and `26DB` never end).
 
 use super::*;
 
@@ -107,6 +121,10 @@ pub enum ScopeChange {
         /// instead of opening another (`m_DED58406`).
         reuse: bool,
         parent: Variables,
+        /// Not a scope instance but `graph` played on the target
+        /// (`STU_CB4905E9`): a root instance whose start entries take these
+        /// parameters (`m_params`, as a PlayScript's).
+        played: Option<Vec<(u64, Value)>>,
     },
     Close {
         source: ScopeSource,
@@ -142,6 +160,24 @@ pub(super) fn scope_id(node: &Node) -> u32 {
         .unwrap_or(0)
 }
 
+/// The state that plays a graph on its targets as a scope state opens
+/// scopes (module notes).
+const PLAYED_GRAPHS: &str = "STU_CB4905E9";
+
+/// The graph `STU_CB4905E9` plays: `m_script`'s, when `m_69F4B52C` names
+/// none (an empty `STU_9DB46B98`). None: another form.
+fn played_graph(node: &Node) -> Option<u32> {
+    let overrides = field(&node.fields, "m_69F4B52C");
+    if !(overrides.is_null()
+        || (overrides.get("$").and_then(Json::as_str) == Some("STU_9DB46B98")
+            && field(overrides, "m_6525E98B").is_null()))
+    {
+        return None;
+    }
+    let guid = node.field("m_script.m_graph").and_then(asset_guid)?;
+    (guid >> 48 == 0x0580).then_some(guid as u32)
+}
+
 /// The scope an entry runs in (`STUStatescriptEntry.m_5AEA0A51`; 0: the
 /// instances that are no scope's).
 pub(super) fn entry_scope(node: &Node) -> u32 {
@@ -175,9 +211,27 @@ impl Component {
                 keep,
                 reuse,
                 parent,
+                played,
                 ..
             } => {
                 if let Some(&(id, _)) = self.machine.scopes.get(source) {
+                    return Ok(Some(id));
+                }
+                if let Some(parameters) = played {
+                    let id = u16::try_from(self.machine.next_id)
+                        .map_err(|_| InitFault::InstanceIdExhausted)?;
+                    let mut created = false;
+                    self.run(erase(world), |vm| {
+                        created = vm.create(id, *graph, None, Variables::new(), *creator)?;
+                        if created {
+                            vm.start_entries(id, parameters, *creator)?;
+                        }
+                        vm.run()
+                    })?;
+                    if !created {
+                        return Ok(None);
+                    }
+                    self.machine.scopes.insert(*source, (id, *keep));
                     return Ok(Some(id));
                 }
                 let reused = self
@@ -305,9 +359,24 @@ impl<W: World + ?Sized> Vm<'_, '_, '_, W> {
     /// a re-picked Training Partner); the client makes it at once.
     pub(super) fn refresh_scopes(&mut self, key: StateKey, node: &Node) -> Result<(), InitFault> {
         let id = key.instance;
-        if self.instance_scope(id) == scope_id(node) {
+        let played = node.class == PLAYED_GRAPHS;
+        if !played && self.instance_scope(id) == scope_id(node) {
             return Ok(());
         }
+        let played = if played {
+            match played_graph(node) {
+                Some(graph) => Some(graph),
+                None => {
+                    self.report(
+                        self.site(id, node),
+                        Issue::UnsupportedField("STU_CB4905E9 graph"),
+                    );
+                    return Ok(());
+                }
+            }
+        } else {
+            None
+        };
         let listed = self.listed_entities(key, node, "m_targets");
         let source = self.scope_source(key);
         let state = self.state(key).expect("active scope state");
@@ -363,8 +432,22 @@ impl<W: World + ?Sized> Vm<'_, '_, '_, W> {
                 self.assume(site, "STU_550D0C5C index outputs", "not written");
             }
             let parent = self.instance_values(id);
-            let creator = self.source_of(id);
-            let graph = self.machine.snapshot.instances[&id].graph;
+            let (graph, creator, parameters) = match played {
+                // The played instance's creator (#27) is the entity whose
+                // state plays it: `26DB` reads the payload's distance as
+                // `#27.id(479)`.
+                Some(graph) => {
+                    let Some(parameters) = self.play_parameters(id, node) else {
+                        return Ok(());
+                    };
+                    (graph, source.entity, Some(parameters))
+                }
+                None => (
+                    self.machine.snapshot.instances[&id].graph,
+                    self.source_of(id),
+                    None,
+                ),
+            };
             for &target in came.iter().chain(&unopened) {
                 taken &= self.world.change_scope(
                     site,
@@ -377,6 +460,7 @@ impl<W: World + ?Sized> Vm<'_, '_, '_, W> {
                         keep,
                         reuse,
                         parent: parent.clone(),
+                        played: parameters.clone(),
                     },
                 );
             }
