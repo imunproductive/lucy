@@ -4,7 +4,7 @@ use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read};
 use std::net::TcpStream;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use lucy_wire::jam::cipher::Jam;
 use lucy_wire::jam::codec::Fields;
@@ -14,6 +14,9 @@ use lucy_wire::tcp::PeerStream;
 
 use crate::clock::Clock;
 
+/// The lobby's own keepalive when the client has been quiet this long. The
+/// client pings every 5 s once the link is up (`docs/notes/behavior.md`,
+/// "Lobby connections"), so it rarely goes.
 const KEEPALIVE: Duration = Duration::from_secs(10);
 
 /// Protocol CRC, message ID and its decoded fields.
@@ -35,19 +38,20 @@ pub struct LobbyTransport {
     clock: Clock,
     /// When the client last pinged, or the lobby last sent a keepalive.
     last_keepalive: Duration,
+    /// When the client's last bytes arrived.
+    last_received: Duration,
     closed: bool,
     pub sequence: u32,
 }
 
 impl LobbyTransport {
     pub fn new(stream: TcpStream, channel: Channel, clock: Clock) -> io::Result<Self> {
-        Ok(Self::from_peer(
-            PeerStream::new(stream, Arc::default())?,
-            channel,
-            clock,
-        ))
+        let mut stream = PeerStream::new(stream, Arc::default())?;
+        stream.set_clock(clock.source());
+        Ok(Self::from_peer(stream, channel, clock))
     }
 
+    /// `stream` reads its deadlines from `clock`.
     pub(crate) fn from_peer(stream: PeerStream, channel: Channel, clock: Clock) -> Self {
         Self {
             stream,
@@ -57,6 +61,7 @@ impl LobbyTransport {
             groups: Vec::new(),
             wire_of: HashMap::new(),
             last_keepalive: clock.now(),
+            last_received: clock.now(),
             clock,
             closed: false,
             sequence: channel.seq,
@@ -68,8 +73,14 @@ impl LobbyTransport {
         self.closed
     }
 
-    pub(crate) fn set_deadline(&mut self, deadline: Option<Instant>) {
-        self.stream.set_deadline(deadline);
+    /// How long the client has sent nothing, not even a ping.
+    pub fn quiet_for(&self) -> Duration {
+        self.clock.now().saturating_sub(self.last_received)
+    }
+
+    /// See [`PeerStream::set_time_limit`]; on the lobby's clock.
+    pub(crate) fn set_time_limit(&mut self, limit: Option<Duration>) {
+        self.stream.set_time_limit(limit);
     }
 
     pub fn groups(&self) -> &[u32] {
@@ -106,7 +117,10 @@ impl LobbyTransport {
                     self.closed = true;
                     return Ok(None);
                 }
-                Ok(count) => self.pending.extend(self.reader.feed(&data[..count])),
+                Ok(count) => {
+                    self.last_received = self.clock.now();
+                    self.pending.extend(self.reader.feed(&data[..count]));
+                }
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 Err(error)
                     if matches!(
@@ -116,6 +130,11 @@ impl LobbyTransport {
                 {
                     if self.stream.deadline_expired() {
                         return Err(error);
+                    }
+                    // The caller's wake comes first: a keepalive after a
+                    // wake follows the caller's checks of that wake.
+                    if !keep_receiving() {
+                        break;
                     }
                     let now = self.clock.now();
                     if now.saturating_sub(self.last_keepalive) > KEEPALIVE {

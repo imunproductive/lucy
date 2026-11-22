@@ -8,7 +8,7 @@ use std::{
     io,
     net::{Ipv4Addr, SocketAddr, TcpStream},
     sync::Arc,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use crate::{
@@ -34,7 +34,11 @@ use lucy_wire::{
     tcp::PeerStream,
 };
 
-const HELLO_TIMEOUT: Duration = Duration::from_secs(30);
+/// From the accept to the end of the handshake (or the BattleTag answer),
+/// on the lobby's clock (`ow174/jam/handshake.py` `recv_exact`, 30 s).
+pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
+/// From the handshake to the login message (the client sends it at once).
+pub const LOGIN_TIMEOUT: Duration = Duration::from_secs(30);
 const DISCONNECT: u32 = 20503;
 const PING: u32 = 0xdda5_83ef;
 
@@ -87,16 +91,16 @@ impl<'a> LobbySession<'a> {
         schemas: &'a Schemas,
         clock: Clock,
     ) -> io::Result<Option<Self>> {
-        Self::accept_peer(
-            PeerStream::new(stream, Arc::default())?,
-            connection_id,
-            signing_key,
-            accounts,
-            schemas,
-            clock,
-        )
+        let mut stream = PeerStream::new(stream, Arc::default())?;
+        stream.set_clock(clock.source());
+        stream.set_time_limit(Some(HANDSHAKE_TIMEOUT));
+        Self::accept_peer(stream, connection_id, signing_key, accounts, schemas, clock)
     }
 
+    /// `stream` is on the lobby's `clock` with the handshake's deadline
+    /// ([`HANDSHAKE_TIMEOUT`] from its accept, set by the accept loop). The
+    /// login must then arrive within [`LOGIN_TIMEOUT`]: a read past either
+    /// deadline fails with `TimedOut`.
     pub fn accept_peer(
         mut stream: PeerStream,
         connection_id: u32,
@@ -114,12 +118,11 @@ impl<'a> LobbySession<'a> {
             ));
         };
         let local = peer.ip().is_loopback();
-        stream.set_deadline(Some(Instant::now() + HELLO_TIMEOUT));
         if battle_tag_query::answer_peer(&mut stream, |name| resolve_battle_tag(accounts, name))? {
             return Ok(None);
         }
         let channel = handshake_io(&mut stream, address, connection_id, signing_key)?;
-        stream.set_deadline(Some(Instant::now() + HELLO_TIMEOUT));
+        stream.set_time_limit(Some(LOGIN_TIMEOUT));
         let transport = LobbyTransport::from_peer(stream, channel, clock);
         Ok(Some(Self {
             transport,
@@ -168,7 +171,7 @@ impl<'a> LobbySession<'a> {
             }
         };
         let identity = Identity::create(account.account_lo, self.transport.sequence)?;
-        self.transport.set_deadline(None);
+        self.transport.set_time_limit(None);
         self.authenticated = true;
         Ok(LoginRequest::Prepared(PreparedLogin {
             account,
@@ -239,6 +242,11 @@ impl<'a> LobbySession<'a> {
     /// Whether the client closed the connection.
     pub fn closed(&self) -> bool {
         self.transport.closed()
+    }
+
+    /// How long the client has sent nothing, not even its ping.
+    pub fn quiet_for(&self) -> Duration {
+        self.transport.quiet_for()
     }
 
     /// Send an outbound JAM message with the wire index announced by this client.

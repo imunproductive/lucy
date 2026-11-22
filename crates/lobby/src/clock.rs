@@ -7,14 +7,17 @@ use std::{
     time::{Duration, Instant},
 };
 
+use lucy_wire::tcp::Now;
+
 /// The lobby's clock: the time since the lobby started. Every lobby timer
-/// reads it: a session's keepalive and ticks, the matchmaker's handoff
-/// delays, sweeps and time played, the account features after login, the
-/// offline friends' presence and party invites. The server reads the wall
-/// clock ([`Clock::wall`]); tests give a virtual one that stands until they
-/// move it, as the game service's loop reads the clock it is given.
+/// reads it: a session's keepalive, ticks, connection deadlines and idle
+/// time, the matchmaker's handoff delays, sweeps and time played, the
+/// account features after login, the offline friends' presence and party
+/// invites. The server reads the wall clock ([`Clock::wall`]); tests give a
+/// virtual one that stands until they move it, as the game service's loop
+/// reads the clock it is given.
 #[derive(Clone)]
-pub struct Clock(Arc<dyn Fn() -> Duration + Send + Sync>);
+pub struct Clock(Now);
 
 impl Clock {
     /// The wall clock, from now.
@@ -31,6 +34,11 @@ impl Clock {
     /// The time since the lobby started.
     pub fn now(&self) -> Duration {
         (self.0)()
+    }
+
+    /// The clock for a connection's deadlines ([`lucy_wire::tcp::PeerStream`]).
+    pub fn source(&self) -> Now {
+        Arc::clone(&self.0)
     }
 }
 

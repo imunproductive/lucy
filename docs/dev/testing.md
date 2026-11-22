@@ -97,7 +97,7 @@ A test on the real clock and real UDP only proves the real loop and its sockets:
 
 #### Lobby tests
 
-Every lobby timer reads the lobby's clock (`lucy_lobby::clock::Clock`, the time since the lobby started): a session's ticks and keepalive, the matchmaker's handoff delays, sweeps and time played, the account features after login, the offline friends' presence, party invites and the dashboard's uptime. The server reads the wall clock. A test's lobby clock is virtual (`lobby/clock.rs`, `VirtualClock`): it stands until the test moves it.
+Every lobby timer reads the lobby's clock (`lucy_lobby::clock::Clock`, the time since the lobby started): a session's ticks, keepalive, connection deadlines and idle time, the matchmaker's handoff delays, sweeps and time played, the account features after login, the offline friends' presence, party invites, the dashboard's uptime and its connections' deadlines. The server reads the wall clock. A test's lobby clock is virtual (`lobby/clock.rs`, `VirtualClock`): it stands until the test moves it.
 
 To write one:
 
@@ -105,6 +105,7 @@ To write one:
 - Connect a game's lobby client with `lobby::test_client::Client` (loopback TCP). A session answers a ping in turn with its client's messages, once it has sent everything it had to send by then. So `send` returns once the lobby handled the message, with its replies; `expect`, `settle` and `take` read up to such a ping; `close` returns once the session ended and its logout ran. Mail one session posts to another is there when the other client reads next. A game on the game service is a `game_service::lockstep::Client` on `time.game`.
 - Move the lobby's clock with `test_client::run(&time.lobby, &mut [&mut client], time)`: it moves a lobby tick (`TICK`, 250 ms) at a time, and each client's session ticks after each. The game service's clock moves only with its network (`time.game.run(time)`, or a game client that waits for a datagram). Never wait in real time: the socket's read timeout only fails a test whose lobby hangs.
 - Timing is exact. Derive the expected time from the rule and write the derivation in a comment: the 20600 of a popped queue comes `FOUND_DELAY` (4 s) after "Game Found!", at the 16th lobby tick (`one_player_to_start_pops_the_queue_and_hands_the_game_off`); a game that stays after 20304 is dropped at the first game tick 3 s after its release, the 188th (`a_game_that_stays_after_20304_is_dropped`).
+- A client that stays quiet while the clock moves (`time.lobby.advance`, not `run`, which pings) tests the lobby's deadlines (`lobby/tests.rs`): `keepalive` waits, sending nothing, for the session's own keepalive, which comes after the session's checks of that wake, so the session kept the link; `closed_by_lobby` returns once the lobby closed it. A connection's thread ends a moment after its connection: `server.lobby_peers()` reaches the expected count in real time, so the test waits for it with a bound, as for an event, never for a time.
 
 #### Slow tests
 

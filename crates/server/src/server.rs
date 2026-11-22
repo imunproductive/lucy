@@ -39,6 +39,8 @@ use lucy_lobby::{
 };
 use lucy_sim::scene_assets::SceneAssets;
 use lucy_wire::jam::codec::Schemas;
+#[cfg(test)]
+use lucy_wire::tcp::PeerCount;
 
 pub struct ServerConfig {
     pub runtime: PathBuf,
@@ -116,6 +118,9 @@ pub struct Server {
     game_addr: Option<SocketAddr>,
     stop_lobby: mpsc::Sender<()>,
     lobby: Option<JoinHandle<io::Result<()>>>,
+    /// The lobby's connections that have a thread.
+    #[cfg(test)]
+    lobby_peers: PeerCount,
     bnet: Option<BnetService>,
     game: Option<Arc<GameService>>,
     dashboard: Option<Dashboard>,
@@ -303,18 +308,29 @@ impl Server {
             })
             .transpose()?;
         let (stop_lobby, shutdown) = mpsc::channel();
+        let peers = crate::lobby::peer_workers(&shared.clock);
+        #[cfg(test)]
+        let lobby_peers = peers.count();
         let lobby = thread::Builder::new()
             .name("lucy-lobby".into())
-            .spawn(move || serve(listener, shared, shutdown))?;
+            .spawn(move || serve(listener, shared, shutdown, peers))?;
         Ok(Self {
             lobby_addr,
             game_addr,
             stop_lobby,
             lobby: Some(lobby),
+            #[cfg(test)]
+            lobby_peers,
             bnet,
             game,
             dashboard,
         })
+    }
+
+    /// The lobby's connections that still have a thread.
+    #[cfg(test)]
+    pub(crate) fn lobby_peers(&self) -> usize {
+        self.lobby_peers.get()
     }
 
     pub fn lobby_addr(&self) -> SocketAddrV4 {

@@ -2,6 +2,13 @@
 //!
 //! Ports the listener roles from `ow174/bnet/service.py` and the connection
 //! handling from `ow174/bnet/rpc_server.py`. RPC content lives in `bnet_rpc`.
+//!
+//! Each connection has a thread, joined when the connection ends, within the
+//! listeners' [`LIMITS`]. The game's dial to the stall port stays open for
+//! the game's life: after the relay swaps the stream, nothing more comes on
+//! it, so it has no deadline. An RPC link must finish its WebSocket upgrade
+//! within [`HANDSHAKE_TIMEOUT`] and log on within [`LOGON_TIMEOUT`]; after
+//! that it lives while it answers the server's pings ([`PING_INTERVAL`]).
 
 use std::io::{self, Read};
 use std::net::{SocketAddr, SocketAddrV4, TcpListener};
@@ -16,14 +23,29 @@ use tungstenite::{Error, Message, WebSocket, accept_hdr_with_config};
 
 use crate::protocol::Protocol;
 use crate::rpc::{Clock, Player, RpcSession};
-use lucy_wire::tcp::{PeerStream, PeerWorkers, accept, retryable};
+use lucy_wire::tcp::{
+    Admission, Limit, Now, PeerCount, PeerLimits, PeerStream, PeerWorkers, accept, retryable,
+    wall_clock,
+};
 
 pub const STALL_PORT: u16 = 1119;
 pub const RPC_PORT: u16 = 21119;
 pub const SUBPROTOCOL: &str = "v1.rpc.battle.net";
 const MAX_RPC_SIZE: usize = 8 << 20;
 const ACCEPT_POLL: Duration = Duration::from_millis(10);
+/// The connections of both ports together. Each game holds one on each, and
+/// they all come from this PC: the listeners are on loopback.
+const LIMITS: PeerLimits = PeerLimits {
+    total: 32,
+    per_address: 16,
+};
+/// From the accept to the end of the WebSocket upgrade.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+/// From the upgrade to AuthenticationServer.Logon, which the game sends
+/// right after ConnectionService.Connect (`rpc.rs`).
+const LOGON_TIMEOUT: Duration = Duration::from_secs(30);
+/// The server pings the RPC link this often; a link that has not answered a
+/// ping by the next one is closed.
 const PING_INTERVAL: Duration = Duration::from_secs(20);
 
 /// Background listeners for the original client dial and the relay's RPC pipe.
@@ -32,6 +54,7 @@ pub struct BnetService {
     rpc: SocketAddr,
     stop: mpsc::Sender<()>,
     worker: Option<JoinHandle<io::Result<()>>>,
+    peers: PeerCount,
 }
 
 impl BnetService {
@@ -44,28 +67,45 @@ impl BnetService {
         protocol: Arc<Protocol>,
         player: impl Fn(SocketAddr) -> Player + Send + Sync + 'static,
     ) -> io::Result<Self> {
+        Self::start_on(stall, rpc, lobby, protocol, player, wall_clock())
+    }
+
+    /// The service with its deadlines and pings on `now`.
+    fn start_on(
+        stall: SocketAddrV4,
+        rpc: SocketAddrV4,
+        lobby: SocketAddrV4,
+        protocol: Arc<Protocol>,
+        player: impl Fn(SocketAddr) -> Player + Send + Sync + 'static,
+        now: Now,
+    ) -> io::Result<Self> {
         let stall_listener = TcpListener::bind(stall)?;
         let rpc_listener = TcpListener::bind(rpc)?;
         stall_listener.set_nonblocking(true)?;
         rpc_listener.set_nonblocking(true)?;
         let stall = stall_listener.local_addr()?;
         let rpc = rpc_listener.local_addr()?;
+        let peers =
+            PeerWorkers::new(LIMITS).with_accept_deadline(Arc::clone(&now), HANDSHAKE_TIMEOUT);
         let endpoint = Arc::new(RpcEndpoint {
             protocol,
             lobby,
             player: Box::new(player),
+            now,
             started: Instant::now(),
             epoch: (wall_millis() / 1000) as u32,
         });
+        let count = peers.count();
         let (stop, shutdown) = mpsc::channel();
         let worker = thread::Builder::new()
             .name("bnet".into())
-            .spawn(move || serve(stall_listener, rpc_listener, endpoint, shutdown))?;
+            .spawn(move || serve(stall_listener, rpc_listener, endpoint, shutdown, peers))?;
         Ok(Self {
             stall,
             rpc,
             stop,
             worker: Some(worker),
+            peers: count,
         })
     }
 
@@ -75,6 +115,11 @@ impl BnetService {
 
     pub fn rpc_addr(&self) -> SocketAddr {
         self.rpc
+    }
+
+    /// The connections that still have a thread.
+    pub fn peers(&self) -> usize {
+        self.peers.get()
     }
 
     /// Closes both listeners and all accepted sockets, including incomplete handshakes.
@@ -99,6 +144,7 @@ struct RpcEndpoint {
     protocol: Arc<Protocol>,
     lobby: SocketAddrV4,
     player: Box<dyn Fn(SocketAddr) -> Player + Send + Sync>,
+    now: Now,
     started: Instant,
     epoch: u32,
 }
@@ -126,8 +172,8 @@ fn serve(
     rpc: TcpListener,
     endpoint: Arc<RpcEndpoint>,
     shutdown: mpsc::Receiver<()>,
+    mut peers: PeerWorkers,
 ) -> io::Result<()> {
-    let mut peers = PeerWorkers::default();
     while matches!(shutdown.try_recv(), Err(mpsc::TryRecvError::Empty)) {
         peers.reap();
         let stall_peer = accept(&stall)?;
@@ -141,21 +187,51 @@ fn serve(
             }
             continue;
         }
-        if let Some((socket, _)) = stall_peer {
-            let _ = peers.spawn("bnet-peer", socket, hold_open);
+        if let Some((socket, address)) = stall_peer {
+            log_admission(
+                peers.spawn("bnet-peer", socket, address, hold_open),
+                address,
+            );
         }
         if let Some((socket, address)) = rpc_peer {
             let endpoint = Arc::clone(&endpoint);
-            let _ = peers.spawn("bnet-peer", socket, move |socket| {
+            let served = peers.spawn("bnet-peer", socket, address, move |socket| {
                 serve_rpc(socket, address, &endpoint)
             });
+            log_admission(served, address);
         }
     }
     Ok(())
 }
 
+fn log_admission(served: io::Result<Admission>, address: SocketAddr) {
+    match served {
+        Ok(Admission::Served | Admission::Refused { first: false, .. }) => {}
+        Ok(Admission::Refused {
+            limit: Limit::Total,
+            first: true,
+        }) => tracing::warn!(
+            "[!] Battle.net serves {} connections, its most; refusing more",
+            LIMITS.total
+        ),
+        Ok(Admission::Refused {
+            limit: Limit::Address,
+            first: true,
+        }) => tracing::warn!(
+            "[!] {} Battle.net connections from {}, the most from one address; refusing more",
+            LIMITS.per_address,
+            address.ip()
+        ),
+        Err(error) => {
+            tracing::warn!("[!] Battle.net connection from {address} not served: {error}")
+        }
+    }
+}
+
 fn hold_open(mut socket: PeerStream) {
-    // The relay swaps out the real client dial. Consume its TLS bytes without replying.
+    // The relay swaps out the real client dial. Consume its TLS bytes without
+    // replying, for as long as the game keeps the dial.
+    socket.set_time_limit(None);
     let mut buffer = [0; 4096];
     loop {
         match socket.read(&mut buffer) {
@@ -200,12 +276,13 @@ fn rpc_config() -> WebSocketConfig {
         .max_frame_size(Some(MAX_RPC_SIZE))
 }
 
-fn serve_rpc(mut socket: PeerStream, address: SocketAddr, endpoint: &RpcEndpoint) {
-    socket.set_deadline(Some(Instant::now() + HANDSHAKE_TIMEOUT));
+/// The WebSocket upgrade must end by the stream's accept deadline
+/// ([`HANDSHAKE_TIMEOUT`]).
+fn serve_rpc(socket: PeerStream, address: SocketAddr, endpoint: &RpcEndpoint) {
     let Ok(mut websocket) = accept_hdr_with_config(socket, negotiate, Some(rpc_config())) else {
         return;
     };
-    websocket.get_mut().set_deadline(None);
+    websocket.get_mut().set_time_limit(None);
     let _ = run_rpc(&mut websocket, address, endpoint);
 }
 
@@ -215,11 +292,16 @@ fn run_rpc(
     endpoint: &RpcEndpoint,
 ) -> Result<(), Error> {
     let mut session = RpcSession::new();
-    let mut next_ping = Instant::now() + PING_INTERVAL;
+    let logon_by = (endpoint.now)() + LOGON_TIMEOUT;
+    let mut next_ping = (endpoint.now)() + PING_INTERVAL;
     let mut ping_number = 0u32;
     let mut pending_ping = None;
     loop {
-        let now = Instant::now();
+        let now = (endpoint.now)();
+        if !session.logged_on() && now >= logon_by {
+            websocket.close(None)?;
+            return Ok(());
+        }
         if now >= next_ping {
             if pending_ping.is_some() {
                 websocket.close(None)?;
@@ -274,6 +356,7 @@ mod tests {
     use crate::protocol::ACCOUNT_HASH;
     use prost_reflect::Value;
     use std::net::Ipv4Addr;
+    use std::sync::Mutex;
     use std::{io::Write, net::TcpStream};
     use tungstenite::{HandshakeError, client, client::IntoClientRequest};
 
@@ -398,6 +481,81 @@ mod tests {
             });
         }
         assert!(TcpStream::connect(service.stall_addr()).is_err());
+    }
+
+    /// Waits in real time for the service's threads to catch up; fails
+    /// after 10 s.
+    fn settle(what: &str, done: impl Fn() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !done() {
+            assert!(Instant::now() < deadline, "{what}");
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// The server closed `socket`.
+    fn closed(socket: &mut TcpStream) -> bool {
+        match socket.read(&mut [0]) {
+            Ok(count) => count == 0,
+            Err(error) => !retryable(&error),
+        }
+    }
+
+    #[test]
+    fn each_connection_has_a_thread_until_it_ends_within_the_limits() {
+        let protocol = Arc::new(Protocol::from_bytes(DESCRIPTORS).unwrap());
+        let service = start(local(), local(), protocol).unwrap();
+        for _ in 0..5 {
+            // Eight games' dials and RPC links: the most from one address.
+            let mut open: Vec<_> = (0..8)
+                .flat_map(|_| [tcp(service.stall_addr()), tcp(service.rpc_addr())])
+                .collect();
+            settle("every connection is served", || service.peers() == 16);
+            let mut refused = tcp(service.stall_addr());
+            assert!(closed(&mut refused));
+            assert_eq!(service.peers(), 16);
+            // Their ends: every thread is joined.
+            open.clear();
+            settle("a thread outlived its connection", || service.peers() == 0);
+        }
+    }
+
+    #[test]
+    fn rpc_links_close_at_the_upgrade_and_logon_deadlines() {
+        let protocol = Arc::new(Protocol::from_bytes(DESCRIPTORS).unwrap());
+        let time = Arc::new(Mutex::new(Duration::ZERO));
+        let clock = Arc::clone(&time);
+        let service = BnetService::start_on(
+            local(),
+            local(),
+            SocketAddrV4::new(Ipv4Addr::LOCALHOST, 3724),
+            protocol,
+            |_| panic!("no link here logs on"),
+            Arc::new(move || *clock.lock().unwrap()),
+        )
+        .unwrap();
+        let advance = |by| *time.lock().unwrap() += by;
+        let address = service.rpc_addr();
+        let mut stall = tcp(service.stall_addr());
+        let mut upgrading = tcp(address);
+        upgrading.write_all(b"GET / HTTP/1.1\r\n").unwrap();
+        let (mut quiet, _) = client(request(address, Some(SUBPROTOCOL)), tcp(address)).unwrap();
+        settle("the links are served", || service.peers() == 3);
+
+        // At 10 s the half-sent upgrade closes.
+        advance(HANDSHAKE_TIMEOUT);
+        assert!(closed(&mut upgrading));
+        // At 30 s the link that never logged on is closed, before the ping
+        // due at 20 s.
+        advance(LOGON_TIMEOUT - HANDSHAKE_TIMEOUT);
+        assert!(matches!(quiet.read(), Ok(Message::Close(None))));
+        settle("the closed links' threads end", || service.peers() == 1);
+        // The game's dial stays.
+        stall
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        assert!(!closed(&mut stall));
+        assert_eq!(service.peers(), 1);
     }
 
     #[test]

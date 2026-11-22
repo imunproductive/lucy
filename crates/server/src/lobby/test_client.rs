@@ -158,8 +158,14 @@ impl<'a> Client<'a> {
 
     /// Closes the connection and returns once the lobby ended the session:
     /// it closes its end after the session's logout.
-    pub(crate) fn close(mut self) {
+    pub(crate) fn close(self) {
         self.tcp.shutdown(Shutdown::Write).unwrap();
+        self.closed_by_lobby();
+    }
+
+    /// Returns once the lobby closes the connection, which this client
+    /// keeps open; what came before is dropped.
+    pub(crate) fn closed_by_lobby(mut self) {
         let mut buffer = vec![0; 65_536];
         loop {
             match self.tcp.read(&mut buffer) {
@@ -174,6 +180,29 @@ impl<'a> Client<'a> {
                     return;
                 }
                 Err(error) => panic!("the lobby did not end the session: {error}"),
+            }
+        }
+    }
+
+    /// Waits, sending nothing, for the session's own keepalive: it comes
+    /// once the client has been quiet 10 s on the lobby's clock, after the
+    /// session's checks of that wake (`transport.rs`), so the session
+    /// passed them. The messages before it are dropped.
+    pub(crate) fn keepalive(&mut self) {
+        let mut buffer = vec![0; 65_536];
+        loop {
+            let count = self
+                .tcp
+                .read(&mut buffer)
+                .unwrap_or_else(|error| panic!("no keepalive from the lobby: {error}"));
+            assert_ne!(count, 0, "the lobby closed the connection");
+            if self
+                .reader
+                .feed(&buffer[..count])
+                .iter()
+                .any(|frame| frame == &framing::PONG)
+            {
+                return;
             }
         }
     }

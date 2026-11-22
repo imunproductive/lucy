@@ -9,7 +9,7 @@ The fork was rebuilt from a Python server with a Rust port into one Rust workspa
 - **Errors:** library crates keep their typed or `io::Error` errors. The app reports `io::Error`s.
 - **Logging:** `tracing`, with a file appender in the state folder. No `println!` outside the CLI.
 - **CLI parsing:** `clap` with the derive API.
-- **Dashboard HTTP:** `tiny_http`. It is synchronous and fits the existing thread model. The JavaScript files are embedded into the binary.
+- **Dashboard HTTP:** a small HTTP/1.1 server of our own (`server/dashboard/http.rs`) on the shared TCP worker model (`wire::tcp`), synchronous like the rest. It replaced `tiny_http` (2026-11-22), whose detached threads, missing timeouts and missing connection limit did not fit the connection hygiene of `server-architecture-plan.md`. The JavaScript files are embedded into the binary.
 - **Developer tools:** stable Rust with the MSVC toolchain, Node.js (only for the dashboard test) and [`just`](https://github.com/casey/just). The `justfile` uses PowerShell on Windows. Every recipe is a short list of plain `cargo` or `node` commands, so each can also be run by hand.
 - **Network:** the program opens only its own listeners and the relay pipe. It never downloads anything.
 - **Target build:** `.build.info` is checked at startup, and any build other than 104319 is refused with a clear message.

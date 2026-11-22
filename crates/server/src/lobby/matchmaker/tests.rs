@@ -418,7 +418,7 @@ mod results {
     use crate::{
         game_service::{MatchResult, Outcome, PlayerResult},
         lobby::{
-            TICK, serve,
+            TICK, peer_workers, serve,
             test_client::{Client, run},
         },
     };
@@ -901,7 +901,8 @@ mod results {
         let (stop, shutdown) = mpsc::channel();
         let server = {
             let lobby = Arc::clone(lobby);
-            thread::spawn(move || serve(listener, lobby, shutdown))
+            let peers = peer_workers(&lobby.clock);
+            thread::spawn(move || serve(listener, lobby, shutdown, peers))
         };
         let mut client = Client::login(&lobby.schemas, address, &ANNOUNCED, "Alpha");
         // The login ends with the settings (20802).
