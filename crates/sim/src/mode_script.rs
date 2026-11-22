@@ -54,13 +54,26 @@ pub fn mode_graph(mode: u64) -> Option<u32> {
         ASSAULT | ESCORT | HYBRID => 0x0f4a,
         ASSAULT_TEST => 0x29a6,
         CONTROL => 0x0ec2,
-        SKIRMISH => 0x0d76,
+        SKIRMISH => SKIRMISH_GRAPH,
         ELIMINATION => 0x0d0b,
         TEAM_DEATHMATCH => 0x0f60,
         DEATHMATCH | BOUNTY_HUNTER => 0x0f73,
         PRACTICE_RANGE_MODE | PYTHON_PRACTICE_RANGE_MODE => 0x13c0,
         _ => return None,
     })
+}
+
+/// Whether `mode`'s graph takes the Workshop's Set Match Time (`08D8`, the
+/// action `1ABC`'s message to the mode entity): the entries of `0F4A`
+/// (rid187), `0D76` (rid87), `0EC2`, `0D0B`, `0F60` and `0F73`. Where the
+/// flow drives in such a graph's place it takes it as the graph would
+/// (`match_flow::MatchFlow::receive`); Lúcioball's `0F9D`, a brawl the
+/// flow plays as Skirmish, has no such entry, so its clock ignores it.
+pub fn takes_set_match_time(mode: u64) -> bool {
+    matches!(
+        mode_graph(mode),
+        Some(0x0f4a | SKIRMISH_GRAPH | 0x0ec2 | 0x0d0b | 0x0f60 | 0x0f73)
+    )
 }
 
 /// The modes with a payload, which the match flow drives outside a
@@ -116,6 +129,10 @@ pub const SHARED_MODE_GRAPH: u32 = 0x0cbb;
 const PHASE: u32 = 59;
 /// The winning team on the same instance (`0F4A` #7525).
 const WINNER: u32 = 7525;
+/// Skirmish's mode graph, which has no phases ([`ModeRunner::match_state`]).
+const SKIRMISH_GRAPH: u32 = 0x0d76;
+/// `0D76`'s declared winner (#13155, rid64 from `09A3`): its match's end.
+const SKIRMISH_DECIDED: u32 = 13155;
 /// The server's start of a match whose teams aren't full
 /// ([`ModeRunner::start_match`]).
 const START_MATCH: u64 = 0x0240_0000_0000_0789;
@@ -261,6 +278,12 @@ impl ModeRunner {
     /// current objective, overtime and whether a graph ended the game
     /// (`180A` after the match end's cards). None before the graph set its
     /// phase.
+    ///
+    /// Skirmish's `0D76` has no phases (it never writes #59): it plays
+    /// from its start, its clock (#1303e, rid91: 1800 s) counting down
+    /// from the first frame, and ends only once a winner is declared
+    /// (`09A3` → rid64 #13155 = #7525 → st62's true branch, rid75's
+    /// `0695`). So its match is a round until then, and its end after.
     pub fn match_state(&self) -> Option<MatchState> {
         let Self::Graph {
             script,
@@ -271,14 +294,23 @@ impl ModeRunner {
             return None;
         };
         let root = script.snapshot()?.instances.get(&1)?;
-        let phase = match orpheus_script::expr::to_int(root.variables.get(&PHASE)?, -1) {
-            0 => match_flow::Phase::Waiting,
-            1 => match_flow::Phase::Assemble,
-            2 => match_flow::Phase::Setup,
-            3 => match_flow::Phase::Round,
-            4 => match_flow::Phase::RoundEnd,
-            5 => match_flow::Phase::MatchEnd,
-            _ => return None,
+        let phase = match root.variables.get(&PHASE) {
+            Some(phase) => match orpheus_script::expr::to_int(phase, -1) {
+                0 => match_flow::Phase::Waiting,
+                1 => match_flow::Phase::Assemble,
+                2 => match_flow::Phase::Setup,
+                3 => match_flow::Phase::Round,
+                4 => match_flow::Phase::RoundEnd,
+                5 => match_flow::Phase::MatchEnd,
+                _ => return None,
+            },
+            None if root.graph == SKIRMISH_GRAPH => match root.variables.get(&SKIRMISH_DECIDED) {
+                Some(value) if *value != orpheus_script::wire::Value::Null => {
+                    match_flow::Phase::MatchEnd
+                }
+                _ => match_flow::Phase::Round,
+            },
+            None => return None,
         };
         let team = |value: &orpheus_script::wire::Value| {
             u8::try_from(orpheus_script::expr::to_int(value, -1))

@@ -5405,17 +5405,20 @@ fn moiras_healing_orb_heals_a_wounded_teammate_at_its_rate() {
     server.stop().unwrap();
 }
 
-/// A PvP match on a map other than the Practice Range (ow174/game/match.py,
-/// server.py): its collision is built from the install while two players
-/// load, and both spawn on it. The first spawn starts "assemble your team":
-/// the game mode entity counts v1303 down every second, hero select stays
-/// open after a pick with the skin selector on, and closes when the 30 s are
-/// up. A third player then joins the running match and sees the others.
+/// A Skirmish match on a map other than the Practice Range (ow174/game/
+/// match.py, server.py): its collision is built from the install while two
+/// players load, and both spawn on it. Skirmish's own graph `0D76` drives
+/// the mode entity (its root in every whole mode frame) and has no
+/// assembly: it never sets a phase, and its clock (#1303e) counts down
+/// from 1800 s (rid91) from its start. So hero select opens for a player
+/// with no hero (the graph's held `0727`, `0C90` st28) and closes once his
+/// pick's body is there, not after 30 s. A third player then joins the
+/// running match and sees the others.
 #[test]
 #[ignore = "builds Workshop Chamber's collision; requires an Overwatch 1.74 install (ORPHEUS_GAME_DIR)"]
-fn a_pvp_match_on_another_map_assembles_its_team_and_takes_a_third_player() {
+fn a_skirmish_match_on_another_map_plays_at_once_and_takes_a_third_player() {
     use orpheus_content::{heroes::SOLDIER, maps::MapCatalog, parameters::PICK_HERO};
-    use orpheus_script::wire::{Value as ScriptValue, Variables};
+    use orpheus_script::wire::read_full_head;
     use orpheus_sim::scene_assets::SceneAssets;
 
     const WORKSHOP_CHAMBER: u64 = 0x0800_0000_0000_0c48;
@@ -5552,13 +5555,13 @@ fn a_pvp_match_on_another_map_assembles_its_team_and_takes_a_third_player() {
         assert!(watcher.created(0x8000_0000 | map.placeables[0]).is_some());
         assert!(watcher.created(watcher.owner).is_some());
         assert!(watcher.created(GAME_MODE_ENTITY).is_some());
-        // Assembling already: hero select opens with the skin selector.
+        // Hero select opens for a player with no hero.
         let (_, first_frame) = &controllers(watcher)[0];
         assert!(shows(first_frame, true, None));
     }
 
-    // A pick creates the body and keeps the screen open while the heroes
-    // assemble.
+    // A pick creates the body, and hero select closes with it: no
+    // assembly keeps it open.
     for watcher in [&mut *first, &mut *second] {
         let owner = watcher.owner;
         send_player_message(
@@ -5570,71 +5573,59 @@ fn a_pvp_match_on_another_map_assembles_its_team_and_takes_a_third_player() {
             SOLDIER.to_le_bytes().to_vec(),
         );
     }
-    pump_until(&mut [first, second], &schemas, "the bodies", |watchers| {
-        watchers.iter().all(|watcher| {
-            watcher.created(watcher.owner | 1).is_some_and(|created| {
-                controllers(watcher)
-                    .iter()
-                    .any(|(index, chunk)| *index >= created && shows(chunk, true, Some(SOLDIER)))
-            })
-        })
-    });
-
-    // The countdown ends: hero select closes for the players with a hero.
     pump_within(
         &mut [first, second],
         &schemas,
-        "the end of the assembly",
-        Duration::from_secs(40),
+        "the bodies, with hero select closed",
+        Duration::from_secs(5),
         |watchers| {
             watchers.iter().all(|watcher| {
-                controllers(watcher)
-                    .iter()
-                    .any(|(_, chunk)| shows(chunk, false, Some(SOLDIER)))
+                watcher.created(watcher.owner | 1).is_some_and(|created| {
+                    controllers(watcher).iter().any(|(index, chunk)| {
+                        *index >= created && shows(chunk, false, Some(SOLDIER))
+                    })
+                })
             })
         },
     );
-    // The game mode entity's frames as the scene makes them
-    // (`PreparedScene::mode_ui`, `PreparedScene::mode_frame`).
-    let mode_frame = |variables: &Variables| {
-        orpheus_sim::scene::mode_ui(assets.graphs(), map.mode_guid, variables).unwrap()
-    };
-    let clock = |seconds: f64| {
-        mode_frame(&Variables::from([(
-            orpheus_sim::match_flow::CLOCK,
-            ScriptValue::Float(seconds),
-        )]))
-    };
-    let (counting, over) = (clock(12.5), clock(0.0));
-    let mode_ui = mode_frame(&Variables::new()).bit_len();
+    // The mode entity's whole frames are `0D76`'s, its clock counting
+    // down from 1800 s.
+    let graphs = assets.graphs();
     for watcher in [&*first, &*second] {
-        let (closed, _) = controllers(watcher)
-            .into_iter()
-            .find(|(_, chunk)| shows(chunk, false, Some(SOLDIER)))
-            .unwrap();
-        let frames: Vec<_> = mode_frames(watcher)
-            .into_iter()
-            .filter(|(index, _)| *index <= closed)
+        let heads: Vec<_> = joined_chunks(mode_frames(watcher).iter().map(|(_, chunk)| chunk))
+            .iter()
+            .filter(|chunk| chunk.first == 0)
+            .map(|chunk| {
+                read_full_head(&chunk.data, |graph| {
+                    graphs
+                        .graph(u32::from(graph))
+                        .map(|graph| graph.header.states_bits)
+                })
+                .expect("a full frame's head")
+            })
             .collect();
-        let (_, last) = frames.last().unwrap();
-        // One frame a second for 30 s, the mode entity's first ones; then
-        // the round's, whose clock Skirmish doesn't run. The flow starts at
-        // the first spawn (the World step), before the clients take mode
-        // frames (the Controller step, 0.1 s later): the frame at 0 s goes
-        // to nobody, so each gets those at 1 to 29 s and the one at 30 s
-        // that ends the assembly.
-        assert_eq!(frames.len(), 30, "countdown frames");
-        for (_, chunk) in &frames[..frames.len() - 1] {
-            assert_eq!(chunk.width, counting.bit_len());
+        assert!(!heads.is_empty(), "no full mode frame");
+        for head in &heads {
+            let root = head
+                .instances
+                .iter()
+                .find(|&&(instance, ..)| instance == 1)
+                .expect("the root instance")
+                .1;
+            assert_eq!(root, 0x0d76);
+            let clock = head
+                .variables
+                .get(&orpheus_sim::match_flow::CLOCK)
+                .map(orpheus_script::expr::to_float);
+            assert!(
+                clock.is_some_and(|clock| clock > 1700.0 && clock <= 1800.0),
+                "{clock:?}"
+            );
         }
-        assert_eq!(
-            (last.width, last.data.as_slice()),
-            (over.bit_len(), over.as_bytes())
-        );
     }
 
-    // A third player joins the running match: no countdown, hero select
-    // open without the skin selector, and the others in his world.
+    // A third player joins the running match: hero select open, the
+    // others in his world, and the graph's frames from his first one.
     let joined = server
         .join_match(MATCH, vec![player("third#3333", 0, 9)])
         .unwrap()
@@ -5655,6 +5646,7 @@ fn a_pvp_match_on_another_map_assembles_its_team_and_takes_a_third_player() {
         "the third player in the world",
         |watchers| {
             !controllers(watchers[2]).is_empty()
+                && !mode_frames(watchers[2]).is_empty()
                 && watchers[2].created(first_owner).is_some()
                 && watchers[2].created(second_owner).is_some()
                 && watchers[0].created(third_owner).is_some()
@@ -5662,19 +5654,8 @@ fn a_pvp_match_on_another_map_assembles_its_team_and_takes_a_third_player() {
         },
     );
     assert!(shows(&controllers(&third)[0].1, true, None));
-    // His first frame may be the mode UI without variables (he was
-    // presented after the heroes assembled); then the round's, with no
-    // countdown (Skirmish has no round clock).
-    let frames: Vec<_> = mode_frames(&third)
-        .into_iter()
-        .filter(|(_, chunk)| chunk.width != mode_ui)
-        .collect();
-    assert!(
-        frames
-            .iter()
-            .all(|(_, chunk)| chunk.data.as_slice() == over.as_bytes()),
-        "the round's frames, no countdown"
-    );
+    let (_, first_mode) = mode_frames(&third).into_iter().next().unwrap();
+    assert_eq!(first_mode.first, 0, "his first mode frame is whole");
 
     let snapshot = server.snapshot().unwrap();
     assert_eq!(snapshot.len(), 1);
