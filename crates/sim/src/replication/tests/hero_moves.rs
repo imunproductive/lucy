@@ -14,7 +14,7 @@ use orpheus_script::{
 };
 use orpheus_wire::{
     commands::{Command, JUMP},
-    entity::MOVE_TO,
+    entity::{MOVE_TO, TURNING},
 };
 use std::collections::BTreeSet;
 
@@ -1286,6 +1286,111 @@ fn reinhardts_charge_crashes_into_the_wall_where_his_client_did() {
     let (crashed, rest) = charge(&mut reinhardt, 16384, 17);
     assert_eq!(crashed, [58.8017578125, 1.0, 43.283203125]);
     assert_eq!(rest, [58.865234375, 1.0, 43.283203125]);
+}
+
+/// Reinhardt's Charge steers with the side keys: its turn (`007D` st6,
+/// `STU_C168636D`, mover behaviour kind 7) turns the body by a rate the
+/// right throttle drives (240°/s², at most 30°/s) instead of the view, and
+/// the movement state carries flag 0x40 and the rate. Game session r2
+/// (2026-11-22, release of this change, Practice Range, refs report
+/// `ReinhardtCharge.md`): from rest at (50.396, 0.548, 14.942) facing
+/// 157.5°, Shift at 7753-7755, the right key from 7778, the charge from
+/// 7790 down the slope to the pit, the crash (st4) at 7836; his client's
+/// feet, yaw (16-bit units from his movement state's rotation) and rate
+/// equal to the server's at every frame sampled in the charge.
+#[test]
+#[ignore = "requires the derived 104319 data and the Practice Range collision"]
+fn reinhardts_charge_turns_with_the_side_key_as_his_client_did() {
+    const REINHARDT: u64 = 0x02e0_0000_0000_0007;
+    const PRESS: u32 = 7753;
+    let mut reinhardt = Player::spawn(REINHARDT);
+    let body = reinhardt.scene.heroes().get(REINHARDT).unwrap().body;
+    let start = [50.396484375, 0.5478515625, 14.9423828125];
+    reinhardt.world.mover = Some(
+        reinhardt
+            .scene
+            .player_mover_at(body, 0, start, 28672)
+            .unwrap(),
+    );
+    reinhardt.idle(60, 28672);
+    assert_eq!(reinhardt.position(), start);
+    // His client's frames: (yaw units, rate in radians a second, feet).
+    let client: BTreeMap<u32, (i32, f32, [f64; 3])> = [
+        (7790, (28672, 0.0, start)),
+        (
+            7794,
+            (
+                28560,
+                -0.268_082_6,
+                [50.83984375, 0.205078125, 14.412109375],
+            ),
+        ),
+        (
+            7797,
+            (
+                28359,
+                -0.469_144_55,
+                [51.28515625, -0.1005859375, 13.880859375],
+            ),
+        ),
+        (7799, (28185, -0.523_598_8, [51.5654296875, -0.3125, 13.5])),
+        (
+            7810,
+            (
+                27228,
+                -0.523_598_8,
+                [53.078125, -1.525390625, 11.3662109375],
+            ),
+        ),
+        (
+            7820,
+            (
+                26358,
+                -0.523_598_8,
+                [54.6298828125, -1.89453125, 9.3603515625],
+            ),
+        ),
+        (
+            7834,
+            (
+                25140,
+                -0.523_598_8,
+                [56.9091796875, -1.767578125, 6.51953125],
+            ),
+        ),
+        (
+            7836,
+            (
+                24966,
+                -0.523_598_8,
+                [57.2587890625, -1.8603515625, 6.1435546875],
+            ),
+        ),
+    ]
+    .into();
+    for frame in PRESS..=7836 {
+        reinhardt.step(Command {
+            yaw: 28672,
+            buttons: if frame < PRESS + 3 { ABILITY_1 } else { 0 },
+            right: if frame >= 7778 { 127 } else { 0 },
+            ..Command::default()
+        });
+        let pose = reinhardt.world.mover.as_ref().unwrap().pose();
+        assert_eq!(
+            reinhardt.graph_state(0x007d, 6),
+            (7790..7836).contains(&frame),
+            "the turn at {frame}"
+        );
+        if let Some(&(yaw, rate, feet)) = client.get(&frame) {
+            assert_eq!(pose.position, feet, "feet at {frame}");
+            assert_eq!(pose.yaw, yaw, "yaw at {frame}");
+            if frame > 7790 {
+                assert_eq!(pose.flags & TURNING, TURNING, "flags at {frame}");
+                assert_eq!(pose.turn_rate, Some(rate), "rate at {frame}");
+            }
+        }
+    }
+    assert!(reinhardt.graph_state(0x007d, 4), "the crash");
 }
 
 /// Seismic Slam on the ground (graph `0B27`, ABILITY_2): the leap (`rid67`

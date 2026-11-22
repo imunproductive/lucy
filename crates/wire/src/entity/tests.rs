@@ -43,8 +43,50 @@ fn moving() -> Movement {
         fall: -3.5,
         discontinuity: 0,
         move_to: None,
+        turn_rate: None,
+        speed_scale: None,
         nav_path: None,
     }
+}
+
+/// The move-speed scale (+28) goes after the gravity scale in steps of
+/// 1/1024 from the reference's 1.0 (0x7FF789B77260): Reinhardt's Charge's
+/// 3.0 (mod 0 + 2) is 2048 steps, past 10 bits.
+#[test]
+fn a_speed_scale_goes_as_steps_from_one() {
+    let plain = movement_record(&moving(), Some(5000)).unwrap();
+    let charging = movement_record(
+        &Movement {
+            speed_scale: Some(3.0),
+            ..moving()
+        },
+        Some(5000),
+    )
+    .unwrap();
+    assert_eq!(charging.bit_len(), plain.bit_len() + 3 + 24);
+    let mut bits = BitReader::new(charging.as_bytes());
+    let mut rest = BitReader::new(plain.as_bytes());
+    bits.advance(12).unwrap();
+    rest.advance(12).unwrap();
+    let at = (12..plain.bit_len())
+        .find(|_| bits.bit().unwrap() != rest.bit().unwrap())
+        .unwrap();
+    // The scale's presence bit was the difference; then two width bits
+    // that don't fit and the 24-bit steps.
+    assert!(!bits.bit().unwrap() && !bits.bit().unwrap() && bits.bit().unwrap());
+    assert_eq!(bits.bits(24).unwrap(), 2048);
+    for _ in at + 1..plain.bit_len() {
+        assert_eq!(bits.bit().unwrap(), rest.bit().unwrap());
+    }
+    // 1.0 is the reference's.
+    let one = Movement {
+        speed_scale: Some(1.0),
+        ..moving()
+    };
+    assert_eq!(
+        movement_record(&one, Some(5000)).unwrap().as_bytes(),
+        plain.as_bytes()
+    );
 }
 
 #[test]
@@ -265,6 +307,39 @@ fn a_path_walk_record_is_the_sixth_flag_block() {
     assert!(bits.bit().unwrap());
     assert_eq!(bits.f32().unwrap(), 28.25);
     // Then the last three blocks and the rest, as without the record.
+    for _ in at + 1..plain.bit_len() {
+        assert_eq!(bits.bit().unwrap(), rest.bit().unwrap());
+    }
+}
+
+/// A running turn's rate goes as the fifth flag block (flag 0x40,
+/// 0x7FF789B6CBF0): present, no reference, then the float as present and
+/// raw (0x7FF789B71860).
+#[test]
+fn a_turn_rate_is_the_fifth_flag_block() {
+    let still = Movement {
+        position: [1.0, 2.0, 3.0],
+        flags: TURNING,
+        ..Movement::default()
+    };
+    let turning = Movement {
+        turn_rate: Some(-0.067_020_65),
+        ..still
+    };
+    let plain = movement_record(&still, None).unwrap();
+    let record = movement_record(&turning, None).unwrap();
+    assert_eq!(record.bit_len(), plain.bit_len() + 3 + 32);
+    let mut bits = BitReader::new(record.as_bytes());
+    let mut rest = BitReader::new(plain.as_bytes());
+    bits.advance(12).unwrap();
+    rest.advance(12).unwrap();
+    // Everything up to the block's presence bit is the same.
+    let at = (12..plain.bit_len())
+        .find(|_| bits.bit().unwrap() != rest.bit().unwrap())
+        .unwrap();
+    assert!(bits.bit().unwrap(), "no reference");
+    assert!(bits.bit().unwrap() && bits.bit().unwrap(), "a raw float");
+    assert_eq!(bits.f32().unwrap(), -0.067_020_65);
     for _ in at + 1..plain.bit_len() {
         assert_eq!(bits.bit().unwrap(), rest.bit().unwrap());
     }

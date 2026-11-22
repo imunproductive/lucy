@@ -132,6 +132,10 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
                         let node = self.graph(id).state(usize::from(raw)).expect("wall check");
                         self.update_wall_check(key, node)?;
                     }
+                    Some(StateKind::Turn) => {
+                        let node = self.graph(id).state(usize::from(raw)).expect("turn");
+                        self.update_turn(key, node)?;
+                    }
                     Some(StateKind::Landing) => {
                         let node = self.graph(id).state(usize::from(raw)).expect("selector");
                         self.update_landing(key, node)?;

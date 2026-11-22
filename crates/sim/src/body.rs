@@ -104,6 +104,7 @@ pub fn remote_movement(pose: Movement, tick: u32, gravity: f64) -> Movement {
         spring: pose.spring,
         spring_speed: pose.spring_speed,
         move_to: pose.move_to,
+        turn_rate: pose.turn_rate,
         ..Movement::default()
     }
 }
@@ -245,6 +246,8 @@ mod tests {
             // A create starts the body's counter at 0.
             discontinuity: 3,
             move_to: None,
+            turn_rate: None,
+            speed_scale: None,
             nav_path: None,
         };
         let pose = owner_pose(source);

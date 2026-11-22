@@ -10,7 +10,8 @@
 //!    0x7FF78B524F6C, limit at 0x7FF78B523F94, back to s16 at 0x7FF78B524F70,
 //!    rounded half away from zero), which sets flag 0x200000 for good
 //!    (0x7FF789B4C8C0). Mods 28..31 hold the yaw and the pitch to their
-//!    limits first and also set the flag.
+//!    limits first and also set the flag. A running turn (kind 7,
+//!    [`turn`]) turns the body by its rate instead.
 //! 2. A held crouch button does not crouch again within 0.15 s of standing up
 //!    (0x7FF789B73CA0, constant 0x7FF78B567978).
 //! 3. The ground probe (0x7FF789B48990) at the feet before anything moves.
@@ -71,6 +72,7 @@ mod ported_tests;
 pub(crate) mod posture;
 pub mod settings;
 pub mod trial;
+pub mod turn;
 
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -97,17 +99,30 @@ use crate::{
 pub use move_to::{MoveEnd, MoveKey, MoveTo, Speed};
 use orpheus_wire::{
     commands::Command,
-    entity::{Movement, NO_INPUT, POSITION_UNITS},
+    entity::{Movement, NO_INPUT, POSITION_UNITS, TURNING},
 };
 pub use path_walk::PathWalk;
+pub use turn::Turn;
 
 /// What a state of the body's graphs hands the mover while it runs: a
-/// `MoveTo`'s move ([`move_to`], kind 1) or a path walk ([`path_walk`],
-/// kind 10).
+/// `MoveTo`'s move ([`move_to`], kind 1), a path walk ([`path_walk`],
+/// kind 10) or the Charge's turn ([`turn`], kind 7).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Behaviour {
     MoveTo(MoveTo),
     PathWalk(PathWalk),
+    Turn(Turn),
+}
+
+impl Behaviour {
+    /// The client's behaviour kind (the factory `0x7FF789B533F0`'s).
+    fn kind(&self) -> u8 {
+        match self {
+            Self::MoveTo(_) => 1,
+            Self::Turn(_) => 7,
+            Self::PathWalk(_) => 10,
+        }
+    }
 }
 
 const ABYSS: f64 = 100.0;
@@ -170,6 +185,8 @@ pub struct Mover {
     move_to: Option<move_to::Run>,
     /// The path walk the body's graphs run ([`path_walk`]).
     walk: Option<path_walk::Walk>,
+    /// The turn the body's graphs run ([`turn`]).
+    turn: Option<turn::Run>,
     /// The map's navigation, whose AI cells a path walk searches.
     navigation: Option<Arc<Navigation>>,
     /// A dash or rewind the body's graphs started ([`motion`]).
@@ -217,6 +234,7 @@ impl Mover {
             },
             move_to: None,
             walk: None,
+            turn: None,
             navigation: None,
             motion: None,
             history: motion::History::with_capacity(motion::HISTORY),
@@ -437,7 +455,14 @@ impl Mover {
         let settings = active.settings(&self.base);
         self.speed_scale = active.speed_scale();
         self.knockback_scale = active.intent(KNOCKBACK_SCALE, 1.0).max(0.0);
-        let input = MotionInput::new(&command, &active);
+        let mut input = MotionInput::new(&command, &active);
+        if let Some(turn) = self.turn.as_mut() {
+            // Kind 7's slot 7 in place of the aim: the body turns by the
+            // rate and keeps its pitch.
+            input.yaw = turn.step(self.pose.yaw, command.right, dt as f32);
+            input.pitch = self.pose.pitch as i16;
+            input.aim_held = false;
+        }
         let normal = if driven {
             // Kind 1's slot 8: no ground probe and no transitions, the up
             // as the ground's normal; slot 10: no spring.
@@ -540,12 +565,15 @@ impl Mover {
         self.pose.pitch = i32::from(input.pitch);
         self.pose.flags = self.posture.flags
             | self.move_to.as_ref().map_or(0, move_to::Run::flag)
-            | self.walk.as_ref().map_or(0, path_walk::Walk::flag);
+            | self.walk.as_ref().map_or(0, path_walk::Walk::flag)
+            | self.turn.map_or(0, |_| TURNING);
         self.pose.move_to = self.move_to.as_ref().and_then(move_to::Run::record);
+        self.pose.turn_rate = self.turn.as_ref().map(turn::Run::rate);
         self.pose.nav_path = self.walk.as_ref().map(path_walk::Walk::record);
         self.pose.air_ticks = self.posture.air_ticks;
         self.pose.crouch_frame = self.posture.crouch_end;
         self.pose.gravity = settings.gravity_scale;
+        self.pose.speed_scale = (self.speed_scale != 1.0).then_some(self.speed_scale);
         self.pose.spring = self.posture.spring_steps().map(i32::from);
         self.pose.spring_speed = f64::from(self.posture.spring_speed());
         self.pose.fall = self.posture.fall;
@@ -553,23 +581,24 @@ impl Mover {
     }
 
     /// The behaviour the state hands over this frame: a new key begins it
-    /// (its begin takes a body on the ground off it and sets the air ticks,
-    /// a `MoveTo`'s lateral count, to 0), none lets it go.
+    /// (a `MoveTo`'s or a path walk's begin takes a body on the ground off
+    /// it and sets the air ticks, a `MoveTo`'s lateral count, to 0), none
+    /// lets it go.
     fn begin_move(
         &mut self,
         request: Option<(MoveKey, &Behaviour)>,
     ) -> Result<(), HullContactError> {
-        let running = |key: MoveKey, walk: bool| match request {
-            Some((requested, Behaviour::MoveTo(_))) => !walk && requested == key,
-            Some((requested, Behaviour::PathWalk(_))) => walk && requested == key,
-            None => false,
+        let running = |key: MoveKey, kind: u8| {
+            request
+                .is_some_and(|(requested, behaviour)| requested == key && behaviour.kind() == kind)
         };
-        if let Some(run) = self.move_to.take_if(|run| !running(run.key, false)) {
+        if let Some(run) = self.move_to.take_if(|run| !running(run.key, 1)) {
             self.pose.velocity = run.let_go(self.pose.velocity).map(snap);
         }
         // Kind 10's end (slot 5 `0x7FF789B53A40`) only clears its flag and
-        // record.
-        self.walk.take_if(|walk| !running(walk.key, true));
+        // record; kind 7's (slot 5 `0x7FF789B53A10`) its flag.
+        self.walk.take_if(|walk| !running(walk.key, 10));
+        self.turn.take_if(|turn| !running(turn.key, 7));
         let Some((key, behaviour)) = request else {
             return Ok(());
         };
@@ -592,6 +621,10 @@ impl Mover {
             Behaviour::PathWalk(params) if self.walk.is_none() => {
                 self.walk = Some(path_walk::Walk::start(key, *params, self.pose.position));
                 true
+            }
+            Behaviour::Turn(params) if self.turn.is_none() => {
+                self.turn = Some(turn::Run::start(key, *params));
+                false
             }
             _ => false,
         };

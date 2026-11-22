@@ -1000,6 +1000,7 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
             "STUStatescriptStateMoveTo" => StateKind::MoveTo,
             "STU_4BBC5D09" => StateKind::GrappleCast,
             "STU_1F5ED928" => StateKind::NavPath,
+            "STU_C168636D" => StateKind::Turn,
             // The scoped heroes' zoom-in input flag (Widowmaker `001B`
             // st103, Ana `0B94` st78, Ashe `14FC` st111; codec none). The
             // client's begin puts the state on its instance's update list
@@ -1209,6 +1210,7 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
             StateKind::MoveTo => self.begin_move_to(key, node),
             StateKind::GrappleCast => self.begin_grapple(key, node, depth)?,
             StateKind::NavPath => self.begin_nav_path(key, node)?,
+            StateKind::Turn => self.begin_turn(key, node)?,
             StateKind::AiMove => self.resolve_ai_move(key, node),
             StateKind::Rewind { .. } => self.begin_rewind(key, node)?,
             StateKind::WaitFrames { .. } => self.arm_frame_wait(key, node)?,
