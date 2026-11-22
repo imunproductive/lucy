@@ -15,6 +15,8 @@ pub(crate) mod services;
 pub(crate) mod social;
 #[cfg(test)]
 pub(crate) mod test_client;
+#[cfg(test)]
+mod tests;
 
 use std::{
     collections::HashMap,
@@ -38,7 +40,7 @@ use lucy_lobby::{
     login::SIGNED_IN_ELSEWHERE,
     presence::Presence,
     ranked::Ranked,
-    session::{LobbySession, LoginContent, LoginRequest},
+    session::{HANDSHAKE_TIMEOUT, LobbySession, LoginContent, LoginRequest},
     social::Social,
     templates::RetailTemplates,
     xp_table::XpTable,
@@ -46,16 +48,25 @@ use lucy_lobby::{
 use lucy_sim::scene_assets::{PreparedScene, SceneAssets};
 use lucy_wire::{
     jam::codec::{Fields, Schemas},
-    tcp::{PeerStream, PeerWorkers, accept},
+    tcp::{Admission, Limit, PeerLimits, PeerStream, PeerWorkers, accept},
 };
 
 use crate::{game_service::GameService, platform::Platform};
-use hub::{Hub, Mailbox};
+use hub::{Hub, MAILBOX_LIMIT, Mailbox};
 use peer::Peer;
 use router::Router;
 
-const MAX_LOBBY_PEERS: usize = 32;
+/// The connections the lobby serves at once, and from one address: a
+/// household behind one public address, or the games on this PC.
+const LIMITS: PeerLimits = PeerLimits {
+    total: 32,
+    per_address: 8,
+};
 const ACCEPT_POLL: Duration = Duration::from_millis(10);
+/// A logged-in game that has sent nothing for this long, not even the ping
+/// it sends every 5 s, is gone: its link closes, unless the account holds a
+/// seat in a match (`docs/notes/behavior.md`, "Lobby connections").
+pub(crate) const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// The longest a session waits between ticks, on the lobby's clock.
 pub(crate) const TICK: Duration = Duration::from_millis(250);
 /// How long a kicked client keeps the link after the disconnect reason, so
@@ -263,7 +274,15 @@ impl Lobby {
         let replaced = || lease.replaced.load(Ordering::Acquire);
         // The dashboard's reconnect closes this connection; the game logs in again.
         let current = || !replaced() && !local_game.as_ref().is_some_and(|game| game.dropped());
+        let mut kept_idle = false;
         while current() {
+            if mailbox.shut() {
+                tracing::warn!(
+                    "[!] More than {MAILBOX_LIMIT} messages waited for this session; \
+                     closing its link so the game logs in again"
+                );
+                break;
+            }
             for message in mailbox.take() {
                 peer.send(&message)?;
             }
@@ -280,6 +299,22 @@ impl Lobby {
                 dispatch(&mut peer, group, message, fields);
             } else if peer.session.closed() {
                 break;
+            }
+            let quiet = peer.session.quiet_for();
+            if quiet < IDLE_TIMEOUT {
+                kept_idle = false;
+            } else if self.matchmaker.seat_of(login.account.account_lo).is_none() {
+                tracing::info!(
+                    "[>>>] The game sent nothing for {} s; closing its lobby link",
+                    quiet.as_secs()
+                );
+                break;
+            } else if !std::mem::replace(&mut kept_idle, true) {
+                tracing::info!(
+                    "[i] The game sent nothing for {} s; its lobby link stays while it holds \
+                     a seat in a match",
+                    quiet.as_secs()
+                );
             }
         }
         if replaced() {
@@ -319,22 +354,52 @@ fn kick(session: &mut LobbySession<'_>, reason: u64) -> io::Result<()> {
     Ok(())
 }
 
+/// The workers that serve the lobby's connections, within its limits; each
+/// connection must finish its handshake within [`HANDSHAKE_TIMEOUT`] on the
+/// lobby's `clock`.
+pub(crate) fn peer_workers(clock: &Clock) -> PeerWorkers {
+    PeerWorkers::new(LIMITS).with_accept_deadline(clock.source(), HANDSHAKE_TIMEOUT)
+}
+
+/// Accept connections until `shutdown`, each served on a thread of `peers`;
+/// then stop and join them.
 pub(crate) fn serve(
     listener: TcpListener,
     lobby: Arc<Lobby>,
     shutdown: mpsc::Receiver<()>,
+    mut peers: PeerWorkers,
 ) -> io::Result<()> {
-    let mut peers = PeerWorkers::default();
     let mut id = 0u32;
     while matches!(shutdown.try_recv(), Err(mpsc::TryRecvError::Empty)) {
         peers.reap();
-        if let Some((socket, _)) = accept(&listener)? {
-            if peers.len() < MAX_LOBBY_PEERS {
-                id = id.wrapping_add(1);
-                let lobby = Arc::clone(&lobby);
-                let _ = peers.spawn("lucy-lobby-peer", socket, move |stream| {
-                    let _ = lobby.serve_peer(stream, id);
-                });
+        if let Some((socket, address)) = accept(&listener)? {
+            id = id.wrapping_add(1);
+            let lobby = Arc::clone(&lobby);
+            let served = peers.spawn("lucy-lobby-peer", socket, address, move |stream| {
+                if let Err(error) = lobby.serve_peer(stream, id) {
+                    tracing::info!("[>>>] Lobby connection from {address} ended: {error}");
+                }
+            });
+            match served {
+                Ok(Admission::Served) | Ok(Admission::Refused { first: false, .. }) => {}
+                Ok(Admission::Refused {
+                    limit: Limit::Total,
+                    first: true,
+                }) => tracing::warn!(
+                    "[!] The lobby serves {} connections, its most; refusing more",
+                    LIMITS.total
+                ),
+                Ok(Admission::Refused {
+                    limit: Limit::Address,
+                    first: true,
+                }) => tracing::warn!(
+                    "[!] {} lobby connections from {}, the most from one address; refusing more",
+                    LIMITS.per_address,
+                    address.ip()
+                ),
+                Err(error) => {
+                    tracing::warn!("[!] Lobby connection from {address} not served: {error}");
+                }
             }
         } else if !matches!(
             shutdown.recv_timeout(ACCEPT_POLL),

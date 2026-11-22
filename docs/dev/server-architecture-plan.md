@@ -5,7 +5,7 @@ Goal (2026-11-22): the server hosts a few matches at once (for example two or th
 ## Where it stands
 
 - One process, plain threads, no async runtime (`architecture.md`, "Services").
-- **Lobby:** one TCP listener (3724), one thread per connection, at most 32 peers (`server/src/lobby/mod.rs` `MAX_LOBBY_PEERS`), a mailbox hub between sessions. Battle.net (1119, 21119) and the dashboard (3725) have their own listeners and threads.
+- **Lobby:** one TCP listener (3724), one thread per connection, at most 32 peers (`server/src/lobby/mod.rs` `LIMITS`), a mailbox hub between sessions. Battle.net (1119, 21119) and the dashboard (3725) have their own listeners and threads.
 - **Game:** one UDP socket (3730) and one thread (`lucy-game`, `game_service.rs` `run`, a `mio` loop) for every match. Rooms tick one after another every 16 ms; a room's scene is prepared on a `lucy-scene` thread. A panic in any room ends the thread and every match on it.
 - **Speed, measured once:** the slow Practice vs AI test (12 bodies, 11 AI) simulates 570 s of match in 240 s, about 6.7 ms per 16 ms tick, in the `gametest` build with debug assertions, under load. Nothing has been profiled.
 - **Latency seen by the user** with the server on the same PC: the client's stats show 15-20 ms ping and 20-25 ms interpolation delay (IND). Cause unknown.
@@ -29,3 +29,4 @@ Goal (2026-11-22): the server hosts a few matches at once (for example two or th
 ## Status
 
 - 2026-11-22: plan written. Stage 1 started (RoomThreads: per-room threads and game links; LobbyConns: lobby, Battle.net and dashboard connections). A latency baseline on the current code runs beside it (LatencyBaseline, measurement only), for stage 2.
+- 2026-11-22 (LobbyConns, `day/lobbyconns`): item 4's lobby, Battle.net and dashboard part done. Shared `wire::tcp` workers: per-listener and per-address limits, a thread per connection joined when it ends, deadlines on the service's clock from the accept, stop-and-join shutdown. Lobby: handshake and login 30 s each, idle 60 s from the client's last byte (it pings every 5 s) except while the account holds a match seat, mailboxes of 256 that shut and end their session on overflow. Battle.net: upgrade 10 s, Logon 30 s, the stall dial kept. Dashboard: own HTTP/1.1 server instead of `tiny_http`, 30 s per request and keep-alive. Values and evidence: behavior.md "Lobby, Battle.net and dashboard connections", `refs/reports/LobbyKeepalive.md`.

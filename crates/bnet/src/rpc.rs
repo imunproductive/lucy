@@ -56,6 +56,7 @@ pub struct Clock {
 pub struct RpcSession {
     token: u32,
     listener_ids: HashMap<u32, u32>,
+    logged_on: bool,
 }
 
 impl Default for RpcSession {
@@ -69,7 +70,13 @@ impl RpcSession {
         Self {
             token: 0x4000_0000,
             listener_ids: HashMap::new(),
+            logged_on: false,
         }
+    }
+
+    /// The client sent AuthenticationServer.Logon.
+    pub fn logged_on(&self) -> bool {
+        self.logged_on
     }
 
     /// Produce the response frames in send order for one request.
@@ -94,6 +101,7 @@ impl RpcSession {
                 protocol.decode_message(protocol::LOGON_REQUEST, body)?;
                 let response = respond(protocol, token, &[])?;
                 let result = logon_result(protocol, player())?;
+                self.logged_on = true;
                 let notification = self.notify(
                     protocol,
                     protocol::AUTH_CLIENT_HASH,

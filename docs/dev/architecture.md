@@ -121,16 +121,25 @@ flowchart LR
 | Battle.net RPC, where the relay pipes the stream | TCP | 21119 (`rpc`) |
 | Lobby (JAM protocol) | TCP | 3724 |
 | Game server | UDP | 3730 |
-| Dashboard (HTTP, `tiny_http`) | TCP | 3725 |
+| Dashboard (HTTP/1.1, `server/dashboard/http.rs`) | TCP | 3725 |
+
+### TCP connections
+
+The lobby, Battle.net and the dashboard serve their TCP connections the same way (`wire::tcp`):
+
+- **Accept loop.** One thread per listener (`lucy-lobby`, `bnet`, `lucy-dashboard`) polls its non-blocking listener every 10 ms and stops when `Server::stop` asks.
+- **One thread per connection** (`PeerWorkers`), within the listener's limits: so many connections in all and so many from one address (`PeerLimits`; the numbers are in [behavior.md](../notes/behavior.md), "Lobby, Battle.net and dashboard connections"). A connection over a limit is closed at once, and the first refusal is logged. The accept loop joins the thread of each connection that ended before its next accept, so no thread outlives its connection by more than a poll.
+- **Deadlines.** Each stream (`PeerStream`) reads its deadlines from the service's clock: the lobby's clock for the lobby and the dashboard (virtual in tests), the wall clock for Battle.net. A connection's first deadline (its handshake's) starts at its accept; the service sets the next ones (login, idle, keep-alive). Reads and writes poll every 250 ms, so a deadline or a stop is seen within one poll.
+- **Shutdown.** Stopping a service closes its listener, sets the workers' stop flag (a blocked read sees it within a poll) and joins every connection's thread. `Server::stop` stops the dashboard, Battle.net, the lobby, then the game service.
 
 ### Lobby
 
 The lobby lives in `crates/server/src/lobby` and uses the services of the `lobby` crate.
 
-- **Sessions.** Each client connection has its own thread. It runs the handshake and login, then a loop that reads messages and answers them.
+- **Sessions.** Each client connection has its own thread. It runs the handshake and login, then a loop that reads messages and answers them. The loop wakes at least every lobby tick (250 ms on the lobby's clock) and then checks the session's mailbox and how long the game has been quiet.
 - **Router.** `router.rs` decides which handler answers each client message after login.
 - **Modules.** Each feature (chat, friends, party, matchmaking, shop, rewards, settings and more) is a module under `handlers/`. A module declares the messages it answers and its session hooks. `handlers::MODULES` lists all modules. To add a feature, add a module and list it there.
-- **Hub.** `hub.rs` keeps the sessions that are online. A session that must tell another session something (a whisper, an invite, a friend's status) posts it to that session's mailbox. The other session sends it at its next wake.
+- **Hub.** `hub.rs` keeps the sessions that are online. A session that must tell another session something (a whisper, an invite, a friend's status) posts it to that session's mailbox. The other session sends it at its next wake. A mailbox holds at most 256 messages; one that overflows shuts, refuses further mail as for an offline account, and its session ends so the game logs in again with the whole state.
 - **Matchmaker.** Forms matches from the queues and hands the players to the game service.
 
 ### Game service and simulation
@@ -157,7 +166,7 @@ So a debug build can stop a hero that a release build plays. Use a release build
 
 ### Dashboard
 
-The dashboard backend is in `server` and serves the files of `web/dashboard`, which are embedded into the binary. It shows the server state and the saved profiles and can change them. It can also start a second game for another account.
+The dashboard backend is in `server` and serves the files of `web/dashboard`, which are embedded into the binary. It shows the server state and the saved profiles and can change them. It can also start a second game for another account. Its HTTP/1.1 server (`dashboard/http.rs`) is the shared TCP model above; it handles the requests one at a time, whichever connection they come on.
 
 With `LUCY_DEBUG_SEND=1` it also has the debug routes (`server/dashboard/debug.rs`, [troubleshooting](../user/troubleshooting.md#marker-messages)). The marker message routes encode a message with the schema encoder and send it on the normal paths: a game link message goes to the game service as a request (`GameService::debug_send`), which queues it on the seat's reliable channel like the server's own messages; a lobby message is posted to the account's session through the hub. `POST /api/debug/kill` asks the game service to kill an account's hero through the normal death path (`Combat::environment_kill`); the client tools' `die` action uses it.
 

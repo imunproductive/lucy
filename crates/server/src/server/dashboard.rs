@@ -1,25 +1,27 @@
 //! The dashboard's loopback HTTP server: the embedded page and its JSON API.
+//! The connections are served in parallel (`http.rs`); the requests one at a
+//! time.
 
 mod api;
 mod bot_group;
 mod debug;
 mod events;
+mod http;
 
 pub(super) use debug::enabled as debug_send_enabled;
 
 use std::{
     collections::{BTreeMap, HashMap},
-    io::{self, Read},
-    net::{Ipv4Addr, SocketAddr},
+    io,
+    net::{Ipv4Addr, SocketAddr, TcpListener},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, atomic::AtomicBool},
-    thread::{self, JoinHandle},
+    sync::{Arc, Mutex, PoisonError, atomic::AtomicBool},
 };
 
 use serde_json::{Map, Value as Json, json};
-use tiny_http::{Header, Method, Request, Response, Server as HttpServer};
 
 use api::{Api, ApiError, ApiResult};
+use http::{HttpServer, Method, Request, Response};
 use lucy_lobby::{
     accounts::{Account, Accounts},
     clock::Clock,
@@ -29,7 +31,6 @@ use lucy_lobby::{
 use crate::lobby::services::Services;
 use crate::platform::Platform;
 
-const MAX_BODY_BYTES: usize = 65_536;
 /// URL path, embedded file and MIME type.
 const PAGES: [(&str, &[u8], &str); 5] = [
     ("/", INDEX, "text/html"),
@@ -52,9 +53,7 @@ const PAGES: [(&str, &[u8], &str); 5] = [
 ];
 const INDEX: &[u8] = include_bytes!("../../../../web/dashboard/index.html");
 pub struct Dashboard {
-    http: Arc<HttpServer>,
-    addr: SocketAddr,
-    worker: Option<JoinHandle<()>>,
+    http: HttpServer,
 }
 
 /// What the dashboard reads and changes, shared with the lobby.
@@ -84,57 +83,44 @@ pub struct DashboardParts {
 
 impl Dashboard {
     pub fn start(port: u16, parts: DashboardParts) -> io::Result<Self> {
-        let http = HttpServer::http((Ipv4Addr::LOCALHOST, port))
-            .map(Arc::new)
-            .map_err(|error| io::Error::new(io::ErrorKind::AddrInUse, error.to_string()))?;
-        let addr = http
-            .server_addr()
-            .to_ip()
-            .ok_or_else(|| io::Error::other("dashboard is not on an IP address"))?;
-        let requests = Arc::clone(&http);
-        let port = addr.port();
-        let worker = thread::Builder::new()
-            .name("lucy-dashboard".into())
-            .spawn(move || {
-                for request in requests.incoming_requests() {
-                    let api = Api {
-                        accounts: &parts.accounts,
-                        selected: &parts.selected,
-                        online: &parts.online,
-                        collection: &parts.collection,
-                        data: &parts.data,
-                        assets: &parts.assets,
-                        lobby_port: parts.lobby_port,
-                        platform: &parts.platform,
-                        services: &parts.services,
-                        lobby: parts.lobby.as_deref(),
-                        uptime: parts.clock.now(),
-                    };
-                    let _ = handle(
-                        &api,
-                        parts.lobby.as_deref(),
-                        port,
-                        parts.debug_send,
-                        request,
-                    );
-                }
-            })?;
-        Ok(Self {
-            http,
-            addr,
-            worker: Some(worker),
-        })
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port))?;
+        let port = listener.local_addr()?.port();
+        let clock = parts.clock.source();
+        // One request at a time, as the API was written for.
+        let serial = Mutex::new(());
+        let http = HttpServer::start(listener, clock, move |request| {
+            let _one_at_a_time = serial.lock().unwrap_or_else(PoisonError::into_inner);
+            let api = Api {
+                accounts: &parts.accounts,
+                selected: &parts.selected,
+                online: &parts.online,
+                collection: &parts.collection,
+                data: &parts.data,
+                assets: &parts.assets,
+                lobby_port: parts.lobby_port,
+                platform: &parts.platform,
+                services: &parts.services,
+                lobby: parts.lobby.as_deref(),
+                uptime: parts.clock.now(),
+            };
+            handle(
+                &api,
+                parts.lobby.as_deref(),
+                port,
+                parts.debug_send,
+                request,
+            )
+        })?;
+        Ok(Self { http })
     }
 
     pub fn addr(&self) -> SocketAddr {
-        self.addr
+        self.http.addr()
     }
 
+    /// Close the listener and every connection, and join their threads.
     pub fn stop(&mut self) {
-        self.http.unblock();
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
+        self.http.stop();
     }
 }
 
@@ -143,32 +129,31 @@ fn handle(
     lobby: Option<&crate::lobby::Lobby>,
     port: u16,
     debug_send: bool,
-    mut request: Request,
-) -> io::Result<()> {
+    request: Request,
+) -> Response {
     // A page on another site can reach this loopback server: through DNS
     // rebinding (refused by the Host check) or with a form post, which
     // cannot send a JSON content type without a preflight this server never
     // answers.
     if !local_host(&request, port) {
-        return request.respond(json_reply(Err(ApiError::new(403, "Use http://127.0.0.1"))));
+        return json_reply(Err(ApiError::new(403, "Use http://127.0.0.1")));
     }
-    if *request.method() == Method::Post && !json_body(&request) {
-        return request.respond(json_reply(Err(ApiError::new(
+    if request.method == Method::Post && !json_body(&request) {
+        return json_reply(Err(ApiError::new(
             415,
             "Send the request as application/json",
-        ))));
+        )));
     }
-    let url = request.url().to_owned();
-    let (path, query) = url.split_once('?').unwrap_or((&url, ""));
-    let response = match request.method() {
+    let (path, query) = request.url.split_once('?').unwrap_or((&request.url, ""));
+    match request.method {
         Method::Get => {
             if let Some((_, body, mime)) = PAGES.iter().find(|(page, _, _)| *page == path) {
-                return request.respond(reply(200, body.to_vec(), mime));
+                return reply(200, body.to_vec(), mime);
             }
             if let Some((file, mime)) = picture(api.assets, path) {
                 return match std::fs::read(file) {
-                    Ok(body) => request.respond(reply(200, body, mime)),
-                    Err(_) => request.respond(json_reply(Err(not_found()))),
+                    Ok(body) => reply(200, body, mime),
+                    Err(_) => json_reply(Err(not_found())),
                 };
             }
             let query = parse_query(query);
@@ -185,36 +170,27 @@ fn handle(
             })
         }
         Method::Post => {
-            let result = read_body(&mut request).and_then(|data| match path {
+            let result = read_body(&request.body).and_then(|data| match path {
                 debug::SEND if debug_send => debug::send(api, lobby, &data),
                 debug::KILL if debug_send => debug::kill(api, lobby, &data),
                 _ => post(api, lobby, path, &data),
             });
             json_reply(result)
         }
-        _ => json_reply(Err(ApiError::new(405, "Method not allowed"))),
-    };
-    request.respond(response)
-}
-
-fn header_value<'a>(request: &'a Request, name: &'static str) -> Option<&'a str> {
-    request
-        .headers()
-        .iter()
-        .find(|header| header.field.equiv(name))
-        .map(|header| header.value.as_str())
+        Method::Other => json_reply(Err(ApiError::new(405, "Method not allowed"))),
+    }
 }
 
 /// The Host header names this server on loopback.
 fn local_host(request: &Request, port: u16) -> bool {
-    header_value(request, "Host").is_some_and(|host| {
+    request.header("Host").is_some_and(|host| {
         let host = host.trim().to_ascii_lowercase();
         host == format!("127.0.0.1:{port}") || host == format!("localhost:{port}")
     })
 }
 
 fn json_body(request: &Request) -> bool {
-    header_value(request, "Content-Type").is_some_and(|value| {
+    request.header("Content-Type").is_some_and(|value| {
         value
             .split(';')
             .next()
@@ -251,20 +227,13 @@ fn post(
     }
 }
 
-fn read_body(request: &mut Request) -> Result<Map<String, Json>, ApiError> {
-    let mut body = Vec::new();
-    request
-        .as_reader()
-        .take(MAX_BODY_BYTES as u64 + 1)
-        .read_to_end(&mut body)
-        .map_err(|error| ApiError::new(400, format!("Invalid request data: {error}")))?;
-    if body.len() > MAX_BODY_BYTES {
-        return Err(ApiError::new(413, "Request too large"));
-    }
+/// The body as a JSON object; the server limits its size
+/// (`http::MAX_BODY_BYTES`).
+fn read_body(body: &[u8]) -> Result<Map<String, Json>, ApiError> {
     if body.iter().all(u8::is_ascii_whitespace) {
         return Ok(Map::new());
     }
-    match serde_json::from_slice(&body) {
+    match serde_json::from_slice(body) {
         Ok(Json::Object(data)) => Ok(data),
         Ok(_) => Err(ApiError::new(400, "A JSON object is expected")),
         Err(error) => Err(ApiError::new(400, format!("Invalid request data: {error}"))),
@@ -303,7 +272,7 @@ fn not_found() -> ApiError {
     ApiError::new(404, "Address not found")
 }
 
-fn json_reply(result: ApiResult) -> Response<io::Cursor<Vec<u8>>> {
+fn json_reply(result: ApiResult) -> Response {
     let (status, value) = match result {
         Ok(value) => (200, value),
         Err(error) => (error.status, json!({"error": error.message})),
@@ -311,22 +280,22 @@ fn json_reply(result: ApiResult) -> Response<io::Cursor<Vec<u8>>> {
     reply(status, value.to_string().into_bytes(), "application/json")
 }
 
-fn reply(status: u16, body: Vec<u8>, mime: &str) -> Response<io::Cursor<Vec<u8>>> {
+fn reply(status: u16, body: Vec<u8>, mime: &str) -> Response {
     let text = mime.starts_with("text/") || mime == "application/json";
     let content_type = if text {
         format!("{mime}; charset=utf-8")
     } else {
         mime.to_owned()
     };
-    Response::from_data(body)
-        .with_status_code(status)
-        .with_header(header("Content-Type", &content_type))
-        .with_header(header("Cache-Control", "no-store"))
-        .with_header(header("X-Content-Type-Options", "nosniff"))
-}
-
-fn header(name: &str, value: &str) -> Header {
-    Header::from_bytes(name.as_bytes(), value.as_bytes()).expect("valid header")
+    Response {
+        status,
+        headers: vec![
+            ("Content-Type", content_type),
+            ("Cache-Control", "no-store".to_owned()),
+            ("X-Content-Type-Options", "nosniff".to_owned()),
+        ],
+        body,
+    }
 }
 
 /// A query string as a map; a repeated key keeps its last value and blank
@@ -371,7 +340,10 @@ mod tests {
     use super::*;
     use lucy_content::catalog::ItemDb;
     use lucy_lobby::templates::RetailTemplates;
-    use std::{io::Write, net::TcpStream};
+    use std::{
+        io::{Read, Write},
+        net::TcpStream,
+    };
 
     fn request(addr: SocketAddr, method: &str, path: &str, body: &str) -> (u16, String) {
         raw(

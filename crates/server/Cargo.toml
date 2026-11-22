@@ -23,7 +23,6 @@ lucy-sim.workspace = true
 lucy-wire.workspace = true
 lucy-workshop.workspace = true
 serde_json.workspace = true
-tiny_http.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
