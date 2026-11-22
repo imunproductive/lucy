@@ -1,4 +1,4 @@
-# Plan: server architecture, then profiling and latency
+# Plan: server architecture, profiling and latency, the dashboard
 
 Goal (2026-11-22): the server hosts a few matches at once (for example two or three Doomfist parkour lobbies) on one modest machine, with matches isolated from each other and connections handled cleanly. Not a goal: production operations, containers, auto-scaling, many hosts.
 
@@ -26,6 +26,22 @@ Goal (2026-11-22): the server hosts a few matches at once (for example two or th
 2. **Profile and optimise** the hot spots in a release build, with no change to what goes on the wire (every exact test unchanged).
 3. **Latency.** Find why a local server shows 15-20 ms ping and 20-25 ms IND: what the client measures for each (client code), when the server reads input and sends acknowledgements and frames relative to its tick, the input buffer it keeps, and Windows timer resolution (a 15.6 ms default granularity would bunch the 16 ms ticks). Compare with retail where the research has numbers (`refs/reports/GDC-Netcode.md`). Fix what the server causes; record what is the client's design.
 
+## Stage 3: the dashboard
+
+The dashboard (`web/dashboard`, served by `server/src/server/dashboard*`) becomes the host's control panel for live matches. It builds on stage 1's rooms.
+
+1. **Remove** the nameplates test tab (`api/bot_plate.rs` and its page) and anything only it uses.
+2. **Redesign** the look and layout so it is clearer and easier to use; keep the existing account and profile tools working.
+3. **Live matches:** a list of every running match (mode, map, players, time, state), updated live.
+4. **Global message:** send a message to everyone online (lobby and matches), as the system.
+5. **Per-match page:**
+   - live chat, with the match's history kept (and for a while after it ends);
+   - send chat as the system;
+   - kick a player;
+   - control the match flow where the mode allows it (for example skip assemble or setup, add or set time, end a round, a Workshop match's own controls), through the game's own mechanisms (mode graph variables and messages, Workshop actions), not a Rust copy of the flow;
+   - stop the match, sending its players home cleanly.
+6. **How each control reaches the client** is researched first: how chat travels in a match and in the lobby, what a system message looks like on the wire, how retail removed a player (the message and the client's reaction), which mode-graph inputs move the phases.
+
 ## Status
 
-- 2026-11-22: plan written. Stage 1 started (RoomThreads: per-room threads and game links; LobbyConns: lobby, Battle.net and dashboard connections). A latency baseline on the current code runs beside it (LatencyBaseline, measurement only), for stage 2.
+- 2026-11-22: plan written. Stage 1 started (RoomThreads: per-room threads and game links; LobbyConns: lobby, Battle.net and dashboard connections). A latency baseline on the current code runs beside it (LatencyBaseline, measurement only), for stage 2. Stage 3 added (user); its research (DashResearch) runs now, its code after stage 1 merges.
