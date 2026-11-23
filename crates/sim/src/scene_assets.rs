@@ -1355,12 +1355,12 @@ impl PreparedScene {
     }
 
     /// The living training bots' capsules where they are now, with their
-    /// teams (`Bot::capsule`), for the bodies they block
-    /// (`replication::blocks`).
-    pub fn bot_capsules(&self) -> impl Iterator<Item = (u8, CapsulePose)> + '_ {
+    /// teams and entities (`Bot::capsule`), for the bodies they block
+    /// (`replication::blockers`).
+    pub fn bot_capsules(&self) -> impl Iterator<Item = (u8, u32, CapsulePose)> + '_ {
         self.bots.iter().filter_map(|bot| {
             let capsule = bot.capsule(self.mover(bot.spawn.body))?;
-            Some((bot.spawn.team, capsule))
+            Some((bot.spawn.team, bot.entity, capsule))
         })
     }
 
@@ -1549,11 +1549,21 @@ impl PreparedScene {
     /// (the patrol `0B8E`; a walk that ended goes back to the script, which
     /// takes it when it next runs), and the live ones are posed
     /// ([`crate::bot_animation`]), by what their scripts asked as of their
-    /// last run.
-    pub fn step_bots(&mut self, tick: u32) {
+    /// last run. The living players' bodies (`players`: each one's team
+    /// and capsule, where his commands so far left it) block the bots of
+    /// the other teams ([`crate::replication::blocks`], [`Bot::set_peers`]).
+    pub fn step_bots(&mut self, tick: u32, players: &[(u8, CapsulePose)]) {
         self.bot_scripts.prepare_next(&self.bots, tick);
         let floor = self.ground.triangles();
+        let free_for_all = self.map.free_for_all;
         for (slot, bot) in self.bots.iter_mut().enumerate() {
+            let team = bot.spawn.team;
+            bot.set_peers(
+                players
+                    .iter()
+                    .filter(|&&(player, _)| crate::replication::blocks(free_for_all, team, player))
+                    .map(|&(_, capsule)| capsule),
+            );
             let motions = self.bot_scripts.take_motions(slot, bot.entity);
             if !motions.is_empty() {
                 let mover = bot_mover(self.contacts.as_ref(), &self.movers, &self.map, bot, tick);
@@ -2113,12 +2123,6 @@ mod tests {
                 ),
                 (
                     0x0043,
-                    Some(10),
-                    "STUStatescriptModifyHealth m_10399AE7",
-                    "not read"
-                ),
-                (
-                    0x0043,
                     Some(43),
                     "STUStatescriptStatePhysicsExplosion",
                     "no effect"
@@ -2512,7 +2516,7 @@ mod tests {
         let goals = [[3, 4], [0, 1]];
         let mut visited = [0; 2];
         for tick in 1001..=2900 {
-            scene.step_bots(tick);
+            scene.step_bots(tick, &[]);
             // The patrol graphs ask for the walks (`0B8E`).
             scene.advance_live_bots(tick);
             for (slot, entity) in bots.into_iter().enumerate() {
@@ -2732,7 +2736,7 @@ mod tests {
         };
         // The visor's search begins about 1.2 s after the press.
         for frame in spawn.frame + 1..spawn.frame + 120 {
-            scene.step_bots(frame);
+            scene.step_bots(frame, &[]);
             combat.record_poses(&scene, std::slice::from_ref(&me), frame);
             runtime.set_target_candidates(&combat.target_candidates(&scene));
             let command = Command {

@@ -126,7 +126,7 @@ impl CombatNotice {
         }
     }
 
-    pub fn encode(self, schemas: &Schemas) -> Result<Vec<u8>, ChannelError> {
+    pub fn encode(self, schemas: &Schemas) -> Result<messages::Encoded, ChannelError> {
         let entity = |id: u32| Value::Struct(Fields::from([(0, Value::Unsigned(u64::from(id)))]));
         let (id, fields) = match self {
             Self::Hit {
@@ -316,7 +316,7 @@ mod tests {
         ];
         for (notice, identity, expected) in cases {
             assert_eq!(notice.required_identity(), identity);
-            assert_eq!(notice.encode(&schemas).unwrap(), expected);
+            assert_eq!(notice.encode(&schemas).unwrap().bytes(), expected);
         }
     }
 
@@ -338,7 +338,8 @@ mod tests {
         };
         assert_eq!(notice.required_identity(), Some(BOT));
         assert!(!notice.needs_mode_ui());
-        let bytes = notice.encode(&schemas).unwrap();
+        let encoded = notice.encode(&schemas).unwrap();
+        let bytes = encoded.bytes();
         assert_eq!(bytes[..2], [3, 0]);
         let (_, crc, _) = messages::locate(VOICE).unwrap();
         let fields = schemas.decode(crc, VOICE, &bytes[2..], true).unwrap();
@@ -369,7 +370,8 @@ mod tests {
             let notice = CombatNotice::View { yaw };
             assert_eq!(notice.required_identity(), None);
             assert!(!notice.needs_mode_ui());
-            let bytes = notice.encode(&schemas).unwrap();
+            let encoded = notice.encode(&schemas).unwrap();
+            let bytes = encoded.bytes();
             assert_eq!(bytes[..2], [2, 8]);
             let fields = schemas.decode(crc, VIEW, &bytes[2..], true).unwrap();
             let Some(Value::Struct(quaternion)) = fields.get(&0x78) else {
@@ -430,7 +432,8 @@ mod tests {
         assert_eq!(
             notice
                 .encode(&Schemas::game(&lucy_testkit::runtime_dir()).unwrap())
-                .unwrap(),
+                .unwrap()
+                .bytes(),
             expected
         );
     }

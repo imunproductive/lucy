@@ -256,7 +256,7 @@ mod tests {
             for (message, (length, digest)) in messages.into_iter().zip(expected) {
                 let bytes = encode(&schemas, message.id, &message.fields).unwrap();
                 assert_eq!(bytes.len(), length);
-                assert_eq!(format!("{:x}", Sha256::digest(bytes)), digest);
+                assert_eq!(format!("{:x}", Sha256::digest(bytes.bytes())), digest);
             }
         }
     }

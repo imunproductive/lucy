@@ -475,7 +475,7 @@ mod tests {
         for stamp in [111_u64, 222, 333, 444, 555] {
             expected.extend(stamp.to_le_bytes());
         }
-        assert_eq!(bytes, expected);
+        assert_eq!(bytes.bytes(), expected);
         let defaults = Pong::new(&Fields::new(), nanos(1), nanos(2))
             .unwrap()
             .sent(nanos(3));

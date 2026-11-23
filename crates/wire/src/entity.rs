@@ -85,7 +85,7 @@
 use std::{borrow::Borrow, error::Error, fmt};
 
 use crate::link::{HEADER_SIZE, MAX_DATAGRAM};
-use crate::messages::{ChannelError, MAX_PER_KIND, write_channel};
+use crate::messages::{ChannelError, Encoded, MAX_PER_KIND, write_channel};
 use lucy_core::bits::{BitError, BitWriter};
 
 pub const MAX_ENTITY_RECORDS: usize = 127;
@@ -1077,8 +1077,8 @@ pub fn frame(
     tick: u32,
     ack: u32,
     clock: u8,
-    reliable: &[(u32, Vec<u8>)],
-    unreliable: &[Vec<u8>],
+    reliable: &[(u32, Encoded)],
+    unreliable: &[Encoded],
     entities: &[&EntityUpdate],
 ) -> Result<Vec<u8>, WorldError> {
     frame_with(
@@ -1102,8 +1102,8 @@ fn frame_with(
     tick: u32,
     ack: u32,
     clock: u8,
-    reliable: &[(u32, Vec<u8>)],
-    unreliable: &[Vec<u8>],
+    reliable: &[(u32, Encoded)],
+    unreliable: &[Encoded],
     entities: &[&EntityUpdate],
     records: &mut RecordBits,
 ) -> Result<Vec<u8>, WorldError> {
@@ -1144,8 +1144,8 @@ pub struct FrameCandidates<'a, Queued = EntityUpdate> {
     pub tick: u32,
     /// The ch3 clock flags.
     pub clock: u8,
-    pub reliable: &'a [(u32, Vec<u8>)],
-    pub unreliable: &'a [Vec<u8>],
+    pub reliable: &'a [(u32, Encoded)],
+    pub unreliable: &'a [Encoded],
     pub queued: &'a [Queued],
     pub movements: &'a [EntityUpdate],
     /// The final movement, if present, corrects the owner: it gets its room
@@ -1200,7 +1200,7 @@ pub fn select_frame<'a, Queued: Borrow<EntityUpdate>>(
     // Each attempt below writes the frame again: its records once.
     let mut written = RecordBits::default();
     let mut encode =
-        |reliable: &[(u32, Vec<u8>)], unreliable: &[Vec<u8>], records: &[&EntityUpdate]| {
+        |reliable: &[(u32, Encoded)], unreliable: &[Encoded], records: &[&EntityUpdate]| {
             frame_with(
                 tick,
                 ack_for_records(records),

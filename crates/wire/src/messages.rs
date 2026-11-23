@@ -4,8 +4,10 @@
 //! bit "any messages"; if set, 4 bits reliable count and 4 bits unreliable
 //! count; when either is not 0, pad to a byte, then reliable messages `u32
 //! seq, u8 protocol index, u8 message index, JAM fields` (in seq order) and
-//! unreliable ones `u8 protocol index, u8 message index, JAM fields`; the
-//! stream goes on at the byte after the last message. With both counts 0
+//! unreliable ones `u8 protocol index, u8 message index, JAM fields`; each
+//! message but the last starts on a byte, and the stream goes on at the bit
+//! right after the last message's last field (a final packed bool ends
+//! inside its byte). With both counts 0
 //! there is no padding (the input record then starts at bit 9). The client
 //! delivers reliable messages strictly in seq order: it parks one that comes
 //! early and drops one it already had, so a lost one must be resent or
@@ -101,6 +103,41 @@ pub struct Channel {
     pub unreliable: Vec<Message>,
 }
 
+/// A game message ready for the channel: protocol index, message index and
+/// JAM fields, the last byte filled with zeros, and the bit right after its
+/// last field, where the frame goes on when it is the channel's last message.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Encoded {
+    bytes: Vec<u8>,
+    end: usize,
+}
+
+impl Encoded {
+    /// A message whose last field fills its last byte (no packed bool at
+    /// the end), such as raw test payloads.
+    pub fn whole(bytes: Vec<u8>) -> Self {
+        let end = bytes.len() * 8;
+        Self { bytes, end }
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub fn len(&self) -> usize {
+        self.bytes.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
+
+    /// The bit right after the last field.
+    pub fn end(&self) -> usize {
+        self.end
+    }
+}
+
 /// Resolve the wire index, CRC and offset. The highest eligible base wins
 /// where protocol ID ranges overlap.
 pub fn locate(id: u32) -> Result<(u8, u32, u8), ChannelError> {
@@ -114,24 +151,28 @@ pub fn locate(id: u32) -> Result<(u8, u32, u8), ChannelError> {
 }
 
 /// Encode a game message without the channel envelope or reliable sequence.
-pub fn encode(schemas: &Schemas, id: u32, fields: &Fields) -> Result<Vec<u8>, ChannelError> {
+pub fn encode(schemas: &Schemas, id: u32, fields: &Fields) -> Result<Encoded, ChannelError> {
     let (index, crc, offset) = locate(id)?;
-    let body = schemas.encode(crc, id, fields)?;
-    let mut message = Vec::with_capacity(2 + body.len());
-    message.extend([index, offset]);
-    message.extend(body);
-    Ok(message)
+    let (body, body_end) = schemas.encode_bits(crc, id, fields)?;
+    let mut bytes = Vec::with_capacity(2 + body.len());
+    bytes.extend([index, offset]);
+    bytes.extend(body);
+    Ok(Encoded {
+        bytes,
+        end: 16 + body_end,
+    })
 }
 
-/// Write pre-encoded messages in caller order. Reliable sequences are assigned
-/// by the caller, and loss recovery belongs to the session. An encoded message
-/// fills its last byte with zeros; only the last message's unused bits are
-/// free for what follows, so the frame goes on right after its last field
-/// (a final packed bool, as in 25005, ends inside its byte).
+/// Write encoded messages in caller order. Reliable sequences are assigned
+/// by the caller, and loss recovery belongs to the session. Only the last
+/// message's unused bits are free for what follows, so the frame goes on
+/// right after its last field (a final packed bool, as in 25005, ends inside
+/// its byte; writing the whole byte there crashed the client at
+/// `0xD697D0`).
 pub fn write_channel(
     bits: &mut BitWriter,
-    reliable: &[(u32, Vec<u8>)],
-    unreliable: &[Vec<u8>],
+    reliable: &[(u32, Encoded)],
+    unreliable: &[Encoded],
 ) -> Result<(), ChannelError> {
     if reliable.is_empty() && unreliable.is_empty() {
         bits.bit(false);
@@ -140,21 +181,6 @@ pub fn write_channel(
     if reliable.len() > MAX_PER_KIND || unreliable.len() > MAX_PER_KIND {
         return Err(ChannelError::TooManyMessages);
     }
-    let final_message = unreliable
-        .last()
-        .or_else(|| reliable.last().map(|(_, message)| message))
-        .expect("a message");
-    // Only the last byte's unused bits are given back. Bytes whose fields
-    // don't end in their last byte (test payloads, not game messages of the
-    // client's layouts), or any message before the game link's layouts were
-    // loaded, are written whole.
-    let whole = final_message.len() * 8;
-    let final_end = GAME_SCHEMAS
-        .get()
-        .and_then(|schemas| read_message(schemas, final_message, 0).ok())
-        .map(|(_, end)| end)
-        .filter(|&end| end <= whole && whole - end < 8)
-        .unwrap_or(whole);
     bits.bit(true);
     bits.bits(reliable.len() as u64, 4)?;
     bits.bits(unreliable.len() as u64, 4)?;
@@ -169,27 +195,13 @@ pub fn write_channel(
             bits.raw(&sequence.to_le_bytes());
         }
         if index == last {
-            bits.raw_bits(message, final_end)
+            bits.raw_bits(&message.bytes, message.end)
                 .expect("a message ends within its bytes");
         } else {
-            bits.raw(message);
+            bits.raw(&message.bytes);
         }
     }
     Ok(())
-}
-
-/// The game link's message layouts, for finding where a message's last
-/// field ends: the first ones [`Schemas::game`] loaded in this process.
-/// There is one client build, so every load reads the same layouts.
-static GAME_SCHEMAS: std::sync::OnceLock<Schemas> = std::sync::OnceLock::new();
-
-/// Keep the game link's layouts for [`write_channel`], unless it has some.
-pub(crate) fn keep_game_schemas(load: impl FnOnce() -> Result<Schemas, CodecError>) {
-    if GAME_SCHEMAS.get().is_none()
-        && let Ok(schemas) = load()
-    {
-        let _ = GAME_SCHEMAS.set(schemas);
-    }
 }
 
 /// Decode the channel and leave the reader at the next field in the frame.
@@ -371,7 +383,7 @@ mod tests {
     #[test]
     fn rejects_excess_counts_and_malformed_messages() {
         let mut writer = BitWriter::new();
-        let overflow = vec![vec![]; MAX_PER_KIND + 1];
+        let overflow = vec![Encoded::whole(Vec::new()); MAX_PER_KIND + 1];
         assert!(matches!(
             write_channel(&mut writer, &[], &overflow),
             Err(ChannelError::TooManyMessages)
@@ -418,7 +430,9 @@ mod tests {
         }
         .encode(&schemas)
         .unwrap();
-        let (_, end) = read_message(&schemas, &elimination, 0).unwrap();
+        // The encoder's end is where the client's reader stops.
+        let (_, end) = read_message(&schemas, elimination.bytes(), 0).unwrap();
+        assert_eq!(elimination.end(), end);
         assert!(end % 8 != 0 && elimination.len() * 8 - end < 8);
         for reliable in [
             vec![(7, elimination.clone())],
