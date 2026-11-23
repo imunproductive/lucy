@@ -86,11 +86,13 @@ const LAZY_TICKS: u32 = 8;
 /// What must reach the other clients at once (observers.py `_activity`): the
 /// instances, the remote states that are on, and the StEC states, whose
 /// counters start them again.
+/// Each list sorted (an instance id and its state slot are unique), so two
+/// activities compare as the sets they are.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ObserverActivity {
-    instances: BTreeSet<u16>,
-    on: BTreeSet<(u16, u16)>,
-    stec: BTreeSet<((u16, u16), bool, u16, u64)>,
+    instances: Vec<u16>,
+    on: Vec<(u16, u16)>,
+    stec: Vec<((u16, u16), bool, u16, u64)>,
 }
 
 impl ObserverActivity {
@@ -99,7 +101,7 @@ impl ObserverActivity {
     pub(crate) fn of(snapshot: &Snapshot, graphs: &GraphStore, codecs: &CodecTable) -> Self {
         let mut activity = Self::default();
         for (&id, instance) in &snapshot.instances {
-            activity.instances.insert(id);
+            activity.instances.push(id);
             let Some(graph) = graphs.graph(instance.graph) else {
                 continue;
             };
@@ -111,12 +113,12 @@ impl ObserverActivity {
                     continue;
                 }
                 if state.active {
-                    activity.on.insert((id, raw));
+                    activity.on.push((id, raw));
                 }
                 if codecs.node_codec(node).is_some_and(Codec::stec)
                     && (state.active || state.activation != 0)
                 {
-                    activity.stec.insert((
+                    activity.stec.push((
                         (id, raw),
                         state.active,
                         state.activation,
@@ -125,6 +127,9 @@ impl ObserverActivity {
                 }
             }
         }
+        activity.instances.sort_unstable();
+        activity.on.sort_unstable();
+        activity.stec.sort_unstable();
         activity
     }
 }
