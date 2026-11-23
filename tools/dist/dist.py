@@ -14,7 +14,8 @@
    the README's download instructions name this file), every file at the
    zip's top level: the two builds side by side, `tools/relay/lucy_relay.py`,
    the start scripts and README.md of this folder, the user guide (docs/user,
-   as docs/), LICENSE, CREDITS.md and SHA256SUMS.txt of those files.
+   as docs/), LICENSE, CREDITS.md, THIRD-PARTY-NOTICES.md and SHA256SUMS.txt
+   of those files.
 4. Writes `dist/SHA256SUMS.txt` (the zip's SHA-256, `sha256sum -c` format) and
    `dist/release-notes.md`: the tag's annotation, or else the commits since
    the previous `v*` tag.
@@ -53,6 +54,7 @@ COPIED = {
     "START_SERVER_LOCAL.cmd": HERE / "START_SERVER_LOCAL.cmd",
     "LICENSE": REPO / "LICENSE",
     "CREDITS.md": REPO / "CREDITS.md",
+    "THIRD-PARTY-NOTICES.md": REPO / "THIRD-PARTY-NOTICES.md",
 }
 USER_DOCS = REPO / "docs/user"
 

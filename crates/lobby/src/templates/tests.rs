@@ -110,6 +110,7 @@ fn content() -> InstallContent {
             (0xc0, Array(Vec::new())),
         ]),
         custom_game_maps: Fields::from([(0x78, Array(Vec::new())), (0x90, Array(Vec::new()))]),
+        stat_catalogs: StatCatalogs::default(),
     }
 }
 

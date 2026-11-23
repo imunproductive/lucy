@@ -2,8 +2,8 @@
 //!
 //! Ports `ow174/content/career.py`. 27202 carries the career stat lists
 //! twice (`+0x78`, `+0xA8`) and two stat catalogs, each hero's (`+0x90`) and
-//! each map's (`+0xC0`) `062` stats, which the server sends empty (see
-//! [`mode_rules`]).
+//! each map's (`+0xC0`) `062` stats, which `lucy_assets` derives from the
+//! stats' own fields (`data/career_stats_174.json`, [`StatCatalogs`]).
 //!
 //! Client research: a hero's lifetime "Time Played" is stat 062/021 (seconds)
 //! and "Matches won" 062/039. The career profile's role tables sum a hero stat
@@ -13,7 +13,7 @@
 //! key `(season << 16) | 3`, with 0x20 added when the season item has the
 //! flag 0xD800000000084E7 (0x7FF7893528A0, 0x7FF78992D210); both keys are sent.
 
-use std::io;
+use std::{io, path::Path};
 
 use indexmap::IndexMap;
 
@@ -29,6 +29,7 @@ use crate::{
     transport::LobbyMessage,
 };
 use lucy_content::catalog::ItemDb;
+use lucy_core::guid::parse_guid;
 use lucy_wire::jam::codec::{
     Fields,
     Value::{self, Array, Blob, Bool, Float64, Signed, Struct, Unsigned},
@@ -48,24 +49,101 @@ const SEASON_KIND: u64 = 3;
 const SEASON_FLAG: u64 = 0x20;
 const ROLE_QUEUES: [Queue; 3] = [Queue::Tank, Queue::Damage, Queue::Support];
 
-/// 27202: the career stats and two empty stat catalogs. Retail listed each
-/// hero's and each map's tracked stats (`062`); the install has no list of
-/// them found yet (the `062` assets name their heroes for only some stats).
-/// Without them the career profile's statistics show 0 (seen in the game;
-/// `docs/dev/loose-ends.md`, `D:/Work/Coding/refs/reports/RetailTemplates.md`).
+/// 27202: the career stats and the two stat catalogs. Without the catalogs
+/// the career profile's statistics show 0 (seen in the game, 2026-11-23).
 pub fn mode_rules(
     profile: &Profile,
     heroes: &[u64],
     items: &ItemDb,
     season: Season,
+    catalogs: &StatCatalogs,
 ) -> io::Result<Fields> {
     let stats = Array(career_stats(profile, heroes, items, season)?);
     Ok(Fields::from([
         (0x78, stats.clone()),
-        (0x90, Array(Vec::new())),
+        (0x90, catalogs.heroes.clone()),
         (0xa8, stats),
-        (0xc0, Array(Vec::new())),
+        (0xc0, catalogs.maps.clone()),
     ]))
+}
+
+/// The file of [`StatCatalogs`] in the derived data folder.
+pub const STAT_CATALOGS_FILE: &str = "career_stats_174.json";
+
+/// 27202's stat catalogs (`lucy_assets` `career_stats.rs`): for each hero,
+/// "all heroes" and each role (`+0x90`), and for each map and "all maps"
+/// (`+0xC0`), the `062` stats the career profile keeps. Each entry is
+/// `{+0x0 key, +0x8 stats}`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StatCatalogs {
+    heroes: Value,
+    maps: Value,
+}
+
+/// Empty catalogs, as the server sent before they were derived.
+impl Default for StatCatalogs {
+    fn default() -> Self {
+        Self {
+            heroes: Array(Vec::new()),
+            maps: Array(Vec::new()),
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct CatalogFile {
+    heroes: Vec<CatalogEntry>,
+    maps: Vec<CatalogEntry>,
+}
+
+#[derive(serde::Deserialize)]
+struct CatalogEntry {
+    key: String,
+    stats: Vec<String>,
+}
+
+impl StatCatalogs {
+    pub fn from_json(text: &str) -> io::Result<Self> {
+        let file: CatalogFile = serde_json::from_str(text).map_err(invalid)?;
+        let list = |entries: Vec<CatalogEntry>| -> io::Result<Value> {
+            let entries = entries
+                .into_iter()
+                .map(|entry| {
+                    let stats = entry
+                        .stats
+                        .iter()
+                        .map(|stat| guid(stat).map(Unsigned))
+                        .collect::<io::Result<_>>()?;
+                    Ok(Struct(Fields::from([
+                        (0, Unsigned(guid(&entry.key)?)),
+                        (8, Array(stats)),
+                    ])))
+                })
+                .collect::<io::Result<_>>()?;
+            Ok(Array(entries))
+        };
+        Ok(Self {
+            heroes: list(file.heroes)?,
+            maps: list(file.maps)?,
+        })
+    }
+
+    pub fn load(data_dir: &Path) -> io::Result<Self> {
+        let path = data_dir.join(STAT_CATALOGS_FILE);
+        let text = std::fs::read_to_string(&path).map_err(|error| {
+            io::Error::new(error.kind(), format!("{}: {error}", path.display()))
+        })?;
+        Self::from_json(&text)
+            .map_err(|error| io::Error::new(error.kind(), format!("{}: {error}", path.display())))
+    }
+}
+
+fn guid(text: &str) -> io::Result<u64> {
+    parse_guid(text).ok_or_else(|| invalid(format!("{text:?} is not a GUID")))
+}
+
+fn invalid(error: impl ToString) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, error.to_string())
 }
 
 /// What a career profile shows besides the profile itself.
@@ -314,17 +392,19 @@ mod tests {
             lobby_hero: "random".into(),
             ..Profile::default()
         };
-        let random = mode_rules(&profile, &heroes, &items, SEASON).unwrap();
+        let runtime = lucy_testkit::runtime_dir();
+        let catalogs = StatCatalogs::load(&runtime.join("data")).unwrap();
+        let random = mode_rules(&profile, &heroes, &items, SEASON, &catalogs).unwrap();
         profile.lobby_hero = "Fictional NPC".into();
-        let npc = mode_rules(&profile, &heroes, &items, SEASON).unwrap();
+        let npc = mode_rules(&profile, &heroes, &items, SEASON, &catalogs).unwrap();
         assert_eq!(npc, random);
         assert_eq!(npc[&0x78], npc[&0xa8]);
         assert_eq!(
             npc[&0x78],
             Array(career_stats(&profile, &heroes, &items, SEASON).unwrap())
         );
-        assert_eq!(npc[&0x90], Array(Vec::new()));
-        assert_eq!(npc[&0xc0], Array(Vec::new()));
+        assert_eq!(npc[&0x90], catalogs.heroes);
+        assert_eq!(npc[&0xc0], catalogs.maps);
         assert!(career_stats(&profile, &[], &items, SEASON).is_err());
         Schemas::lobby(&lucy_testkit::runtime_dir())
             .unwrap()

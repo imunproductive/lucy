@@ -141,3 +141,17 @@ fn keeps_the_pack(path: &str, equal: &[&str]) -> std::collections::BTreeMap<u64,
     ));
     derived_graphs
 }
+
+/// The bundle carries the communication wheel's callout textures
+/// (`054/01A5`): 26 actions, `016C` among them; `01F5`, which is no wheel
+/// action, has none.
+#[test]
+#[ignore = "requires an Overwatch 1.74 install"]
+fn the_bundle_has_the_wheels_callout_textures() {
+    let path = lucy_testkit::runtime_dir().join("data/game_graphs_174.json.gz");
+    let bundle = json(&std::fs::read(path).unwrap());
+    let textures = bundle["callout_textures"].as_object().unwrap();
+    assert_eq!(textures.len(), 26);
+    assert_eq!(textures["0x0A9000000000016C"], "0x0C000000000039DD");
+    assert!(!textures.contains_key("0x0A900000000001F5"));
+}

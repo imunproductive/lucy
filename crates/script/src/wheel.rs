@@ -1,5 +1,6 @@
-//! The communication wheel's fixed data: its actions, their categories, the
-//! slot tables and the callout textures, and what a body has equipped.
+//! The communication wheel's fixed data: its actions, their categories and
+//! the slot tables, and what a body has equipped. The callout textures come
+//! from the install (`054/01A5`, [`GraphStore::callout_texture`](crate::graph::GraphStore::callout_texture)).
 //!
 //! Ported from leafall903/ORPHEUS (MIT), commit `c239a84` and later
 //! (`src/ow174/game/script/driver.py`, `docs/COMMUNICATION_WHEEL.txt`):
@@ -38,36 +39,6 @@ const CALLOUT_CATEGORY: u64 = 0x0d80_0000_0000_7428;
 pub const EMOTE_ACTIONS: [u32; 4] = [0x172, 0x1a1, 0x1a0, 0x19f];
 pub const VOICE_ACTIONS: [u32; 4] = [0x16f, 0x19d, 0x19c, 0x19b];
 pub const SPRAY_ACTIONS: [u32; 4] = [0x173, 0x1a5, 0x1a4, 0x1a3];
-
-/// Action-to-texture rows of 104319 `01A5.054` (44A820).
-const CALLOUT_TEXTURES: [(u32, u64); 26] = [
-    (0x16b, 0x0c00_0000_0000_5a0b),
-    (0x16c, 0x0c00_0000_0000_39dd),
-    (0x16d, 0x0c00_0000_0000_39da),
-    (0x16e, 0x0c00_0000_0000_39db),
-    (0x16f, 0x0c00_0000_0000_7114),
-    (0x170, 0x0c00_0000_0000_5a0e),
-    (0x171, 0x0c00_0000_0000_5a0d),
-    (0x172, 0x0c00_0000_0000_5a0a),
-    (0x1e5, 0x0c00_0000_0002_a9fb),
-    (0x1e6, 0x0c00_0000_0002_aa02),
-    (0x1e7, 0x0c00_0000_0002_aa01),
-    (0x1e8, 0x0c00_0000_0002_a9f9),
-    (0x1e9, 0x0c00_0000_0002_a9f4),
-    (0x1ea, 0x0c00_0000_0002_a9f1),
-    (0x1eb, 0x0c00_0000_0002_a9fd),
-    (0x1ec, 0x0c00_0000_0002_a9ef),
-    (0x1ed, 0x0c00_0000_0002_a9fc),
-    (0x1ee, 0x0c00_0000_0002_a9f5),
-    (0x1ef, 0x0c00_0000_0002_aa00),
-    (0x1f0, 0x0c00_0000_0002_a9f2),
-    (0x1f1, 0x0c00_0000_0002_a9fa),
-    (0x1f2, 0x0c00_0000_0002_a9ec),
-    (0x1f3, 0x0c00_0000_0002_a9ed),
-    (0x1f4, 0x0c00_0000_0000_5a0c),
-    (0x1f7, 0x0c00_0000_0002_a9fe),
-    (0x1f9, 0x0c00_0000_0000_3a73),
-];
 
 /// The wheel's own self-targeted PlayScript actions: (graph, node) and the
 /// graph each plays (upstream `WHEEL_PLAY_GRAPHS`).
@@ -128,18 +99,6 @@ pub fn slot(action: u64, table: &[u32; 4]) -> i64 {
     action_index(action)
         .and_then(|action| table.iter().position(|&entry| entry == action))
         .map_or(-1, |slot| slot as i64)
-}
-
-/// `STU_1ECB66A0` (CDB390): the action's callout texture, zero for none.
-pub fn callout_texture(action: u64) -> u64 {
-    action_index(action)
-        .and_then(|action| {
-            CALLOUT_TEXTURES
-                .iter()
-                .find(|(entry, _)| *entry == action)
-                .map(|(_, texture)| *texture)
-        })
-        .unwrap_or(0)
 }
 
 /// The graph a wheel PlayScript node plays, if it is one.
@@ -219,8 +178,6 @@ mod tests {
         assert_eq!(slot(action(0x16f), &VOICE_ACTIONS), 0);
         assert_eq!(slot(action(0x19e), &VOICE_ACTIONS), -1);
         assert_eq!(slot(action(0x1a3), &SPRAY_ACTIONS), 3);
-        assert_eq!(callout_texture(action(0x16c)), 0x0c00_0000_0000_39dd);
-        assert_eq!(callout_texture(action(0x1f5)), 0);
         let cosmetics = Cosmetics {
             spray_unlocks: [1, 2, 3, 4],
             ..Cosmetics::default()

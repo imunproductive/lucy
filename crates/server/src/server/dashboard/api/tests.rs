@@ -60,6 +60,7 @@ impl Fixture {
             credits: [("Common".into(), 100)].into(),
             competitive_points: 3000,
             league_tokens: [("Common".into(), 50)].into(),
+            ..ItemPrices::default()
         };
         let collection = Collection::new(Arc::new(items), prices);
         Self {

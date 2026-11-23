@@ -1,6 +1,6 @@
-//! The Workshop against build 104319's own catalog: the test subset is
-//! the install's, and the Doomfist parkour scripts of the DPK archive
-//! parse, round-trip through the binary form and run.
+//! The Workshop against build 104319's own catalog: the Doomfist parkour
+//! scripts of the DPK archive parse, round-trip through the binary form and
+//! run.
 
 mod common;
 
@@ -10,12 +10,7 @@ use std::{
     sync::Arc,
 };
 
-use lucy_workshop::{Catalog, Engine, binary::encode, decode, parse, text::Setting};
-use serde_json::Value as Json;
-
-fn install_catalog() -> Arc<Catalog> {
-    Arc::new(Catalog::load(&lucy_testkit::runtime_dir().join("data")).unwrap())
-}
+use lucy_workshop::{Engine, binary::encode, decode, parse, text::Setting};
 
 fn scripts(folder: &Path, found: &mut Vec<PathBuf>) {
     for entry in fs::read_dir(folder).unwrap() {
@@ -29,47 +24,9 @@ fn scripts(folder: &Path, found: &mut Vec<PathBuf>) {
 }
 
 #[test]
-#[ignore = "requires an Overwatch 1.74 install (just test-game <install>)"]
-fn catalog_subset_is_the_installs() {
-    let path = lucy_testkit::runtime_dir().join("data/workshop_catalog_174.json");
-    let install: Json = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
-    let subset: Json = serde_json::from_str(common::CATALOG).unwrap();
-    for key in ["events", "conditions", "strings"] {
-        assert_eq!(subset[key], install[key], "{key}");
-    }
-    for (index, action) in subset["actions"].as_array().unwrap().iter().enumerate() {
-        let full = &install["actions"][index];
-        if action.get("stripped").is_some() {
-            assert_eq!(
-                (&action["name"], &action["graph"]),
-                (&full["name"], &full["graph"])
-            );
-        } else {
-            assert_eq!(action, full, "action {index}");
-        }
-    }
-    for (key, id) in [("values", "id"), ("enums", "id")] {
-        for item in subset[key].as_array().unwrap() {
-            let full = install[key]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|full| full[id] == item[id])
-                .unwrap();
-            assert_eq!(item, full, "{key} {}", item[id]);
-        }
-    }
-    for key in ["heroes", "maps", "game_modes"] {
-        for (name, value) in subset[key].as_object().unwrap() {
-            assert_eq!(&install[key][name], value, "{key} {name}");
-        }
-    }
-}
-
-#[test]
 #[ignore = "requires an Overwatch 1.74 install and the DPK archive (just test-dpk <install> <archive>)"]
 fn dpk_archive_scripts_parse_round_trip_and_run() {
-    let catalog = install_catalog();
+    let catalog = common::catalog();
     let mut found = Vec::new();
     scripts(&lucy_testkit::dpk_archive(), &mut found);
     found.sort();

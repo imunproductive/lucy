@@ -39,4 +39,4 @@ The first start derives the game data from the install, which takes about two mi
 
 ## License
 
-MIT, see [LICENSE](LICENSE). Upstream projects are listed in [CREDITS.md](CREDITS.md).
+MIT, see [LICENSE](LICENSE). Upstream projects are listed in [CREDITS.md](CREDITS.md), and their notices are in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).

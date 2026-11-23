@@ -16,14 +16,10 @@ use lucy_workshop::{
     value::{EntityId, Value},
 };
 
-/// The catalog subset the tests use, cut from the install's
-/// `workshop_catalog_174.json` (every event, condition, action and
-/// predefined string; the values and enums the test scripts name).
-/// `catalog_subset_is_the_installs` checks it against the install.
-pub const CATALOG: &str = include_str!("../data/workshop_catalog_subset.json");
-
+/// The install's Workshop catalog (`workshop_catalog_174.json`, derived
+/// from the install), which the tests' scripts are written in.
 pub fn catalog() -> Arc<Catalog> {
-    Arc::new(Catalog::from_reader(CATALOG.as_bytes()).unwrap())
+    Arc::new(Catalog::load(&lucy_testkit::runtime_dir().join("data")).unwrap())
 }
 
 /// Button enum values (`4A39`).

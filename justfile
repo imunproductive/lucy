@@ -35,7 +35,8 @@ build:
     cargo build --workspace --release --locked
 
 # A release for Windows in dist/ (docs/dev/releasing.md): the release build with `version` (1.2.3 or
-# v1.2.3) in `lucy --version`, zipped with the relay script, the user guide, LICENSE and CREDITS.md;
+# v1.2.3) in `lucy --version`, zipped with the relay script, the user guide, LICENSE, CREDITS.md and
+# THIRD-PARTY-NOTICES.md;
 # the zip's SHA-256 and the release notes. The release workflow (.github/workflows/release.yml) runs it.
 dist version:
     python tools/dist/dist.py {{version}}

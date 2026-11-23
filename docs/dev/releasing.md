@@ -22,7 +22,7 @@ The zip's files, all at its top level (no folder of their own), so `lucy.exe` is
 | `START.cmd`, `START_SERVER_LOCAL.cmd` | `tools/dist/`: they run `lucy.exe` and `lucy.exe serve`. The checkout's own `START.cmd` and `START_SERVER_LOCAL.cmd` build with Cargo first, which a download can't. |
 | `README.md` | `tools/dist/release-readme.md`: the files, the first start, hosting |
 | `docs\` | The user guide (`docs/user`). In the copies, `target\release\lucy.exe` becomes `lucy.exe`, where it is in the zip. |
-| `LICENSE`, `CREDITS.md` | The repository's |
+| `LICENSE`, `CREDITS.md`, `THIRD-PARTY-NOTICES.md` | The repository's |
 | `SHA256SUMS.txt` | The SHA-256 of each file above |
 
 Each file in the zip is dated at the commit's time and the files are in name order, so the same commit and builds give the same zip.

@@ -11,16 +11,17 @@
 //! - A loot box item belongs to its box's pool: `+0x16` is the box type
 //!   (`Enum_BABC4175`, 0 the base box, 1-6 the events); any other item has
 //!   -1. It costs its rarity's base credit price, an icon nothing (icons
-//!   are not sold). Retail charged three times as much for some event items
-//!   (each event's newest), which the install doesn't mark: every item here
-//!   costs the base price.
+//!   are not sold); an event item of `event_priced` costs its event box's
+//!   price (three times as much: each event's newest items, `lucy_assets`
+//!   `economy.rs`).
 //! - An Overwatch League item (category `OWL`) costs league tokens by
 //!   rarity, a golden weapon the competitive point price; other items are
 //!   not sold (price 0).
 //!
 //! These rules give the 7,040 entries of the 1.68 retail capture, but for
-//! those event prices (160 items) and 64 Overwatch League skins retail did
-//! not sell.
+//! 64 Overwatch League skins retail did not sell, one Internal box
+//! legendary it priced at 200, and 56 Archives and Anniversary items it
+//! sold at the event price, which 1.74 marks as base-price items.
 //!
 //! Client research (1.74):
 //!
@@ -133,10 +134,14 @@ impl StoreEntry {
                         .iter()
                         .find(|(box_name, _)| *box_name == name)
                         .map_or(-1, |&(_, event)| event);
+                    let event_table = prices
+                        .event_credits
+                        .get(&event)
+                        .filter(|_| prices.event_priced.contains(&unlock.guid));
                     let price = if unlock.item_type == "Icon" {
                         0
                     } else {
-                        rarity(&prices.credits)
+                        rarity(event_table.unwrap_or(&prices.credits))
                     };
                     entry(NO_UNLOCK_LEVEL, price, event)
                 }
@@ -749,12 +754,15 @@ mod tests {
 
     #[test]
     fn store_entries_follow_the_catalogs_rules() {
+        const NEW_EVENT_ITEM: u64 = 0x0250_0000_0000_0002;
         let prices = ItemPrices {
             credits: [("Rare", 75), ("Legendary", 1000)]
                 .map(|(rarity, price)| (rarity.into(), price))
                 .into(),
             competitive_points: 3000,
             league_tokens: [("Epic".into(), 100)].into(),
+            event_credits: [(2, [("Legendary".into(), 3000)].into())].into(),
+            event_priced: [NEW_EVENT_ITEM].into(),
         };
         let item = |item_type: &str, rarity: &str, box_type: Option<&str>| Unlock {
             rarity: rarity.into(),
@@ -770,8 +778,9 @@ mod tests {
             entry(&unlock(1, "PortraitFrame", false, Some(50))),
             (50, 0, -1, false)
         );
-        // Every box sells at the base credit price, an event box too; an
-        // icon is not sold.
+        // Every box sells at the base credit price, an event box too but
+        // for its newest items (`event_priced`), at its own price; an icon
+        // is not sold.
         assert_eq!(
             entry(&item("Skin", "Legendary", Some("Base"))),
             (65_535, 1000, 0, false)
@@ -780,6 +789,11 @@ mod tests {
             entry(&item("Skin", "Legendary", Some("Halloween"))),
             (65_535, 1000, 2, false)
         );
+        let new_event_item = Unlock {
+            guid: NEW_EVENT_ITEM,
+            ..item("Skin", "Legendary", Some("Halloween"))
+        };
+        assert_eq!(entry(&new_event_item), (65_535, 3000, 2, false));
         assert_eq!(
             entry(&item("VictoryPose", "Rare", Some("Anniversary"))),
             (65_535, 75, 6, false)
