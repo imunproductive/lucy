@@ -28,7 +28,10 @@
 //! party work goes through [`Parties`] once the state lock is released, since
 //! the social state reads the queue fields back from here.
 
-mod custom;
+mod codes;
+pub(crate) mod custom;
+#[cfg(test)]
+mod custom_tests;
 mod game;
 pub(crate) mod parties;
 #[cfg(test)]
@@ -82,6 +85,12 @@ pub(crate) struct Matchmaker {
     data: PathBuf,
     /// The Workshop catalog, loaded the first time a Workshop is read.
     catalog: OnceLock<Arc<lucy_workshop::Catalog>>,
+    /// Settings codes and saved settings (`custom_games/` in the state
+    /// folder).
+    links: lucy_lobby::custom_game::links::LinkStore,
+    /// Folders of Workshop scripts the server answers settings codes from:
+    /// a file `<CODE>.txt` or `<CODE>_<anything>.txt` (`codes.rs`).
+    code_dirs: Vec<PathBuf>,
     state: Mutex<State>,
 }
 
@@ -113,8 +122,16 @@ struct State {
     clock_blocked: bool,
     /// The lobby's clock at the last sweep.
     last_sweep: Option<Duration>,
-    /// The custom game lobby of each host, by account.
-    custom: HashMap<u32, custom::CustomGame>,
+    /// The custom game lobbies, by lobby id (`custom.rs`).
+    custom: HashMap<[u64; 2], custom::CustomGame>,
+    /// The lobby each player is in.
+    custom_of: HashMap<u32, [u64; 2]>,
+    /// Each player's settings upload in progress (24008-24013).
+    uploads: HashMap<u32, lucy_lobby::custom_game::Upload>,
+    /// The lobby each player was last invited to, and where to.
+    invites: HashMap<u32, ([u64; 2], lucy_lobby::custom_game::lobby::Wish)>,
+    /// Each player's upload to the settings code service (40802-40807).
+    link_uploads: HashMap<u32, lucy_lobby::custom_game::Upload>,
     /// The Workshop script every player goes into from the menu
     /// (`--workshop`, the dashboard).
     workshop: Option<Arc<workshop::WorkshopScript>>,
@@ -168,6 +185,8 @@ struct Room {
     /// nobody joins it.
     ai: bool,
     seats: Vec<Seat>,
+    /// The custom game lobby whose match it is.
+    custom: Option<[u64; 2]>,
 }
 
 struct Seat {
@@ -220,6 +239,8 @@ struct Entry {
 /// Work done once the state lock is released, in order.
 enum Effect {
     Post(u32, LobbyMessage),
+    /// Messages that go together (a custom game's settings), as one post.
+    PostAll(u32, Vec<LobbyMessage>),
     Notify(Party, Option<QueueFields>),
     PassesChanged(Arc<Account>),
     GameLeft(u32, [u64; 2]),
@@ -272,6 +293,8 @@ impl Matchmaker {
             modes_path,
             data: data.to_owned(),
             catalog: OnceLock::new(),
+            links: lucy_lobby::custom_game::links::LinkStore::new(state),
+            code_dirs: vec![state.join(codes::CODE_DIR)],
             state: Mutex::new(State {
                 minimum_players,
                 test_ai,
@@ -279,6 +302,13 @@ impl Matchmaker {
                 ..State::default()
             }),
         })
+    }
+
+    /// Answer settings codes from the Workshop scripts in `dir` too
+    /// (`--workshop-codes`).
+    pub(crate) fn with_code_dir(mut self, dir: PathBuf) -> Self {
+        self.code_dirs.push(dir);
+        self
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -329,13 +359,18 @@ impl Matchmaker {
         );
     }
 
-    /// The session ended: its party leaves the queue, and a seat waiting for
-    /// it is freed (Python `session._cleanup`, `Matchmaker.cancel`).
+    /// The session ended: its party leaves the queue, a seat waiting for it
+    /// is freed (Python `session._cleanup`, `Matchmaker.cancel`), and it is
+    /// out of its custom game.
     pub(crate) fn logout(&self, lobby: &Lobby, account: &Arc<Account>) {
         self.with(lobby, |ctx| {
-            ctx.state.online.remove(&account.account_lo);
-            ctx.state.custom.remove(&account.account_lo);
-            ctx.state.workshop_due.remove(&account.account_lo);
+            let me = account.account_lo;
+            ctx.leave_custom(me, "logged out");
+            ctx.state.online.remove(&me);
+            ctx.state.uploads.remove(&me);
+            ctx.state.link_uploads.remove(&me);
+            ctx.state.invites.remove(&me);
+            ctx.state.workshop_due.remove(&me);
             let party = ctx
                 .state
                 .tickets
@@ -713,6 +748,11 @@ impl Matchmaker {
         lobby_id: [u64; 2],
         waiting_request: bool,
     ) -> io::Result<()> {
+        // A custom game's Leave Game, in its lobby (with +0x89 1,
+        // `Action_STU_3618B2A9`) or its match: out of the custom game.
+        if self.leave_custom_game(lobby, account, lobby_id) {
+            return Ok(());
+        }
         let party = lobby.party_of(account)?;
         let me = account.account_lo;
         let alone = self.with(lobby, |ctx| {
@@ -940,6 +980,10 @@ fn perform(lobby: &Lobby, effects: Vec<Effect>) {
                 lobby.hub.post(account_lo, message);
                 Ok(())
             }
+            Effect::PostAll(account_lo, messages) => {
+                lobby.hub.post_all(account_lo, messages);
+                Ok(())
+            }
             Effect::Notify(party, queue) => lobby.notify_party(&party, queue.as_ref()),
             Effect::PassesChanged(account) => account.save().and_then(|()| {
                 let counts = passes::counts(&account.profile())?;
@@ -1087,6 +1131,11 @@ struct Ctx<'a> {
 impl Ctx<'_> {
     fn post(&mut self, account_lo: u32, message: LobbyMessage) {
         self.effects.push(Effect::Post(account_lo, message));
+    }
+
+    /// Messages that go together, as one post to the account's mailbox.
+    fn post_all(&mut self, account_lo: u32, messages: Vec<LobbyMessage>) {
+        self.effects.push(Effect::PostAll(account_lo, messages));
     }
 
     /// To every member who is online, but `skip`.
@@ -1678,6 +1727,7 @@ impl Ctx<'_> {
             ranked,
             ai: ai.is_some(),
             seats: Vec::new(),
+            custom: None,
         });
         let room = self.state.rooms.len() - 1;
         self.seat(room, &entries, &handoffs, records);
@@ -1949,15 +1999,24 @@ impl Ctx<'_> {
         }
         let mut cards = Vec::new();
         for (room, account_lo, joined) in events {
-            let (match_id, card, ranked) = {
+            let (match_id, card, ranked, custom) = {
                 let room = &self.state.rooms[room];
-                (room.id, room.card, room.ranked)
+                (room.id, room.card, room.ranked, room.custom)
             };
             let online = self.state.online.contains_key(&account_lo);
             if joined {
-                if online {
-                    self.post(account_lo, lineup::lobby_state(match_id));
-                    self.state.match_lobbies.insert(account_lo, match_id);
+                // A custom match's game keeps its lobby's match lobby
+                // (type 1): a type 0 one would turn the custom screens off
+                // (`refs/reports/CustomGames.md` §11.2).
+                let state = match custom {
+                    Some(lobby) => self.custom_match_lobby(lobby),
+                    None => Some(lineup::lobby_state(match_id)),
+                };
+                if online && let Some(state) = state {
+                    self.post(account_lo, state);
+                    if custom.is_none() {
+                        self.state.match_lobbies.insert(account_lo, match_id);
+                    }
                     tracing::info!("[>>>] Match lobby of {match_id:X?} (53000)");
                 }
                 continue;
@@ -1972,6 +2031,9 @@ impl Ctx<'_> {
                     self.post(account_lo, lineup::no_roster());
                 }
                 self.effects.push(Effect::GameLeft(account_lo, match_id));
+                if let Some(lobby) = custom {
+                    self.back_to_custom_lobby(lobby, account_lo);
+                }
             }
             if card != 0 && !cards.contains(&card) {
                 cards.push(card);
@@ -1980,13 +2042,18 @@ impl Ctx<'_> {
         // A room nobody is in is over; a custom game's match ruleset goes
         // with it (`custom.rs`; a no-op for the others).
         let graphs = self.lobby.assets.graphs();
+        let mut over = Vec::new();
         self.state.rooms.retain(|room| {
             let on = room.seats.iter().any(|seat| !seat.gone);
             if !on {
                 graphs.remove_match_ruleset(room.map.ruleset);
+                over.extend(room.custom);
             }
             on
         });
+        for lobby in over {
+            self.custom_match_over(lobby);
+        }
         for card in cards {
             self.retry(Some(card));
         }

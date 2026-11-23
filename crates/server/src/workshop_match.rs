@@ -288,8 +288,17 @@ pub struct ScriptMatch {
     pub games: Vec<ScriptGame>,
     /// `Max Team 1 Players` and `Max Team 2 Players`.
     pub team_sizes: [Option<u8>; 2],
+    /// `Max Spectators`.
+    pub spectators: Option<u8>,
+    /// The heroes' General lines: every body's values (also in each
+    /// game's [`ScriptGame::values`]); a custom game's settings keep them
+    /// in team 5's `allHeroBodyVars`, not with the mode's.
+    pub hero_values: BTreeMap<u32, ModeValue>,
     /// The heroes' General `enabled heroes`; `None`: every hero.
     pub heroes: Option<Vec<u64>>,
+    /// Team 1's and Team 2's own `enabled heroes` (or every hero but their
+    /// `disabled heroes`), over General's for that team.
+    pub team_heroes: [Option<Vec<u64>>; 2],
     /// The values of the `heroes` blocks that only some bodies get (a
     /// hero's block, a team's block), each over the ones before: General's
     /// heroes, then each team's lines, then each team's heroes
@@ -410,6 +419,7 @@ impl ScriptMatch {
             }
             game.values
                 .extend(hero_values.iter().map(|(&key, &value)| (key, value)));
+            found.hero_values = hero_values.clone();
             for setting in block {
                 if let Setting::Block(list, maps) = setting {
                     let maps = found.maps(maps, catalog);
@@ -427,12 +437,35 @@ impl ScriptMatch {
         Ok(found)
     }
 
+    /// Each team's hero pool ([`GameMap::hero_pools`]): its own list, else
+    /// General's; empty: every hero.
+    ///
+    /// [`GameMap::hero_pools`]: lucy_content::maps::GameMap::hero_pools
+    pub fn hero_pools(&self) -> Vec<Vec<u64>> {
+        self.team_heroes
+            .iter()
+            .map(|team| {
+                team.as_ref()
+                    .or(self.heroes.as_ref())
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .collect()
+    }
+
     fn skip(&mut self, why: String) {
         self.skipped.push(why);
     }
 
     fn lobby(&mut self, block: &[Setting]) {
         for (name, text) in pairs(block) {
+            if name == "Max Spectators" {
+                match text.parse() {
+                    Ok(count) => self.spectators = Some(count),
+                    Err(_) => self.skip(format!("lobby: {name}: {text}: not a number")),
+                }
+                continue;
+            }
             let team = match name {
                 "Max Team 1 Players" => 0,
                 "Max Team 2 Players" => 1,
@@ -496,11 +529,7 @@ impl ScriptMatch {
                 };
                 match (pool, team) {
                     (Some(pool), None) => self.heroes = Some(pool),
-                    (Some(_), Some(_)) => {
-                        self.skip(format!(
-                            "heroes: {name}: {list}: a team's heroes not applied"
-                        ));
-                    }
+                    (Some(pool), Some(team)) => self.team_heroes[usize::from(team)] = Some(pool),
                     (None, _) => match catalog.hero(list) {
                         Some(hero) => lines.push(HeroLines {
                             block: format!("{name}: {list}"),
@@ -692,7 +721,8 @@ mod tests {
     /// Rising Uppercut's and Seismic Slam's the shared Abilities entries of
     /// buttons 78 and 79 (9536, 9538), the ultimate's bracketed name
     /// without its brackets; a team's lines are that team's. The General
-    /// lines stay every body's ruleset values.
+    /// lines stay every body's ruleset values. Team 2's own `disabled
+    /// heroes` give it every hero but those; Team 1 keeps General's list.
     #[test]
     #[ignore = "requires an Overwatch 1.74 install (just test-game <install>)"]
     fn hero_and_team_blocks_give_their_bodies_values() {
@@ -718,6 +748,11 @@ mod tests {
 				Ultimate Generation Meteor Strike: 10%
 				Wall Jump: On
 			}
+			enabled heroes
+			{
+				Doomfist
+				Lúcio
+			}
 		}
 		Team 2
 		{
@@ -726,6 +761,10 @@ mod tests {
 			Doomfist
 			{
 				Rocket Punch Cooldown Time: 0%
+			}
+			disabled heroes
+			{
+				Mercy
 			}
 		}
 	}
@@ -774,6 +813,17 @@ mod tests {
             ),
             "{:?}",
             script.skipped
+        );
+        let mercy = catalog.hero("Mercy").unwrap();
+        let lucio = catalog.hero("Lúcio").unwrap();
+        let every_but_mercy: Vec<u64> = catalog
+            .heroes()
+            .map(|(_, hero)| hero)
+            .filter(|&hero| hero != mercy)
+            .collect();
+        assert_eq!(
+            script.hero_pools(),
+            [vec![doomfist, lucio], every_but_mercy]
         );
     }
 

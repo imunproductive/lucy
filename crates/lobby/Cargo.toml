@@ -8,6 +8,7 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+base64.workspace = true
 crc32fast.workspace = true
 getrandom.workspace = true
 indexmap.workspace = true
@@ -16,6 +17,7 @@ lucy-content.workspace = true
 lucy-core.workspace = true
 lucy-wire.workspace = true
 prost.workspace = true
+ruzstd.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true

@@ -344,6 +344,7 @@ fn dispatch(peer: &mut Peer<'_, '_>, group: u32, message: u32, fields: Fields) {
         tracing::info!("[<<<] {group:08X}/{message} {shown}");
         return;
     };
+    tracing::debug!("[<<<] {group:08X}/{message}");
     if let Err(error) = handle(peer, fields) {
         tracing::error!("handler for {group:08X}/{message} failed: {error}");
     }

@@ -124,6 +124,10 @@ pub struct ServerArgs {
     /// describe.
     #[arg(long, value_name = "FILE")]
     pub workshop: Option<PathBuf>,
+    /// A folder of Workshop scripts named by their codes (`C32S2.txt`,
+    /// `C32S2_<name>.txt`): Import Code in a custom game loads them.
+    #[arg(long, value_name = "DIR")]
+    pub workshop_codes: Option<PathBuf>,
 }
 
 /// What `lucy` starts: the modes of `ow174/cli.py`, in its menu order.
@@ -247,6 +251,8 @@ pub struct Settings {
     pub dev_console: bool,
     /// The Workshop script players go into from the menu (`--workshop`).
     pub workshop: Option<PathBuf>,
+    /// Workshop scripts by code for Import Code (`--workshop-codes`).
+    pub workshop_codes: Option<PathBuf>,
     /// The players (lobby connections) served at once, and from one address
     /// (`--max-players`, `--max-players-per-address`).
     pub lobby_limits: PeerLimits,
@@ -301,6 +307,7 @@ impl Settings {
             template: args.save.clone(),
             dev_console: args.dev_console || file.dev_console.unwrap_or(false),
             workshop: args.workshop.clone(),
+            workshop_codes: args.workshop_codes.clone(),
             lobby_limits,
             game_args: Vec::new(),
         })

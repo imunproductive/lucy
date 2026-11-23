@@ -96,6 +96,9 @@ pub struct ServerConfig {
     /// A Workshop script every player goes into from the menu: the custom
     /// match its settings describe (`--workshop`).
     pub workshop: Option<PathBuf>,
+    /// A folder of Workshop scripts whose codes Import Code finds
+    /// (`--workshop-codes`), besides `workshop_codes/` in the state folder.
+    pub workshop_codes: Option<PathBuf>,
     /// The lobby connections served at once, and from one address
     /// (`--max-players`, `--max-players-per-address`).
     pub lobby_limits: PeerLimits,
@@ -122,6 +125,7 @@ impl ServerConfig {
             template: None,
             dev_console: false,
             workshop: None,
+            workshop_codes: None,
             lobby_limits: LOBBY_LIMITS,
         }
     }
@@ -202,7 +206,11 @@ impl Server {
         }
         // The gun models, beside the install's preload.
         let extra_preload = assets.graphs().weapon_cosmetics().into_iter().collect();
-        let matchmaker = Matchmaker::new(&data, &config.data, config.test_players, config.test_ai)?;
+        let mut matchmaker =
+            Matchmaker::new(&data, &config.data, config.test_players, config.test_ai)?;
+        if let Some(dir) = &config.workshop_codes {
+            matchmaker = matchmaker.with_code_dir(dir.clone());
+        }
         matchmaker.set_workshop(config.workshop.as_deref())?;
         // The Practice Range's scene is prepared up front for the first match
         // (`ow174/lobby/server.py` `start_game_server`); no match starts

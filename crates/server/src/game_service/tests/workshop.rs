@@ -47,7 +47,7 @@ fn dpk_archive_c32s2_hosted_match_shows_a_hud_text_on_the_mode_entity() {
     let mut map = maps
         .game_map(hanamura, game.mode, "Assault", false, &[12, 0])
         .expect("Hanamura in Assault");
-    map.hero_pool = script.heroes.clone().unwrap();
+    map.hero_pools = script.hero_pools();
     map.ruleset = RULESET;
     let assets = Arc::new(
         SceneAssets::load(&runtime)
@@ -1141,7 +1141,7 @@ fn survey_script(path: &std::path::Path) -> Result<String, String> {
         ));
     };
     let name = map.name.clone();
-    map.hero_pool = script.heroes.clone().unwrap_or_default();
+    map.hero_pools = script.hero_pools();
     map.ruleset = RULESET;
     let hero = script
         .heroes

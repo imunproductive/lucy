@@ -400,9 +400,12 @@ impl Schemas {
 }
 
 fn message_offset_position(crc: u32) -> usize {
-    // These protocol registrations carry a zero u32 before the message offset.
+    // These protocol registrations carry a zero u32 before the message
+    // offset: the client's protocol table marks them with flag 2 (entry
+    // `+0xC`; 0x262EF305, the Game Browser's answers, at 0x7FF78B50F19C),
+    // and its reader takes the u32 first (0x7FF789471C50, header flag 8).
     match crc {
-        0xBCD57A46 | 0xBDDBF58A => 5,
+        0xBCD57A46 | 0xBDDBF58A | 0x262E_F305 => 5,
         _ => 1,
     }
 }
@@ -683,6 +686,7 @@ mod tests {
         for (crc, id, expected) in [
             (0xbddbf58a, 52301, &[70, 0, 0, 0, 0, 1][..]),
             (0xbcd57a46, 55500, &[70, 0, 0, 0, 0, 0][..]),
+            (0x262ef305, 40603, &[70, 0, 0, 0, 0, 3][..]),
             (0x2411de56, 20703, &[70, 3][..]),
         ] {
             let mut frame = schemas.header(crc, 70, id).unwrap();

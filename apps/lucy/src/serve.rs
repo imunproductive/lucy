@@ -71,6 +71,7 @@ pub fn start(settings: &Settings, hosting: Hosting) -> io::Result<Server> {
     config.template = settings.template.clone();
     config.dev_console = settings.dev_console;
     config.workshop = settings.workshop.clone();
+    config.workshop_codes = settings.workshop_codes.clone();
     config.lobby_limits = settings.lobby_limits;
     Server::start(config)
 }
