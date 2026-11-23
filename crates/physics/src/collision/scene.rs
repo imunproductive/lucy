@@ -265,6 +265,45 @@ fn append_placed(
     Ok(())
 }
 
+/// One shape's triangles as the movement probe's view keeps a prop's
+/// ([`CollisionScene::movement_probe`]: round shapes as prisms), scaled by
+/// `scale`, in the shape's own frame: the ground the mover's rays meet on
+/// a shape the match places itself (`ContactWorld::ground`). Placed by
+/// [`placed_triangles`], they equal a movement cache prop's triangles of
+/// the same placement, value for value.
+pub fn probe_triangles(shape: &Shape, scale: [f32; 3]) -> Result<Vec<SceneTriangle>, SceneError> {
+    let scaling = Transform {
+        translation: [0.0; 3],
+        scale: scale.map(f64::from),
+        rotation: [0.0, 0.0, 0.0, 1.0],
+    };
+    let mut triangles = model_triangles(std::slice::from_ref(shape), true, false)?;
+    for triangle in &mut triangles {
+        triangle.vertices = triangle.vertices.map(|point| scaling.place(point));
+    }
+    Ok(triangles)
+}
+
+/// [`probe_triangles`] turned by `rotation` and moved by `translation`.
+pub fn placed_triangles(
+    local: &[SceneTriangle],
+    translation: [f32; 3],
+    rotation: [f32; 4],
+) -> Vec<SceneTriangle> {
+    let transform = Transform {
+        translation: translation.map(f64::from),
+        scale: [1.0; 3],
+        rotation: rotation.map(f64::from),
+    };
+    local
+        .iter()
+        .map(|triangle| SceneTriangle {
+            vertices: triangle.vertices.map(|point| transform.place(point)),
+            ..*triangle
+        })
+        .collect()
+}
+
 fn model_triangles(
     model: &[Shape],
     surfaces: bool,

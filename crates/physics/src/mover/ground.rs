@@ -132,7 +132,7 @@ impl GroundProbe {
                 .min(top_speed(settings, pose.crouched));
             reach = settings.step_down.max(self.slope_tan * dt * speed * 1.1);
         }
-        let hit = rays.ground(x, z, top, y - reach, category);
+        let hit = ground_ray(rays, world, x, z, top, y - reach, category);
         let mut result = ProbeResult {
             ground: None,
             non_ground_under: hit.is_some_and(|hit| hit.surface & NOT_GROUND != 0),
@@ -175,7 +175,7 @@ impl GroundProbe {
             }
             StaticGeometry::Hull(_) => {
                 let Some((ray_point, ray_normal, ray_surface)) =
-                    self.rays(rays, start, point, cast.hit.normal, category)
+                    self.rays(rays, world, start, point, cast.hit.normal, category)
                 else {
                     return Ok(result);
                 };
@@ -255,6 +255,7 @@ impl GroundProbe {
     fn rays(
         &self,
         rays: &TriangleIndex,
+        world: &ContactWorld,
         start: Vec3,
         point: Vec3,
         normal: Vec3,
@@ -271,7 +272,9 @@ impl GroundProbe {
         for _ in 0..5 {
             let x = hx + (dx * RAY_SPREAD + nx);
             let z = hz + (dz * RAY_SPREAD + nz);
-            if let Some(hit) = rays.ground(
+            if let Some(hit) = ground_ray(
+                rays,
+                world,
                 f64::from(x),
                 f64::from(z),
                 f64::from(start[1]),
@@ -298,6 +301,30 @@ pub fn pogo(settings: &MoverSettings, crouched: bool) -> f64 {
         settings.crouch_pogo
     } else {
         settings.stand_pogo
+    }
+}
+
+/// The highest ground under `(x, z)` between `bottom` and `top`: the map's
+/// triangles (the movement cache's index, its props included) and the
+/// standing server placeables' models (`ContactWorld::ground`), which the
+/// client's ray meets alike (its physics world holds both). On the
+/// Practice Range's Training Partner console the centre ray met nothing
+/// within reach, so the disc's sweep caught the console's upper block,
+/// half a metre above the face the client's ray stood him on (refs
+/// `MapEntities.md` "RangeConsole").
+fn ground_ray(
+    rays: &TriangleIndex,
+    world: &ContactWorld,
+    x: f64,
+    z: f64,
+    top: f64,
+    bottom: f64,
+    category: u16,
+) -> Option<GroundHit> {
+    let map = rays.ground(x, z, top, bottom, category);
+    match world.ground(x, z, top, bottom, category) {
+        Some((placed, _)) if map.is_none_or(|map| placed.y > map.y) => Some(placed),
+        _ => map,
     }
 }
 
