@@ -1041,6 +1041,32 @@ pub fn frame(
     unreliable: &[Vec<u8>],
     entities: &[&EntityUpdate],
 ) -> Result<Vec<u8>, WorldError> {
+    frame_with(
+        tick,
+        ack,
+        clock,
+        reliable,
+        unreliable,
+        entities,
+        &mut RecordBits::default(),
+    )
+}
+
+/// The records [`select_frame`]'s attempts share: each record that reads
+/// nothing of where it stands in the frame (no create or update) is
+/// written once, then copied into each attempt.
+#[derive(Default)]
+struct RecordBits(Vec<(*const EntityUpdate, BitWriter)>);
+
+fn frame_with(
+    tick: u32,
+    ack: u32,
+    clock: u8,
+    reliable: &[(u32, Vec<u8>)],
+    unreliable: &[Vec<u8>],
+    entities: &[&EntityUpdate],
+    records: &mut RecordBits,
+) -> Result<Vec<u8>, WorldError> {
     if entities.len() > MAX_ENTITY_RECORDS {
         return Err(WorldError::TooManyEntities);
     }
@@ -1053,8 +1079,23 @@ pub fn frame(
     out.bit(true); // Keep channel 4.
     out.bit(false); // Empty channel 5.
     out.bits(entities.len() as u64, 7)?;
-    for entity in entities {
-        write_entity(&mut out, entity, tick)?;
+    for &entity in entities {
+        // A create's or update's record is laid out from its place in the
+        // frame (`origin`).
+        if !matches!(entity.operation, None | Some(Operation::Destroy)) {
+            write_entity(&mut out, entity, tick)?;
+            continue;
+        }
+        let key = std::ptr::from_ref(entity);
+        match records.0.iter().find(|(kept, _)| std::ptr::eq(*kept, key)) {
+            Some((_, bits)) => out.append(bits),
+            None => {
+                let mut bits = BitWriter::new();
+                write_entity(&mut bits, entity, tick)?;
+                out.append(&bits);
+                records.0.push((key, bits));
+            }
+        }
     }
     Ok(out.into_bytes())
 }
@@ -1116,15 +1157,18 @@ pub fn select_frame<'a, Queued: Borrow<EntityUpdate>>(
             .take(MAX_ENTITY_RECORDS)
             .collect()
     };
-    let encode =
+    // Each attempt below writes the frame again: its records once.
+    let mut written = RecordBits::default();
+    let mut encode =
         |reliable: &[(u32, Vec<u8>)], unreliable: &[Vec<u8>], records: &[&EntityUpdate]| {
-            frame(
+            frame_with(
                 tick,
                 ack_for_records(records),
                 clock,
                 reliable,
                 unreliable,
                 records,
+                &mut written,
             )
         };
     let mut payload = encode(reliable, unreliable, &entities)?;

@@ -64,7 +64,7 @@ use lucy_script::{
         PVP_CONTROLLER, PlayableHero,
     },
     graph::{Graph, GraphStore},
-    snapshot::{ProjectedSnapshot, SnapshotEncoder, SnapshotError, View},
+    snapshot::{ProjectedSnapshot, ProjectionCache, SnapshotEncoder, SnapshotError, View},
     timeline::FRAME_MS,
     vm::{InitFault, Unknowns},
     wire::{Instance, Layout, Value, Variables, WireError, remote_full},
@@ -191,7 +191,7 @@ impl Controller {
         command_frame: u32,
         input: ControllerFrame,
     ) -> Result<BitWriter, SnapshotError> {
-        let projected = self.controller_projection(script, input)?;
+        let projected = self.controller_projection(script, input, &mut None)?;
         self.encode_controller(script, &projected, command_frame)
     }
 
@@ -210,16 +210,23 @@ impl Controller {
     }
 
     /// What an owner frame of the controller carries: its script's
-    /// snapshot as the owner sees it, with `input` on top.
+    /// snapshot as the owner sees it, with `input` on top. `kept` keeps
+    /// the script's projection for the next call, which shares what didn't
+    /// change ([`SnapshotEncoder::project_cached`]): the server compares
+    /// the controller's frame with the last one sent each time its script
+    /// changed, every tick in a Workshop match.
     pub fn controller_projection(
         &self,
         script: &ControllerScript,
         input: ControllerFrame,
+        kept: &mut Option<ProjectionCache>,
     ) -> Result<ProjectedSnapshot, SnapshotError> {
         let snapshot = script.snapshot().ok_or(SnapshotError::DifferentStream)?;
         let encoder =
             SnapshotEncoder::new(script.graphs(), &self.codecs).with_unknowns(self.unknowns);
-        let mut projected = encoder.project(snapshot, View::Owner)?;
+        let mut projected = encoder
+            .project_cached(snapshot, View::Owner, None, kept)?
+            .clone();
         let open = input.keep_open || script.hero_select_state().is_some_and(|state| state.open);
         projected.set_entity_variable(OPEN_SELECT, Some(Value::Bool(open)));
         projected.set_entity_variable(SELECT_SHOWN, Some(Value::Bool(open)));

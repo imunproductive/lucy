@@ -15,7 +15,7 @@ use lucy_sim::{
     match_flow::MatchFlow,
     mode_script::ModeRunner,
     projectiles::FiredProjectile,
-    replication::{WorldDelivery, blockers},
+    replication::{MAX_PENDING_INPUT, WorldDelivery, blockers},
     scene_assets::{FellOut, PreparedScene},
 };
 use lucy_wire::combat_messages::CombatNotice;
@@ -178,6 +178,19 @@ impl RoomState {
             self.resolve_player_hits(tick, now);
         }
         self.input_waits()
+    }
+
+    /// [`Self::advance_input`] until the released input is done
+    /// (`ready`: some waits). The released commands are at most a full
+    /// queue each (`MAX_PENDING_INPUT`), so the passes are bounded too.
+    pub(super) fn advance_released_input(&mut self, now: Duration, mut ready: bool) {
+        let passes = self.peers.len() * MAX_PENDING_INPUT / INPUT_PER_TURN + 1;
+        for _ in 0..passes {
+            if !ready {
+                break;
+            }
+            ready = self.advance_input(now);
+        }
     }
 
     /// Input in hand that [`RoomState::advance_input`] runs: the next pass

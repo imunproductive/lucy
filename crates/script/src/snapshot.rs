@@ -14,7 +14,7 @@
 
 use std::{
     borrow::Cow,
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     error::Error,
     fmt,
     sync::{Arc, Mutex, PoisonError, Weak},
@@ -58,6 +58,8 @@ pub struct ProjectedSnapshot {
     /// The newest action this projection has passed: a full frame's
     /// baseline takes the newest one there is, a delta the one it carried.
     action_serial: u32,
+    /// The observer deltas made to this projection ([`SharedDeltas`]).
+    shared: SharedDeltas,
 }
 
 /// A projection and what it was made from
@@ -251,6 +253,23 @@ impl ProjectedSnapshot {
 
     pub fn has_instance(&self, id: u16) -> bool {
         self.instances.contains_key(&id)
+    }
+
+    /// Whether `other` is made of the same shared parts (its entity
+    /// variables and instances, by address) and the same actions: then
+    /// it holds the same values while both are kept ([`SharedDeltas`]).
+    fn same_parts(&self, other: &Self) -> bool {
+        self.entity == other.entity
+            && self.view == other.view
+            && self.action_serial == other.action_serial
+            && Arc::ptr_eq(&self.variables, &other.variables)
+            && self.actions == other.actions
+            && self.instances.len() == other.instances.len()
+            && self.instances.iter().zip(&other.instances).all(
+                |((id, part), (other_id, other_part))| {
+                    id == other_id && Arc::ptr_eq(part, other_part)
+                },
+            )
     }
 }
 
@@ -554,6 +573,127 @@ impl EntityVariables {
 struct InstanceDifferences {
     variables: BTreeSet<u32>,
     states: BTreeSet<u16>,
+}
+
+/// The observer deltas made to a projection, each with what it was made
+/// from: the encoder's setup, the stream's base and its queued chunks'
+/// snapshots. An observer delta with no wheel action in it depends on
+/// nothing else (not on the chunks' numbers or keys), so every client
+/// whose stream holds the same snapshots gets the same bytes, made once:
+/// the mode entity's frame goes to every client of a match each tick,
+/// another player's body to each client that sees it, and each client's
+/// delta of a Workshop match's mode entity (hundreds of action instances)
+/// was most of a 12-player C32S2 tick. Snapshots are told apart by their
+/// shared parts ([`ProjectedSnapshot::same_parts`]); an entry holds its
+/// snapshots, so no part it lists can change or be freed while listed (an
+/// edit of a shared part copies it, [`edit_instance`]). It takes no part
+/// in comparisons, and a clone starts empty.
+#[derive(Debug, Default)]
+struct SharedDeltas(Mutex<VecDeque<SharedDelta>>);
+
+/// The entries a projection keeps: about one for each distinct stream
+/// (clients whose acknowledgements keep the same pace share one).
+const SHARED_DELTAS: usize = 16;
+
+#[derive(Debug)]
+struct SharedDelta {
+    /// The encoder's graphs and codecs, by address (a match keeps its own
+    /// for as long as its projections).
+    graphs: usize,
+    codecs: usize,
+    unknowns: Unknowns,
+    hidden: Vec<u16>,
+    presenters: bool,
+    frame_ms: u32,
+    current: ProjectedSnapshot,
+    base: ProjectedSnapshot,
+    pending: Vec<ProjectedSnapshot>,
+    /// The frame and its keys; none: nothing to send.
+    delta: Option<(BitWriter, BTreeSet<ChangeKey>)>,
+}
+
+impl SharedDelta {
+    fn made_by(&self, encoder: &SnapshotEncoder<'_>, frame_ms: u32) -> bool {
+        self.graphs == std::ptr::from_ref(encoder.graphs).addr()
+            && self.codecs == std::ptr::from_ref(encoder.codecs).addr()
+            && self.unknowns == encoder.unknowns
+            && self.hidden == encoder.hidden
+            && self.presenters == encoder.presenters
+            && self.frame_ms == frame_ms
+    }
+}
+
+impl Clone for SharedDeltas {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl PartialEq for SharedDeltas {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl SharedDeltas {
+    /// The delta made for a stream with the same snapshots, if one was.
+    fn find(
+        &self,
+        encoder: &SnapshotEncoder<'_>,
+        frame_ms: u32,
+        current: &ProjectedSnapshot,
+        stream: &BodyStream<ProjectedSnapshot>,
+    ) -> Option<Option<(BitWriter, BTreeSet<ChangeKey>)>> {
+        let (_, base) = stream.base()?;
+        let entries = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        entries
+            .iter()
+            .find(|entry| {
+                entry.made_by(encoder, frame_ms)
+                    && entry.base.same_parts(base)
+                    && entry.pending.len() == stream.pending().count()
+                    && entry
+                        .pending
+                        .iter()
+                        .zip(stream.pending())
+                        .all(|(kept, (_, pending, _))| kept.same_parts(pending))
+                    && entry.current.same_parts(current)
+            })
+            .map(|entry| entry.delta.clone())
+    }
+
+    fn insert(
+        &self,
+        encoder: &SnapshotEncoder<'_>,
+        frame_ms: u32,
+        current: &ProjectedSnapshot,
+        stream: &BodyStream<ProjectedSnapshot>,
+        delta: Option<(BitWriter, BTreeSet<ChangeKey>)>,
+    ) {
+        let Some((_, base)) = stream.base() else {
+            return;
+        };
+        let entry = SharedDelta {
+            graphs: std::ptr::from_ref(encoder.graphs).addr(),
+            codecs: std::ptr::from_ref(encoder.codecs).addr(),
+            unknowns: encoder.unknowns,
+            hidden: encoder.hidden.to_vec(),
+            presenters: encoder.presenters,
+            frame_ms,
+            current: current.clone(),
+            base: base.clone(),
+            pending: stream
+                .pending()
+                .map(|(_, pending, _)| pending.clone())
+                .collect(),
+            delta,
+        };
+        let mut entries = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if entries.len() == SHARED_DELTAS {
+            entries.pop_front();
+        }
+        entries.push_back(entry);
+    }
 }
 
 /// `instance` to edit, alone (a clone if shared), with no comparisons
@@ -1037,6 +1177,7 @@ impl<'a> SnapshotEncoder<'a> {
                 .frame_actions
                 .last()
                 .map_or(0, |action| action.serial),
+            shared: SharedDeltas::default(),
         })
     }
 
@@ -1414,6 +1555,27 @@ impl<'a> SnapshotEncoder<'a> {
         {
             return Ok(None);
         }
+        // An observer delta that carries no wheel action is the same for
+        // every stream with the same snapshots ([`SharedDeltas`]). Action
+        // keys sort last.
+        let mut shared = view == View::Observer
+            && !snapshot
+                .actions
+                .iter()
+                .any(|action| action.serial > base.action_serial)
+            && stream.pending().all(|(_, _, keys)| {
+                !keys
+                    .last()
+                    .is_some_and(|key| matches!(key, ChangeKey::Action { .. }))
+            });
+        if shared && let Some(made) = snapshot.shared.find(self, frame_ms, snapshot, stream) {
+            let Some((frame, keys)) = made else {
+                return Ok(None);
+            };
+            let mut delivered = snapshot.clone();
+            delivered.action_serial = base.action_serial;
+            return Ok(Some(stream.delta(&frame, delivered, keys, kind)?));
+        }
         let known: BTreeSet<_> = if view == View::Observer {
             base.instances
                 .keys()
@@ -1428,7 +1590,12 @@ impl<'a> SnapshotEncoder<'a> {
             BTreeSet::new()
         };
         let mut touched = match view {
-            View::Observer => self.observer_touched(stream, base, &known),
+            View::Observer => {
+                let (touched, own_keys) = self.observer_touched(stream, base, &known);
+                // A chunk's own keys make the delta that stream's alone.
+                shared &= !own_keys;
+                touched
+            }
             View::Owner => stream.touched(),
         };
         // An idle volley's ammunition goes in every owner chunk, but makes
@@ -1461,11 +1628,25 @@ impl<'a> SnapshotEncoder<'a> {
             });
         }
         if view == View::Observer && delta.keys.is_empty() {
+            if shared {
+                snapshot
+                    .shared
+                    .insert(self, frame_ms, snapshot, stream, None);
+            }
             return Ok(None);
         }
         let mut delivered = snapshot.clone();
         delivered.action_serial = action.map_or(base.action_serial, |(_, action)| action.serial);
         let frame = self.delta_frame(snapshot, &delta, kind, frame_ms, action)?;
+        if shared {
+            snapshot.shared.insert(
+                self,
+                frame_ms,
+                snapshot,
+                stream,
+                Some((frame.clone(), delta.keys.clone())),
+            );
+        }
         Ok(Some(stream.delta(&frame, delivered, delta.keys, kind)?))
     }
 
@@ -1479,29 +1660,32 @@ impl<'a> SnapshotEncoder<'a> {
     /// tick (the run timer), so its deltas grew to the whole start-up's
     /// changes, 24 KB in parts, and the HUD reached the client every 30
     /// ticks or later. Actions keep the stamp of the chunk that first
-    /// carried them.
+    /// carried them. Also whether a chunk's own keys went in.
     fn observer_touched(
         &self,
         stream: &BodyStream<ProjectedSnapshot>,
         base: &ProjectedSnapshot,
         known: &BTreeSet<u16>,
-    ) -> BTreeSet<ChangeKey> {
-        let none = BTreeSet::new();
+    ) -> (BTreeSet<ChangeKey>, bool) {
         let mut touched = BTreeSet::new();
+        let mut own_keys = false;
         for (_, pending, keys) in stream.pending() {
             touched.extend(
                 keys.iter()
                     .filter(|key| matches!(key, ChangeKey::Action { .. }))
                     .copied(),
             );
-            match self.differences(base, pending, &none, known) {
-                Ok(delta) => touched.extend(delta.keys),
+            match self.difference_keys(base, pending, known) {
+                Ok(keys) => touched.extend(keys),
                 // An instance id the base had for another graph: as before,
                 // everything the chunk carried.
-                Err(_) => touched.extend(keys.iter().copied()),
+                Err(_) => {
+                    touched.extend(keys.iter().copied());
+                    own_keys = true;
+                }
             }
         }
-        touched
+        (touched, own_keys)
     }
 
     /// Whether the owner's projection differs from what his client holds
@@ -1523,8 +1707,8 @@ impl<'a> SnapshotEncoder<'a> {
         if action.is_some_and(|action| action.serial > expected.action_serial) {
             return Ok(true);
         }
-        let delta = self.differences(expected, current, &BTreeSet::new(), &BTreeSet::new())?;
-        Ok(delta.keys.iter().any(|key| match *key {
+        let keys = self.difference_keys(expected, current, &BTreeSet::new())?;
+        Ok(keys.iter().any(|key| match *key {
             ChangeKey::State(id, raw) => !current
                 .state(id, raw)
                 .zip(expected.state(id, raw))
@@ -1573,12 +1757,38 @@ impl<'a> SnapshotEncoder<'a> {
         Ok(keys)
     }
 
+    /// The delta from `base` to `current`.
     fn differences<'s>(
         &self,
         base: &ProjectedSnapshot,
         current: &'s ProjectedSnapshot,
         touched: &BTreeSet<ChangeKey>,
         known: &BTreeSet<u16>,
+    ) -> Result<SnapshotDelta<'s>, SnapshotError> {
+        self.delta_from(base, current, touched, known, true)
+    }
+
+    /// The keys of [`Self::differences`], without the values they list:
+    /// what a queued chunk or the owner's expected frame touched.
+    fn difference_keys(
+        &self,
+        base: &ProjectedSnapshot,
+        current: &ProjectedSnapshot,
+        known: &BTreeSet<u16>,
+    ) -> Result<BTreeSet<ChangeKey>, SnapshotError> {
+        Ok(self
+            .delta_from(base, current, &BTreeSet::new(), known, false)?
+            .keys)
+    }
+
+    /// [`Self::differences`]; `values`: with the values it lists.
+    fn delta_from<'s>(
+        &self,
+        base: &ProjectedSnapshot,
+        current: &'s ProjectedSnapshot,
+        touched: &BTreeSet<ChangeKey>,
+        known: &BTreeSet<u16>,
+        values: bool,
     ) -> Result<SnapshotDelta<'s>, SnapshotError> {
         let mut delta = SnapshotDelta::default();
         // The entity's variables that differ from the base's, found once
@@ -1594,6 +1804,7 @@ impl<'a> SnapshotEncoder<'a> {
                 .collect(),
             &current.variables.variables,
             &mut delta.keys,
+            values,
         );
         for (&id, next) in &current.instances {
             let before = base.instances.get(&id);
@@ -1610,10 +1821,24 @@ impl<'a> SnapshotEncoder<'a> {
                 delta.keys.insert(ChangeKey::Instance(id));
             }
             // A baseline instance the projection shares lists only what
-            // was touched: each entry compares equal to itself. What it
-            // differs in from another base is found once for every client
-            // with that base ([`Compared`]).
+            // was touched: each entry compares equal to itself; untouched,
+            // nothing (most of a Workshop mode entity's hundreds of action
+            // instances, in each client's deltas). What it differs in from
+            // another base is found once for every client with that base
+            // ([`Compared`]).
             let shared = before.is_some_and(|before| Arc::ptr_eq(before, next) && next.self_same());
+            if shared
+                && touched
+                    .range(ChangeKey::Variable(id, 0)..=ChangeKey::Variable(id, u32::MAX))
+                    .next()
+                    .is_none()
+                && touched
+                    .range(ChangeKey::State(id, 0)..=ChangeKey::State(id, u16::MAX))
+                    .next()
+                    .is_none()
+            {
+                continue;
+            }
             let differing = before.filter(|_| !shared).map(|before| {
                 next.compared.with(before, || InstanceDifferences {
                     variables: next.variables.differing_from(&before.variables),
@@ -1638,11 +1863,16 @@ impl<'a> SnapshotEncoder<'a> {
                         .collect(),
                     &next.variables,
                     &mut delta.keys,
+                    values,
                 ),
-                None if shared => {
-                    listed_variables(id, touched_ids.collect(), &next.variables, &mut delta.keys)
-                }
-                None => new_variables(id, &next.variables, touched, &mut delta.keys),
+                None if shared => listed_variables(
+                    id,
+                    touched_ids.collect(),
+                    &next.variables,
+                    &mut delta.keys,
+                    values,
+                ),
+                None => new_variables(id, &next.variables, touched, &mut delta.keys, values),
             };
             let graph = self.graph(id, next.graph)?;
             let touched_states = touched
@@ -2121,13 +2351,14 @@ fn new_variables(
     current: &ProjectedVariables,
     touched: &BTreeSet<ChangeKey>,
     changes: &mut BTreeSet<ChangeKey>,
+    values: bool,
 ) -> ProjectedVariables {
     let listed = current
         .differing_from(&ProjectedVariables::default())
         .into_iter()
         .chain(touched_variables(instance, touched))
         .collect();
-    listed_variables(instance, listed, current, changes)
+    listed_variables(instance, listed, current, changes, values)
 }
 
 /// The ids of `instance`'s variables in `touched`.
@@ -2141,21 +2372,26 @@ fn touched_variables(instance: u16, touched: &BTreeSet<ChangeKey>) -> impl Itera
 }
 
 /// The variables `ids` of `current` (unset ones as null), in id order, for
-/// a delta: each a change of `instance`.
+/// a delta: each a change of `instance`. Without `values`, only the
+/// changes.
 fn listed_variables(
     instance: u16,
     ids: BTreeSet<u32>,
     current: &ProjectedVariables,
     changes: &mut BTreeSet<ChangeKey>,
+    values: bool,
 ) -> ProjectedVariables {
     let mut result = ProjectedVariables::default();
     for id in ids {
+        changes.insert(ChangeKey::Variable(instance, id));
+        if !values {
+            continue;
+        }
         let now = current.values.get(&id).unwrap_or(&Value::Null);
         result.values.insert(id, now.clone());
         if let Some(bindings) = current.bindings.get(&id) {
             result.bindings.insert(id, bindings.clone());
         }
-        changes.insert(ChangeKey::Variable(instance, id));
     }
     result
 }

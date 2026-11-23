@@ -530,14 +530,14 @@ impl Host<'_, '_> {
                 Arc::clone(&running.call.source),
                 running.call.context.clone(),
             );
-            let params = engine.evaluate_params(&*self, &source, &context);
+            let params = engine.reevaluate_params(&*self, &source, &context, &running.reevaluated);
             let kinds = param_kinds(self.catalog, running.call.action);
             let running = self.actions.get_mut(&handle).expect("due action");
             let mut changed = Vec::new();
             for (index, param) in params.iter().enumerate() {
-                if !running.reevaluated.get(index).copied().unwrap_or(false) {
+                let Some(param) = param else {
                     continue;
-                }
+                };
                 let value = parameter(self.catalog, kinds.get(index).copied(), param);
                 if let Some(sent) = running.sent.get_mut(index)
                     && !sent.identical(&value)

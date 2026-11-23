@@ -100,7 +100,7 @@ pub(crate) const BODY_REUSE_DELAY: Duration = Duration::from_secs(30);
 const MAX_INPUT_LEAD: u32 = 96;
 // Several retransmit windows fit before a peer exhausts this queue. One final
 // leave marker may follow the accepted prefix when the cap is reached.
-const MAX_PENDING_INPUT: usize = 256;
+pub const MAX_PENDING_INPUT: usize = 256;
 // BodyScript.command retains this many intermediate VM frames before its
 // requested frame. The first held frame runs even across a larger gap.
 const MAX_SCRIPT_TAIL: u32 = 256;
@@ -1903,6 +1903,9 @@ pub struct WorldDelivery {
     /// The controller snapshot's revision [`Self::controller_changed`] last
     /// projected.
     controller_seen: Option<Revision>,
+    /// The controller script's last projection
+    /// ([`crate::controller::Controller::controller_projection`]).
+    controller_kept: Option<ProjectionCache>,
     /// Hero select stays shown open after a pick while the heroes assemble
     /// (match.py `game_message`), though `288B` closes it (module notes of
     /// `crate::controller`): until the client closes it or the countdown
@@ -2180,6 +2183,7 @@ impl WorldDelivery {
             select_shown: None,
             controller_sent: None,
             controller_seen: None,
+            controller_kept: None,
             keep_open: false,
             mode_held: Vec::new(),
             body: None,
@@ -2375,6 +2379,7 @@ impl WorldDelivery {
         self.select_shown = None;
         self.controller_sent = None;
         self.controller_seen = None;
+        self.controller_kept = None;
         self.keep_open = false;
         self.multikill_due = false;
     }
@@ -2623,7 +2628,7 @@ impl WorldDelivery {
         };
         scene
             .controller()
-            .controller_projection(script, input)
+            .controller_projection(script, input, &mut self.controller_kept)
             .is_ok_and(|projected| projected != *sent)
     }
 
@@ -6731,8 +6736,9 @@ impl WorldDelivery {
         };
         self.select_shown = Some(shown);
         let controller = scene.controller();
+        let kept = &mut self.controller_kept;
         let projections = controller
-            .controller_projection(script, input)
+            .controller_projection(script, input, kept)
             .and_then(|plain| {
                 let noticed = notice
                     .map(|notice| {
@@ -6742,6 +6748,7 @@ impl WorldDelivery {
                                 notice: Some(notice),
                                 ..input
                             },
+                            kept,
                         )
                     })
                     .transpose()?;
