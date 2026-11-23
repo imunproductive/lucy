@@ -418,6 +418,8 @@ struct Watch {
     stream: BodyStream<ProjectedSnapshot>,
     sent: Option<Arc<ObserverActivity>>,
     next_lazy: u32,
+    /// The newest chunk not sent yet: a newer delta replaces it.
+    unsent: Option<u32>,
 }
 
 #[derive(Default)]
@@ -493,8 +495,12 @@ impl Others {
                 .is_some_and(|shown| shown.serial == serial && shown.possession == Some(held)),
             OtherDelivery::Body(id) => seen(id, Lifetime::Live),
             OtherDelivery::BodyDestroy(id) => seen(id, Lifetime::Retiring),
-            OtherDelivery::Script { body, .. } => {
-                seen(body, Lifetime::Live) && self.seen[&body.entity].watch.is_some()
+            OtherDelivery::Script { body, last } => {
+                seen(body, Lifetime::Live)
+                    && self.seen[&body.entity]
+                        .watch
+                        .as_ref()
+                        .is_some_and(|watch| watch.stream.queued(last))
             }
             OtherDelivery::Health { body, revision } => {
                 seen(body, Lifetime::Live) && self.seen[&body.entity].health == revision
@@ -548,6 +554,9 @@ impl Others {
             OtherDelivery::Script { body, last } => {
                 if let Some(watch) = self.watch_mut(body) {
                     watch.stream.sent(last);
+                    if watch.unsent == Some(last) {
+                        watch.unsent = None;
+                    }
                 }
             }
             _ => {}
@@ -1061,6 +1070,15 @@ impl Others {
         };
         match chunk {
             Ok(Some(chunk)) => {
+                // Each delta goes from what this client acknowledged, so a
+                // newer one covers one that hasn't gone yet, which goes no
+                // more (as the mode entity's, `mode_view.rs`). A client
+                // whose datagrams can't carry every body's delta each tick
+                // (a match behind its ticks) kept them all queued, and each
+                // tick's delta compared against every one.
+                if let Some(old) = watch.unsent.replace(chunk.last) {
+                    watch.stream.discard_unsent(old);
+                }
                 watch.sent = script.activity.clone();
                 watch.next_lazy = tick.saturating_add(LAZY_TICKS);
                 output.records.push((
@@ -1290,6 +1308,7 @@ impl Others {
                     stream: BodyStream::new(body.id.entity),
                     sent: None,
                     next_lazy: 0,
+                    unsent: None,
                 }),
             },
         );
