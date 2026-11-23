@@ -12,8 +12,10 @@ use lucy_lobby::account_name;
 use crate::settings::Mode;
 
 /// The server joined last time (`SERVER_ADDRESS_FILE` in `ow174/paths.py`).
+#[cfg(any(windows, test))]
 pub const SERVER_ADDRESS_FILE: &str = "server_address.txt";
 /// The name used to join last time.
+#[cfg(any(windows, test))]
 pub const PLAYER_NAME_FILE: &str = "player_name.txt";
 /// The host's public address, asked when hosting.
 pub const PUBLIC_ADDRESS_FILE: &str = "public_address.txt";
@@ -94,6 +96,7 @@ pub fn public_address(
 }
 
 /// Ask for the server address. Enter reuses the one from last time.
+#[cfg(any(windows, test))]
 pub fn server_address(
     input: &mut impl BufRead,
     output: &mut impl Write,
@@ -115,6 +118,7 @@ pub fn server_address(
 }
 
 /// Ask for the player's name on the server. Enter reuses the one from last time.
+#[cfg(any(windows, test))]
 pub fn player_name(
     input: &mut impl BufRead,
     output: &mut impl Write,
@@ -173,6 +177,7 @@ pub fn parse_player_name(text: &str) -> Result<String, String> {
         .map_err(|error| format!("{text:?} can't be a name: {error}."))
 }
 
+#[cfg(any(windows, test))]
 fn reuse_hint(last: &str) -> String {
     if last.is_empty() {
         String::new()
@@ -182,6 +187,7 @@ fn reuse_hint(last: &str) -> String {
 }
 
 /// The answer, or the remembered one for an empty answer.
+#[cfg(any(windows, test))]
 fn answer_or(
     input: &mut impl BufRead,
     output: &mut impl Write,

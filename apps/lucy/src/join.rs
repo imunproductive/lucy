@@ -4,40 +4,13 @@
 use std::{
     io,
     net::{SocketAddr, SocketAddrV4, TcpStream, ToSocketAddrs},
-    path::Path,
     time::Duration,
 };
 
 use lucy_lobby::battle_tag_query;
 
-use crate::{ask, settings::ModeArgs};
-
 /// How long a join waits for the server to answer.
 const CHECK_TIME: Duration = Duration::from_secs(5);
-
-/// The server to join: `--server`, else asked (and remembered).
-fn server_address(options: &ModeArgs, state: &Path) -> io::Result<String> {
-    match &options.remote {
-        Some(address) => Ok(address.clone()),
-        None => ask::server_address(
-            &mut io::stdin().lock(),
-            &mut io::stdout(),
-            &state.join(ask::SERVER_ADDRESS_FILE),
-        ),
-    }
-}
-
-/// The player's name on that server: `--name`, else asked (and remembered).
-fn player_name(options: &ModeArgs, state: &Path) -> io::Result<String> {
-    match &options.name {
-        Some(name) => Ok(name.clone()),
-        None => ask::player_name(
-            &mut io::stdin().lock(),
-            &mut io::stdout(),
-            &state.join(ask::PLAYER_NAME_FILE),
-        ),
-    }
-}
 
 /// `host:port` with the host as an IPv4 address: the Battle.net referral
 /// takes no names.
@@ -109,11 +82,37 @@ mod client {
     use std::net::Ipv4Addr;
     use tracing::info;
 
-    use super::{battle_tag_on, ipv4_address, player_name, reachable, server_address};
+    use super::{battle_tag_on, ipv4_address, reachable};
     use crate::{
+        ask,
         play::{self, close_running_copy, start_tournament_game, wait_for},
         settings::{ModeArgs, Settings},
     };
+    use std::path::Path;
+
+    /// The server to join: `--server`, else asked (and remembered).
+    fn server_address(options: &ModeArgs, state: &Path) -> io::Result<String> {
+        match &options.remote {
+            Some(address) => Ok(address.clone()),
+            None => ask::server_address(
+                &mut io::stdin().lock(),
+                &mut io::stdout(),
+                &state.join(ask::SERVER_ADDRESS_FILE),
+            ),
+        }
+    }
+
+    /// The player's name on that server: `--name`, else asked (and remembered).
+    fn player_name(options: &ModeArgs, state: &Path) -> io::Result<String> {
+        match &options.name {
+            Some(name) => Ok(name.clone()),
+            None => ask::player_name(
+                &mut io::stdin().lock(),
+                &mut io::stdout(),
+                &state.join(ask::PLAYER_NAME_FILE),
+            ),
+        }
+    }
 
     /// Start the game with the full menu on someone else's server. A
     /// Battle.net emulator of our own logs it in with the player's name and
