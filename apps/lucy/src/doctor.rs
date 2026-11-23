@@ -41,7 +41,7 @@ pub fn run(state_dir: &Path, args: &ServerArgs) -> bool {
                 "config",
                 &problem(
                     error.to_string(),
-                    "correct config.toml; its keys are account, game, locale and [ports]",
+                    "correct config.toml or the flags (keys: account, game, locale, dev_console, max_players, max_players_per_address and [ports])",
                 ),
             );
             return false;
@@ -53,6 +53,7 @@ pub fn run(state_dir: &Path, args: &ServerArgs) -> bool {
         ("data", data(&settings)),
         ("account", account(&settings)),
         ("ports", ports(&settings)),
+        ("players", players(&settings)),
         ("client", client(&settings)),
         ("relay", relay()),
     ];
@@ -191,6 +192,14 @@ fn ports(settings: &Settings) -> Outcome {
             "stop the other server, or choose free ports with the --*-port flags or [ports] in config.toml",
         )
     }
+}
+
+fn players(settings: &Settings) -> Outcome {
+    let limits = settings.lobby_limits;
+    Outcome::Ok(format!(
+        "the lobby serves at most {}, {} from one address",
+        limits.total, limits.per_address
+    ))
 }
 
 fn client(settings: &Settings) -> Outcome {

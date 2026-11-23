@@ -11,7 +11,9 @@ use std::{
 };
 
 use clap::{Args, ValueEnum};
+use lucy_server::server::LOBBY_LIMITS;
 use lucy_sim::ai::Difficulty;
+use lucy_wire::tcp::PeerLimits;
 use serde::Deserialize;
 
 use crate::ask;
@@ -50,6 +52,8 @@ struct ConfigFile {
     #[serde(default)]
     ports: PortsFile,
     dev_console: Option<bool>,
+    max_players: Option<usize>,
+    max_players_per_address: Option<usize>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -107,6 +111,14 @@ pub struct ServerArgs {
     /// features on). Commands run on the client only.
     #[arg(long, env = "LUCY_DEV_CONSOLE", value_parser = clap::builder::FalseyValueParser::new())]
     pub dev_console: bool,
+    /// Players the lobby serves at once [default: 128].
+    #[arg(long, value_name = "PLAYERS")]
+    pub max_players: Option<usize>,
+    /// Players the lobby serves at once from one address: a household or a
+    /// carrier-grade NAT behind one public address [default: 16, or
+    /// --max-players if lower].
+    #[arg(long, value_name = "PLAYERS")]
+    pub max_players_per_address: Option<usize>,
     /// A Workshop script (its text, as Overwatch copies it): every player
     /// goes from the menu straight into the custom match its settings
     /// describe.
@@ -235,6 +247,9 @@ pub struct Settings {
     pub dev_console: bool,
     /// The Workshop script players go into from the menu (`--workshop`).
     pub workshop: Option<PathBuf>,
+    /// The players (lobby connections) served at once, and from one address
+    /// (`--max-players`, `--max-players-per-address`).
+    pub lobby_limits: PeerLimits,
     /// Extra arguments for Overwatch.exe (after `--`), for the modes that
     /// start the game.
     pub game_args: Vec<String>,
@@ -244,6 +259,18 @@ impl Settings {
     pub fn resolve(state: &Path, args: &ServerArgs) -> io::Result<Self> {
         let file = read_config(&state.join(CONFIG_FILE))?;
         let ports = &file.ports;
+        let total = args
+            .max_players
+            .or(file.max_players)
+            .unwrap_or(LOBBY_LIMITS.total);
+        let lobby_limits = lobby_limits(PeerLimits {
+            total,
+            // The default is never above the total.
+            per_address: args
+                .max_players_per_address
+                .or(file.max_players_per_address)
+                .unwrap_or(LOBBY_LIMITS.per_address.min(total)),
+        })?;
         Ok(Self {
             state: state.to_owned(),
             account: args.account.clone().or(file.account),
@@ -274,6 +301,7 @@ impl Settings {
             template: args.save.clone(),
             dev_console: args.dev_console || file.dev_console.unwrap_or(false),
             workshop: args.workshop.clone(),
+            lobby_limits,
             game_args: Vec::new(),
         })
     }
@@ -309,6 +337,24 @@ fn read_config(path: &Path) -> io::Result<ConfigFile> {
         }),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(ConfigFile::default()),
         Err(error) => Err(error),
+    }
+}
+
+/// `limits` if the lobby can serve them: at least one player, and no more
+/// from one address than in all.
+fn lobby_limits(limits: PeerLimits) -> io::Result<PeerLimits> {
+    let invalid = |message: String| Err(io::Error::new(io::ErrorKind::InvalidInput, message));
+    if limits.total == 0 {
+        invalid("max_players is 0; give at least 1".into())
+    } else if limits.per_address == 0 {
+        invalid("max_players_per_address is 0; give at least 1".into())
+    } else if limits.per_address > limits.total {
+        invalid(format!(
+            "max_players_per_address ({}) is above max_players ({}); give at most max_players",
+            limits.per_address, limits.total
+        ))
+    } else {
+        Ok(limits)
     }
 }
 
@@ -369,5 +415,60 @@ mod tests {
         };
         let settings = Settings::resolve(state.path(), &args).unwrap();
         assert_eq!(settings.game_port(), Some(4001));
+    }
+
+    #[test]
+    fn the_player_limits_come_from_the_flags_then_the_config_and_must_fit() {
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(flatten)]
+            server: ServerArgs,
+        }
+        let resolve = |config: &str, flags: &[&str]| {
+            let state = write_config(config);
+            let cli = <Cli as clap::Parser>::try_parse_from(
+                std::iter::once("lucy").chain(flags.iter().copied()),
+            )
+            .unwrap();
+            Settings::resolve(state.path(), &cli.server).map(|settings| settings.lobby_limits)
+        };
+
+        let limits = resolve("", &[]).unwrap();
+        assert_eq!((limits.total, limits.per_address), (128, 16));
+        let limits = resolve("max_players = 200\nmax_players_per_address = 20\n", &[]).unwrap();
+        assert_eq!((limits.total, limits.per_address), (200, 20));
+        let limits = resolve(
+            "max_players = 200\nmax_players_per_address = 20\n",
+            &["--max-players", "36"],
+        )
+        .unwrap();
+        assert_eq!((limits.total, limits.per_address), (36, 20));
+        let limits = resolve("", &["--max-players-per-address", "1"]).unwrap();
+        assert_eq!((limits.total, limits.per_address), (128, 1));
+
+        // A total below the default from one address lowers that default.
+        let limits = resolve("max_players = 12\n", &[]).unwrap();
+        assert_eq!((limits.total, limits.per_address), (12, 12));
+
+        // At least one player, and no more from one address than in all.
+        for (config, flags) in [
+            ("max_players = 0\n", &[][..]),
+            ("", &["--max-players-per-address", "0"][..]),
+            (
+                "max_players_per_address = 40\n",
+                &["--max-players", "36"][..],
+            ),
+            (
+                "max_players = 12\n",
+                &["--max-players-per-address", "13"][..],
+            ),
+        ] {
+            let error = resolve(config, flags).unwrap_err();
+            assert_eq!(
+                error.kind(),
+                io::ErrorKind::InvalidInput,
+                "{config} {flags:?}"
+            );
+        }
     }
 }
