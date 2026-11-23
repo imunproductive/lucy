@@ -191,9 +191,7 @@ use lucy_physics::{
     contact::{
         math::ContactFrame,
         mesh::ContactMesh,
-        world::{
-            ContactWorldError, Platform, StaticGeometry, StaticShape, compose, scaled_solid,
-        },
+        world::{ContactWorldError, Platform, StaticGeometry, StaticShape, compose, scaled_solid},
     },
     mover::platform::PlatformClock,
 };
@@ -208,9 +206,9 @@ use serde::Deserialize;
 use crate::{
     bot_animation::{multiply, rotate},
     idle_animation::{IdleMotion, RawIdleRig},
-    path_follower::{PathFollower, RawPath},
     objective_data::MapObjectives,
     objectives::{Area, CaptureBox},
+    path_follower::{PathFollower, RawPath},
 };
 
 /// The file in the runtime `data` folder.
@@ -569,8 +567,7 @@ impl MovingBody {
         self.parts
             .iter()
             .map(|&(index, bone, _)| {
-                let Some(moved) = bone.zip(moves.as_ref()).map(|(bone, moves)| &moves[bone])
-                else {
+                let Some(moved) = bone.zip(moves.as_ref()).map(|(bone, moves)| &moves[bone]) else {
                     return (index, base);
                 };
                 let scaled =
@@ -625,6 +622,10 @@ impl MovingBodies {
 }
 
 impl PlatformClock for MovingBodies {
+    /// The platform posed `back` before now on both clocks: its path and
+    /// its bones (the client's velocity of a bobbing Range platform has the
+    /// bob in it: session `D:/Temp/mm/r2`; with the path alone moving back
+    /// the vertical part of the local velocity was 0.1 m/s off).
     fn frame_before(&self, platform: &Platform, back: f32) -> Option<ContactFrame> {
         let (idle, path) = *self
             .times

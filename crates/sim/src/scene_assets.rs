@@ -58,9 +58,9 @@ use lucy_physics::{
     collision::scene::CollisionScene,
     contact::cache::CapsulePose,
     contact::world::ContactWorld,
-    mover::platform::PlatformClock,
     mover::Mover,
     mover::ground::{NOT_GROUND, pogo, standing_body},
+    mover::platform::PlatformClock,
     mover::settings::{MoverCatalog, MoverSettings},
     nav::{self, Navigation},
 };
@@ -1234,17 +1234,6 @@ impl PreparedScene {
                 .place(moves)
                 .expect("a moving body's shapes are moving shapes at finite frames");
         }
-    }
-
-    /// The movers' world.
-    #[cfg(test)]
-    pub(crate) fn contacts(&self) -> Option<&Arc<ContactWorld>> {
-        self.contacts.as_ref()
-    }
-
-    /// SCRATCH (MovingMaps, not for commit).
-    pub fn scratch_contacts(&self) -> Option<&Arc<ContactWorld>> {
-        self.contacts.as_ref()
     }
 
     /// The server placeables whose models stop the mover: each one's

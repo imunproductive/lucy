@@ -6395,22 +6395,9 @@ impl WorldDelivery {
         let knocks = &mut self.knocks;
         let stepped =
             mover.step_pending_with(&mut pending.poses, budget - used, |mover, command| {
-                // The idle-animated placeables' parts where this client had
-                // them as it predicted the command.
+                // The idle-animated and path-following placeables where this
+                // client had them as it predicted the command.
                 scene.pose_moving_for(&command, quanta);
-                // SCRATCH (MovingMaps, not for commit): LUCY_SCRATCH_RIDE=entity_hex; teleport
-                // above that platform once each time D:/Temp/mm/ride.go appears.
-                if let Ok(text) = std::env::var("LUCY_SCRATCH_RIDE")
-                    && let Ok(entity) = u32::from_str_radix(&text, 16)
-                    && std::fs::remove_file("D:/Temp/mm/ride.go").is_ok()
-                    && let Some(contacts) = scene.scratch_contacts()
-                    && let Some(shape) = contacts.platform_shape(entity, 1)
-                    && let Some(at) = contacts.platform_frame(shape)
-                {
-                    let [x, y, z] = at.translation.map(f64::from);
-                    tracing::info!(target: "lucy::pose", entity, frame = command.frame, ?at, "scratch ride teleport");
-                    mover.teleport([x, y + 1.0, z], None);
-                }
                 tracing::debug!(
                     target: "lucy::pose",
                     frame = command.frame,

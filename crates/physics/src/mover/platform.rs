@@ -101,8 +101,7 @@ impl Matrix {
     /// A world vector in the rows' axes, by the transposed rows
     /// (`0x7FF789B76A70`): `(M_i.y v.y + M_i.x v.x) + M_i.z v.z`.
     pub(crate) fn turn_back(&self, [x, y, z]: Vec3) -> Vec3 {
-        self.rows
-            .map(|row| (row[1] * y + row[0] * x) + row[2] * z)
+        self.rows.map(|row| (row[1] * y + row[0] * x) + row[2] * z)
     }
 
     /// Its inverse by cofactors (`0x7FF789884260`, `0x7FF789884370`).
@@ -213,7 +212,8 @@ impl Mover {
             Some((riding, matrix, carry))
         });
         let same = |platform: &Platform| {
-            found.is_some_and(|found| found.entity == platform.entity && found.node == platform.node)
+            found
+                .is_some_and(|found| found.entity == platform.entity && found.node == platform.node)
         };
         if let Some((riding, matrix, carry)) = old.filter(|(riding, ..)| same(&riding.platform)) {
             self.riding = Some(Riding { carry, ..riding });

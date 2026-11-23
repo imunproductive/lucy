@@ -51,7 +51,7 @@ const SAMPLES: usize = 30;
 const STEP: f32 = 0.033_333_335;
 const HALF_STEP: f32 = 0.016_666_668;
 /// 1/29 (`0x7FF78B568280`).
-const SHARE: f32 = 0.034_482_758;
+const SHARE: f32 = 0.034_482_76;
 /// The squared length below which a vector has none (`0x7FF78B4F1860`).
 const TINY: f32 = 1.175_494_4e-36;
 /// A distance this close to the path's length is the next lap's start
@@ -151,7 +151,7 @@ impl PathFollower {
     /// model where the map puts it.
     pub fn place(&self, time: f64, rotation: Quat) -> Option<(Vec3, Quat)> {
         let length = self.length;
-        if !(length > 0.0) {
+        if length.is_nan() || length <= 0.0 {
             return None;
         }
         let mut distance = time as f32 * self.speed;
@@ -163,7 +163,11 @@ impl PathFollower {
             let lap = length + paused;
             let laps = distance / lap;
             let whole = laps as i32;
-            let floor = if laps < whole as f32 { whole - 1 } else { whole };
+            let floor = if laps < whole as f32 {
+                whole - 1
+            } else {
+                whole
+            };
             let rest = distance - whole as f32 * lap;
             let start = floor as f32 * length;
             distance = if rest < paused {
@@ -172,10 +176,10 @@ impl PathFollower {
                 (start + rest) - paused
             };
         }
-        distance = distance + length * self.offset;
+        distance += length * self.offset;
         let mut laps = 0u32;
         while !((distance - length).abs() > LAP_SLACK && distance <= length) {
-            distance = distance - length;
+            distance -= length;
             laps += 1;
         }
         let backwards = self.mode == Mode::BackAndForth && laps % 2 == 1;
@@ -190,7 +194,7 @@ impl PathFollower {
             let Some(next) = next else {
                 break;
             };
-            distance = distance - self.segments[index].length();
+            distance -= self.segments[index].length();
             index = next;
         }
         let segment = &self.segments[index];
@@ -234,8 +238,9 @@ impl Segment {
         let mut speed = client_length(c);
         let mut u = STEP;
         for k in 1..SAMPLES {
-            let direction: Vec3 =
-                std::array::from_fn(|axis| ((3.0 * a[axis]) * u) * u + (2.0 * b[axis]) * u + c[axis]);
+            let direction: Vec3 = std::array::from_fn(|axis| {
+                ((3.0 * a[axis]) * u) * u + (2.0 * b[axis]) * u + c[axis]
+            });
             let next = client_length(direction);
             u += STEP;
             lengths[k] = (speed * STEP + lengths[k - 1]) + (next - speed) * HALF_STEP;
@@ -258,7 +263,10 @@ impl Segment {
     /// The cubic's point and direction `distance` along it
     /// (`0x7FF789AF3300`, `0x7FF789AF3E40`).
     fn at(&self, distance: f32) -> (Vec3, Vec3) {
-        let u = lerp_table(&self.params, distance * (29.0 / MIN_LENGTH.max_sse(self.length())));
+        let u = lerp_table(
+            &self.params,
+            distance * (29.0 / MIN_LENGTH.max_sse(self.length())),
+        );
         let [a, b, c, d] = self.cubic;
         let position = std::array::from_fn(|axis| {
             ((((a[axis] * u) * u) * u + (b[axis] * u) * u) + c[axis] * u) + d[axis]

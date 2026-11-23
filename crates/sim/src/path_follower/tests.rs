@@ -22,7 +22,10 @@ fn path(mode: u32, orient: bool, segments: Vec<[Vec3; 4]>) -> PathFollower {
 
 fn near(got: Vec3, expected: Vec3) {
     for axis in 0..3 {
-        assert!((got[axis] - expected[axis]).abs() < 1e-4, "{got:?} {expected:?}");
+        assert!(
+            (got[axis] - expected[axis]).abs() < 1e-4,
+            "{got:?} {expected:?}"
+        );
     }
 }
 
@@ -34,8 +37,14 @@ const STILL: Quat = [0.0, 0.0, 0.0, 1.0];
 #[test]
 fn a_segment_walks_its_whole_cubic_in_the_length_up_to_29_30() {
     let follower = path(2, false, vec![line([1.0, 2.0, 3.0], [10.0, 0.0, 0.0])]);
-    assert!((follower.length - 29.0 / 3.0).abs() < 1e-4, "{}", follower.length);
-    let (position, rotation) = follower.place(f64::from(follower.length / 2.0), STILL).unwrap();
+    assert!(
+        (follower.length - 29.0 / 3.0).abs() < 1e-4,
+        "{}",
+        follower.length
+    );
+    let (position, rotation) = follower
+        .place(f64::from(follower.length / 2.0), STILL)
+        .unwrap();
     near(position, [6.0, 2.0, 3.0]);
     assert_eq!(rotation, STILL);
     // A lap later it is there again, and the start offset counts in laps.

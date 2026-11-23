@@ -280,25 +280,36 @@ fn the_tag_queries_find_the_maps_tagged_entities_of_the_mode() {
     );
 }
 
+/// The Practice Range's four platforms (`0516`, component 98) walk their
+/// path where the client walks them: in the client's physics world
+/// (session `D:/Temp/mm/p1`, dump 0, 2026-11-23) all four polytopes stood,
+/// to 0.2 mm across the floor, where the path puts each at one time of
+/// the path clock, 82.759 s (each 1/4 lap apart: offsets 0.75, 0.99, 0.25,
+/// 0.5 of a 143 m loop at 4 m/s). The height and turn differ by
+/// millimetres: they bob on the idle clock, which the dump didn't time.
 #[test]
-#[ignore = "scratch"]
-fn scratch_platform_frames() {
+#[ignore = "requires the derived 104319 data"]
+fn the_range_platforms_walk_their_path_where_the_clients_physics_world_had_them() {
     let data = MapAreaData::load(&lucy_testkit::runtime_dir().join("data")).unwrap();
-    let map = GameMap::practice_range();
-    let bodies = data.placeable_bodies(&map, &BTreeSet::new());
-    let times: Vec<f64> = std::fs::read_to_string("D:/Temp/mm/times.txt")
-        .unwrap()
-        .split_whitespace()
-        .map(|t| t.parse().unwrap())
-        .collect();
-    let mut out = String::new();
-    for body in bodies.iter().filter(|body| [0x81, 0xC2, 0x10F, 0x193].contains(&body.placeable.placeable)) {
-        let moving = body.moving().unwrap();
-        for &t in &times {
-            for (index, frame) in moving.frames(t as f32, t) {
-                out += &format!("{:08X} {t} {index} {:?} {:?}\n", body.entity(), frame.translation, frame.rotation);
-            }
-        }
+    let bodies = data.placeable_bodies(&GameMap::practice_range(), &BTreeSet::new());
+    let client = [
+        (0x81, [50.657_726, -7.009_680_3]),
+        (0xC2, [79.549_58, 9.312_379]),
+        (0x10F, [86.566_52, -20.054_947]),
+        (0x193, [55.161_19, -34.559_75]),
+    ];
+    for (placeable, [x, z]) in client {
+        let body = bodies
+            .iter()
+            .find(|body| body.placeable.placeable == placeable)
+            .unwrap();
+        let [(_, frame)] = body.moving().unwrap().frames(82.759, 82.759)[..] else {
+            panic!("one polytope");
+        };
+        let [px, _, pz] = frame.translation;
+        assert!(
+            (px - x).abs() < 3e-4 && (pz - z).abs() < 3e-4,
+            "{placeable:X}: {frame:?}"
+        );
     }
-    std::fs::write("D:/Temp/mm/frames.txt", out).unwrap();
 }

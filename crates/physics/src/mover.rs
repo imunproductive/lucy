@@ -283,10 +283,7 @@ impl Mover {
     /// The clock of the platforms it may ride, for their velocity
     /// ([`platform::PlatformClock`]); without it they carry it with no
     /// velocity of their own.
-    pub fn with_platform_clock(
-        mut self,
-        clock: Option<Arc<dyn platform::PlatformClock>>,
-    ) -> Self {
+    pub fn with_platform_clock(mut self, clock: Option<Arc<dyn platform::PlatformClock>>) -> Self {
         self.platforms = clock;
         self
     }
