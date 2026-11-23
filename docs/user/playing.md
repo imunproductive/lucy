@@ -146,6 +146,22 @@ Add `--test-ai <level>` (`easy`, `medium` or `hard`) to fill the missing players
 - **During the match**, press **Esc**, then **Show Lobby**: the owner can go **Back to Lobby** or **Restart Match** from there, or **Start Game Mode** (end the waiting phase). **Pause Match** does nothing yet. A player who joins a game in a match goes into the match. Settings you change in a match take effect in the next one.
 - **After the match** everyone is back in the lobby. **Leave Game** leaves the custom game. When the owner leaves, the next player owns the game; it closes when the last player leaves.
 
-**Share Code** gives the settings a code of five characters, kept on the server. **Import Code** loads the settings of a code that the server knows: a code someone shared on this server, or a Workshop script you put in the folder `workshop_codes` in the state folder (or a folder that you give with `--workshop-codes`), named by its code: `C32S2.txt` or `C32S2_doomfist_parkour.txt`. The Doomfist parkour archive's `workshop.codes` folder can be used as it is. **Save** and **Load** in the settings keep your own presets on the server.
+**Share Code** gives the settings a code of five characters, kept on the server. **Import Code** loads the settings of a code that the server knows: a code someone shared on this server, or a Workshop script file named by its code (see [Workshop scripts](#workshop-scripts)). Codes belong to your server: a code shared on another server, or on Blizzard's servers, means nothing here unless you have its script. **Save** and **Load** in the settings keep your own presets on the server.
+
+## Workshop scripts
+
+The server runs Workshop scripts (for example the Doomfist parkour maps). It needs the script's text, as Overwatch's Workshop copies it, in a `.txt` file. There are two ways to play one.
+
+**In a custom game, by its code.** Put the script in the folder `workshop_codes` in the state folder (`%APPDATA%\lucy\workshop_codes` unless you chose another state folder), and name the file after its code: `C32S2.txt`, or `C32S2_` and any name after it (`C32S2_doomfist_parkour.txt`). Then create a custom game, open **Settings > Import Code** and type the code. Upper or lower case doesn't matter, and `I`, `L` and `O` count as `1`, `1` and `0`, as in Overwatch. To keep the scripts in another folder, start the server with `--workshop-codes <folder>`; the state folder's `workshop_codes` still works too. A folder of scripts named this way, like the Doomfist parkour archive's `workshop.codes` folder, works as it is. Without the script, the code gives *Error importing Game Settings Code*. The server reads the file when someone imports the code, so you can add or change scripts while it runs; a script it can't read fails only that import, and the reason is in the log.
+
+**For everyone, from the menu.** `--workshop <file>` takes the path of one script file:
+
+```powershell
+lucy.exe play --game C:\path\to\Overwatch --workshop C:\scripts\C32S2_doomfist_parkour.txt
+```
+
+Every player who starts a match from the menu then goes straight into that script's match, instead of the usual matchmaking. The option takes a file, not a code: it doesn't look in `workshop_codes`, and the file's name doesn't matter. The server reads the script when it starts, and doesn't start if the file is missing or the script can't be read. The **Server** page of the dashboard changes or clears the script while the server runs.
+
+Both ways read the script the same way, so a script that works with one works with the other. Lines the server doesn't apply yet are listed in the log (`not applied: …`).
 
 Next: [hosting and joining](hosting.md).

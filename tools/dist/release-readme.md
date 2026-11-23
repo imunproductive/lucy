@@ -36,7 +36,7 @@ To host for other PCs, choose mode 3 (host and play) or 4 (server only), or run 
 ## More
 
 - `docs\first-run.md`: the game install, the game data and the state folder.
-- `docs\playing.md`: the modes and the dashboard.
+- `docs\playing.md`: the modes, custom games, Workshop scripts (such as the Doomfist parkour maps) and the dashboard.
 - `docs\troubleshooting.md`: every `doctor` message and common problems.
 - `docs\commands.md`: every command and option.
 

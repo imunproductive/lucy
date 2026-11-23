@@ -51,7 +51,7 @@ You need your own copy of Overwatch, build 1.74.0.0.104319, on Windows.
 3. `cargo build --release --locked`
 4. `target\release\lucy.exe play --game C:\path\to\Overwatch`
 
-The first start reads the game data from your install, which takes a few minutes. To host for others or join someone, see [Hosting](docs/user/hosting.md).
+The first start reads the game data from your install, which takes a few minutes. To host for others or join someone, see [Hosting](docs/user/hosting.md). To play Workshop scripts such as the Doomfist parkour maps, see [Workshop scripts](docs/user/playing.md#workshop-scripts).
 
 ## Documentation
 
