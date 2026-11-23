@@ -59,9 +59,12 @@ const REBUILT_PARTS: [&str; 3] = ["owned_account", "owned_heroes", "menu_config"
 /// Arcade's state value (39800: `+0x7C`, which the client doesn't read, is
 /// 0) and busyness (39804), achievements (28001), config (36600), replay
 /// hosts (51804), store (26400), ranked state (36300), the custom game
-/// maps (23301: the capture's maps, in header order) and the career profile
-/// (20807, which holds the 24300 and 24900 records).
-const REBUILT: [(u32, u32); 14] = [
+/// maps (23301: the capture's maps, in header order), the career profile
+/// (20807, which holds the 24300 and 24900 records), and the event records
+/// (38900, 38901), whose content key names (`+0x30`) are the install's
+/// (`resource_keys.json`) where Python had TACTLib's keyring names
+/// (`celebrations` tests check them against 20504).
+const REBUILT: [(u32, u32); 16] = [
     (0xf5ff_548a, 20504),
     (0xf5ff_548a, 20505),
     (0x779a_8581, 24300),
@@ -76,6 +79,8 @@ const REBUILT: [(u32, u32); 14] = [
     (0x2372_a2e8, 36300),
     (0x2128_6b49, 23301),
     (0x1a98_79a4, 20807),
+    (0x8b77_c823, 38900),
+    (0x8b77_c823, 38901),
 ];
 /// Captured messages the server doesn't send: anti-cheat payloads (20820)
 /// and Battle.net's profanity filter (27104).

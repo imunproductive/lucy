@@ -1017,6 +1017,33 @@ mod tests {
                 celebrations.login_messages(&profile, &items, now).unwrap();
             assert_eq!(as_array(&keys[&0x78]).len(), named.len());
             assert_eq!(as_array(&keys[&0x90]).len(), named.len() * KEY_LENGTH);
+            // Each event record names its key as 20504 does, with the bytes
+            // of its resource key asset: the client finds the key by name
+            // (the names of keys the install doesn't name are their GUIDs;
+            // the Lunar New Year menu showed with them, 2026-11-23).
+            let names = as_array(&keys[&0x78]);
+            let bytes = as_array(&keys[&0x90]);
+            for record in as_array(&records.2[&0x78]) {
+                let record = as_struct(record);
+                let (Unsigned(name), Unsigned(guid)) = (&record[&0x30], &record[&0x38]) else {
+                    panic!("a record's key name and id are unsigned")
+                };
+                if *guid == 0 {
+                    continue;
+                }
+                let key = &celebrations.resource_keys[&(guid & 0xFFFF_FFFF_FFFF)];
+                assert_eq!(*name, key.name);
+                let at = names
+                    .iter()
+                    .position(|sent| *sent == Unsigned(*name))
+                    .expect("the record's key goes in 20504");
+                let sent: Vec<_> = key
+                    .bytes
+                    .iter()
+                    .map(|&byte| Unsigned(u64::from(byte)))
+                    .collect();
+                assert_eq!(bytes[at * KEY_LENGTH..][..KEY_LENGTH], sent[..]);
+            }
             for ((crc, id, fields), length) in [records, progress].into_iter().zip(lengths) {
                 assert_eq!(schemas.encode(crc, id, &fields).unwrap().len(), length);
             }
