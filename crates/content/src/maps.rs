@@ -68,9 +68,19 @@ pub struct GameMap {
     /// The game modes the map's header supports (`m_supportedGamemodes`),
     /// which the mode graph's `STU_16753B11` tests.
     pub supported_modes: Vec<u64>,
-    /// The heroes its players may pick (a custom game's `enabled
-    /// heroes`); empty: every hero.
-    pub hero_pool: Vec<u64>,
+    /// The heroes each team's players may pick, by team (a custom game's
+    /// `enabled heroes`, General's or the team's own); a team without a
+    /// list, or with an empty one, may pick every hero.
+    pub hero_pools: Vec<Vec<u64>>,
+}
+
+impl GameMap {
+    /// The heroes a player of `team` may pick; empty: every hero.
+    pub fn hero_pool(&self, team: u8) -> &[u64] {
+        self.hero_pools
+            .get(usize::from(team))
+            .map_or(&[], Vec::as_slice)
+    }
 }
 
 /// A spawn point of a team's spawn room and when the mode uses it.
@@ -162,7 +172,7 @@ impl GameMap {
             objectives: Vec::new(),
             rooms: Vec::new(),
             supported_modes: vec![PYTHON_PRACTICE_RANGE_MODE, PRACTICE_RANGE_MODE],
-            hero_pool: Vec::new(),
+            hero_pools: Vec::new(),
         }
     }
 
@@ -401,7 +411,7 @@ impl MapCatalog {
             objectives: Vec::new(),
             rooms: Vec::new(),
             supported_modes: entry.modes.clone(),
-            hero_pool: Vec::new(),
+            hero_pools: Vec::new(),
         })
     }
 
@@ -462,7 +472,7 @@ impl MapCatalog {
                 })
                 .collect(),
             supported_modes: entry.modes.clone(),
-            hero_pool: Vec::new(),
+            hero_pools: Vec::new(),
         })
     }
 }

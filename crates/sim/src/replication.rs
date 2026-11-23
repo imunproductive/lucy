@@ -3973,11 +3973,12 @@ impl WorldDelivery {
                 );
             })
             .ok();
-        // A custom game's hero pool: `0C90` st65 takes `080D` {`0458`: the
-        // heroes} into #10489, the list HeroSelect allows (`m_8B103ADE`;
-        // the client refuses a hero outside it, `sub_7FF789CB0C70`), as
-        // the Workshop's Set Player Allowed Heroes and `0F2F` send it.
-        let pool = &scene.map().hero_pool;
+        // A custom game's hero pool of the player's team: `0C90` st65 takes
+        // `080D` {`0458`: the heroes} into #10489, the list HeroSelect
+        // allows (`m_8B103ADE`; the client refuses a hero outside it,
+        // `sub_7FF789CB0C70`), as the Workshop's Set Player Allowed Heroes
+        // and `0F2F` send it.
+        let pool = scene.map().hero_pool(viewer.team);
         if !pool.is_empty() {
             let message = GameMessage {
                 sender: GAME_MODE_ENTITY,

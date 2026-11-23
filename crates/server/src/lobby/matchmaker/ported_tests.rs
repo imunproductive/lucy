@@ -327,6 +327,7 @@ impl Fixture {
             ranked: false,
             ai: false,
             seats,
+            custom: None,
         });
         (id, handoffs)
     }

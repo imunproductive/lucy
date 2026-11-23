@@ -30,7 +30,9 @@ tracing.workspace = true
 windows-sys = { workspace = true, features = ["Win32_Media"] }
 
 [dev-dependencies]
+base64.workspace = true
 lucy-testkit.workspace = true
+ruzstd.workspace = true
 tempfile.workspace = true
 tracing-subscriber.workspace = true
 lucy-sim = { workspace = true, features = ["fixtures"] }

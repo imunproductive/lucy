@@ -109,6 +109,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
+name = "base64"
+version = "0.22.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
+
+[[package]]
 name = "bitflags"
 version = "2.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -682,6 +688,7 @@ dependencies = [
 name = "lucy-lobby"
 version = "0.0.0"
 dependencies = [
+ "base64",
  "crc32fast",
  "getrandom",
  "indexmap",
@@ -692,6 +699,7 @@ dependencies = [
  "lucy-testkit",
  "lucy-wire",
  "prost",
+ "ruzstd",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -754,6 +762,7 @@ dependencies = [
 name = "lucy-server"
 version = "0.0.0"
 dependencies = [
+ "base64",
  "flate2",
  "getrandom",
  "indexmap",
@@ -770,6 +779,7 @@ dependencies = [
  "lucy-workshop",
  "mimalloc",
  "mio",
+ "ruzstd",
  "serde_json",
  "tempfile",
  "tracing",
@@ -1134,6 +1144,12 @@ dependencies = [
  "linux-raw-sys",
  "windows-sys",
 ]
+
+[[package]]
+name = "ruzstd"
+version = "0.8.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e5ff0cc5e135c8870a775d3320910cd9b564ec036b4dc0b8741629020be63f01"
 
 [[package]]
 name = "serde"

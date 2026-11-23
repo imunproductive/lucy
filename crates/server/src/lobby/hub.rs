@@ -6,12 +6,14 @@
 //! posts the message to its mailbox; the session's thread sends it at its
 //! next wake, at most one socket poll later.
 //!
-//! A mailbox holds at most [`MAILBOX_LIMIT`] messages. A session that falls
-//! that far behind has stopped draining it (its game no longer reads, or
-//! the thread is stuck); its game cannot be kept in step by dropping
-//! messages, so the mailbox shuts: it refuses all further mail, as for an
-//! offline account, and the session ends its link at its next wake. The
-//! game then logs in again and gets the whole state.
+//! A mailbox holds at most [`MAILBOX_LIMIT`] posts; a post is one message,
+//! or the messages of one answer that belong together (a custom game's
+//! settings, which a large Workshop makes hundreds of chunks). A session
+//! that falls that far behind has stopped draining it (its game no longer
+//! reads, or the thread is stuck); its game cannot be kept in step by
+//! dropping messages, so the mailbox shuts: it refuses all further mail,
+//! as for an offline account, and the session ends its link at its next
+//! wake. The game then logs in again and gets the whole state.
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -23,21 +25,21 @@ use std::{
 
 use lucy_lobby::transport::LobbyMessage;
 
-/// The most messages a session's mailbox holds.
+/// The most posts a session's mailbox holds.
 pub(crate) const MAILBOX_LIMIT: usize = 256;
 
 /// Messages waiting for one session's thread.
 #[derive(Default)]
 pub(crate) struct Mailbox {
-    queue: Mutex<VecDeque<LobbyMessage>>,
+    queue: Mutex<VecDeque<Vec<LobbyMessage>>>,
     has_mail: AtomicBool,
     /// The mailbox overflowed and refuses mail; its session ends.
     shut: AtomicBool,
 }
 
 impl Mailbox {
-    /// Queue a message. False when the mailbox is shut: it was full.
-    pub(crate) fn post(&self, message: LobbyMessage) -> bool {
+    /// Queue messages that go together, as one post.
+    pub(crate) fn post_all(&self, messages: Vec<LobbyMessage>) -> bool {
         let mut queue = self.queue.lock().expect("mailbox");
         if self.shut.load(Ordering::Acquire) {
             return false;
@@ -48,7 +50,7 @@ impl Mailbox {
             self.has_mail.store(true, Ordering::Release);
             return false;
         }
-        queue.push_back(message);
+        queue.push_back(messages);
         self.has_mail.store(true, Ordering::Release);
         true
     }
@@ -67,7 +69,7 @@ impl Mailbox {
     pub(crate) fn take(&self) -> Vec<LobbyMessage> {
         let mut queue = self.queue.lock().expect("mailbox");
         self.has_mail.store(false, Ordering::Release);
-        queue.drain(..).collect()
+        queue.drain(..).flatten().collect()
     }
 }
 
@@ -103,13 +105,18 @@ impl Hub {
     /// Post a message to an online account's session. False when it is
     /// offline or its mailbox shut.
     pub(crate) fn post(&self, account_lo: u32, message: LobbyMessage) -> bool {
+        self.post_all(account_lo, vec![message])
+    }
+
+    /// Post messages that go together, as one post.
+    pub(crate) fn post_all(&self, account_lo: u32, messages: Vec<LobbyMessage>) -> bool {
         let mailbox = self
             .online
             .lock()
             .expect("lobby hub")
             .get(&account_lo)
             .cloned();
-        mailbox.is_some_and(|mailbox| mailbox.post(message))
+        mailbox.is_some_and(|mailbox| mailbox.post_all(messages))
     }
 }
 
@@ -142,7 +149,12 @@ mod tests {
     fn a_full_mailbox_shuts_and_refuses_mail() {
         let hub = Hub::default();
         let mailbox = hub.join(7);
-        for id in 0..MAILBOX_LIMIT {
+        // A post of many messages (a custom game's settings) is one post.
+        let settings: Vec<LobbyMessage> = (0..MAILBOX_LIMIT as u32 * 2)
+            .map(|id| (1, id, Fields::new()))
+            .collect();
+        assert!(hub.post_all(7, settings));
+        for id in 1..MAILBOX_LIMIT {
             assert!(hub.post(7, (1, id as u32, Fields::new())));
         }
         assert!(!mailbox.shut());
@@ -152,6 +164,7 @@ mod tests {
         assert!(!hub.post(7, (1, 0, Fields::new())));
         assert!(mailbox.shut() && mailbox.has_mail());
         assert!(mailbox.take().is_empty());
+        assert!(!hub.post_all(7, vec![(1, 0, Fields::new())]));
         assert!(!hub.post(7, (1, 0, Fields::new())));
     }
 }

@@ -12,8 +12,9 @@ use std::{
 
 use lucy_lobby::{accounts::Account, session::PreparedLogin};
 
-use super::{Ctx, Lobby, Matchmaker, Parties, Party};
+use super::{Ctx, Lobby, Matchmaker, Parties, Party, Ticket};
 use crate::workshop_match::{ScriptMatch, SettingNames};
+use lucy_wire::jam::codec::Fields;
 
 /// A script file and what its settings describe.
 #[derive(Debug)]
@@ -167,20 +168,31 @@ impl Ctx<'_> {
             );
             return false;
         };
-        map.hero_pool = script.script.heroes.clone().unwrap_or_default();
+        map.hero_pools = script.script.hero_pools();
         for (team, size) in script.script.team_sizes.iter().enumerate() {
             if let Some(size) = *size {
                 map.team_sizes.resize(map.team_sizes.len().max(team + 1), 0);
                 map.team_sizes[team] = size;
             }
         }
+        // The player plays in Team 1.
+        let ticket = Ticket {
+            party: party.clone(),
+            key: Fields::new(),
+            card: 0,
+            members: Vec::new(),
+        };
+        let Some(entry) = self.entry(account, &ticket, 0, 0) else {
+            return false;
+        };
         self.start_custom(
-            account,
-            party,
+            vec![entry],
             map,
             game.values.clone(),
             script.script.bodies.clone(),
             Arc::clone(&script.script.logic),
+            None,
         )
+        .is_some()
     }
 }

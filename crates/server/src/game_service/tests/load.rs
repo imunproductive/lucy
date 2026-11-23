@@ -125,7 +125,7 @@ impl Setup {
             let mut map = maps
                 .game_map(hanamura, game.mode, "Assault", false, &[12, 0])
                 .expect("Hanamura in Assault");
-            map.hero_pool = script.heroes.clone().unwrap();
+            map.hero_pools = script.hero_pools();
             map.ruleset = RULESET;
             assets.graphs().add_match_ruleset(
                 RULESET,

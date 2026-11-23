@@ -86,6 +86,9 @@ pub struct ServerConfig {
     /// A Workshop script every player goes into from the menu: the custom
     /// match its settings describe (`--workshop`).
     pub workshop: Option<PathBuf>,
+    /// A folder of Workshop scripts whose codes Import Code finds
+    /// (`--workshop-codes`), besides `workshop_codes/` in the state folder.
+    pub workshop_codes: Option<PathBuf>,
 }
 
 impl ServerConfig {
@@ -109,6 +112,7 @@ impl ServerConfig {
             template: None,
             dev_console: false,
             workshop: None,
+            workshop_codes: None,
         }
     }
 }
@@ -187,7 +191,11 @@ impl Server {
         let extra_preload = extra_preload_themes(&items)
             .chain(assets.graphs().weapon_cosmetics())
             .collect();
-        let matchmaker = Matchmaker::new(&data, &config.data, config.test_players, config.test_ai)?;
+        let mut matchmaker =
+            Matchmaker::new(&data, &config.data, config.test_players, config.test_ai)?;
+        if let Some(dir) = &config.workshop_codes {
+            matchmaker = matchmaker.with_code_dir(dir.clone());
+        }
         matchmaker.set_workshop(config.workshop.as_deref())?;
         // The Practice Range's scene is prepared up front for the first match
         // (`ow174/lobby/server.py` `start_game_server`); no match starts

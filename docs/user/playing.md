@@ -133,4 +133,17 @@ Add `--test-ai <level>` (`easy`, `medium` or `hard`) to fill the missing players
 
 **Training > Practice vs AI** works. The server picks an Assault, Control, Escort or Hybrid map at random. Your group plays on one team, and the server fills both teams with AI heroes at the level you chose. The AI heroes walk to the objective, fight, fall back when they are hurt and respawn. Easy AI heroes deal 25% of their damage, Medium 50% and Hard 100%. The match counts in your profile; the AI heroes get no result.
 
+## Custom games
+
+**Play > Game Browser > Create** makes a custom game with you as its owner. Change the settings as in Overwatch: modes, maps, heroes, lobby, the Workshop. The settings are the game's, and every player in the lobby sees them.
+
+- **Find a game**: **Play > Game Browser** lists the custom games on the server. The filters work. Select a game to see its settings and players, then press **Join**, or join as a spectator. A friend's **Join Game** works too.
+- **Invite**: click an empty slot in your lobby, or use **Invite** on a player's card. The player gets an invitation in his chat and accepts or declines it.
+- **The lobby**: as the owner, move players between Team 1, Team 2, the spectators and the queue (drag and drop, or a player's menu), swap two players, remove a player, add or edit AI bots, rename the game and the teams, and make another player the owner. A player who joins a full game waits in the queue and takes the first free seat.
+- **Start** sends everyone on a team into the match of the first map of the settings that the server hosts, with the settings applied: the mode and hero settings, each team's and each hero's settings, the teams' hero lists and the Workshop rules. AI bots play as AI heroes at the bots' highest difficulty. Spectators and players in the queue stay in the lobby: watching a match is not done yet.
+- **During the match**, the owner can go **Back to Lobby**, **Restart** the match, or **Start Game Mode** (end the waiting phase). A player who joins a game in a match goes into the match. Settings you change in a match take effect in the next one.
+- **After the match** everyone is back in the lobby. **Leave Game** leaves the custom game. When the owner leaves, the next player owns the game; it closes when the last player leaves.
+
+**Share Code** gives the settings a code of five characters, kept on the server. **Import Code** loads the settings of a code that the server knows: a code someone shared on this server, or a Workshop script you put in the folder `workshop_codes` in the state folder (or a folder that you give with `--workshop-codes`), named by its code: `C32S2.txt` or `C32S2_doomfist_parkour.txt`. The Doomfist parkour archive's `workshop.codes` folder can be used as it is. **Save** and **Load** in the settings keep your own presets on the server.
+
 Next: [hosting and joining](hosting.md).
