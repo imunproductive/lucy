@@ -8,11 +8,11 @@ The release has three files:
 
 | File | Content |
 | --- | --- |
-| `lucy-<version>-windows-x64.zip` | Everything a host or player needs, in a folder `lucy-<version>/` (below) |
+| `lucy-<version>.zip` | Everything a host or player needs (below). The version has no `v`: tag `v1.2.3` gives `lucy-1.2.3.zip`, the name the README's download instructions use. |
 | `SHA256SUMS.txt` | The zip's SHA-256, in the `sha256sum -c` format |
 | The release notes | The tag's annotation, or else the commits since the previous `v*` tag |
 
-The zip's folder:
+The zip's files, all at its top level (no folder of their own), so `lucy.exe` is next to `owwfd_relay.dll` where you unzip it:
 
 | File | From |
 | --- | --- |

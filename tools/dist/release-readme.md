@@ -17,15 +17,15 @@ Lucy is a server for the Overwatch client of build **1.74.0.0.104319**. It runs 
 
 ## First start
 
-1. Unzip this folder to a place you can write to, for example `C:\Lucy`. Do not use `Program Files`.
-2. Open a terminal in the folder and check your setup. Use the folder of your game install:
+1. Unzip `lucy-{version}.zip` into a new folder you can write to, for example `C:\Lucy`. Do not use `Program Files`. The files have no folder of their own in the zip.
+2. Open a terminal in that folder and check your setup. Use the folder of your game install:
 
    ```powershell
    .\lucy.exe doctor --game C:\Games\Overwatch
    ```
 
    Each `FAIL` line tells you how to fix it. The first check derives the game data from your install; this takes about two minutes, once.
-3. Double-click `START.cmd` and choose a mode. Press Enter to play alone.
+3. Play alone: `.\lucy.exe play --game C:\Games\Overwatch`. Or double-click `START.cmd` and choose a mode (Enter plays alone); it uses the game you gave last time.
 
 Lucy keeps your accounts, settings and logs in `%APPDATA%\lucy`, not in this folder. To update, unzip the new version and use it instead of this one: your accounts and settings stay.
 

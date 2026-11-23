@@ -10,10 +10,11 @@
    The workspace's Cargo version stays 0.0.0. The dashboard is already in
    `lucy.exe` (crates/server/build.rs embeds web/dashboard/dist).
 2. Checks that `lucy.exe --version` prints `lucy <version>`.
-3. Zips into `dist/lucy-<version>-windows-x64.zip`, under a folder
-   `lucy-<version>/`: the two builds, `tools/relay/lucy_relay.py`, the start
-   scripts and README.md of this folder, the user guide (docs/user, as docs/),
-   LICENSE, CREDITS.md and SHA256SUMS.txt of those files.
+3. Zips into `dist/lucy-<version>.zip` (the version without the tag's `v`;
+   the README's download instructions name this file), every file at the
+   zip's top level: the two builds side by side, `tools/relay/lucy_relay.py`,
+   the start scripts and README.md of this folder, the user guide (docs/user,
+   as docs/), LICENSE, CREDITS.md and SHA256SUMS.txt of those files.
 4. Writes `dist/SHA256SUMS.txt` (the zip's SHA-256, `sha256sum -c` format) and
    `dist/release-notes.md`: the tag's annotation, or else the commits since
    the previous `v*` tag.
@@ -132,13 +133,13 @@ def stage(folder: Path, release: Path, version: str) -> None:
 
 
 def zip_folder(folder: Path, archive: Path) -> None:
-    """Zip `folder` under its own name, files in name order, each dated at the
-    commit's time, so the same commit and builds give the same zip."""
+    """Zip what is in `folder` at the zip's top level, files in name order, each
+    dated at the commit's time, so the same commit and builds give the same zip."""
     stamp = time.gmtime(int(git("log", "-1", "--format=%ct")))[:6]
     archive.unlink(missing_ok=True)
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zipped:
         for path in sorted(path for path in folder.rglob("*") if path.is_file()):
-            name = f"{folder.name}/{path.relative_to(folder).as_posix()}"
+            name = path.relative_to(folder).as_posix()
             info = zipfile.ZipInfo(name, date_time=stamp)
             info.compress_type = zipfile.ZIP_DEFLATED
             info.external_attr = 0o644 << 16
@@ -203,7 +204,7 @@ def main() -> None:
     name = f"lucy-{version}"
     folder = OUT / name
     stage(folder, release, version)
-    archive = OUT / f"{name}-windows-x64.zip"
+    archive = OUT / f"{name}.zip"
     zip_folder(folder, archive)
     shutil.rmtree(folder)
 
