@@ -37,7 +37,7 @@
 use std::{
     borrow::Cow,
     cell::{OnceCell, RefCell},
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     io, mem,
     sync::Arc,
     time::Duration,

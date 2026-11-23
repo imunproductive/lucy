@@ -1191,18 +1191,28 @@ impl<'a> SnapshotEncoder<'a> {
                 }),
             );
         }
-        let variables = self.project_variables(
+        // The entity's variables as the kept projection has them, shared
+        // (with the comparisons made to them) while none changed.
+        let kept = stamps
+            .as_ref()
+            .and_then(|(kept, _)| *kept)
+            .map(|kept| &kept.projected.variables);
+        let variables = match self.project_variables_over(
             snapshot,
             0,
             &snapshot.variables,
             &BTreeSet::from([OWNER_HEALTH]),
             view,
-        )?;
+            kept.map(|kept| &kept.variables),
+        )? {
+            Some(variables) => EntityVariables::new(variables),
+            None => Arc::clone(kept.expect("only a kept projection is kept")),
+        };
         let actions = self.project_actions(snapshot, &instances, fresh_until_ms)?;
         Ok(ProjectedSnapshot {
             entity: snapshot.entity,
             view,
-            variables: EntityVariables::new(variables),
+            variables,
             instances,
             actions,
             action_serial: snapshot
@@ -1268,7 +1278,39 @@ impl<'a> SnapshotEncoder<'a> {
         excluded: &BTreeSet<u32>,
         view: View,
     ) -> Result<ProjectedVariables, SnapshotError> {
-        let mut projected = ProjectedVariables::default();
+        Ok(self
+            .project_variables_over(snapshot, owner, values, excluded, view, None)?
+            .unwrap_or_default())
+    }
+
+    /// The variables as [`Self::project_variables`] projects them, compared
+    /// as they are worked out with `kept` (the same variables' last
+    /// projection): `None` when they are `kept` as it is, so nothing was
+    /// copied. Without `kept`, always some.
+    fn project_variables_over(
+        &self,
+        snapshot: &Snapshot,
+        owner: u16,
+        values: &Variables,
+        excluded: &BTreeSet<u32>,
+        view: View,
+        kept: Option<&ProjectedVariables>,
+    ) -> Result<Option<ProjectedVariables>, SnapshotError> {
+        // `kept`'s entries matched in order so far; the new projection is
+        // made from the first that differs.
+        let mut matched = 0;
+        let mut matched_bindings = 0;
+        let mut projected = kept.is_none().then(ProjectedVariables::default);
+        let prefix = |kept: &ProjectedVariables, matched: usize| {
+            let mut prefix = ProjectedVariables::default();
+            for (&id, value) in kept.values.iter().take(matched) {
+                prefix.values.insert(id, value.clone());
+                if let Some(links) = kept.bindings.get(&id) {
+                    prefix.bindings.insert(id, links.clone());
+                }
+            }
+            prefix
+        };
         for (&variable, base) in values {
             if excluded.contains(&variable) {
                 continue;
@@ -1282,8 +1324,9 @@ impl<'a> SnapshotEncoder<'a> {
                 }
                 None => base,
             };
+            let mut links = None;
             if let Some(bindings) = bindings.filter(|_| view == View::Owner) {
-                let links = self.project_bindings(snapshot, owner, variable, bindings)?;
+                let projected_links = self.project_bindings(snapshot, owner, variable, bindings)?;
                 // The owner's client keeps a variable as its own value plus
                 // its links and works the links out itself (a Stack's entry
                 // reads the value below it: client 0x7FF78AAA5FF0,
@@ -1308,18 +1351,46 @@ impl<'a> SnapshotEncoder<'a> {
                             .and_then(|instance| instance.states.get(&binding.raw_state))
                             .is_some_and(|state| state.kind == StateKind::Ray)
                 };
-                if links.len() == bindings.len() && bindings.iter().all(own) {
+                if projected_links.len() == bindings.len() && bindings.iter().all(own) {
                     value = base;
                 }
-                if !links.is_empty() {
-                    projected.bindings.insert(variable, links);
+                links = (!projected_links.is_empty()).then_some(projected_links);
+            }
+            if matches!(value, Value::Null) && links.is_none() {
+                continue;
+            }
+            if projected.is_none()
+                && let Some(kept) = kept
+            {
+                if let Some((&id, was)) = kept.values.get_index(matched)
+                    && id == variable
+                    && was.identical(value)
+                    && kept.bindings.get(&variable) == links.as_ref()
+                {
+                    matched += 1;
+                    matched_bindings += usize::from(links.is_some());
+                    continue;
                 }
+                projected = Some(prefix(kept, matched));
             }
-            if !matches!(value, Value::Null) || projected.bindings.contains_key(&variable) {
-                projected.values.insert(variable, value.clone());
+            let projected = projected
+                .as_mut()
+                .expect("made at the start or at the first difference");
+            if let Some(links) = links {
+                projected.bindings.insert(variable, links);
             }
+            projected.values.insert(variable, value.clone());
         }
-        Ok(projected)
+        Ok(match (projected, kept) {
+            (Some(projected), _) => Some(projected),
+            (None, Some(kept))
+                if matched == kept.values.len() && matched_bindings == kept.bindings.len() =>
+            {
+                None
+            }
+            (None, Some(kept)) => Some(prefix(kept, matched)),
+            (None, None) => unreachable!("made at the start without a kept projection"),
+        })
     }
 
     fn project_bindings(
