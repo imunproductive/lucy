@@ -35,6 +35,41 @@ def _pids_of(image):
     return pids
 
 
+# The agents' shared cache of derived game data, one folder per derivation stamp (build, build config, locale,
+# `DERIVATIONS_VERSION`), so a session copies a current one instead of deriving it again (minutes).
+AGENT_SEED = Path(os.environ.get("LUCY_AGENT_SEED") or r"D:/Temp/lucy-agent-seed")
+
+
+def _derived_stamp(cache):
+    """The stamp of a cache's derived game data (`<build>/derived.txt`), or None."""
+    stamps = sorted(Path(cache).glob("*/derived.txt"))
+    return stamps[0].read_text("utf-8").strip() if stamps else None
+
+
+def _newest_agent_seed():
+    """The most recently published shared cache, or None."""
+    caches = [c for c in AGENT_SEED.glob("*/cache") if _derived_stamp(c)]
+    return max(caches, key=lambda c: c.stat().st_mtime) if caches else None
+
+
+def _publish_agent_seed(cache, stamp):
+    """Put a freshly derived cache into the shared seed under its stamp (copied aside, then renamed in)."""
+    import hashlib
+    key = hashlib.sha1(stamp.encode()).hexdigest()[:12]
+    target = AGENT_SEED / key / "cache"
+    if _derived_stamp(target) == stamp:
+        os.utime(target)
+        return
+    staging = AGENT_SEED / f"{key}.{os.getpid()}.tmp"
+    shutil.rmtree(staging, ignore_errors=True)
+    shutil.copytree(cache, staging / "cache")
+    shutil.rmtree(AGENT_SEED / key, ignore_errors=True)
+    try:
+        staging.rename(AGENT_SEED / key)
+    except OSError:  # another session published the same stamp first
+        shutil.rmtree(staging, ignore_errors=True)
+
+
 def _terminate(pids, wait):
     """TerminateProcess each, then wait up to `wait` s in all for them to be gone; returns those still running."""
     import ctypes
@@ -121,15 +156,18 @@ class Session:
 
     # ---- lifetime
     def __enter__(self):
-        if self.team_lock:
-            self._take_team_lock()
-        else:
-            from tools import gamelock
-            held = gamelock.holder()
-            if not held or held[0] != self.owner:
-                raise RuntimeError(f"team_lock=False but {self.owner} does not hold the game lock "
-                                   f"(holder: {held and held[0]}); take it with tools/gamelock.py acquire")
         try:
+            # The game data is derived before the game lock is taken: deriving takes minutes, and the lock
+            # only guards the game window.
+            self.prepare_state()
+            if self.team_lock:
+                self._take_team_lock()
+            else:
+                from tools import gamelock
+                held = gamelock.holder()
+                if not held or held[0] != self.owner:
+                    raise RuntimeError(f"team_lock=False but {self.owner} does not hold the game lock "
+                                       f"(holder: {held and held[0]}); take it with tools/gamelock.py acquire")
             self._lock.acquire()
             self.start()
             if self.enter_range:
@@ -165,6 +203,38 @@ class Session:
     def elapsed(self):
         return time.monotonic() - self.t0
 
+    def prepare_state(self):
+        """The temp state folder: the seed's profiles, and a cache of derived game data that is current for
+        this `lucy`. The cache comes from the agents' shared seed (`AGENT_SEED`, the newest one an earlier
+        session derived) unless `seed_state` was given, else from the seed state; `lucy doctor` derives it
+        again when it is stale for this build, and a new derivation goes back into the shared seed."""
+        if self.state is not None:
+            return
+        if not self.lucy.is_file():
+            raise RuntimeError(f"{self.lucy} is missing (set LUCY_BIN; owprobe.dll must be next to it)")
+        self.state = Path(tempfile.mkdtemp(prefix="owprobe-lucy-"))
+        for item in STATE_ITEMS:
+            src = self.seed_state / item
+            if item == "cache" and self.seed_state == USER_STATE:
+                src = _newest_agent_seed() or src
+            if src.is_dir():
+                shutil.copytree(src, self.state / item)
+            elif src.is_file():
+                shutil.copy2(src, self.state / item)
+        before = _derived_stamp(self.state / "cache")
+        started = time.monotonic()
+        self.log("[owprobe] checking the game data (derived now if stale), before taking the game lock")
+        # doctor's own verdict (ports, accounts, relay) doesn't matter here, only the derivation it runs.
+        with open(self.state / "doctor.log", "wb") as out:
+            subprocess.run([str(self.lucy), "--state", str(self.state), "doctor", "--game", str(self.game)],
+                           cwd=str(self.lucy.parent), stdout=out, stderr=subprocess.STDOUT,
+                           stdin=subprocess.DEVNULL, timeout=3600, creationflags=w.CREATE_NO_WINDOW,
+                           check=False)
+        after = _derived_stamp(self.state / "cache")
+        if after and after != before:
+            self.log(f"[owprobe] game data derived in {time.monotonic() - started:.0f} s ({after})")
+            _publish_agent_seed(self.state / "cache", after)
+
     def start(self):
         if not self.lucy.is_file():
             raise RuntimeError(f"{self.lucy} is missing (set LUCY_BIN; owprobe.dll must be next to it)")
@@ -178,13 +248,7 @@ class Session:
             self.log(f"[owprobe] waiting for an earlier game to exit: {sorted(self._earlier)}")
             time.sleep(5)
             self._earlier = set(_pids_of(self.game.name))
-        self.state = Path(tempfile.mkdtemp(prefix="owprobe-lucy-"))
-        for item in STATE_ITEMS:
-            src = self.seed_state / item
-            if src.is_dir():
-                shutil.copytree(src, self.state / item)
-            elif src.is_file():
-                shutil.copy2(src, self.state / item)
+        self.prepare_state()
         cmd = [str(self.lucy), "--state", str(self.state), "play", "--game", str(self.game), "--account",
                self.account, "--locale", "enUS", "--probe", str(self.port), "--timeout", "120", *self.play_args,
                "--", "--tank_NoFullScreen=1", *self.game_args]
