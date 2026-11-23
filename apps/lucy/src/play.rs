@@ -14,6 +14,7 @@ use crate::settings::Settings;
 
 pub const RELAY_DLL: &str = "owwfd_relay.dll";
 /// The client probe `--probe` loads (crates/probe).
+#[cfg(windows)]
 pub const PROBE_DLL: &str = "owprobe.dll";
 
 /// The game to start without asking, checked to be build 104319: the
