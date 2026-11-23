@@ -225,15 +225,9 @@ impl Schemas {
         Self::load(runtime.join(LOBBY_SCHEMAS))
     }
 
-    /// The client's game link message layouts (as [`Self::lobby`]). The
-    /// first load also gives the channel writer
-    /// ([`crate::messages::write_channel`]) the layouts it finds a frame's
-    /// last field end with.
+    /// The client's game link message layouts (as [`Self::lobby`]).
     pub fn game(runtime: &Path) -> Result<Self, CodecError> {
-        let path = runtime.join(GAME_SCHEMAS);
-        let schemas = Self::load(&path)?;
-        crate::messages::keep_game_schemas(|| Self::load(&path));
-        Ok(schemas)
+        Self::load(runtime.join(GAME_SCHEMAS))
     }
 
     pub fn from_json(json: &str) -> Result<Self, CodecError> {
@@ -384,12 +378,28 @@ impl Schemas {
     }
 
     pub fn encode(&self, crc: u32, id: u32, value: &Fields) -> Result<Vec<u8>, CodecError> {
+        Ok(self.encode_bits(crc, id, value)?.0)
+    }
+
+    /// [`Self::encode`] and the bit right after the last field: inside the
+    /// last byte when the message ends in packed bools.
+    pub fn encode_bits(
+        &self,
+        crc: u32,
+        id: u32,
+        value: &Fields,
+    ) -> Result<(Vec<u8>, usize), CodecError> {
         let mut encoder = Encoder {
             data: Vec::new(),
             bit: 8,
         };
         encoder.fields(self.fields(crc, id)?, Some(value))?;
-        Ok(encoder.data)
+        let end = if encoder.bit == 8 {
+            encoder.data.len() * 8
+        } else {
+            (encoder.data.len() - 1) * 8 + usize::from(encoder.bit)
+        };
+        Ok((encoder.data, end))
     }
 
     /// Builds a template containing the schema defaults for every field.
