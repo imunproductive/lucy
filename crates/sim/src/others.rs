@@ -39,6 +39,7 @@ use std::{
     cell::{OnceCell, RefCell},
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     io, mem,
+    sync::Arc,
     time::Duration,
 };
 
@@ -221,7 +222,9 @@ impl ViewerReadiness<'_> {
 pub(crate) struct ObservedScript<'a> {
     pub encoder: SnapshotEncoder<'a>,
     pub snapshot: &'a Snapshot,
-    pub activity: Option<ObserverActivity>,
+    /// Shared while it stays the same, so each client's check of what
+    /// it was sent compares one address ([`ObserverCache::activity`]).
+    pub activity: Option<Arc<ObserverActivity>>,
     pub frame_ms: u32,
     projected: OnceCell<Option<ProjectedSnapshot>>,
     kept: &'a ObserverCache,
@@ -264,19 +267,29 @@ impl<'a> ObservedScript<'a> {
 #[derive(Default)]
 pub(crate) struct ObserverCache {
     projection: RefCell<Option<ProjectionCache>>,
-    activity: RefCell<Option<(Revision, Option<ObserverActivity>)>>,
+    activity: RefCell<Option<(Revision, Option<Arc<ObserverActivity>>)>>,
 }
 
 impl ObserverCache {
+    /// The activity at `revision`; one that came out as it was keeps its
+    /// allocation.
     fn activity(
         &self,
         revision: Revision,
         make: impl FnOnce() -> Option<ObserverActivity>,
-    ) -> Option<ObserverActivity> {
+    ) -> Option<Arc<ObserverActivity>> {
         let mut kept = self.activity.borrow_mut();
-        match &*kept {
+        match &mut *kept {
             Some((at, activity)) if *at == revision => activity.clone(),
-            _ => kept.insert((revision, make())).1.clone(),
+            Some((at, activity)) => {
+                *at = revision;
+                let made = make();
+                if made.as_ref() != activity.as_deref() {
+                    *activity = made.map(Arc::new);
+                }
+                activity.clone()
+            }
+            None => kept.insert((revision, make().map(Arc::new))).1.clone(),
         }
     }
 }
@@ -403,8 +416,10 @@ struct Seen {
 /// The body's statescript on this client (observers.py Watch).
 struct Watch {
     stream: BodyStream<ProjectedSnapshot>,
-    sent: Option<ObserverActivity>,
+    sent: Option<Arc<ObserverActivity>>,
     next_lazy: u32,
+    /// The newest chunk not sent yet: a newer delta replaces it.
+    unsent: Option<u32>,
 }
 
 #[derive(Default)]
@@ -480,8 +495,12 @@ impl Others {
                 .is_some_and(|shown| shown.serial == serial && shown.possession == Some(held)),
             OtherDelivery::Body(id) => seen(id, Lifetime::Live),
             OtherDelivery::BodyDestroy(id) => seen(id, Lifetime::Retiring),
-            OtherDelivery::Script { body, .. } => {
-                seen(body, Lifetime::Live) && self.seen[&body.entity].watch.is_some()
+            OtherDelivery::Script { body, last } => {
+                seen(body, Lifetime::Live)
+                    && self.seen[&body.entity]
+                        .watch
+                        .as_ref()
+                        .is_some_and(|watch| watch.stream.queued(last))
             }
             OtherDelivery::Health { body, revision } => {
                 seen(body, Lifetime::Live) && self.seen[&body.entity].health == revision
@@ -535,6 +554,9 @@ impl Others {
             OtherDelivery::Script { body, last } => {
                 if let Some(watch) = self.watch_mut(body) {
                     watch.stream.sent(last);
+                    if watch.unsent == Some(last) {
+                        watch.unsent = None;
+                    }
                 }
             }
             _ => {}
@@ -1048,6 +1070,15 @@ impl Others {
         };
         match chunk {
             Ok(Some(chunk)) => {
+                // Each delta goes from what this client acknowledged, so a
+                // newer one covers one that hasn't gone yet, which goes no
+                // more (as the mode entity's, `mode_view.rs`). A client
+                // whose datagrams can't carry every body's delta each tick
+                // (a match behind its ticks) kept them all queued, and each
+                // tick's delta compared against every one.
+                if let Some(old) = watch.unsent.replace(chunk.last) {
+                    watch.stream.discard_unsent(old);
+                }
                 watch.sent = script.activity.clone();
                 watch.next_lazy = tick.saturating_add(LAZY_TICKS);
                 output.records.push((
@@ -1277,6 +1308,7 @@ impl Others {
                     stream: BodyStream::new(body.id.entity),
                     sent: None,
                     next_lazy: 0,
+                    unsent: None,
                 }),
             },
         );
