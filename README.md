@@ -1,42 +1,69 @@
 # Lucy
 
-A private server for the Overwatch 1 client, version **1.74.0.0.104319**, written in Rust. It runs the lobby, the game server, a local Battle.net and a web dashboard on your PC. It reads the game data from your own Overwatch install. It never downloads anything.
+**Lucy** is a private server for Overwatch 1, written in Rust. It runs the lobby, the game servers, a local Battle.net and a web dashboard for the 1.74 client (build 1.74.0.0.104319), using the game data from your own installation.
 
-You need your own copy of the game, build 1.74.0.0.104319, on Windows.
+> *Unofficial fan project, not affiliated with or endorsed by Blizzard Entertainment. You need your own copy of the game.*
 
-## Quick start
+Lucy is a fork of [ORPHEUS](https://github.com/leafall903/ORPHEUS) by leafall903 and contributors. Everything it builds on is credited in [CREDITS.md](CREDITS.md).
 
-1. Build (you need Rust with the MSVC toolchain and the Microsoft C++ Build Tools; see [building](docs/user/building.md)):
+## What works
 
-   ```powershell
-   cargo build --release --locked --workspace
-   ```
+Compared with retail Overwatch 1.74:
 
-2. Check the setup:
+| Area | Feature | Status | Notes |
+|---|---|---|---|
+| **Lobby** | Login, main menu, profile and career | Works | |
+| | Loot boxes, collection, shop, events | Works | Edit any profile from the dashboard |
+| | Friends, groups, chat, whispers | Works | |
+| | Custom games | Works | Browser, create, join, teams, start, share codes; spectating a match not yet |
+| **Modes** | Practice Range (Training Bots, Training Partner) | Works | |
+| | Practice vs AI | Works | AI heroes on both teams |
+| | Assault | Works | Runs on the game's own mode graph, with the end-of-match cards |
+| | Escort, Hybrid | Partial | Payload runs on a stand-in; moving to the game's payload graph |
+| | Control, Elimination, Deathmatch, Team Deathmatch | Partial | Not checked in the game |
+| | Workshop scripts | Works | Full rule engine; Doomfist parkour playable start to finish |
+| | Play of the Game, replays | Not yet | |
+| **Gameplay** | Movement matching the client's prediction | Works | Frame-exact for the heroes checked |
+| | Abilities | Partial | The heroes' own scripts run on the server. Checked in detail: Doomfist, Soldier: 76, Reinhardt, Ana, Lúcio, Widowmaker |
+| | Hit registration | Works | On the client's own hitboxes |
+| | Damage, healing, deaths, respawns, ultimate charge | Works | |
+| | Kill feed, death cam, scoreboard | Works | |
+| | Map objects (cars, consoles) | Works | Spawn doors not yet |
+| **Hosting** | Play on your own PC | Works | |
+| | Host for other players (`lucy host`, `lucy join`) | Works | |
+| | Relay | Works | `owwfd_relay.dll`, or the Python script `lucy_relay.py` |
+| | Host dashboard | Works | Live matches, chat, system messages, kick, match controls |
 
-   ```powershell
-   target\release\lucy.exe doctor --game C:\path\to\Overwatch
-   ```
+## Getting started
 
-3. Play:
+You need your own copy of Overwatch, build 1.74.0.0.104319, on Windows.
 
-   ```powershell
-   target\release\lucy.exe play --game C:\path\to\Overwatch
-   ```
+### From a release
 
-The first start derives the game data from the install, which takes about two minutes. `START.cmd` does the build and then asks which mode to start.
+1. Download the latest `lucy-<version>.zip` from [Releases](https://github.com/imunproductive/lucy/releases) and unzip it.
+2. Check your setup: `lucy.exe doctor --game C:\path\to\Overwatch`
+3. Play: `lucy.exe play --game C:\path\to\Overwatch`
+
+### From source
+
+1. Install Rust (MSVC toolchain) and the Microsoft C++ Build Tools ([details](docs/user/building.md)).
+2. `git clone https://github.com/imunproductive/lucy.git` and `cd lucy`
+3. `cargo build --release --locked`
+4. `target\release\lucy.exe play --game C:\path\to\Overwatch`
+
+The first start reads the game data from your install, which takes a few minutes. To host for others or join someone, see [Hosting](docs/user/hosting.md).
 
 ## Documentation
 
-- [User guide](docs/user/README.md): building, first run, playing, hosting and joining, troubleshooting, commands, configuration.
-- [Architecture](docs/dev/architecture.md): crates, data flow, the lobby, the game service, the state folder.
-- [Testing](docs/dev/testing.md): the test tiers and the `just` recipes. Run `just check` before every change.
-- [Data sources](docs/dev/data-sources.md): where each data file comes from.
-- [Decisions](docs/dev/decisions.md): conventions, fixed data, decisions, and how the Python tests were retired.
-- [Hardcoded values](docs/dev/hardcoded-values.md): game values still kept in code, and whether the install has the real value.
-- [Research notes](docs/notes): protocol, behavior and acceptance records, references.
-- [Client tools](docs/dev/client-tools.md): scripts that answer questions about the client's code (statescript classes, fields, messages) from a dump and a debugger.
+- [User guide](docs/user/README.md)
+- [Architecture](docs/dev/architecture.md)
+- [Testing](docs/dev/testing.md)
+- [Research notes](docs/notes)
 
 ## License
 
-MIT, see [LICENSE](LICENSE). Upstream projects are listed in [CREDITS.md](CREDITS.md), and their notices are in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+MIT, see [LICENSE](LICENSE). Credits: [CREDITS.md](CREDITS.md). Third-party notices: [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+
+---
+
+<sub>Overwatch and Blizzard Entertainment are trademarks or registered trademarks of Blizzard Entertainment, Inc. in the U.S. and/or other countries. Lucy is an independent, non-commercial fan project. It is not affiliated with, associated with, authorized, sponsored or endorsed by Blizzard Entertainment, Inc. It contains no Blizzard game files or data: you need your own legally obtained copy of Overwatch. All game content remains the property of Blizzard Entertainment, Inc.</sub>
