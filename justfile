@@ -1,4 +1,6 @@
 set windows-shell := ["powershell.exe", "-NoLogo", "-NoProfile", "-Command"]
+# The recipes are PowerShell; elsewhere (Linux CI) PowerShell 7 runs them.
+set shell := ["pwsh", "-NoLogo", "-NoProfile", "-Command"]
 
 # List the recipes.
 default:

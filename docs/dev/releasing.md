@@ -68,6 +68,8 @@ To redo a release, delete the GitHub Release and the tag (`git push origin :refs
 
 ## CI
 
-[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) runs on pushes to `main` and on pull requests, on Windows runners: `just fmt-check`, `just lint`, `just test` and `just test-windows` (loads the relay and probe DLLs into a stand-in process) in one job, `just dashboard-test` in another. It sets `CARGO_BUILD_JOBS` and `RUST_TEST_THREADS` to 4, the runner's CPU threads: the justfile's default is a quarter of them, for a shared PC.
+[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) runs on pushes to `main` and on pull requests, on Linux runners (`ubuntu-latest`): `just fmt-check`, `just lint` and `just test` in one job, `just dashboard-test` in another. The justfile's recipes are PowerShell; off Windows `just` runs them with `pwsh`, which the runners have. It sets `CARGO_BUILD_JOBS` and `RUST_TEST_THREADS` to 4, the runner's CPU threads: the justfile's default is a quarter of them, for a shared PC.
+
+Code built only on Windows (`lucy-launcher`'s game start, the relay and probe DLLs, `lucy play`/`join`/`tournament`) is not compiled in CI. `just lint` and `just test-windows` on a Windows PC check it: run them before a merge that touches it. The release workflow builds it on Windows for every tag.
 
 The game-install tests (`just test-game`, `test-slow`, `test-affected`, `test-dpk`, `test-assets`, `test-datatool`, `load`) are not in CI: they read an Overwatch 1.74 install, which can't be put on a runner. Run them on your PC before a merge and before a tag.

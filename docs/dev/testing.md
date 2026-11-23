@@ -197,7 +197,7 @@ It installs the npm packages (`npm ci`) the first time. It is part of `just chec
 
 ### 7. Windows relay
 
-`just test-windows` builds the relay and loads it into a stand-in process. It does not need the game.
+`just test-windows` builds the relay and loads it into a stand-in process. It does not need the game. CI runs on Linux and doesn't run it: run it on a Windows PC when you change the relay, the probe or the launcher.
 
 ### 8. Client acceptance
 
