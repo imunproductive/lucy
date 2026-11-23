@@ -6,14 +6,12 @@
 
 Lucy was originally forked from [ORPHEUS](https://github.com/leafall903/ORPHEUS) by leafall903 and contributors, and has since been largely rewritten. Everything it builds on is credited in [CREDITS.md](CREDITS.md).
 
-## What works
-
-Compared with retail Overwatch 1.74:
+## Compared with retail Overwatch 1.74
 
 | Area | Feature | Status | Notes |
 |---|---|---|---|
 | **Lobby** | Login, main menu, profile and career | Works | |
-| | Loot boxes, collection, shop, events | Works | Edit any profile from the dashboard |
+| | Loot boxes, collection, shop, events | Works | |
 | | Friends, groups, chat, whispers | Works | |
 | | Custom games | Works | Browser, create, join, teams, start, share codes; spectating a match not yet |
 | **Modes** | Practice Range (Training Bots, Training Partner) | Works | |
@@ -21,18 +19,22 @@ Compared with retail Overwatch 1.74:
 | | Assault | Works | Runs on the game's own mode graph, with the end-of-match cards |
 | | Escort, Hybrid | Partial | Payload runs on a stand-in; moving to the game's payload graph |
 | | Control, Elimination, Deathmatch, Team Deathmatch | Partial | Not checked in the game |
-| | Workshop scripts | Works | Full rule engine; Doomfist parkour playable start to finish |
+| | Workshop | Works | Full rule engine; Doomfist parkour playable start to finish |
 | | Play of the Game, replays | Not yet | |
 | **Gameplay** | Movement matching the client's prediction | Works | Frame-exact for the heroes checked |
 | | Abilities | Partial | The heroes' own scripts run on the server. Checked in detail: Doomfist, Soldier: 76, Reinhardt, Ana, Lúcio, Widowmaker |
 | | Hit registration | Works | On the client's own hitboxes |
 | | Damage, healing, deaths, respawns, ultimate charge | Works | |
 | | Kill feed, death cam, scoreboard | Works | |
-| | Map objects (cars, consoles) | Works | Spawn doors not yet |
-| **Hosting** | Play on your own PC | Works | |
-| | Host for other players (`lucy host`, `lucy join`) | Works | |
-| | Relay | Works | `owwfd_relay.dll`, or the Python script `lucy_relay.py` |
-| | Host dashboard | Works | Live matches, chat, system messages, kick, match controls |
+| | Map objects (cars, consoles) | Works | Spawn doors and moving platforms not yet |
+
+## What Lucy adds
+
+- **Everything on your PC:** the lobby, the game servers and a local Battle.net, started with one command (`lucy play`).
+- **Hosting for friends:** `lucy host` on your PC, `lucy join` on theirs. The game reaches the server through a relay: `owwfd_relay.dll`, or the Python script `lucy_relay.py` instead of the DLL.
+- **A host dashboard** in the browser: live matches, chat, system messages, kicking players, match controls (time, phases, stopping a match), and editing any account's profile, currencies, loot boxes and unlocks.
+- **Workshop scripts from files:** **Import Code** in a custom game loads a script saved under its code, and `--workshop` sends every player into one script's match ([Workshop scripts](docs/user/playing.md#workshop-scripts)).
+- **Your own game data:** the server reads what it needs from your Overwatch install on first start; nothing is downloaded.
 
 ## Getting started
 

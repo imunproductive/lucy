@@ -246,11 +246,17 @@ mod tests {
         fs::write(retail.join(GAME_EXE), b"").unwrap();
         fs::write(install.path().join(OFFICIAL_LAUNCHER), b"").unwrap();
         let expected = plain_canonical(&retail.join(GAME_EXE)).unwrap();
-        for path in [
+        let mut paths = vec![
             install.path().to_owned(),
             install.path().join(OFFICIAL_LAUNCHER),
-            retail.join("overwatch.EXE"),
-        ] {
+        ];
+        // Windows file names ignore case; elsewhere `overwatch.EXE` is another (missing) file.
+        if cfg!(windows) {
+            paths.push(retail.join("overwatch.EXE"));
+        } else {
+            assert_eq!(resolve_game(&retail.join("overwatch.EXE")), None);
+        }
+        for path in paths {
             assert_eq!(
                 resolve_game(&path),
                 Some(expected.clone()),
