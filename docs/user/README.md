@@ -1,6 +1,6 @@
 # User guide
 
-1. [Building from source](building.md): the tools you need and the build.
+1. [Download or build from source](building.md): the release download, or the tools you need and the build.
 2. [First run](first-run.md): the game install, the game data cache, the state folder, importing old profiles.
 3. [Playing](playing.md): `START.cmd`, `lucy play`, tournament mode, `serve`, the dashboard.
 4. [Hosting and joining](hosting.md): `host`, `server`, `join`, `join-tournament`, ports, `--game-host`.
