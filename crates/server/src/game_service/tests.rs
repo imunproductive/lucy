@@ -197,8 +197,9 @@ fn worker_serves_a_match_seat_and_retries_before_map_entry() {
 }
 
 #[test]
+#[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn worker_serves_loading_using_the_retail_schemas() {
-    let schemas = Schemas::game();
+    let schemas = Schemas::game(&lucy_testkit::runtime_dir()).unwrap();
     exercise_loading(schemas);
 }
 
@@ -243,8 +244,9 @@ fn first_reliable(client: &Client, schemas: &Schemas) -> u32 {
 /// tests/test_leaving.py `test_a_player_taken_out_before_his_game_connects_
 /// leaves_at_once_and_only_gets_20304`.
 #[test]
+#[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn a_player_taken_out_before_his_game_connects_leaves_at_once_and_only_gets_20304() {
-    let schemas = Arc::new(Schemas::game());
+    let schemas = Arc::new(Schemas::game(&lucy_testkit::runtime_dir()).unwrap());
     let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     let ticket = server
         .open_match(MATCH, GameMap::practice_range(), player())
@@ -1141,8 +1143,8 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
     const CONTROLLER: u32 = 0xa000_0100;
     let runtime = lucy_testkit::runtime_dir();
     let data = runtime.join("data");
-    let schemas = Arc::new(Schemas::game());
-    let lobby = Schemas::lobby();
+    let schemas = Arc::new(Schemas::game(&lucy_testkit::runtime_dir()).unwrap());
+    let lobby = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
     let assets = SceneAssets::load(runtime).unwrap();
     let collection = Collection::new(
         &RetailTemplates::captured(),
@@ -1967,7 +1969,7 @@ fn two_players_in_one_practice_range_see_each_other() {
     let scene = assets.prepare(GameMap::practice_range()).unwrap();
     assert!(scene.movement_ready());
     let tracer = assets.heroes().find_hero("Tracer").unwrap().guid;
-    let schemas = Arc::new(Schemas::game());
+    let schemas = Arc::new(Schemas::game(&lucy_testkit::runtime_dir()).unwrap());
     let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     let tags = ["first#1111", "second#2222"];
     let members = tags
@@ -2284,7 +2286,7 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
     let assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
     let scene = assets.prepare(two_team_range()).unwrap();
     let facing = scene.map().spawn_point(0, 0).unwrap().1;
-    let schemas = Arc::new(Schemas::game());
+    let schemas = Arc::new(Schemas::game(&lucy_testkit::runtime_dir()).unwrap());
     let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     let tags = ["shooter#1111", "target#2222"];
     let members = tags
@@ -2734,7 +2736,7 @@ fn walking_out_of_the_spawn_room_clears_the_hero_select_flag() {
     let assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
     let scene = assets.prepare(GameMap::practice_range()).unwrap();
     let facing = scene.map().spawn_point(0, 0).unwrap().1;
-    let schemas = Arc::new(Schemas::game());
+    let schemas = Arc::new(Schemas::game(&lucy_testkit::runtime_dir()).unwrap());
     let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     let tag = "walker#1111";
     let members = vec![WorldPlayer {
@@ -2890,7 +2892,7 @@ fn practice_world<const N: usize>(
             .count();
         scene.map().spawn_point(team, number).unwrap().0
     });
-    let schemas = Arc::new(Schemas::game());
+    let schemas = Arc::new(Schemas::game(&lucy_testkit::runtime_dir()).unwrap());
     let server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     let members = players
         .iter()
@@ -5468,7 +5470,7 @@ fn a_skirmish_match_on_another_map_plays_at_once_and_takes_a_third_player() {
     let map = catalog
         .game_map(WORKSHOP_CHAMBER, SKIRMISH, "Skirmish", false, &[6, 6])
         .expect("Workshop Chamber in Skirmish");
-    let schemas = Arc::new(Schemas::game());
+    let schemas = Arc::new(Schemas::game(&lucy_testkit::runtime_dir()).unwrap());
     let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     let player = |tag: &str, team, account| WorldPlayer {
         player: MatchPlayer {
@@ -5762,7 +5764,7 @@ fn slow_an_assault_match_on_anubis_captures_a_and_b_and_sends_the_players_home()
         objective.position = attack_spawn;
     }
 
-    let schemas = Arc::new(Schemas::game());
+    let schemas = Arc::new(Schemas::game(&lucy_testkit::runtime_dir()).unwrap());
     let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     server
         .set_match_timers(lucy_sim::match_flow::Timers { scale: SCALE })
@@ -6004,7 +6006,7 @@ fn slow_a_practice_vs_ai_match_plays_its_ai_heroes_to_the_end() {
         .position;
     let flat = |a: [f64; 3], b: [f64; 3]| (a[0] - b[0]).hypot(a[2] - b[2]);
 
-    let schemas = Arc::new(Schemas::game());
+    let schemas = Arc::new(Schemas::game(&lucy_testkit::runtime_dir()).unwrap());
     let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     server
         .set_match_timers(lucy_sim::match_flow::Timers { scale: SCALE })
@@ -6313,7 +6315,7 @@ fn slow_a_competitive_assault_on_anubis_swaps_sides_and_spawn_rooms() {
         }
     }
 
-    let schemas = Arc::new(Schemas::game());
+    let schemas = Arc::new(Schemas::game(&lucy_testkit::runtime_dir()).unwrap());
     let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     server
         .set_match_timers(lucy_sim::match_flow::Timers { scale: SCALE })
@@ -6532,7 +6534,7 @@ fn practice_bots_run_their_scripts_for_a_client() {
         }
         Ok(Some(Box::new(factory.start(spawn)?)))
     }));
-    let schemas = Arc::new(Schemas::game());
+    let schemas = Arc::new(Schemas::game(&lucy_testkit::runtime_dir()).unwrap());
     let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     let ticket = server
         .open_prepared_practice(MATCH, scene, player().remove(0), PlayerCard::default())
@@ -6806,7 +6808,7 @@ fn the_range_mode_frames_leave_room_for_every_movement_record() {
     let mut assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
     assets.set_bot_unknowns(Unknowns::Tolerate);
     let scene = assets.prepare(GameMap::practice_range()).unwrap();
-    let schemas = Arc::new(Schemas::game());
+    let schemas = Arc::new(Schemas::game(&lucy_testkit::runtime_dir()).unwrap());
     let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     let ticket = server
         .open_prepared_practice(MATCH, scene, player().remove(0), PlayerCard::default())
@@ -6974,7 +6976,7 @@ fn a_firing_practice_bot_shoots_the_player() {
     shooter.position = [bot_x, y, bot_z];
     shooter.yaw = ((-sin).atan2(-cos) * 65536.0 / std::f64::consts::TAU).rem_euclid(65536.0);
     let shooter = shooter.entity;
-    let schemas = Arc::new(Schemas::game());
+    let schemas = Arc::new(Schemas::game(&lucy_testkit::runtime_dir()).unwrap());
     let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     let ticket = server
         .open_prepared_practice(MATCH, scene, player().remove(0), PlayerCard::default())

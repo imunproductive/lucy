@@ -98,8 +98,9 @@ fn states(server: &GameService, id: MatchId) -> Vec<PlayerState> {
 /// (20304) once and gets no world, the seat nobody connected to is
 /// dropped, and the match takes nobody more. Its players leave it.
 #[test]
+#[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn a_failed_collision_sends_connected_games_home_once_and_drops_the_others() {
-    let schemas = Arc::new(Schemas::game());
+    let schemas = Arc::new(Schemas::game(&lucy_testkit::runtime_dir()).unwrap());
     let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     let (release, wait) = mpsc::channel::<io::Error>();
     let prepare: ScenePreparation = Box::new(move || Err(wait.recv().unwrap()));
@@ -204,7 +205,7 @@ fn seats_wait_for_their_scene_while_another_match_plays() {
     use lucy_sim::scene_assets::SceneAssets;
 
     let assets = Arc::new(SceneAssets::load(lucy_testkit::runtime_dir()).unwrap());
-    let schemas = Arc::new(Schemas::game());
+    let schemas = Arc::new(Schemas::game(&lucy_testkit::runtime_dir()).unwrap());
     let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     let (release, wait) = mpsc::channel::<()>();
     let prepared = Arc::new(AtomicUsize::new(0));

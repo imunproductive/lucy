@@ -861,8 +861,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn state_card_and_party_rating_messages_match_python_wire_vectors() {
-        let schemas = Schemas::lobby();
+        let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
         let templates = RetailTemplates::captured();
         let ranked = Ranked::new(&templates).unwrap();
         let default = Profile::default();

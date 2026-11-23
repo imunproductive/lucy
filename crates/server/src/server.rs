@@ -116,6 +116,8 @@ impl ServerConfig {
 pub struct Server {
     lobby_addr: SocketAddrV4,
     game_addr: Option<SocketAddr>,
+    /// The lobby's message layouts and protocol groups.
+    schema_counts: (usize, usize),
     stop_lobby: mpsc::Sender<()>,
     lobby: Option<JoinHandle<io::Result<()>>>,
     /// The lobby's connections that have a thread.
@@ -167,9 +169,10 @@ impl Server {
             ));
         }
         let data = config.runtime.join("data");
-        let signing_key = *lucy_fixed::LOBBY_STATE_BLOB_KEY;
-        let schemas = Schemas::lobby();
-        let game_schemas = Arc::new(Schemas::game());
+        let signing_key = game_data::lobby_state_blob_key(&config.runtime)?;
+        let schemas = Schemas::lobby(&config.runtime).map_err(io::Error::other)?;
+        let schema_counts = schemas.counts();
+        let game_schemas = Arc::new(Schemas::game(&config.runtime).map_err(io::Error::other)?);
         let templates = RetailTemplates::captured();
         let items = Arc::new(ItemDb::load(&data)?);
         let collection = Collection::new(&templates, Arc::clone(&items))?;
@@ -204,7 +207,7 @@ impl Server {
         } else {
             None
         };
-        let protocol = Arc::new(Protocol::client());
+        let protocol = Arc::new(Protocol::client(&config.runtime)?);
         let template = config
             .template
             .clone()
@@ -317,6 +320,7 @@ impl Server {
         Ok(Self {
             lobby_addr,
             game_addr,
+            schema_counts,
             stop_lobby,
             lobby: Some(lobby),
             #[cfg(test)]
@@ -335,6 +339,11 @@ impl Server {
 
     pub fn lobby_addr(&self) -> SocketAddrV4 {
         self.lobby_addr
+    }
+
+    /// The number of lobby message layouts and protocol groups it speaks.
+    pub fn schema_counts(&self) -> (usize, usize) {
+        self.schema_counts
     }
     /// The game server's address, when it runs.
     pub fn game_addr(&self) -> Option<SocketAddr> {
@@ -603,8 +612,8 @@ mod tests {
         }
         rust.save().unwrap();
         fs::write(state.path().join("default_account.txt"), "RUST\n").unwrap();
-        let schemas = Schemas::lobby();
-        let game_schemas = Schemas::game();
+        let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
+        let game_schemas = Schemas::game(&lucy_testkit::runtime_dir()).unwrap();
         let collection = Collection::new(
             &RetailTemplates::captured(),
             Arc::new(ItemDb::load(&runtime.join("data")).unwrap()),
@@ -895,7 +904,7 @@ mod tests {
             LEADERBOARD_OUT,
             player::PERMISSIONS,
         ];
-        let schemas = Schemas::lobby();
+        let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
         let mut client = Client::connect(&schemas, SocketAddr::from(server.lobby_addr()), &groups);
         let id16 = |lo: u64| {
             Value::Struct(Fields::from([

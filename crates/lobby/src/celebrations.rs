@@ -267,7 +267,7 @@ impl Celebrations {
         economy: Arc<Economy>,
     ) -> io::Result<Self> {
         Self::from_readers(
-            lucy_fixed::RESOURCE_KEYS.as_bytes(),
+            BufReader::new(File::open(data_dir.join("resource_keys.json"))?),
             BufReader::new(File::open(data_dir.join("extracted_maps.json"))?),
             templates,
             economy,
@@ -1015,7 +1015,7 @@ mod tests {
         let economy = Arc::new(Economy::load(&data).unwrap());
         let celebrations = Celebrations::load(&data, &templates, economy).unwrap();
         let items = ItemDb::load(&data).unwrap();
-        let schemas = Schemas::lobby();
+        let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
         let empty = Profile {
             events: Vec::new(),
             server_date: "2022-09-16".into(),

@@ -398,7 +398,7 @@ mod tests {
     #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn arcade_and_pass_wire_bytes_match_python_across_events_seasons_and_dates() {
         let data = lucy_testkit::runtime_dir().join("data");
-        let schemas = Schemas::lobby();
+        let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
         let templates = RetailTemplates::captured();
         let ranked = Ranked::new(&templates).unwrap();
         let arcade = Arcade::load(data.join("arcade_cards_174.json"), &templates).unwrap();

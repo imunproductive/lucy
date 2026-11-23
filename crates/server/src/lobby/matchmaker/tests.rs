@@ -95,7 +95,7 @@ fn one_player_to_start_pops_the_queue_and_hands_the_game_off() {
         )
     );
 
-    let schemas = Schemas::lobby();
+    let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
     let mut client = Client::connect(&schemas, SocketAddr::from(server.lobby_addr()), &GROUPS);
     let key = Fields::from([(
         0,
@@ -258,7 +258,7 @@ fn a_host_creates_a_custom_game_and_starts_it() {
     config.dashboard_port = None;
     // The clocks stand still: the replies come with each message.
     let (mut server, _clocks) = Server::start_virtual(config).unwrap();
-    let schemas = Schemas::lobby();
+    let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
     let mut client = Client::connect(&schemas, SocketAddr::from(server.lobby_addr()), &GROUPS);
     client.send(OUT_CONNECT, LOGIN_MESSAGE, Fields::new());
 

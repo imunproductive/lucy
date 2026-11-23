@@ -334,7 +334,7 @@ mod tests {
         let items = Arc::new(ItemDb::load(&data).unwrap());
         let collection = Collection::new(&templates, Arc::clone(&items)).unwrap();
         let ranked = Ranked::new(&templates).unwrap();
-        let schemas = Schemas::lobby();
+        let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
 
         let default = Profile {
             player_name: "Mode fixture".into(),
@@ -391,10 +391,11 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn only_the_players_own_account_gets_a_full_career_profile() {
         let collection = crate::test_catalog::collection();
         let ranked = Ranked::new(&RetailTemplates::captured()).unwrap();
-        let schemas = Schemas::lobby();
+        let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
         let profile = Profile {
             player_name: "Career".into(),
             ..Profile::default()

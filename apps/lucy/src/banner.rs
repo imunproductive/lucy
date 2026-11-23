@@ -9,7 +9,6 @@ use std::{
 
 use lucy_lobby::accounts::saved_names;
 use lucy_server::server::Server;
-use lucy_wire::jam::codec::Schemas;
 use tracing::info;
 
 use crate::{logging::LOG_FILE, settings::Settings};
@@ -55,7 +54,7 @@ pub fn log(server: &Server, settings: &Settings, game_host: &str) {
         game_host,
         accounts: &accounts,
         template: &template,
-        schemas: Schemas::lobby().counts(),
+        schemas: server.schema_counts(),
         log_file: &settings.logs().join(LOG_FILE),
     };
     for line in lines(&banner) {

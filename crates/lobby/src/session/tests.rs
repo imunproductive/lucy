@@ -235,7 +235,7 @@ fn a_login_with_a_path_for_a_name_is_refused_without_a_profile() {
 #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn prepared_subset_matches_the_python_login_in_wire_order() {
     let runtime = lucy_testkit::runtime_dir().join("data");
-    let schemas = Schemas::lobby();
+    let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
     let templates = RetailTemplates::captured();
     let items = Arc::new(ItemDb::load(&runtime).unwrap());
     let reaper = items.hero_by_name("Reaper").unwrap();
@@ -433,7 +433,7 @@ fn prepared_subset_matches_the_python_login_in_wire_order() {
 #[ignore = "requires a derived 104319 runtime"]
 fn live_messages_follow_the_python_refresh_order() {
     let runtime = lucy_testkit::runtime_dir().join("data");
-    let schemas = Schemas::lobby();
+    let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
     let templates = RetailTemplates::captured();
     let items = Arc::new(ItemDb::load(&runtime).unwrap());
     let collection = Collection::new(&templates, items).unwrap();

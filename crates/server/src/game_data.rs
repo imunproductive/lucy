@@ -1,11 +1,28 @@
 //! The files the server reads from a derived game data folder.
 
-use std::path::Path;
+use std::{fs, io, path::Path};
+
+/// The key the lobby signs its state blob with: the client's own, which
+/// `lucy-assets` reads from the client program.
+pub fn lobby_state_blob_key(root: &Path) -> io::Result<[u8; 64]> {
+    let path = root.join("data/lobby_state_blob.key");
+    fs::read(&path)?.try_into().map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{} is not 64 bytes", path.display()),
+        )
+    })
+}
 
 /// Every file under `data/` that the lobby and the match worker read. The
 /// install derivation (`lucy-assets`) writes them all.
 pub const FILES: &[&str] = &[
     "extracted_items.json",
+    "lobby_schemas.json",
+    "game_schemas.json",
+    "bnet_descriptors.pb",
+    "lobby_state_blob.key",
+    "resource_keys.json",
     "extracted_general_unlocks.json",
     "extracted_heroes.json",
     "extracted_maps.json",

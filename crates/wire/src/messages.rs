@@ -146,10 +146,12 @@ pub fn write_channel(
         .expect("a message");
     // Only the last byte's unused bits are given back. Bytes whose fields
     // don't end in their last byte (test payloads, not game messages of the
-    // client's layouts) are written whole.
+    // client's layouts), or any message before the game link's layouts were
+    // loaded, are written whole.
     let whole = final_message.len() * 8;
-    let final_end = read_message(&GAME_SCHEMAS, final_message, 0)
-        .ok()
+    let final_end = GAME_SCHEMAS
+        .get()
+        .and_then(|schemas| read_message(schemas, final_message, 0).ok())
         .map(|(_, end)| end)
         .filter(|&end| end <= whole && whole - end < 8)
         .unwrap_or(whole);
@@ -177,8 +179,18 @@ pub fn write_channel(
 }
 
 /// The game link's message layouts, for finding where a message's last
-/// field ends.
-static GAME_SCHEMAS: std::sync::LazyLock<Schemas> = std::sync::LazyLock::new(Schemas::game);
+/// field ends: the first ones [`Schemas::game`] loaded in this process.
+/// There is one client build, so every load reads the same layouts.
+static GAME_SCHEMAS: std::sync::OnceLock<Schemas> = std::sync::OnceLock::new();
+
+/// Keep the game link's layouts for [`write_channel`], unless it has some.
+pub(crate) fn keep_game_schemas(load: impl FnOnce() -> Result<Schemas, CodecError>) {
+    if GAME_SCHEMAS.get().is_none()
+        && let Ok(schemas) = load()
+    {
+        let _ = GAME_SCHEMAS.set(schemas);
+    }
+}
 
 /// Decode the channel and leave the reader at the next field in the frame.
 /// A set presence bit with both counts zero ends immediately after the counts.
@@ -394,10 +406,11 @@ mod tests {
     /// other messages, or the client misreads the rest of the frame (the
     /// freeze after a kill, leafall903/ORPHEUS issue 14).
     #[test]
+    #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn the_frame_goes_on_after_a_final_packed_bool() {
         use crate::combat_messages::CombatNotice;
 
-        let schemas = Schemas::game();
+        let schemas = Schemas::game(&lucy_testkit::runtime_dir()).unwrap();
         let elimination = CombatNotice::Elimination {
             killer: 0xa000_0101,
             victim: 0xa002_0005,

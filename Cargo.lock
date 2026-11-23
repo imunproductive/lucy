@@ -619,13 +619,13 @@ dependencies = [
  "lucy-testkit",
  "lucy-wire",
  "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]
 name = "lucy-bnet"
 version = "0.0.0"
 dependencies = [
- "lucy-fixed",
  "lucy-testkit",
  "lucy-wire",
  "prost",
@@ -761,7 +761,6 @@ dependencies = [
  "lucy-bnet",
  "lucy-content",
  "lucy-core",
- "lucy-fixed",
  "lucy-lobby",
  "lucy-script",
  "lucy-sim",
@@ -824,7 +823,6 @@ dependencies = [
  "getrandom",
  "hmac",
  "lucy-core",
- "lucy-fixed",
  "lucy-testkit",
  "serde",
  "serde_json",

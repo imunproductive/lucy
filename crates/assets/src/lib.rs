@@ -18,6 +18,7 @@ mod blend_trees;
 mod body_data;
 mod bot_animation;
 pub mod cache;
+pub mod client;
 mod collision;
 mod economy;
 mod game_maps;
@@ -36,6 +37,7 @@ mod objectives;
 mod progression;
 mod props;
 mod ray_profiles;
+pub mod resource_keys;
 mod tunables;
 mod voice_sets;
 mod workshop;
@@ -108,6 +110,14 @@ pub struct Derivation {
 
 /// Every derivation, inputs first.
 pub const DERIVATIONS: &[Derivation] = &[
+    Derivation {
+        name: "client",
+        derive: client::derive,
+    },
+    Derivation {
+        name: "resource_keys",
+        derive: resource_keys::derive,
+    },
     Derivation {
         name: "lists",
         derive: lists::derive,

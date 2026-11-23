@@ -8,7 +8,6 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
-lucy-fixed.workspace = true
 lucy-wire.workspace = true
 prost.workspace = true
 prost-reflect.workspace = true

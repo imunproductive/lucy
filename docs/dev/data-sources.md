@@ -8,13 +8,13 @@ The server derives its game data from the install (`crates/assets`, see [archite
 
 | File | Content | Made by | Inputs |
 | --- | --- | --- | --- |
-| `schemas_174.json` | Layouts of 707 lobby messages in 87 protocol groups | `dump_schemas.py` from a running client or a memory dump | Client memory (fixed data) |
-| `game_schemas_174.json` | Layouts of the game link messages | `dump_schemas.py --game-link` | Client memory (fixed data) |
+| `lobby_schemas.json` | Layouts of 707 lobby messages in 87 protocol groups | `lucy-assets` derivation `client` (was `dump_schemas.py` over a running client) | The client program `_retail_/Overwatch.exe`: its `JamMessageInfo` records in `.data`/`.rdata`, stored plain on disk (the code is encrypted). Byte for byte the file the repository used to ship (`crates/assets/tests/client.rs`) |
+| `game_schemas.json` | Layouts of the game link messages (11 protocols, in the wire order of the client's table `0x7FF789B797C0`) | `lucy-assets` derivation `client` (was `dump_schemas.py --game-link`) | The client program, as above |
+| `bnet_descriptors.pb` | Battle.net protobuf descriptor set: every `bgs/low/pb/client/` file the program holds and the files they import, in name order | `lucy-assets` derivation `client`; `lucy join` reads it from the program directly (`client::bnet_descriptors`) | The client program's serialized `FileDescriptorProto`s |
+| `lobby_state_blob.key` | The client's 64-byte HMAC key for the lobby handshake's state blob | `lucy-assets` derivation `client` | The client program's `.rdata` at `0x278CF30`, checked against its SHA-256 |
+| `resource_keys.json` | The content keys the server hands the client for events (20504 and each event record): 189 keys by asset index, each with its name | `lucy-assets` derivation `resource_keys` | `090` `STUResourceKey` (`m_key`, `m_keyID`); a key its asset doesn't name takes the install keyring's name for the same bytes, else its GUID |
 | `statescript_codecs_174.json` | What the client reads for each statescript state class in a frame (property block and class reader) | `extract_statescript_codecs.py`, an IDA script over a client memory image (base `0x7FF788F10000`) | Client code (fixed data) |
-| `bnet/descriptors.pb` | Battle.net protobuf descriptor set | Extracted from the client | Client binary (fixed data) |
-| `lobby_state_blob.key` | 64-byte signing key for the lobby state blob | — | Fixed data |
 | `retail_templates.json` | Decoded server templates, including catalogs and prices. Display-name markers are anonymized. | Decoded from 1.68 reference traffic with the 1.74 schemas | Captured server data (fixed data) |
-| `resource_keys_174.json` | Content keys for event resources, sent by the server to the client. Not account credentials. | — | Fixed data |
 | `extracted_heroes.json` | Hero identifiers and names (DataTool `list-heroes --json`) | `lucy-assets` derivation `lists` | `075`, `09E` loadouts, `07C` strings, DataTool's `GUIDNames.csv` hero classes |
 | `extracted_maps.json` | Map metadata and seasonal variants, English names (DataTool `list-maps --json`) | `lucy-assets` derivation `lists` | `09F`, `0C5` mode names, `07C` strings, DataTool's `GUIDNames.csv` menu map and celebration names. The pack's copy has other text for 207 of its strings (mostly `""`); the derivation writes the install's text, as DataTool does |
 | `extracted_items.json`, `extracted_general_unlocks.json` | Cosmetic names, types, rarity, categories and rewards (DataTool `list-unlocks --json`, `list-general-unlocks --json`) | `lucy-assets` derivation `lists` | `075`, `054` player progression, `0A5` unlocks, esports teams, `07C` strings, DataTool's `GUIDNames.csv` categories |
@@ -65,7 +65,7 @@ The fixed data most likely came from client dumps and traffic captured while the
 - **CASC GUID lookup (`crates/casc`):** `.build.info` (active row) names the build config and keyring under `data\casc\config\ab\cd\<hash>`. The build config names the encoding table (by encoding key) and the root file (by content key). The root file lists the `RDEV` content manifests (`.cmf`): one base, plus text and speech per locale. A 104319 CMF header is twelve u32s ending in asset count, entry count and magic; the body is AES-256-CBC encrypted with TACTLib's `ProCMF_104319` key and an IV from the SHA-1 of the manifest's file name. Assets are 29 bytes `{GUID, u32 size, u8, content key}`. Bundles (`09C`) start `{i32 count, u8 offset size}` with `{GUID, offset}` entries; the asset size comes from the manifest. Encrypted BLTE blocks (`E`) are Salsa20 with a keyring key; the IV's low 32 bits are xored with the block number.
 - **Structured data (`crates/stu`):** an STUv2 asset starts with three `{i32 count, i32 offset}` tables (instances `{class hash, field hash, instance, size}`, inline array types, field bags of `{field hash, size}`), then the size and offset of the dynamic buffer and the offset of the data buffer. Each instance in the data buffer is a field bag index and that bag's fields; a size of 0 means the field's size precedes it. Arrays, strings and hash maps live in the dynamic buffer. Asset references are stored xored with the field hash (repeated in both halves) and the CRC-64 of the 36-byte header (reflected polynomial `0x95AC9329AC4BC9B5`, zero start, inverted output), with bytes 0/3, 7/1, 2/6 and 4/5 swapped. Fields an asset doesn't store take the class's declared default.
 - **The key the install lacks:** 8 bundles are encrypted with key `28B8EBB462B83EEA`, which the install's keyring lacks (OWLib's support keyring labels it "[1.74] ???"). They hold 1 of 1,587 graphs (`1D6D`), 19 of 3,528 definitions, maps `0EEE` and `0F14`, the Genji "Happi" OWL skin (`000000005058.0A5`), and some models and strings. Those two maps are main menu lobby maps, "OWL Summer Showdown 2022" and "Goodbye" ([Logo2K's lobby map list](https://rentry.co/wcwyv3r8)). TACTLib's static `Overwatch.keyring` has the key (tagged `[1.74]`), and DataTool uses it too, so the recorded export has those assets; `crates/casc` uses it when the install's keyring lacks it, and every graph and definition reads and matches its content key (`just test-game`). The derived lists need it for the Happi skin; nothing derived references `1D6D`.
-- **Message schemas in client memory** (how `lobby_schemas.json` and `game_schemas.json` were dumped from a running 1.74 client, read-only): the client keeps one `JamMessageInfo` per message `{name*, protocol*, items*, u32 crc, u32 message_id}`. Items are 0x30-byte records `{name*, u32 type, u32 offset, u32 size, i32 count, inner*, resize*, bits}`; type 17 ends a list, type 14 nests a struct through `inner*`, and a non-null `resize*` marks an array. The game link's protocols have no announcement: they sit in a fixed table in the client's message system (0x7FF789B797C0), in wire-index order.
+- **Message schemas in the client program** (how `lucy_assets::client` reads `lobby_schemas.json` and `game_schemas.json`; `dump_schemas.py` read the same records from a running client): the client keeps one `JamMessageInfo` per message `{name*, protocol*, items*, u32 crc, u32 message_id}`. Items are 0x30-byte records `{name*, u32 type, u32 offset, u32 size, i32 count, inner*, resize*, bits}`; type 17 ends a list, type 14 nests a struct through `inner*`, and a non-null `resize*` marks an array. The game link's protocols have no announcement: they sit in a fixed table in the client's message system (0x7FF789B797C0), in wire-index order.
 
 ## Pinned tools and the recorded extraction
 
@@ -79,18 +79,23 @@ The fixed data most likely came from client dumps and traffic captured while the
 
 ## Fixed data (`crates/fixed/data`)
 
-Committed and embedded in the binary. Taken from LizRollin's repository (MIT) at `9f8f3bcb5eccab6fb7738bee3c2371fcf0623f29` and renamed:
+Committed and embedded in the binary. Taken from LizRollin's repository (MIT) at `9f8f3bcb5eccab6fb7738bee3c2371fcf0623f29` and renamed. The audit of 2026-11-23 (`D:/Work/Coding/refs/reports/RepoData.md`) says why each is kept:
+
+| File | Source in that commit | SHA-256 |
+| --- | --- | --- |
+| `statescript_codecs.json` | `data/statescript_codecs_174.json` | `49834e2c3b2a9761011be0b17d5b742e784a148090ed6f0430771bb7e6bea019` |
+| `retail_templates.json` | `data/retail_templates.json` | `667cf09afd5a2b889b4c95e7957e0d2d90d5a7a711cb527fc8159bed2c5602e5` |
+| `statescript_names.json` | `data/statescript_names_174.json` | `1b9289832ad27b111802eb2a25d0ca94abdae9e11b769d7374eadc13ff342dbb` |
+
+Until 2026-11-23 it also held the files the server now derives (`lucy-assets` derivations `client` and `resource_keys`); the derived ones are byte for byte these (key names aside, see `resource_keys.json` above), which `crates/assets/tests/client.rs` checks:
 
 | File | Source in that commit | SHA-256 |
 | --- | --- | --- |
 | `lobby_schemas.json` | `data/schemas_174.json` | `bd0d752bc365df93ab35b3749add3e34c690d06b33ba6ea9293d4589cc2cff53` |
 | `game_schemas.json` | `data/game_schemas_174.json` | `904f77bd3d5fc18a5348aa32d5274c2015454aff274c13c7864a24306dccc12d` |
-| `statescript_codecs.json` | `data/statescript_codecs_174.json` | `49834e2c3b2a9761011be0b17d5b742e784a148090ed6f0430771bb7e6bea019` |
 | `bnet_descriptors.pb` | `ow174/bnet/descriptors.pb` | `c20cac09537c013ef359d3c47aa39b178c51c3efe2258308ca0b1e8ee8f0fb2d` |
 | `lobby_state_blob.key` | `BLOB_KEY` in `ow174/jam/handshake.py` | `ab024361c5acd29e3a45548cc675002b762895753fe6dc7613335b1f0ff033b8` |
-| `retail_templates.json` | `data/retail_templates.json` | `667cf09afd5a2b889b4c95e7957e0d2d90d5a7a711cb527fc8159bed2c5602e5` |
 | `resource_keys.json` | `data/resource_keys_174.json` | `47084948c33f4d2437f0f9c6b452b10a014beedd3a99cef8c3ee3a72e8bd7ba2` |
-| `statescript_names.json` | `data/statescript_names_174.json` | `1b9289832ad27b111802eb2a25d0ca94abdae9e11b769d7374eadc13ff342dbb` |
 
 ## Where a runtime pack comes from
 

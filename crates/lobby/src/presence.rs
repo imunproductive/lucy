@@ -433,8 +433,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn own_and_friend_presence_match_python_wire_values() {
-        let schemas = Schemas::lobby();
+        let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
         let templates = RetailTemplates::captured();
         let presence = Presence::new(&templates).unwrap();
         let profile = Profile {

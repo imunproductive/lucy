@@ -387,8 +387,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn the_messages_encode_with_the_lobby_schemas() {
-        let schemas = Schemas::lobby();
+        let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
         for (crc, id, fields) in [queue_joined(&key()), queue_left(&key()), wait_times()] {
             schemas.encode(crc, id, &fields).unwrap();
         }

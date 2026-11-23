@@ -55,7 +55,7 @@ impl World {
             presence: Presence::new(&captured).unwrap(),
             places: LeaderboardPlaces::new(),
             social: Social::default(),
-            schemas: Schemas::lobby(),
+            schemas: Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap(),
             accounts,
         }
     }
@@ -134,6 +134,7 @@ fn field<'a>(fields: &'a Fields, path: &[u32]) -> &'a Value {
 // --- parties -----------------------------------------------------------------
 
 #[test]
+#[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn a_party_has_one_leader_who_hands_over_on_leaving() {
     let world = World::new();
     let [alpha, beta, gamma] = ["Alpha", "Beta", "Gamma"].map(|name| world.account(name));
@@ -168,6 +169,7 @@ fn a_party_has_one_leader_who_hands_over_on_leaving() {
 }
 
 #[test]
+#[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn joining_another_party_leaves_the_old_one_and_drops_the_invite() {
     let world = World::new();
     let [alpha, beta, gamma] = ["Alpha", "Beta", "Gamma"].map(|name| world.account(name));
@@ -184,6 +186,7 @@ fn joining_another_party_leaves_the_old_one_and_drops_the_invite() {
 }
 
 #[test]
+#[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn an_unanswered_invite_times_out_and_a_new_one_restarts_the_timer() {
     let world = World::new();
     let [alpha, beta, gamma] = ["Alpha", "Beta", "Gamma"].map(|name| world.account(name));
@@ -214,6 +217,7 @@ fn an_unanswered_invite_times_out_and_a_new_one_restarts_the_timer() {
 }
 
 #[test]
+#[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn the_party_chat_channel_follows_group_membership() {
     let world = World::new();
     let [alpha, beta] = ["Alpha", "Beta"].map(|name| world.account(name));
@@ -252,6 +256,7 @@ fn the_party_chat_channel_follows_group_membership() {
 // --- chat and presence -------------------------------------------------------
 
 #[test]
+#[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn channel_members_are_general_the_party_or_the_match() {
     let world = World::new();
     let [alpha, beta, gamma] = ["Alpha", "Beta", "Gamma"].map(|name| world.account(name));
@@ -326,6 +331,7 @@ fn channel_members_are_general_the_party_or_the_match() {
 }
 
 #[test]
+#[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn a_seat_is_seen_once() {
     let world = World::new();
     let alpha = world.account("Alpha");
@@ -337,6 +343,7 @@ fn a_seat_is_seen_once() {
 }
 
 #[test]
+#[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn offline_presence_goes_again_at_3_s_then_7_s_then_every_minute() {
     let world = World::new();
     let alpha = world.account("Alpha");
@@ -357,6 +364,7 @@ fn offline_presence_goes_again_at_3_s_then_7_s_then_every_minute() {
 }
 
 #[test]
+#[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn friends_see_the_chosen_status_and_the_bot_always_online() {
     let world = World::new();
     let alpha = world.account("Alpha");
@@ -372,6 +380,7 @@ fn friends_see_the_chosen_status_and_the_bot_always_online() {
 // --- friends -----------------------------------------------------------------
 
 #[test]
+#[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn a_request_waits_then_a_request_back_means_yes_and_is_saved() {
     let world = World::new();
     let [alpha, beta] = ["Alpha", "Beta"].map(|name| world.account(name));
@@ -417,6 +426,7 @@ fn a_request_waits_then_a_request_back_means_yes_and_is_saved() {
 }
 
 #[test]
+#[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn a_declined_request_only_leaves_the_list() {
     let world = World::new();
     let [alpha, beta] = ["Alpha", "Beta"].map(|name| world.account(name));
@@ -429,6 +439,7 @@ fn a_declined_request_only_leaves_the_list() {
 // --- group finder ------------------------------------------------------------
 
 #[test]
+#[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn a_listed_group_is_found_until_it_is_full() {
     let world = World::new();
     let [alpha, beta, gamma] = ["Alpha", "Beta", "Gamma"].map(|name| world.account(name));
@@ -455,6 +466,7 @@ fn a_listed_group_is_found_until_it_is_full() {
 }
 
 #[test]
+#[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn search_filters_pick_the_groups() {
     let world = World::new();
     let alpha = world.account("Alpha");
@@ -513,6 +525,7 @@ fn search_filters_pick_the_groups() {
 }
 
 #[test]
+#[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn group_limits_hide_and_refuse_players_outside_them() {
     let world = World::new();
     let [alpha, beta] = ["Alpha", "Beta"].map(|name| world.account(name));
@@ -562,6 +575,7 @@ fn group_limits_hide_and_refuse_players_outside_them() {
 }
 
 #[test]
+#[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn the_bot_group_takes_the_first_slot_and_a_merge_the_next_ones() {
     let world = World::new();
     let [alpha, beta] = ["Alpha", "Beta"].map(|name| world.account(name));
@@ -608,6 +622,7 @@ fn the_bot_group_takes_the_first_slot_and_a_merge_the_next_ones() {
 }
 
 #[test]
+#[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn watchers_hear_a_group_until_it_closes() {
     let world = World::new();
     let [alpha, beta] = ["Alpha", "Beta"].map(|name| world.account(name));
@@ -631,6 +646,7 @@ fn watchers_hear_a_group_until_it_closes() {
 // --- messages ----------------------------------------------------------------
 
 #[test]
+#[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn the_party_state_carries_the_listing_slots_and_pending_tiles() {
     let world = World::new();
     let [alpha, beta, gamma] = ["Alpha", "Beta", "Gamma"].map(|name| world.account(name));
@@ -686,6 +702,7 @@ fn the_party_state_carries_the_listing_slots_and_pending_tiles() {
 }
 
 #[test]
+#[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn the_friends_list_has_presence_for_every_friend_and_cards_for_online_ones() {
     let world = World::new();
     let [alpha, beta] = ["Alpha", "Beta"].map(|name| world.account(name));
@@ -744,6 +761,7 @@ fn the_friends_list_has_presence_for_every_friend_and_cards_for_online_ones() {
 }
 
 #[test]
+#[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn the_other_social_messages_encode_as_the_client_reads_them() {
     let world = World::new();
     let alpha = world.account("Alpha");

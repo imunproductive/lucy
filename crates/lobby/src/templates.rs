@@ -546,9 +546,10 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn real_templates_and_localized_login_match_python_wire_hashes() {
         let templates = RetailTemplates::captured();
-        let schemas = Schemas::lobby();
+        let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
         let digest = |messages: &[LobbyMessage]| {
             let mut hash = Sha256::new();
             for (crc, id, fields) in messages {

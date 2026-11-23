@@ -191,7 +191,7 @@ mod tests {
     #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn solo_and_group_party_payloads_match_the_python_wire_bytes() {
         let runtime = lucy_testkit::runtime_dir().join("data");
-        let schemas = Schemas::lobby();
+        let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
         let templates = RetailTemplates::captured();
         let items = Arc::new(ItemDb::load(&runtime).unwrap());
         let reaper = items.hero_by_name("Reaper").unwrap();

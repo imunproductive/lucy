@@ -119,9 +119,11 @@ impl Fixture {
         .unwrap();
         let selected = accounts.get("Alpha").unwrap();
         let (game, network) = if with_game {
-            let (service, network) = Lockstep::new(Arc::new(Schemas::game()))
-                .unwrap()
-                .into_parts();
+            let (service, network) = Lockstep::new(Arc::new(
+                Schemas::game(&lucy_testkit::runtime_dir()).unwrap(),
+            ))
+            .unwrap()
+            .into_parts();
             (Some(Arc::new(service)), Some(network))
         } else {
             (None, None)
@@ -129,8 +131,9 @@ impl Fixture {
         let clock = VirtualClock::default();
         let economy = Arc::new(lucy_lobby::economy::Economy::load(&data).unwrap());
         let lobby = Arc::new(Lobby {
-            signing_key: *lucy_fixed::LOBBY_STATE_BLOB_KEY,
-            schemas: Schemas::lobby(),
+            signing_key: crate::game_data::lobby_state_blob_key(&lucy_testkit::runtime_dir())
+                .unwrap(),
+            schemas: Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap(),
             presence: Presence::new(&templates).unwrap(),
             ranked: Ranked::new(&templates).unwrap(),
             arcade: Arcade::load(data.join("arcade_cards_174.json"), &templates).unwrap(),
@@ -418,7 +421,7 @@ impl Game {
         client.handshake();
         Self {
             client,
-            schemas: Schemas::game(),
+            schemas: Schemas::game(&lucy_testkit::runtime_dir()).unwrap(),
         }
     }
 

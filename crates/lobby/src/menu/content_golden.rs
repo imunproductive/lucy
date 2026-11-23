@@ -425,7 +425,7 @@ fn messages_are_unchanged() {
     let extra_preload = extra_preload_themes(&items).collect();
     let temporary = tempfile::tempdir().unwrap();
     let content = Content {
-        schemas: Schemas::lobby(),
+        schemas: Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap(),
         collection: Collection::new(&templates, items).unwrap(),
         presence: Presence::new(&templates).unwrap(),
         ranked: Ranked::new(&templates).unwrap(),

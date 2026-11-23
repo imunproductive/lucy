@@ -18,22 +18,17 @@ The fork was rebuilt from a Python server with a Rust port into one Rust workspa
 
 ## Fixed data
 
-These inputs are not game assets, so CASC cannot provide them. They are fixed for build 104319 and never change. Most likely they came from client dumps and traffic taken while the live servers were still running. The first seven and the research names are committed in `crates/fixed/data` (decision D1) and embedded in the binary; [data-sources.md](data-sources.md) records their source and SHA-256.
+These inputs can't be read from the install while the server runs. They are fixed for build 104319 and committed in `crates/fixed/data` (decision D1) and embedded in the binary; [data-sources.md](data-sources.md) records their source and SHA-256, and `D:/Work/Coding/refs/reports/RepoData.md` the audit of every committed data file (2026-11-23).
 
-| Item | File | Why it can't come from CASC |
+| Item | File | Why it isn't derived |
 | --- | --- | --- |
-| Lobby message schemas | `lobby_schemas.json` | Field layouts of compiled C++ message classes, read from a running client |
-| Game link schemas | `game_schemas.json` | Same, with `--game-link` |
-| Statescript payload codecs | `statescript_codecs.json` | What the client's reader code reads per state class, extracted with IDA from a client memory image |
-| Battle.net descriptors | `bnet_descriptors.pb` | Protobuf descriptors compiled into the client |
-| Lobby state-blob key | `lobby_state_blob.key` | A 64-byte constant of the build's handshake |
-| Captured server templates | `retail_templates.json` | Server-side data, decoded from 1.68 reference traffic. It was never in the client. |
-| Event resource keys | `resource_keys.json` | The server sends them to the client (`lobby_celebrations`). Treated as server-side data; whether the install also contains them is unverified (D2). |
+| Statescript payload codecs | `statescript_codecs.json` | Our description of what the client's reader code reads per state class, generated with IDA from a client memory image. The program's code is encrypted on disk, so the server can't read it there. |
+| Captured server templates | `retail_templates.json` | Server-side data, decoded from 1.68 reference traffic; never in the client. Being replaced by messages our code builds (agent TemplatesGone). |
 | Server-set queue and Arcade card fields | Parts of `game_queues_174.json` and `arcade_cards_174.json` | The `game_queues` derivation reads the captured templates. Arcade card duration and permanence are set by the server, not the card asset. |
 | Rules from client code used by derivations | Constants in the derivations, for example the placeable type flag table in `crates/assets/src/game_maps.rs` | Facts about compiled code. |
 | Research names | `statescript_names.json` | Research-only naming catalog (class aliases, the STU fields that hold a variable, logical buttons, the hero select and HUD graphs, each mode's scripts, the server's variable names), used by `lucy script query`. Upstream research (LizRollin's `statescript_names_174.json`), not read from the client. |
 
-The captured templates should become authored server content: TOML files a server owner can read and edit, generated once from `retail_templates.json`.
+Derived since 2026-11-23 (`lucy-assets` derivations `client` and `resource_keys`): the lobby and game link message layouts, the Battle.net descriptors and the lobby state-blob key from the client program's data sections (stored plain on disk), and the event resource keys from the install's `090` assets (D2).
 
 ## Decisions
 
@@ -49,13 +44,12 @@ The captured templates should become authored server content: TOML files a serve
 | Dashboard | The JavaScript front end stays; the backend is Rust. No WebAssembly. |
 | Runtime | No async runtime. `mio` and worker threads stay. |
 | Target | Build 104319 only |
-| D1 Fixed data | Committed to `crates/fixed/data` and embedded in the binary (decided 2026-11-10). The repository owns the files, so names and formats may change. |
+| D1 Fixed data | Committed to `crates/fixed/data` and embedded in the binary (decided 2026-11-10). The repository owns the files, so names and formats may change. Only what the server can't derive from the install at run time stays (2026-11-23). |
+| D2 Resource keys | Derived from the install's `090` assets (2026-11-23): all 189 are there, with the shipped bytes. |
 
 ### Open
 
-| ID | Question | Options | Needed before |
-| --- | --- | --- | --- |
-| D2 | Can `resource_keys_174.json` be derived from the install? | If the install does contain the keys, the item moves out of the fixed data. | — |
+None.
 
 ## Upstream ports
 

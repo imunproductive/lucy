@@ -133,6 +133,15 @@ impl Keyring {
                 .map(|(_, key)| key)
         })
     }
+
+    /// The name the install's keyring gives `key` (not the static keys).
+    pub fn name_of(&self, key: &[u8; 16]) -> Option<u64> {
+        self.keys
+            .iter()
+            .filter(|(_, known)| *known == key)
+            .map(|(&name, _)| name)
+            .min()
+    }
 }
 
 /// Keys this build's content needs that the install's keyring lacks, from

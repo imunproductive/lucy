@@ -12,6 +12,7 @@ lucy-casc.workspace = true
 lucy-fixed.workspace = true
 lucy-stu.workspace = true
 flate2.workspace = true
+sha2.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
 
 [dev-dependencies]
@@ -19,3 +20,4 @@ lucy-physics = { workspace = true, features = ["fixtures"] }
 lucy-stu.workspace = true
 lucy-testkit.workspace = true
 lucy-wire.workspace = true
+sha2.workspace = true

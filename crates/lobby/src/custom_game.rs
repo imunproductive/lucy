@@ -512,7 +512,7 @@ mod tests {
     /// teams of 12 and 0, an Assault block, one Workshop item; each encoded
     /// and decoded with the lobby schemas as the session would.
     fn upload() -> Vec<(u32, Fields)> {
-        let schemas = Schemas::lobby();
+        let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
         let workshop = Fields::from([(
             0,
             Array(vec![Struct(Fields::from([(
@@ -577,6 +577,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn an_upload_completes_with_its_last_chunk_and_reads_back() {
         let mut upload_state = Upload::default();
         let mut done = None;
@@ -610,6 +611,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn the_answers_replay_the_upload_in_the_server_groups() {
         let mut upload_state = Upload::default();
         let settings = upload()
@@ -622,7 +624,7 @@ mod tests {
             host_card: Fields::new(),
             host_group: [0, 0],
         };
-        let schemas = Schemas::lobby();
+        let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
         let entered = lobby.enter(&settings);
         let ids: Vec<_> = entered.iter().map(|(_, id, _)| *id).collect();
         assert_eq!(ids, [23304, 23305, 23306, 23308, 53000, 53001, 53002]);

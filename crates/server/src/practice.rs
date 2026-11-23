@@ -250,9 +250,10 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn practice_request_hands_off_an_authenticated_udp_seat_and_releases_failed_sends() {
-        let lobby = Schemas::lobby();
-        let game_schemas = Arc::new(Schemas::game());
+        let lobby = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
+        let game_schemas = Arc::new(Schemas::game(&lucy_testkit::runtime_dir()).unwrap());
         let game = Lockstep::new(game_schemas).unwrap();
         let fields = lobby
             .decode(GAME_REQUEST, CREATE_GAME, REQUEST, true)

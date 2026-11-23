@@ -507,7 +507,7 @@ fn virtual_clock(
     players: usize,
     rooms: usize,
 ) -> (Vec<Option<TickStats>>, u64) {
-    let schemas = Arc::new(Schemas::game());
+    let schemas = Arc::new(Schemas::game(&lucy_testkit::runtime_dir()).unwrap());
     let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     server
         .set_match_timers(lucy_sim::match_flow::Timers { scale: 0.25 })
@@ -581,7 +581,7 @@ fn real_clock(
     players: usize,
     rooms: usize,
 ) -> (Vec<Option<TickStats>>, u64) {
-    let schemas = Arc::new(Schemas::game());
+    let schemas = Arc::new(Schemas::game(&lucy_testkit::runtime_dir()).unwrap());
     let mut server =
         GameService::bind((Ipv4Addr::LOCALHOST, 0).into(), Arc::clone(&schemas)).unwrap();
     server

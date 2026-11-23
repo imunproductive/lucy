@@ -814,7 +814,7 @@ mod tests {
     #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn progression_and_gallery_wire_bytes_match_python_for_three_profiles() {
         let runtime = lucy_testkit::runtime_dir().join("data");
-        let schemas = Schemas::lobby();
+        let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
         let templates = RetailTemplates::captured();
         let items = Arc::new(ItemDb::load(&runtime).unwrap());
         let reaper = items.hero_by_name("Reaper").unwrap();

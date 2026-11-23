@@ -12,8 +12,9 @@ fn entry(value: i64, key: u64) -> Value {
 }
 
 #[test]
+#[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn a_saved_block_comes_back_in_20802() {
-    let schemas = Schemas::lobby();
+    let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
     let mut profile = Profile::default();
     let social = Value::Struct(Fields::from([
         (0, Value::Bool(false)),
@@ -61,6 +62,7 @@ fn stored_values_restore_unchanged() {
 }
 
 #[test]
+#[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn changed_values_replace_their_setting_id_in_place() {
     let mut profile = Profile::default();
     profile.settings.insert(
@@ -78,7 +80,11 @@ fn changed_values_replace_their_setting_id_in_place() {
         profile.settings["+0x130"],
         json!([{"+0x0": 5, "+0x8": 20}, {"+0x0": 7, "+0x8": 30}, {"+0x0": u64::MAX, "+0x8": 10}])
     );
-    player_messages::settings(&Schemas::lobby(), &profile).unwrap();
+    player_messages::settings(
+        &Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap(),
+        &profile,
+    )
+    .unwrap();
 }
 
 #[test]
