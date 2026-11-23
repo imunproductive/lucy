@@ -9,6 +9,7 @@ use std::{
 
 use lucy_lobby::accounts::saved_names;
 use lucy_server::server::Server;
+use lucy_wire::tcp::PeerLimits;
 use tracing::info;
 
 use crate::{logging::LOG_FILE, settings::Settings};
@@ -23,6 +24,8 @@ struct Banner<'a> {
     /// This PC's addresses other PCs can dial.
     network: &'a [Ipv4Addr],
     game_host: &'a str,
+    /// The players the lobby serves at once, and from one address.
+    players: PeerLimits,
     accounts: &'a [String],
     /// The file new accounts copy.
     template: &'a str,
@@ -52,6 +55,7 @@ pub fn log(server: &Server, settings: &Settings, game_host: &str) {
         dashboard: server.dashboard_addr(),
         network: &network,
         game_host,
+        players: settings.lobby_limits,
         accounts: &accounts,
         template: &template,
         schemas: server.schema_counts(),
@@ -107,6 +111,10 @@ fn lines(banner: &Banner<'_>) -> Vec<String> {
         Some(dashboard) => format!(" [*] Dashboard:      http://{dashboard}"),
         None => " [*] Dashboard:      off".to_owned(),
     });
+    lines.push(format!(
+        " [*] Players:        at most {}, {} from one address",
+        banner.players.total, banner.players.per_address
+    ));
     lines.push(format!(
         " [*] Accounts:       {} (profiles/)",
         if banner.accounts.is_empty() {
@@ -193,6 +201,7 @@ mod tests {
             dashboard: None,
             network: &network,
             game_host: "1.2.3.4",
+            players: lucy_server::server::LOBBY_LIMITS,
             accounts: &[],
             template: "profile.json",
             schemas: (707, 87),

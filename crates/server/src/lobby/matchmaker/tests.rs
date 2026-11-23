@@ -910,7 +910,7 @@ mod results {
         let (stop, shutdown) = mpsc::channel();
         let server = {
             let lobby = Arc::clone(lobby);
-            let peers = peer_workers(&lobby.clock);
+            let peers = peer_workers(&lobby);
             thread::spawn(move || serve(listener, lobby, shutdown, peers))
         };
         let mut client = Client::login(&lobby.schemas, address, &ANNOUNCED, "Alpha");

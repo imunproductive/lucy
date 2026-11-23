@@ -14,6 +14,8 @@ game = 'C:\Games\Overwatch'   # the install, Overwatch.exe or the official launc
 account = "Player"            # the saved account the game logs in as
 dev_console = false           # the game's own engine console (Alt+backtick)
 locale = "auto"               # auto, none, or a code such as enUS
+max_players = 128             # players the lobby serves at once
+max_players_per_address = 16  # of them, from one address
 
 [ports]
 lobby = 3724                  # TCP
@@ -29,6 +31,8 @@ dashboard = 3725              # TCP; 0 turns the dashboard off
 | `account` | `--account` | | `default_account.txt` | The saved account the game on this PC logs in as |
 | `locale` | `--locale` | | `auto` | The game language: `auto`, `none` or a code such as `enUS` (see [playing](playing.md#game-language)) |
 | `dev_console` | `--dev-console` | `LUCY_DEV_CONSOLE` | off | Turns on the game's developer features and its own engine console: in the game, Alt+backtick opens it (a `>:` prompt; what works there: [the engine console](#the-engine-console)). The console is the client's: nothing you type there goes to the server. Don't use the `--tank_Console` or `--tank_ShowMode` game options for this: one of them opens a full-screen window that can't be hidden or closed. The flag or `LUCY_DEV_CONSOLE=1` turns it on even when `config.toml` says `false`. |
+| `max_players` | `--max-players` | | 128 | The players the lobby serves at once: everyone online, in the menus or in a match. At least 1. Each game holds one lobby connection; a player who joins with `lucy join` holds a second one for a moment. A player over the limit can't connect, and the server log says "The lobby serves N connections, its most". See [hosting](hosting.md#how-many-players). |
+| `max_players_per_address` | `--max-players-per-address` | | 16, or `max_players` if lower | The players the lobby serves at once from one IP address: a household or a mobile or carrier-grade NAT behind one public address, or the games on this PC. Players on your LAN each have their own address. At least 1, and not above `max_players`. |
 | `ports.lobby` | `--lobby-port` | | 3724 | Lobby, TCP |
 | `ports.stall` | `--stall-port` | | 1119 | Battle.net, TCP |
 | `ports.rpc` | `--rpc-port` | | 21119 | Battle.net RPC, TCP |

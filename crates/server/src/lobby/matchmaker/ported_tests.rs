@@ -144,6 +144,7 @@ impl Fixture {
             collection,
             extra_preload: Vec::new(),
             dev_console: false,
+            limits: crate::server::LOBBY_LIMITS,
             assets,
             first_scene: Mutex::new(None),
             accounts: Arc::new(accounts),

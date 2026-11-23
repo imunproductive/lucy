@@ -34,6 +34,12 @@ dashboard-test:
 build:
     cargo build --workspace --release --locked
 
+# A release for Windows in dist/ (docs/dev/releasing.md): the release build with `version` (1.2.3 or
+# v1.2.3) in `lucy --version`, zipped with the relay script, the user guide, LICENSE and CREDITS.md;
+# the zip's SHA-256 and the release notes. The release workflow (.github/workflows/release.yml) runs it.
+dist version:
+    python tools/dist/dist.py {{version}}
+
 # Every recipe builds and tests with a quarter of the PC's CPU threads (4 on a 16-thread PC; cargo's
 # default is all of them): other agents and the user share the machine. The game-install tests also
 # need the cap for memory: each keeps a game server thread busy in real time beside its own and holds

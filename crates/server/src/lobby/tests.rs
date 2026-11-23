@@ -14,12 +14,24 @@ use lucy_lobby::{
     session::{HANDSHAKE_TIMEOUT, LOGIN_TIMEOUT},
     templates::IN_CONNECT,
 };
-use lucy_wire::jam::codec::{Fields, Schemas, Value};
+use lucy_wire::{
+    jam::codec::{Fields, Schemas, Value},
+    tcp::PeerLimits,
+};
 
-use super::{IDLE_TIMEOUT, LIMITS, TICK, test_client::Client};
-use crate::server::{Server, ServerConfig, VirtualTime};
+use super::{IDLE_TIMEOUT, TICK, test_client::Client};
+use crate::server::{LOBBY_LIMITS, Server, ServerConfig, VirtualTime};
 
 const ANNOUNCED: [u32; 4] = [IN_CONNECT, OUT_CONNECT, GAME_REQUEST, HANDOFF];
+/// The host's limits (`--max-players 6 --max-players-per-address 6`), below
+/// the defaults: a connection over them is refused only if they reach the
+/// lobby.
+const LIMITS: PeerLimits = PeerLimits {
+    total: 6,
+    per_address: 6,
+};
+const _: () = assert!(LIMITS.total < LOBBY_LIMITS.total);
+const _: () = assert!(LIMITS.per_address < LOBBY_LIMITS.per_address);
 
 fn start(state: &tempfile::TempDir) -> (Server, VirtualTime) {
     let mut config = ServerConfig::new(lucy_testkit::runtime_dir(), state.path().into());
@@ -28,6 +40,7 @@ fn start(state: &tempfile::TempDir) -> (Server, VirtualTime) {
     config.stall_port = 0;
     config.rpc_port = 0;
     config.dashboard_port = None;
+    config.lobby_limits = LIMITS;
     Server::start_virtual(config).unwrap()
 }
 
@@ -73,7 +86,7 @@ fn every_lobby_connection_thread_ends_with_its_connection() {
         settle("every connection is served", || {
             server.lobby_peers() == LIMITS.per_address
         });
-        // One more from this address is closed at once.
+        // One more is closed at once: the lobby serves 6 in all.
         assert!(closed(&mut connect(lobby)));
         assert_eq!(server.lobby_peers(), LIMITS.per_address);
         drop((bare, games));

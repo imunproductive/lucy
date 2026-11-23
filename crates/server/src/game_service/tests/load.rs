@@ -692,6 +692,24 @@ fn rows(
     table
 }
 
+/// The scenarios to run: `LUCY_LOAD_SCENARIOS` (players×matches, comma
+/// separated, e.g. `12x1,8x2`) replaces a test's own list, to profile one
+/// size or to measure another machine's limit.
+fn scenarios(default: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    let Ok(list) = std::env::var("LUCY_LOAD_SCENARIOS") else {
+        return default.to_vec();
+    };
+    list.split(',')
+        .map(|scenario| {
+            let (players, rooms) = scenario
+                .trim()
+                .split_once('x')
+                .expect("LUCY_LOAD_SCENARIOS: players×matches, as 12x1");
+            (players.parse().unwrap(), rooms.parse().unwrap())
+        })
+        .collect()
+}
+
 fn run(kind: Kind, clock: &str, scenarios: &[(usize, usize)]) {
     // The server's warnings and its rooms' timing windows, as they come.
     let _ = tracing_subscriber::fmt()
@@ -701,7 +719,7 @@ fn run(kind: Kind, clock: &str, scenarios: &[(usize, usize)]) {
     let setup = Setup::load(kind);
     let mut table = String::from(HEADER);
     table.push('\n');
-    for &(players, rooms) in scenarios {
+    for (players, rooms) in self::scenarios(scenarios) {
         let (measured, memory) = match clock {
             "virtual" => virtual_clock(&setup, kind, players, rooms),
             _ => real_clock(&setup, kind, players, rooms),
