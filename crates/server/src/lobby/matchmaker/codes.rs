@@ -16,7 +16,7 @@ use std::{
 use lucy_lobby::{
     accounts::Account,
     custom_game::{
-        Chunk, ChunkKind, CustomSettings, Upload,
+        BOOL_KIND, CHOICE_KIND, Chunk, ChunkKind, CustomSettings, FLOAT_KIND, INTEGER_KIND, Upload,
         links::{
             self, LINK_UPLOAD, Saved, SavedRequest, ShareStatus, link, link_failed, normalise,
             shared,
@@ -42,13 +42,13 @@ fn hero_index(hero: u64) -> u64 {
 }
 
 /// A ruleset value as the settings' `{u32 value, u16 key, u8 kind}` pair
-/// (`CustomGames.md` §2: kind 1 bool, 2 int, 3 float bits, 4 a `01C`).
+/// (`lucy_lobby::custom_game::BOOL_KIND` …).
 fn pair(key: u32, value: ModeValue) -> lucy_wire::jam::codec::Value {
     let (value, kind) = match value {
-        ModeValue::Bool(value) => (u32::from(value), 1),
-        ModeValue::Integer(value) => (value as i32 as u32, 2),
-        ModeValue::Float(value) => ((value as f32).to_bits(), 3),
-        ModeValue::Asset(value) => (value as u32, 4),
+        ModeValue::Bool(value) => (u32::from(value), BOOL_KIND),
+        ModeValue::Integer(value) => (value as i32 as u32, INTEGER_KIND),
+        ModeValue::Float(value) => ((value as f32).to_bits(), FLOAT_KIND),
+        ModeValue::Asset(value) => (value as u32, CHOICE_KIND),
     };
     Struct(Fields::from([
         (0x0, Unsigned(u64::from(value))),
@@ -69,38 +69,61 @@ fn pairs(values: &BTreeMap<u32, ModeValue>) -> lucy_wire::jam::codec::Value {
 /// The default team size of a custom game's settings.
 const TEAM_SIZE: u8 = 6;
 
-/// A script's teams (`CGGameRulesetTeam`): Team 1 and Team 2 with their
-/// sizes, heroes and values, and team 5 (every team) with General's.
+/// A script's teams (`CGGameRulesetTeam`): Team 1 and Team 2, each with
+/// its size, its heroes (else General's) and its values over General's.
+/// No team 5 (every team) entry: the client's own settings have none, and
+/// its check refuses one after both teams' (`0x7FF789357C60`, error 43;
+/// game check 2026-11-23).
 fn teams(script: &ScriptMatch) -> lucy_wire::jam::codec::Value {
-    let team = |number: u64, size: u8, heroes: Option<&Vec<u64>>, scope: Option<u8>| {
-        let of_scope = |body: &&BodyValues| body.team == scope;
-        let all = script
+    let team = |number: u8| {
+        // General's lines first, the team's over them.
+        let in_order = |hero: Option<u64>| {
+            [None, Some(number)].into_iter().flat_map(move |scope| {
+                script
+                    .bodies
+                    .iter()
+                    .filter(move |body| body.team == scope && body.hero == hero)
+            })
+        };
+        let all = in_order(None).fold(script.hero_values.clone(), |mut values, body| {
+            values.extend(&body.values);
+            values
+        });
+        let mut heroes: Vec<u64> = script
             .bodies
             .iter()
-            .filter(of_scope)
-            .filter(|body| body.hero.is_none())
-            .fold(BTreeMap::new(), |mut values, body| {
-                values.extend(&body.values);
-                values
-            });
-        let per_hero: Vec<_> = script
-            .bodies
-            .iter()
-            .filter(of_scope)
-            .filter_map(|body| {
-                Some(Struct(Fields::from([
-                    (0x0, pairs(&body.values)),
-                    (0x18, Unsigned(hero_index(body.hero?))),
-                ])))
+            .filter(|body| body.team.is_none_or(|team| team == number))
+            .filter_map(|body| body.hero)
+            .collect();
+        heroes.sort_unstable();
+        heroes.dedup();
+        let per_hero: Vec<_> = heroes
+            .into_iter()
+            .map(|hero| {
+                let values = in_order(Some(hero)).fold(BTreeMap::new(), |mut values, body| {
+                    values.extend(&body.values);
+                    values
+                });
+                Struct(Fields::from([
+                    (0x0, pairs(&values)),
+                    (0x18, Unsigned(hero_index(hero))),
+                ]))
             })
             .collect();
+        let index = usize::from(number);
         let mut fields = Fields::from([
             (0x0, Array(per_hero)),
             (0x18, pairs(&all)),
-            (0x60, Unsigned(number)),
-            (0x61, Unsigned(u64::from(size))),
+            (0x60, Unsigned(u64::from(number))),
+            (
+                0x61,
+                Unsigned(u64::from(script.team_sizes[index].unwrap_or(TEAM_SIZE))),
+            ),
         ]);
-        if let Some(heroes) = heroes {
+        if let Some(heroes) = script.team_heroes[index]
+            .as_ref()
+            .or(script.heroes.as_ref())
+        {
             fields.insert(
                 0x48,
                 Array(
@@ -114,21 +137,7 @@ fn teams(script: &ScriptMatch) -> lucy_wire::jam::codec::Value {
         }
         Struct(fields)
     };
-    Array(vec![
-        team(
-            0,
-            script.team_sizes[0].unwrap_or(TEAM_SIZE),
-            script.team_heroes[0].as_ref(),
-            Some(0),
-        ),
-        team(
-            1,
-            script.team_sizes[1].unwrap_or(TEAM_SIZE),
-            script.team_heroes[1].as_ref(),
-            Some(1),
-        ),
-        team(5, 0, script.heroes.as_ref(), None),
-    ])
+    Array(vec![team(0), team(1)])
 }
 
 /// A Workshop script as the settings a client takes: a mode block per
@@ -176,17 +185,38 @@ pub(crate) fn script_settings(
         }
     }
     for game in &script.games {
+        // The mode's own values: the client checks them against the mode's
+        // schemas (`0x7FF789357C60`, error 38), so the heroes' go with
+        // the teams.
+        let values: BTreeMap<u32, ModeValue> = game
+            .values
+            .iter()
+            .filter(|(key, value)| script.hero_values.get(key) != Some(value))
+            .map(|(&key, &value)| (key, value))
+            .collect();
         chunks.push(Chunk {
             kind: ChunkKind::Mode,
-            fields: Fields::from([(0x78, Struct(block(game.mode, Some(&game.values))))]),
+            fields: Fields::from([(0x78, Struct(block(game.mode, Some(&values))))]),
         });
     }
     chunks.extend(items.into_iter().map(|fields| Chunk {
         kind: ChunkKind::Workshop,
         fields,
     }));
+    // The lobby options the client's check needs in range (settings
+    // `+0x1D0`/`+0x1E0`, each 1..3, spectators 0..12; `0x7FF7893481D0`,
+    // error 39/40, "INVALID OPTIONS" in the lobby: game check 2026-11-23):
+    // the server's defaults, with the script's spectators.
+    let mut settings = CustomSettings::default_game().settings;
+    if let Some(Struct(options)) = settings.get_mut(&0x1d0) {
+        options.insert(
+            0x8,
+            Unsigned(u64::from(script.spectators.unwrap_or(0).min(12))),
+        );
+    }
+    settings.insert(0x30, Struct(workshop));
     CustomSettings {
-        settings: Fields::from([(0x30, Struct(workshop))]),
+        settings,
         extra: Fields::new(),
         chunks,
     }

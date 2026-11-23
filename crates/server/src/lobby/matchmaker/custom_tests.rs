@@ -215,10 +215,15 @@ fn two_players_create_join_start_and_return_to_the_lobby() {
     custom(&mut host);
     custom(&mut guest);
 
+    // Create makes the lobby at once with the server's default settings
+    // (the client uploads only settings that differ from the server's);
+    // the owner's upload then changes them for everyone.
     create(&mut host, "Parkour", &hanamura());
     assert_eq!(
         custom(&mut host),
-        [23304, 23305, 23306, 53000, 53001, 53002]
+        [
+            23304, 23305, 23306, 53000, 53001, 53002, 23312, 23313, 23314, 53001, 53002
+        ]
     );
 
     // The browser lists it; its row's lobby id is what JOIN sends.
@@ -519,18 +524,45 @@ fn dpk_archive_c32s2_runs_through_a_custom_game_lobby() {
         ]),
     });
 
-    // The settings say what the script says: Assault's values, Doomfist
-    // alone (General's list, every team).
+    // The settings say what the script says: Assault's values with the
+    // mode, the heroes' General lines (Ultimate Generation) as each team's
+    // body values (the client checks a mode's values against the mode's
+    // schemas), Doomfist alone (General's list, each team).
     let rules = settings.rules(HANAMURA, ASSAULT);
-    let values: std::collections::BTreeMap<u32, lucy_script::graph::ModeValue> = rules
-        .values
-        .iter()
-        .map(|(&key, &value)| (key, super::custom::mode_value(value)))
-        .collect();
+    let typed =
+        |values: &std::collections::BTreeMap<u32, lucy_lobby::custom_game::RulesetValue>| {
+            values
+                .iter()
+                .map(|(&key, &value)| (key, super::custom::mode_value(value)))
+                .collect::<std::collections::BTreeMap<u32, lucy_script::graph::ModeValue>>()
+        };
+    assert_eq!(
+        rules
+            .bodies
+            .iter()
+            .map(|body| (body.team, body.hero, typed(&body.values)))
+            .collect::<Vec<_>>(),
+        [
+            (Some(0), None, script.hero_values.clone()),
+            (Some(1), None, script.hero_values.clone()),
+        ]
+    );
+    let mut values = typed(&rules.values);
+    assert!(
+        values
+            .keys()
+            .all(|key| !script.hero_values.contains_key(key))
+    );
+    values.extend(script.hero_values.clone());
     assert_eq!(values, script.games[0].values);
     let doomfist = catalog.hero("Doomfist").unwrap();
-    let every = &rules.hero_lists[&None];
-    assert!(every.whitelist && every.heroes == [doomfist]);
+    for team in [Some(0), Some(1)] {
+        let list = &rules.hero_lists[&team];
+        assert!(
+            list.whitelist && list.heroes == [doomfist],
+            "{team:?}: {list:?}"
+        );
+    }
     let schemas = Schemas::lobby();
     let state = tempfile::tempdir().unwrap();
     let (mut server, _time) = server(&state);

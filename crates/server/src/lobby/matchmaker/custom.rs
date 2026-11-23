@@ -78,12 +78,6 @@ pub(super) struct CustomGame {
     restart: bool,
 }
 
-/// A create (24000) waiting for the creator's settings.
-pub(super) struct Creating {
-    name: String,
-    owner: Member,
-}
-
 /// Who asks: the player's account, his card and his party.
 pub(crate) struct Asker<'a> {
     pub account: &'a Arc<Account>,
@@ -113,9 +107,11 @@ fn number(value: &Value) -> Option<u64> {
 }
 
 impl Matchmaker {
-    /// 24000 kind 1: a new lobby with the player as its owner, made once
-    /// his settings come: the client sends its default settings right
-    /// after (`0x7FF7895DD340`). A lobby he was in, he leaves.
+    /// 24000 kind 1: a new lobby with the player as its owner, at once,
+    /// with the server's default settings ([`CustomSettings::default_game`]):
+    /// the client uploads settings only when they differ from the server's
+    /// (`0x7FF7895DD340`), so a fresh client sends none after Create (game
+    /// check 2026-11-23). A lobby he was in, he leaves.
     pub(crate) fn create_custom_game(
         &self,
         lobby: &Lobby,
@@ -126,20 +122,34 @@ impl Matchmaker {
         tracing::info!("[CG] {} creates custom game {name:?}", asker.account.name);
         self.with(lobby, |ctx| {
             ctx.leave_custom(account, "created another");
-            ctx.state.creating.insert(
-                account,
-                Creating {
-                    name,
-                    owner: asker.member(),
+            let id = match super::match_id() {
+                Ok(id) => id,
+                Err(error) => {
+                    tracing::error!("[CG] {error}");
+                    return;
+                }
+            };
+            let settings = CustomSettings::default_game();
+            let game = ctx.hosted_game(&settings);
+            let mut custom = room::Lobby::new(id, name, asker.member(), settings);
+            custom.game = game.or(custom.game);
+            tracing::info!("[CG] Lobby {id:X?} made: game {:X?}", custom.game);
+            ctx.post_all(account, custom.enter());
+            ctx.state.custom_of.insert(account, id);
+            ctx.state.custom.insert(
+                id,
+                CustomGame {
+                    lobby: custom,
+                    room: None,
+                    restart: false,
                 },
             );
         });
         Ok(())
     }
 
-    /// 24008-24013: a part of a settings upload. Complete, it makes the
-    /// lobby the player created, or it is his lobby's new settings when he
-    /// owns it.
+    /// 24008-24013: a part of a settings upload. Complete, they are the
+    /// new settings of the lobby the player owns.
     pub(crate) fn custom_game_settings(
         &self,
         lobby: &Lobby,
@@ -303,30 +313,6 @@ impl Ctx<'_> {
 
     /// A complete settings upload of `account`.
     fn custom_settings(&mut self, account: u32, settings: CustomSettings) {
-        if let Some(creating) = self.state.creating.remove(&account) {
-            let id = match super::match_id() {
-                Ok(id) => id,
-                Err(error) => {
-                    tracing::error!("[CG] {error}");
-                    return;
-                }
-            };
-            let game = self.hosted_game(&settings);
-            let mut lobby = room::Lobby::new(id, creating.name, creating.owner, settings);
-            lobby.game = game.or(lobby.game);
-            tracing::info!("[CG] Lobby {id:X?} made: game {:X?}", lobby.game);
-            self.post_all(account, lobby.enter());
-            self.state.custom_of.insert(account, id);
-            self.state.custom.insert(
-                id,
-                CustomGame {
-                    lobby,
-                    room: None,
-                    restart: false,
-                },
-            );
-            return;
-        }
         let Some(id) = self.owned(account) else {
             tracing::info!("[CG] Settings from a player who owns no lobby: dropped");
             return;
@@ -350,7 +336,6 @@ impl Ctx<'_> {
             return;
         }
         self.leave_custom(me, "joined another");
-        self.state.creating.remove(&me);
         let custom = self.state.custom.get_mut(&id).expect("the lobby");
         if !custom.lobby.join(asker.member(), wish) {
             tracing::info!("[CG] {} can't join {id:X?}: it is full", asker.account.name);
@@ -610,8 +595,10 @@ impl Ctx<'_> {
                 return;
             }
         };
-        // Each team as many places as it has players and bots: the
-        // bots are the AI heroes that fill the places the players leave.
+        // Each team as many places as its layout gives it (the lobby's Max
+        // Team Players), or with bots as many as it has players and bots:
+        // the bots are the AI heroes that fill the places the players
+        // leave.
         let mut sizes = vec![0u8; if rules.free_for_all { 1 } else { 2 }];
         let mut entries = Vec::new();
         let mut difficulty = 0;
@@ -646,6 +633,13 @@ impl Ctx<'_> {
         if entries.is_empty() {
             tracing::info!("[CG] Start of {id:X?}: no player has a seat");
             return;
+        }
+        if difficulty == 0
+            && let Some(layout) = &rules.team_sizes
+        {
+            for (size, &places) in sizes.iter_mut().zip(layout) {
+                *size = (*size).max(places);
+            }
         }
         map.team_sizes = sizes;
         map.hero_pools = (0..map.team_sizes.len() as u8)

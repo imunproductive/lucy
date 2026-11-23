@@ -126,8 +126,6 @@ struct State {
     custom: HashMap<[u64; 2], custom::CustomGame>,
     /// The lobby each player is in.
     custom_of: HashMap<u32, [u64; 2]>,
-    /// Creates waiting for the creator's settings.
-    creating: HashMap<u32, custom::Creating>,
     /// Each player's settings upload in progress (24008-24013).
     uploads: HashMap<u32, lucy_lobby::custom_game::Upload>,
     /// The lobby each player was last invited to, and where to.
@@ -369,7 +367,6 @@ impl Matchmaker {
             let me = account.account_lo;
             ctx.leave_custom(me, "logged out");
             ctx.state.online.remove(&me);
-            ctx.state.creating.remove(&me);
             ctx.state.uploads.remove(&me);
             ctx.state.link_uploads.remove(&me);
             ctx.state.invites.remove(&me);

@@ -288,6 +288,12 @@ pub struct ScriptMatch {
     pub games: Vec<ScriptGame>,
     /// `Max Team 1 Players` and `Max Team 2 Players`.
     pub team_sizes: [Option<u8>; 2],
+    /// `Max Spectators`.
+    pub spectators: Option<u8>,
+    /// The heroes' General lines: every body's values (also in each
+    /// game's [`ScriptGame::values`]); a custom game's settings keep them
+    /// in team 5's `allHeroBodyVars`, not with the mode's.
+    pub hero_values: BTreeMap<u32, ModeValue>,
     /// The heroes' General `enabled heroes`; `None`: every hero.
     pub heroes: Option<Vec<u64>>,
     /// Team 1's and Team 2's own `enabled heroes` (or every hero but their
@@ -413,6 +419,7 @@ impl ScriptMatch {
             }
             game.values
                 .extend(hero_values.iter().map(|(&key, &value)| (key, value)));
+            found.hero_values = hero_values.clone();
             for setting in block {
                 if let Setting::Block(list, maps) = setting {
                     let maps = found.maps(maps, catalog);
@@ -452,6 +459,13 @@ impl ScriptMatch {
 
     fn lobby(&mut self, block: &[Setting]) {
         for (name, text) in pairs(block) {
+            if name == "Max Spectators" {
+                match text.parse() {
+                    Ok(count) => self.spectators = Some(count),
+                    Err(_) => self.skip(format!("lobby: {name}: {text}: not a number")),
+                }
+                continue;
+            }
             let team = match name {
                 "Max Team 1 Players" => 0,
                 "Max Team 2 Players" => 1,

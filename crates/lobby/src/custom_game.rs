@@ -496,11 +496,10 @@ impl CustomSettings {
     ///   chunks). Team number 5 is every team, as the client's hero check
     ///   reads it (`0x7FF789CB1250`: the team's own entry, else team 5's).
     ///
-    /// The key is the `01C` ruleset key and the value is read by its type
-    /// as the client's own lookup reads it (`0x7FF789356650`: bool
-    /// `value != 0`, int, float bits, `01C` index); the kind byte is taken
-    /// to be that type, 1 to 4 (an inference, `CustomGames.md` §2). Other
-    /// kinds are left out.
+    /// The key is the `01C` ruleset key and the kind byte the value's type,
+    /// as the client's settings check reads them (`0x7FF789353FB0`: 0 a
+    /// bool, 1 an int, 2 float bits, 3 a `01C` choice of an enum entry;
+    /// game check 2026-11-23). Other kinds are left out.
     pub fn rules(&self, map: u64, mode: u64) -> MatchRules {
         let blocks = self.blocks();
         let modes = blocks.iter().filter(|block| {
@@ -736,14 +735,22 @@ pub enum RulesetValue {
 /// `0x0D8000000000254D`).
 const IDENTIFIER_GUID: u64 = 0x0d80_0000_0000_0000;
 
+/// A pair's kind byte (`0x7FF789353FB0`: the entry's value type it must
+/// match, `STU_8A8AA0A4` bool, `STU_118786E9` int, `STU_A499C365` float,
+/// `STU_776E5ADD` enum).
+pub const BOOL_KIND: u64 = 0;
+pub const INTEGER_KIND: u64 = 1;
+pub const FLOAT_KIND: u64 = 2;
+pub const CHOICE_KIND: u64 = 3;
+
 fn ruleset_pair(pair: &Fields) -> Option<(u32, RulesetValue)> {
     let value = u32::try_from(pair.get(&0).and_then(unsigned)?).ok()?;
     let key = u32::try_from(pair.get(&4).and_then(unsigned)?).ok()?;
     let value = match pair.get(&6).and_then(unsigned)? {
-        1 => RulesetValue::Bool(value != 0),
-        2 => RulesetValue::Integer(i64::from(value as i32)),
-        3 => RulesetValue::Float(f32::from_bits(value)),
-        4 => RulesetValue::Asset(IDENTIFIER_GUID | u64::from(value)),
+        BOOL_KIND => RulesetValue::Bool(value != 0),
+        INTEGER_KIND => RulesetValue::Integer(i64::from(value as i32)),
+        FLOAT_KIND => RulesetValue::Float(f32::from_bits(value)),
+        CHOICE_KIND => RulesetValue::Asset(IDENTIFIER_GUID | u64::from(value)),
         _ => return None,
     };
     Some((key, value))
@@ -924,7 +931,7 @@ mod tests {
         let mut second = team(1, 0);
         second.insert(
             TEAM_ALL_HEROES,
-            Array(vec![pair(0.5f32.to_bits(), 9529, 3)]),
+            Array(vec![pair(0.5f32.to_bits(), 9529, FLOAT_KIND)]),
         );
         let mut every = team(EVERY_TEAM, 0);
         every.insert(TEAM_HEROES, Array(vec![Unsigned(MERCY & 0xffff)]));
@@ -943,8 +950,8 @@ mod tests {
             (
                 MASTER_VARS,
                 Array(vec![
-                    pair(0.0f32.to_bits(), 9531, 3),
-                    pair(12, 2, 2),
+                    pair(0.0f32.to_bits(), 9531, FLOAT_KIND),
+                    pair(12, 2, INTEGER_KIND),
                     pair(1, 9539, 9),
                 ]),
             ),
@@ -985,7 +992,7 @@ mod tests {
                         Struct(Fields::from([
                             (
                                 HERO_VARS_PAIRS,
-                                Array(vec![pair(0.25f32.to_bits(), 9744, 3)]),
+                                Array(vec![pair(0.25f32.to_bits(), 9744, FLOAT_KIND)]),
                             ),
                             (HERO_VARS_HERO, Unsigned(DOOMFIST & 0xffff)),
                         ])),
