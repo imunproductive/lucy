@@ -28,7 +28,7 @@ use lucy_script::{
     codecs::CodecTable,
     graph::GraphStore,
     mode::{CreatedEntity, EVERY_ENTITY, ModePlayer, ModeScript, ModeWorld},
-    snapshot::{ProjectedSnapshot, SnapshotEncoder, View},
+    snapshot::{ProjectedSnapshot, ProjectionCache, SnapshotEncoder, View},
     vm::{GameMessage, InitFault, MessageEnd, Unknowns},
     wire::{Value, Variables},
 };
@@ -94,6 +94,11 @@ pub enum ModeRunner {
         codecs: Arc<CodecTable>,
         /// Its last projection failed (said once, [`Self::project`]).
         unprojected: bool,
+        /// The last projection, whose unchanged instances the next shares
+        /// ([`SnapshotEncoder::project_cached`]): each client's delta then
+        /// compares only what changed (a Workshop match's mode entity has
+        /// hundreds of action instances, each projected again every tick).
+        kept: Option<ProjectionCache>,
         /// The mode's own graph runs (not only a Workshop host,
         /// [`Self::workshop`]): it holds the spawn rooms' `0724` itself.
         mode_graph: bool,
@@ -253,6 +258,7 @@ impl ModeRunner {
             graphs: scene.shared_graphs(),
             codecs: Arc::new(CodecTable::client()),
             unprojected: false,
+            kept: None,
             mode_graph,
             created: BTreeMap::new(),
         }
@@ -568,6 +574,7 @@ impl ModeRunner {
             graphs,
             codecs,
             unprojected,
+            kept,
             created,
             ..
         } = self
@@ -579,10 +586,9 @@ impl ModeRunner {
             .with_presenters();
         project_created(script, &encoder, created);
         let snapshot = script.snapshot()?;
-        let projected = match previous {
-            Some(previous) => encoder.project_next(snapshot, previous),
-            None => encoder.project(snapshot, View::Observer),
-        };
+        let projected = encoder
+            .project_cached(snapshot, View::Observer, previous, kept)
+            .cloned();
         match projected {
             Ok(projected) => {
                 *unprojected = false;

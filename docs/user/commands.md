@@ -56,6 +56,8 @@ With a command, the options go after the command: `lucy play --game ...`. Only `
 | `--dev-console` | Turn on the game's developer features and its own engine console: Alt+backtick opens it in the game. Its commands run on the client; nothing goes to the server. Use this, never `--tank_Console` or `--tank_ShowMode`. Environment: `LUCY_DEV_CONSOLE`. |
 | `--workshop <FILE>` | A Workshop script (its text, as Overwatch copies it): every player goes from the menu straight into the custom match its settings describe |
 | `--workshop-codes <DIR>` | A folder of Workshop scripts named by their codes (`C32S2.txt` or `C32S2_<name>.txt`): **Import Code** in a custom game loads them. The folder `workshop_codes` in the state folder works without this option. |
+| `--max-players <PLAYERS>` | Players the lobby serves at once (default 128) |
+| `--max-players-per-address <PLAYERS>` | Players the lobby serves at once from one address (default 16, or `--max-players` if lower) |
 
 ### Mode options
 

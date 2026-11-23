@@ -185,7 +185,7 @@ pub struct ActionCall {
     /// The parameters evaluated once, in catalog order (`#18739`).
     pub params: Vec<Param>,
     /// The action as written, for the parameters an action re-evaluates
-    /// (its Reevaluation enum): [`crate::Engine::evaluate_params`] with
+    /// (its Reevaluation enum): [`crate::Engine::reevaluate_params`] with
     /// this context evaluates them again.
     pub source: Arc<logic::Action>,
     pub context: Context,
