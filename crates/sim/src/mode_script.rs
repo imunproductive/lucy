@@ -148,6 +148,11 @@ const START_MATCH: u64 = 0x0240_0000_0000_0789;
 const ATTACKERS: u32 = match_flow::ATTACKERS;
 const OBJECTIVE: u32 = 10548;
 const OVERTIME: u32 = 3392;
+/// The mode graph's pause (`#7898` on its root, [`ModeRunner::paused`]).
+const PAUSED: u32 = 7898;
+/// The mode entity's "built-in completion off" (`#18600e`,
+/// [`ModeRunner::completion_off`]).
+const COMPLETION_OFF: u32 = 18600;
 
 /// `0727.025` (no parameters), which the mode graphs hold to every entity
 /// from their start (`0F4A` st22 beside its `0CBB` SubScript st12, `13C0`
@@ -337,6 +342,67 @@ impl ModeRunner {
             overtime: lucy_script::expr::truthy(&script.entity_value(OVERTIME)),
             over: script.game_over(),
         })
+    }
+
+    /// The mode's own graph, while it drives the match
+    /// ([`Self::holds_rooms`]): its root instance's graph (`0F4A`, `0D76`).
+    pub fn mode_graph(&self) -> Option<u32> {
+        let Self::Graph {
+            script,
+            mode_graph: true,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        Some(script.snapshot()?.instances.get(&1)?.graph)
+    }
+
+    /// Whether the mode's own graph, while it drives the match, has an
+    /// entry for game message `message` (an `EntryGameMessage` the server
+    /// runs): what the Workshop's actions that send it to the mode entity
+    /// can do in this mode (`0F4A` takes Set Match Time `08D8`, pause
+    /// `06D5` and a declared winner `09A3`, but no round winner `0EAB`).
+    pub fn takes(&self, message: u64) -> bool {
+        let (Self::Graph { graphs, .. }, Some(graph)) = (self, self.mode_graph()) else {
+            return false;
+        };
+        graphs.graph(graph).is_some_and(|graph| {
+            graph
+                .message_nodes(message)
+                .any(|node| node.class == "STUStatescriptEntryGameMessage")
+        })
+    }
+
+    /// Whether the mode's own graph has paused its clock: its root's
+    /// `#7898`, which its `06D5` entry toggles (`0F4A` rid69, `0D76`
+    /// rid89; the Workshop's Pause `1D53` and Unpause `1D54` send it alike,
+    /// so the parameter doesn't matter) and its chases test.
+    pub fn paused(&self) -> bool {
+        let Self::Graph {
+            script,
+            mode_graph: true,
+            ..
+        } = self
+        else {
+            return false;
+        };
+        script
+            .snapshot()
+            .and_then(|snapshot| snapshot.instances.get(&1))
+            .and_then(|root| root.variables.get(&PAUSED))
+            .is_some_and(lucy_script::expr::truthy)
+    }
+
+    /// Whether the mode entity's built-in completion is off: `#18600e`,
+    /// which the Workshop's Disable Built-In Game Mode Completion `1ABA`
+    /// holds true until Enable `1AB9` sends `0D68`; every mode graph tests
+    /// it before it ends the match at clock 0.
+    pub fn completion_off(&self) -> bool {
+        let Self::Graph { script, .. } = self else {
+            return false;
+        };
+        lucy_script::expr::truthy(&script.entity_value(COMPLETION_OFF))
     }
 
     /// The graph on the mode entity, while one drives it.

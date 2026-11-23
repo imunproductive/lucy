@@ -12,7 +12,7 @@ use serde_json::Value as Json;
 
 use crate::{
     codecs::CodecTable,
-    expr::{EntityRelation, EvalError, Scope, Variable, native_shape},
+    expr::{EntityRelation, EvalError, native_shape},
     graph::{GraphStore, Node},
     snapshot::SnapshotEncoder,
     target_tags::{TargetTagLists, TargetTags},
@@ -843,55 +843,6 @@ impl BotBody {
     /// One of the body's entity variables as stored now (none: never set).
     pub fn entity_variable(&self, id: u32) -> Option<&Value> {
         self.component.snapshot()?.variables.get(&id)
-    }
-
-    /// One of the first nameplate (`0D24`) instance's own variables as
-    /// stored now (none: never set, or no nameplate).
-    pub fn nameplate_variable(&self, id: u32) -> Option<&Value> {
-        let snapshot = self.component.snapshot()?;
-        let first = nameplates(&self.component).into_iter().next()?;
-        snapshot.instances.get(&first)?.variables.get(&id)
-    }
-
-    /// What one of the body's variables reads now, a nameplate instance's
-    /// (`nameplate`) or the body's own, after the states that hold it.
-    pub fn resolved(&self, nameplate: bool, id: u32) -> Option<Value> {
-        let (instance, scope) = if nameplate {
-            (
-                nameplates(&self.component).into_iter().next()?,
-                Scope::Instance,
-            )
-        } else {
-            (0, Scope::Entity)
-        };
-        self.component
-            .resolved_variable(instance, Variable { scope, id })
-    }
-
-    /// Set one variable of every nameplate (`0D24`) instance now; the next
-    /// frame carries it to the clients when `0D24` shares it.
-    pub fn set_nameplate_variable(&mut self, id: u32, value: Value) -> Result<(), BotError> {
-        for instance in nameplates(&self.component) {
-            self.component
-                .set_instance_variable(instance, id, value.clone(), &mut self.world)?;
-        }
-        Ok(())
-    }
-
-    /// Every nameplate (`0D24`) instance gets the message, and the script
-    /// runs now. True: a nameplate took it.
-    pub fn message_nameplates(&mut self, message: u64) -> Result<bool, BotError> {
-        let mut taken = 0;
-        for id in nameplates(&self.component) {
-            taken += self
-                .component
-                .queue_message(id, message, Variables::new())?;
-        }
-        if taken == 0 {
-            return Ok(false);
-        }
-        self.component.run_now(&mut self.world)?;
-        Ok(true)
     }
 
     /// The hit the body took and survived: `0011.025` ([`DAMAGED`]) with

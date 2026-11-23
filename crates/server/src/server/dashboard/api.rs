@@ -1048,7 +1048,6 @@ fn parse_challenge(value: &Json) -> Result<String, ApiError> {
         .ok_or_else(|| ApiError::bad("Challenge not found"))
 }
 
-mod bot_plate;
 mod games;
 mod matchmaking;
 

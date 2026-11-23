@@ -4648,7 +4648,7 @@ impl WorldDelivery {
         now: Duration,
     ) -> Option<BodyDamage> {
         let damage = self.apply_damage(scene, hit, tick, now)?;
-        self.send_hit_messages(scene, hit, &damage, &[]);
+        self.send_hit_messages(hit, &damage, &[]);
         Some(damage)
     }
 
@@ -4743,13 +4743,7 @@ impl WorldDelivery {
     /// message (`0011.025`), and for a killing hit the "died" message
     /// (003E.025, which pulses the kill feed line), both naming `assists`
     /// (`03E7`: the assisters' bodies, [`crate::combat::kill_credit`]).
-    pub fn send_hit_messages(
-        &mut self,
-        scene: &PreparedScene,
-        hit: &PlayerHit,
-        damage: &BodyDamage,
-        assists: &[u32],
-    ) {
+    pub fn send_hit_messages(&mut self, hit: &PlayerHit, damage: &BodyDamage, assists: &[u32]) {
         if let Some(from) = hit.from.filter(|_| !self.headless) {
             self.hurt.push(CombatNotice::Hurt {
                 victim: hit.body,
@@ -4775,7 +4769,6 @@ impl WorldDelivery {
             damage.dealt,
             damage.killed.then_some(assists),
             camera,
-            scene.hurt_feedback(),
         );
         let failure = messages.into_iter().find_map(|(message, parameters)| {
             script.runtime.receive_message(0, message, parameters).err()
@@ -5747,11 +5740,9 @@ impl WorldDelivery {
             self.voice = Some((speaker, VoiceState::default()));
         }
         let (_, voice) = self.voice.as_mut().expect("the body's voice");
-        let hurt = scene.hurt_feedback();
         let mut lines: Vec<VoiceLine> = criteria
             .into_iter()
             .filter(|criteria| !dead || is_death_cry(criteria.identifier))
-            .filter(|criteria| hurt.speaks(criteria.identifier))
             .filter_map(|criteria| voice.answer(set, speaker, criteria, tick))
             .collect();
         if !dead {

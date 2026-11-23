@@ -79,8 +79,7 @@ class Server:
     """Lucy `serve` with a temp copy of the user's state folder (never the user's own)."""
 
     def __init__(self, account="Researcher", log=print, keep_state=False, env=None):
-        """env: the server's environment (None: ours), e.g. dict(os.environ, LUCY_DEBUG_SEND="1")
-        for the marker endpoint (owdbg.msg)."""
+        """env: the server's environment (None: ours)."""
         self.account, self.log, self.keep_state, self.env = account, log, keep_state, env
         self.proc = None
         self.state = None
@@ -476,3 +475,134 @@ def post_click(hwnd, x, y):
 
 def post_move(hwnd, x, y):
     w.PostMessageW(hwnd, WM_MOUSEMOVE, 0, (y << 16) | (x & 0xFFFF))
+
+
+_LOG_OFFSETS = {}  # (state dir, log name) -> bytes read; ("found", state dir) -> the line
+
+
+def match_found(s):
+    """The server's first `[MM] Match found` line in <state>/serve.log (its whole output; logs/
+    rotates every 2 MB), or None (read incrementally: the log grows by megabytes in a match)."""
+    server = s.server
+    if server is None or server.state is None:
+        return None
+    hit = _LOG_OFFSETS.get(("found", server.state))
+    if hit:
+        return hit
+    for path in (server.state / "serve.log",):
+        key = (server.state, path.name)
+        try:
+            with open(path, "rb") as f:
+                f.seek(_LOG_OFFSETS.get(key, 0))
+                data = f.read()
+        except OSError:
+            continue
+        cut = data.rfind(b"\n") + 1  # keep a partial last line for the next read
+        _LOG_OFFSETS[key] = _LOG_OFFSETS.get(key, 0) + cut
+        for line in data[:cut].decode("utf-8", "replace").splitlines():
+            if "[MM] Match found" in line:
+                _LOG_OFFSETS[("found", server.state)] = line.strip()
+                return line.strip()
+    return None
+
+
+class RangeEntry:
+    """--enter-range: main menu TRAINING > PRACTICE RANGE > SELECT (the preselected hero) by
+    PostMessage clicks at relative client coordinates (measured at 1584x891). TRAINING is clicked
+    25 s after the login (the main menu needs that long), PRACTICE RANGE 8 s later; the server's
+    `[MM] Match found: Practice Range` line confirms; without it after 60 s the sequence is
+    retried once (Escape first). In hero select the yellow SELECT button is clicked until it
+    disappears; with `hero` ((x, y) client fractions of a portrait) that portrait is clicked first."""
+
+    TRAINING = (0.0789, 0.2974)
+    PRACTICE_RANGE = (0.5, 0.5)
+    SELECT = (0.5, 0.935)
+    SELECT_PIXEL = (0.47, 0.935)  # inside the button, left of its text
+
+    def __init__(self, s, hero=None):
+        self.s = s
+        self.hero = hero
+        self.hero_clicked = False
+        self.state = "wait"
+        self.at = None
+        self.tries = 0
+        self.select_clicks = 0
+
+    def start(self):
+        self.s.dbg.every(2.0, self.poll, first=2.0)
+
+    def click(self, frac, what):
+        hwnd = self.s.window()
+        if not hwnd:
+            return False
+        width, height, _ = capture(hwnd)
+        post_click(hwnd, int(width * frac[0]), int(height * frac[1]))
+        self.s.log(f"[range] t={self.s.dbg.elapsed:.0f}s clicked {what}")
+        return True
+
+    def select_visible(self):
+        hwnd = self.s.window()
+        if not hwnd:
+            return False
+        try:
+            width, height, rgb = capture(hwnd)
+        except RuntimeError:
+            return False
+        r, g, b = rgb(int(width * self.SELECT_PIXEL[0]), int(height * self.SELECT_PIXEL[1]))
+        return r > 180 and 0.65 * r < g < 0.85 * r and b < 0.5 * r  # (213, 159, 89)
+
+    def poll(self):
+        t = self.s.dbg.elapsed
+        if self.state == "done" or not self.s.logged_in:
+            return
+        if self.state == "wait":
+            self.at, self.state = t + 25, "training"
+        elif self.state == "training" and t >= self.at:
+            if self.click(self.TRAINING, "TRAINING"):
+                self.at, self.state = t + 8, "range"
+        elif self.state == "range" and t >= self.at:
+            if self.click(self.PRACTICE_RANGE, "PRACTICE RANGE"):
+                self.at, self.state = t + 60, "match"
+                self.tries += 1
+        elif self.state == "match":
+            if match_found(self.s):
+                self.s.log(f"[range] t={t:.0f}s server: match found (Practice Range); waiting for hero select")
+                self.at, self.state = t + 120, "select"
+            elif t >= self.at:
+                self.snap_screen()
+                if self.tries >= 2:
+                    self.s.log("[range] no match after 2 tries: enter the Practice Range by hand")
+                    self.state = "done"
+                    return
+                hwnd = self.s.window()
+                if hwnd:
+                    post_key(hwnd, 0x1B)  # Escape back to the main menu
+                self.s.log("[range] no match yet: retrying TRAINING > PRACTICE RANGE")
+                self.at, self.state = t + 5, "training"
+        elif self.state == "select":
+            if self.select_visible():
+                if self.hero and not self.hero_clicked:
+                    self.click(self.hero, "the hero's portrait")
+                    self.hero_clicked = True
+                elif self.select_clicks < 6:
+                    self.click(self.SELECT, "SELECT (hero select)")
+                    self.select_clicks += 1
+            elif self.select_clicks:
+                self.s.log(f"[range] t={t:.0f}s SELECT gone: spawning in the Practice Range")
+                self.state = "done"
+            elif t >= self.at:
+                self.s.log("[range] hero select not recognized; pick a hero by hand if needed")
+                self.state = "done"
+
+    def snap_screen(self):
+        """The window as it was when no match came (what the clicks met), for the log."""
+        hwnd = self.s.window()
+        if not hwnd:
+            return
+        path = out_path("range-nomatch", ".png")
+        try:
+            screenshot(hwnd, path)
+        except (RuntimeError, ImportError, OSError) as error:
+            self.s.log(f"[range] no screenshot: {error}")
+            return
+        self.s.log(f"[range] screen without a match: {path}")

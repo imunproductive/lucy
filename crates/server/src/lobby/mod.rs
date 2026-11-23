@@ -6,7 +6,9 @@
 #[cfg(test)]
 pub(crate) mod clock;
 
+pub(crate) mod chat_log;
 mod handlers;
+pub(crate) mod host;
 pub(crate) mod hub;
 pub(crate) mod matchmaker;
 pub(crate) mod peer;
@@ -110,6 +112,8 @@ pub(crate) struct Lobby {
     pub services: Arc<services::Services>,
     /// Friends, presence, parties, chat channels and the group finder.
     pub social: Social,
+    /// What was said in each match's chat and in General (`chat_log.rs`).
+    pub chat_log: chat_log::ChatLog,
     /// Queues, the matchmaker and the games it starts.
     pub matchmaker: matchmaker::Matchmaker,
     /// The time since the lobby started: the wall clock, or in tests a

@@ -35,11 +35,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use lucy_sim::{
-    bot_plate::{BotPlate, PlateChange},
-    hurt_feedback::HurtFeedback,
-    match_flow::Timers,
-};
+use lucy_sim::match_flow::Timers;
 use lucy_wire::{
     jam::codec::Schemas,
     link::{MAX_DATAGRAM, peek_connection},
@@ -47,9 +43,8 @@ use lucy_wire::{
 use mio::{Events as Readiness, Poll, Waker, net::UdpSocket};
 
 use super::{
-    GAME_SOCKET, MatchId, MatchResult, OpenRequest, PlateAnswers, RECEIVE_BATCH, Request,
-    RoomPlate, RoomRequest, RoomSettings, RoomSnapshot, RoomState, Target, WorldPlayer,
-    room::RoomLoop, timer,
+    GAME_SOCKET, MatchId, MatchResult, OpenRequest, RECEIVE_BATCH, Request, RoomRequest,
+    RoomSettings, RoomSnapshot, RoomState, Target, WorldPlayer, room::RoomLoop, timer,
 };
 use crate::connection::MAX_CONNECTION_ID;
 use lucy_lobby::handoff::Handoff;
@@ -67,16 +62,6 @@ pub(super) enum Inbound {
     Request(RoomRequest),
     /// Its line of the snapshot ([`super::GameService::snapshot`]).
     Snapshot(mpsc::Sender<RoomSnapshot>),
-    /// The live nameplate tool's plate, the messages it has for the live
-    /// bots, and where the room's part of the answer goes
-    /// ([`super::GameService::bot_plate`]).
-    BotPlate {
-        plate: Arc<BotPlate>,
-        messages: Vec<u64>,
-        reply: mpsc::Sender<RoomPlate>,
-    },
-    /// The live hurt feedback switch now in force.
-    Hurt(HurtFeedback),
 }
 
 impl Inbound {
@@ -202,10 +187,6 @@ pub(super) struct Router {
     /// The match flow's timers for the rooms that open (tests shorten
     /// them).
     timers: Timers,
-    /// The live nameplate tool's changes, which every room takes.
-    bot_plate: Arc<BotPlate>,
-    /// The live hurt feedback switch, which every room takes.
-    hurt: HurtFeedback,
 }
 
 impl Router {
@@ -222,8 +203,6 @@ impl Router {
             next_connection: 1,
             results: Vec::new(),
             timers: Timers::default(),
-            bot_plate: Arc::default(),
-            hurt: HurtFeedback::default(),
         }
     }
 
@@ -241,18 +220,6 @@ impl Router {
             }
             Request::Results { reply } => {
                 let _ = reply.send(std::mem::take(&mut self.results));
-            }
-            Request::BotPlate { change, reply } => {
-                let _ = reply.send(self.tune_bot_plate(change));
-            }
-            Request::Hurt { change, reply } => {
-                let mut hurt = self.hurt;
-                let changed = hurt.change(&change).map(|()| {
-                    self.hurt = hurt;
-                    self.broadcast(|| Inbound::Hurt(hurt));
-                    hurt
-                });
-                let _ = reply.send(changed);
             }
             #[cfg(test)]
             Request::Timers { timers, reply } => {
@@ -343,8 +310,6 @@ impl Router {
         let settings = RoomSettings {
             schemas: Arc::clone(&self.schemas),
             timers: self.timers,
-            bot_plate: Arc::clone(&self.bot_plate),
-            hurt: self.hurt,
             events: Events {
                 id,
                 sender: self.events.clone(),
@@ -422,33 +387,6 @@ impl Router {
         if let Err(mpsc::SendError(inbound)) = room.send(Inbound::Request(request)) {
             inbound.refuse();
         }
-    }
-
-    /// The live nameplate tool's change, if any: the plate every room takes
-    /// now, and the messages it has for their live bots. Each room's part
-    /// of the answer comes on the receiver; a change the tool refuses comes
-    /// back as its reason.
-    fn tune_bot_plate(&mut self, change: Option<PlateChange>) -> Result<PlateAnswers, String> {
-        let mut messages = Vec::new();
-        if let Some(change) = change {
-            messages = change.messages();
-            let mut plate = (*self.bot_plate).clone();
-            plate.change(change)?;
-            if plate != *self.bot_plate {
-                self.bot_plate = Arc::new(plate);
-            }
-        }
-        let (answers, rooms) = mpsc::channel();
-        self.broadcast(|| Inbound::BotPlate {
-            plate: Arc::clone(&self.bot_plate),
-            messages: messages.clone(),
-            reply: answers.clone(),
-        });
-        Ok(PlateAnswers {
-            commands: self.bot_plate.commands(),
-            messages,
-            rooms,
-        })
     }
 
     fn broadcast(&self, inbound: impl Fn() -> Inbound) {

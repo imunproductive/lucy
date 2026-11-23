@@ -157,7 +157,8 @@ fn one_player_to_start_pops_the_queue_and_hands_the_game_off() {
         .filter(|id| *id != 20700)
         .collect();
     // 20402 General at login; then the queue, the role check, the search, the
-    // pop and the game.
+    // pop and the game: out of General, into the match's channel and the
+    // team's.
     assert_eq!(
         order,
         [
@@ -170,9 +171,17 @@ fn one_player_to_start_pops_the_queue_and_hands_the_game_off() {
             53003,
             20404,
             20402,
+            20402,
             HANDOFF_MESSAGE
         ]
     );
+    // General at login, then the match's channel and the team's.
+    let joined: Vec<u64> = received
+        .iter()
+        .filter(|(id, _)| *id == 20402)
+        .map(|(_, fields)| lucy_lobby::social::unsigned(structure(&fields[&0x78]).get(&0x10)))
+        .collect();
+    assert_eq!(joined, [7, 6, 5]);
     let find = |wanted: u32| &received.iter().find(|(id, _)| *id == wanted).unwrap().1;
     // The role check shows the queue entry in the party state.
     let party_states: Vec<&Fields> = received
