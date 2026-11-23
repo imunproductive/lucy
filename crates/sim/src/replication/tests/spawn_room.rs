@@ -411,6 +411,7 @@ fn lift(
     let ballistics = lucy_script::weapons::ProjectileBallistics {
         speed: 50.0,
         lifetime: 2.0,
+        range: None,
         definition: None,
         direct: None,
         blast: None,
@@ -498,6 +499,7 @@ fn blasted(
     let helix = ProjectileBallistics {
         speed: 50.0,
         lifetime: 2.0,
+        range: None,
         definition: None,
         direct: Some(hit(40.0)),
         blast: Some(Blast {
@@ -505,6 +507,8 @@ fn blasted(
             rings: vec![(1.0, 1.0), (3.0, 0.5)],
             self_damage: 0.5,
             aura: None,
+            sight: Some(lucy_script::weapons::BLAST_SIGHT_PROFILE),
+            self_knockback: 1.0,
             knockback: Some(Knockback {
                 away: 4.0,
                 upward: 6.0,

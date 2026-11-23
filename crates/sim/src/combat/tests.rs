@@ -846,6 +846,7 @@ fn the_biotic_rifle_heals_hurt_allies_and_damages_enemies() {
     let dart = ProjectileBallistics {
         speed: 125.0,
         lifetime: 0.8,
+        range: None,
         definition: None,
         direct: Some(RIFLE),
         blast: None,
@@ -946,6 +947,7 @@ fn a_projectile_deals_with_the_modifiers_of_its_launch() {
     let dart = ProjectileBallistics {
         speed: 125.0,
         lifetime: 0.8,
+        range: None,
         definition: None,
         direct: Some(DART),
         blast: None,

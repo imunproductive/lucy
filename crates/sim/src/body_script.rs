@@ -20,7 +20,7 @@ use crate::{
     },
     replication::{BodyStep, OwnerBodyRuntime, RESPAWN_READY, hero_setting_variables},
     scene::target_tags_component,
-    weapon_spread::{ring_directions, shot_direction},
+    weapon_spread::{lifted, ring_directions, shot_directions},
 };
 use lucy_content::{hero_settings::HeroSettings, heroes::Hero};
 #[cfg(any(test, feature = "fixtures"))]
@@ -48,8 +48,8 @@ use lucy_script::{
         TrackedStat, Unknowns, VoiceRequest, World,
     },
     weapons::{
-        DamageTags, HitDefinition, ProjectileBallistics, launch_direction, pellet_rings,
-        ray_profile,
+        DamageTags, HitDefinition, ProjectileBallistics, launch_direction, launch_lift,
+        pellet_rings, ray_profile,
     },
     wire::{Value, Variables},
 };
@@ -860,11 +860,16 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                     .ok()
                     .flatten()
                     .unwrap_or(aim);
-                // The volley's growing spread turns the aim (a guessed seed;
-                // `weapon_spread::shot_direction`).
-                let spread = shot_direction(&shot, node, aim, &mut evaluate).ok()?;
+                // The volley's growing spread turns the aim, each pellet its
+                // own way (a guessed seed; `weapon_spread::shot_directions`).
+                let pellets = projectiles_per_shot(node, &mut evaluate).ok()?;
+                let spreads = shot_directions(&shot, node, aim, pellets, &mut evaluate).ok()?;
+                let spread = spreads[0];
+                // Every direction the shot leaves along takes its launch's
+                // lift last (`weapon_spread::lifted`).
+                let lift = launch_lift(node, &mut evaluate).ok()?;
                 let log_spread = || {
-                    if spread != aim {
+                    if spreads.iter().any(|&spread| spread != aim) {
                         log_assumption(
                             shot.graph,
                             Some(node.pos),
@@ -875,7 +880,7 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                 };
                 let speed = node.field("m_projectileSpeed").unwrap_or(&Json::Null);
                 if !speed.is_null() && to_float(&evaluate(speed).ok()?) != 0.0 {
-                    let projectiles = projectiles_per_shot(node, &mut evaluate).ok()?;
+                    let projectiles = pellets;
                     let ballistics =
                         ProjectileBallistics::from_authored(node, &mut evaluate).ok()??;
                     for class in &ballistics.unmodelled {
@@ -965,6 +970,7 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                         volleys,
                         projectiles,
                         pellets,
+                        lift,
                     }))]);
                 }
                 let hit = HitDefinition::from_authored(node.field("m_6396149F")?, &mut evaluate)
@@ -985,7 +991,10 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                 // pellet of its rings, each hit its own 25001 (upstream kjs
                 // `1e2e10c3`, seen there: a Training Bot at 6 m dies about
                 // 1.3 s into D.Va's held fire). A volley without rings fires
-                // one ray whatever its pellet count.
+                // a ray per pellet of its count in its cone (upstream
+                // `b26caa8b`; the client's launches number them, see
+                // `weapon_spread::shot_directions`): Tracer's Pulse Pistols
+                // (`0016` rid12) fire 2 a shot, one per pistol.
                 let directions = match pellet_rings(node, &mut evaluate).ok()? {
                     Some(rings) => {
                         log_assumption(
@@ -996,7 +1005,7 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                         );
                         ring_directions(spread, &rings)
                     }
-                    None => vec![spread],
+                    None => spreads,
                 };
                 Some(
                     directions
@@ -1006,7 +1015,7 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                                 source: shot.entity,
                                 origin,
                                 command,
-                                direction,
+                                direction: lifted(direction, lift),
                                 shot_frame: shot.frame,
                                 reach,
                                 hit,

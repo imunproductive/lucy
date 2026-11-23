@@ -1198,6 +1198,13 @@ pub struct ObservedProjectile {
     direction: Vec3,
     launch: EntityUpdate,
     deadline: u32,
+    /// The tick the shot's flight began on the server.
+    started: u32,
+    /// The tick its flight ended ([`Self::finish`]).
+    ended: Option<u32>,
+    /// The tick its launch was queued: when this client's copy starts to
+    /// fly, as near as the server knows.
+    launch_sent: Option<u32>,
     pending_create: bool,
     launch_queued: bool,
     creation_arrived: bool,
@@ -1231,8 +1238,9 @@ struct CopyScript {
 impl ObservedProjectile {
     /// The shot record of `_show_others`: the shot's frame, volley instance,
     /// state and full activation counter, the volley state's `volleys & 0xFF`,
-    /// shot counter 0, and this viewer's entity. `deadline` is the tick plus
-    /// the shot's bound plus DELIVERY_GRACE.
+    /// shot counter 0, and this viewer's entity. `started` is the tick the
+    /// server's flight began; `deadline` the tick plus the shot's bound
+    /// plus DELIVERY_GRACE.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         body: u32,
@@ -1242,6 +1250,7 @@ impl ObservedProjectile {
         volleys: u16,
         origin: [f32; 3],
         direction: Vec3,
+        started: u32,
         deadline: u32,
     ) -> io::Result<Self> {
         let volleys = volleys & 0xff;
@@ -1275,6 +1284,9 @@ impl ObservedProjectile {
             direction,
             launch,
             deadline,
+            started,
+            ended: None,
+            launch_sent: None,
             pending_create: true,
             launch_queued: false,
             creation_arrived: false,
@@ -1373,9 +1385,23 @@ impl ObservedProjectile {
     /// keeps DELIVERY_GRACE ticks for the launch, else it retires now.
     pub fn finish(&mut self, tick: u32, explode: bool, drain: bool) {
         self.finished = true;
+        self.ended = Some(tick);
         self.explode = explode;
         let grace = if explode || drain { DELIVERY_GRACE } else { 0 };
         self.deadline = self.deadline.min(tick.saturating_add(grace));
+    }
+
+    /// Whether its copy on this client has flown the server's whole flight:
+    /// as long after its launch went as the flight lasted (upstream
+    /// `90d49b5a`, `95494b0a`; the copy starts at the launch, whether or not
+    /// its acknowledgement came back yet). Python waited only for the
+    /// acknowledgement, so a launch that went late had its copy destroyed
+    /// short of its impact.
+    fn flown(&self, tick: u32) -> bool {
+        let (Some(sent), Some(ended)) = (self.launch_sent, self.ended) else {
+            return false;
+        };
+        tick >= sent.saturating_add(ended.saturating_sub(self.started))
     }
 
     /// A server projectile's flight ended ([`ServerCopies`]): it exploded
@@ -1450,7 +1476,7 @@ impl ObservedProjectile {
     }
 
     /// `_ObservedProjectile.advance`. Ending (the source stream changed, the
-    /// deadline, or finished after the launch arrived) yields
+    /// deadline, or its copy flew the whole flight, [`Self::flown`]) yields
     /// [CancelLaunch if launched but unacknowledged], [Destroy unless the
     /// create never went], Done. Otherwise [Create once the stream has a
     /// baseline], [Launch once the create arrived and the baseline holds the
@@ -1464,7 +1490,7 @@ impl ObservedProjectile {
     ) -> Vec<ObservedOut> {
         let mut out = Vec::new();
         let launched = self.launch_arrived;
-        if !source_live || tick >= self.deadline || (self.finished && launched) {
+        if !source_live || tick >= self.deadline || self.flown(tick) {
             if self.launch_queued && !launched {
                 out.push(ObservedOut::CancelLaunch);
             }
@@ -1488,6 +1514,7 @@ impl ObservedProjectile {
         }
         if !self.launch_queued && self.creation_arrived && volley_arrived {
             self.launch_queued = true;
+            self.launch_sent = Some(tick);
             out.push(ObservedOut::Launch(self.launch.clone()));
         }
         out
@@ -1572,6 +1599,7 @@ impl ServerCopies {
             fired.volleys,
             fired.origin.map(|value| value as f32),
             fired.direction,
+            tick,
             deadline,
         ) else {
             return Vec::new();
@@ -2204,6 +2232,7 @@ mod tests {
             0x101,
             [1.0, 2.0, 3.0],
             [0.0, 0.0, 1.0],
+            1000,
             deadline,
         )
         .unwrap()
@@ -2260,11 +2289,15 @@ mod tests {
         assert!(seen.advance(1006, true, true, true).is_empty());
         seen.launch_arrived();
         seen.finish(1010, true, false);
-        let out = seen.advance(1010, true, true, true);
+        // The flight lasted 10 ticks from 1000; the copy began at its
+        // launch, 1005, so it lands at 1015, not when the server's did.
+        assert!(seen.advance(1010, true, true, true).is_empty());
+        assert!(seen.advance(1014, true, true, true).is_empty());
+        let out = seen.advance(1015, true, true, true);
         assert_eq!(out.len(), 2);
         assert_eq!(
             destroy(&out[0]).ch2.as_ref().unwrap().as_bytes(),
-            projectile_wire::release(1010 + RELEASE_AHEAD, 1, projectile_wire::HIDDEN_POSITION)
+            projectile_wire::release(1015 + RELEASE_AHEAD, 1, projectile_wire::HIDDEN_POSITION)
                 .unwrap()
                 .as_bytes()
         );
@@ -2286,10 +2319,10 @@ mod tests {
         ));
         seen.launch_arrived();
         seen.finish_at(1010, Some(landed));
-        let out = seen.advance(1010, true, true, true);
+        let out = seen.advance(1011, true, true, true);
         assert_eq!(
             destroy(&out[0]).ch2.as_ref().unwrap().as_bytes(),
-            projectile_wire::release(1010 + RELEASE_AHEAD, 1, landed)
+            projectile_wire::release(1011 + RELEASE_AHEAD, 1, landed)
                 .unwrap()
                 .as_bytes()
         );
@@ -2301,7 +2334,7 @@ mod tests {
         seen.advance(1001, true, true, true);
         seen.launch_arrived();
         seen.finish_at(1010, None);
-        let out = seen.advance(1010, true, true, true);
+        let out = seen.advance(1011, true, true, true);
         assert_eq!(destroy(&out[0]).ch2, None);
     }
 
@@ -2339,6 +2372,20 @@ mod tests {
         let out = seen.advance(1003, true, true, true);
         assert_eq!(destroy(&out[0]).ch2, None);
         assert_eq!(out[1], ObservedOut::Done);
+
+        // A launch still unacknowledged when its copy would have flown the
+        // whole flight (launched at 1001, a 5-tick flight from 1000) stops
+        // going: withdrawn, and the copy destroyed without a release.
+        let mut seen = observed(2000);
+        assert!(seen.open(true).is_some());
+        seen.creation_arrived();
+        seen.advance(1001, true, true, true);
+        seen.finish(1005, true, false);
+        assert!(seen.advance(1005, true, true, true).is_empty());
+        let out = seen.advance(1006, true, true, true);
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0], ObservedOut::CancelLaunch);
+        assert_eq!(destroy(&out[1]).ch2, None);
 
         // Nothing reached the client.
         let mut seen = observed(1050);

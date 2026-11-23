@@ -19,8 +19,15 @@ use crate::{
 pub const ULT_CHARGE: u32 = 342;
 pub const ULT_COST: u32 = 338;
 /// `0012.025`: the body dealt damage: the amount (`0013`), the body hit
-/// (`0015`) and the hit's tags (`003D`). `0B8B` rid0 charges it.
+/// (`0015`), the hit's tags (`003D`) and what it took from the body's named
+/// pools (`0624`). `0B8B` rid0 charges it; rid72 folds `0624` and rid73
+/// takes what the pool `3EBB.01C` (Wrecking Ball's Adaptive Shield, `1566`
+/// st6) lost off the amount, so damage that shield soaks charges nothing.
 pub const DAMAGE_DEALT: u64 = 0x0240_0000_0000_0012;
+/// `0624`'s item keys, as `0B8B` rid72 reads them: the pool's name
+/// (`3EB8`, an identifier) and what it lost (`01F3`).
+const DRAIN_POOL: i64 = 0x3eb8;
+const DRAIN_AMOUNT: i64 = 0x01f3;
 /// `0044.025`: the body healed another: the amount (`0040`), the body
 /// healed (`003F`) and its kind (`0041`). `0B8B` rid31 charges it.
 pub const HEALING_DONE: u64 = 0x0240_0000_0000_0044;
@@ -43,19 +50,39 @@ pub fn generation_variables(ruleset: impl Fn(u32) -> Option<Value>) -> Variables
 }
 
 /// The message the body takes for `amount` it dealt to `target`: damage
-/// with the hit's tags, or healing whose kind is the heal's tags
-/// (assumption: `0B8B` leaves out kinds `0292` and `025A`, and `01C7`
-/// tests `04AB`, all identifiers a health change's tags hold).
-pub fn dealt_message(target: u32, amount: f64, tags: &DamageTags, heal: bool) -> (u64, Variables) {
+/// with the hit's tags and what it took from the target's named pools
+/// (`drained`, by name, in order: `crate::vitals::Damage::drained`), or
+/// healing whose kind is the heal's tags (assumption: `0B8B` leaves out
+/// kinds `0292` and `025A`, and `01C7` tests `04AB`, all identifiers a
+/// health change's tags hold).
+pub fn dealt_message(
+    target: u32,
+    amount: f64,
+    tags: &DamageTags,
+    heal: bool,
+    drained: &[(u64, f64)],
+) -> (u64, Variables) {
     let (message, keys) = if heal {
         (HEALING_DONE, [0x40, 0x3f, 0x41])
     } else {
         (DAMAGE_DEALT, [0x13, 0x15, 0x3d])
     };
-    let parameters = Variables::from([
+    let mut parameters = Variables::from([
         (keys[0], Value::Float(amount)),
         (keys[1], Value::Entity(target)),
         (keys[2], tags.to_value()),
     ]);
+    if !heal {
+        let drains = drained
+            .iter()
+            .map(|&(pool, lost)| {
+                Value::Map(vec![
+                    (Value::Integer(DRAIN_POOL), Value::Asset(pool)),
+                    (Value::Integer(DRAIN_AMOUNT), Value::Float(lost)),
+                ])
+            })
+            .collect();
+        parameters.insert(0x624, Value::Array(drains));
+    }
     (message, parameters)
 }

@@ -93,26 +93,36 @@ pub fn direction(
     rotate(forward, axis, f64::from(radius)).map(|part| f64::from(part as f32))
 }
 
-/// A shot's direction: `aim` turned by its volley's growing spread (a
-/// launch `STU_239B571E` with a spread ramp; `ShotEvent::spread`), at a
-/// uniform radius in the cone, else `aim`. The seed's identities are the
-/// shot's body entity, instance, the volley's `m_states` index (the client's
-/// seed reads the index written at `1B914DD`, `D74B68`; upstream main
-/// `9ed63eed`) and activation counter, and the shot number its ordinal in
-/// the volley: upstream's reconstruction (`mccree.py` `fan_direction`,
-/// which it uses for McCree's Fan the Hammer alone; here for every such
-/// volley). The owner word stays a guess.
-pub fn shot_direction(
+/// A shot's directions, one per pellet (`pellets`, at least one): `aim`
+/// turned by its volley's growing spread (a launch `STU_239B571E` with a
+/// spread ramp; `ShotEvent::spread`), at a uniform radius in the cone, each
+/// pellet drawn from the table at its own seed index (the client's shot
+/// direction `0x7FF789C6EBA0` takes the pellet's number, which the seed
+/// `0x7FF789C6F8D0` weighs × 3; the launches `0x7FF7899F43F0` and
+/// `0x7FF789C89250` number a shot's pellets 0, 1, …), else `aim` for each.
+/// The seed's identities are the shot's body entity, instance, the
+/// volley's `m_states` index (the client's seed reads the index written at
+/// `1B914DD`, `D74B68`; upstream main `9ed63eed`) and activation counter,
+/// and the shot number its ordinal in the volley: upstream's
+/// reconstruction (`mccree.py` `fan_direction`, which it uses for McCree's
+/// Fan the Hammer alone; here for every such volley). The owner word stays
+/// a guess.
+pub fn shot_directions(
     shot: &ShotEvent,
     node: &Node,
     aim: Vec3,
+    pellets: u8,
     evaluate: impl FnMut(&Json) -> Result<Value, EvalError>,
-) -> Result<Vec3, EvalError> {
-    let (Some(normalized), Some(state)) = (shot.spread, node.state) else {
-        return Ok(aim);
+) -> Result<Vec<Vec3>, EvalError> {
+    let pellets = u32::from(pellets.max(1));
+    let cone = match (shot.spread, node.state) {
+        (Some(normalized), Some(state)) => spread_cone(node, normalized, evaluate)?
+            .filter(|cone| *cone > 0.0)
+            .map(|cone| (cone, state)),
+        _ => None,
     };
-    let Some(cone) = spread_cone(node, normalized, evaluate)?.filter(|cone| *cone > 0.0) else {
-        return Ok(aim);
+    let Some((cone, state)) = cone else {
+        return Ok(vec![aim; pellets as usize]);
     };
     let base = seed_base(
         shot.entity,
@@ -120,7 +130,25 @@ pub fn shot_direction(
         u32::from(state),
         u32::from(shot.activation),
     );
-    Ok(direction(aim, cone, base, shot.ordinal, 0, false))
+    Ok((0..pellets)
+        .map(|pellet| direction(aim, cone, base, shot.ordinal, pellet, false))
+        .collect())
+}
+
+/// `direction` with its launch's lift (`lucy_script::weapons::launch_lift`)
+/// added to its up part, normalized, in single precision as the client's
+/// shot direction (`0x7FF789C6EBA0`) does it; unchanged without one.
+pub fn lifted(direction: Vec3, lift: f64) -> Vec3 {
+    if lift == 0.0 {
+        return direction;
+    }
+    let mut raised = direction.map(|part| part as f32);
+    raised[1] += lift as f32;
+    let length = raised.iter().map(|part| part * part).sum::<f32>().sqrt();
+    if !(length.is_finite() && length > 0.0) {
+        return direction;
+    }
+    raised.map(|part| f64::from(part / length))
 }
 
 /// The pellet rings of a shot (upstream 7cb4018 `launch_directions`): for

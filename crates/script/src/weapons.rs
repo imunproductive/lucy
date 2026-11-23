@@ -294,6 +294,12 @@ const RING_EPSILON: f64 = 1e-9;
 /// The projectile motion class of an arc: `m_599AB8D7` is its downward
 /// acceleration in m/s² (9.8 for Hanzo's arrows, Junkrat's grenades and
 /// Torbjörn's rivets; Tracer's Pulse Bomb sets its variable `1CDD` to 30).
+/// With `m_D0C4CF49` set it pulls nothing in flight: the client's motion
+/// step (`0x7FF789C81A70`) skips a motion whose `+0x24` (that field, filled
+/// by `0x7FF789C97AF0`) is set while the projectile's `+0x24C` is 0
+/// (assumption: a count of its bounces or hits; only Echo's Sticky Bombs,
+/// `1C36`, set the field, and they stick at their first hit, so it is 0
+/// for their whole flight).
 const GRAVITY_MOTION: &str = "STU_E1A5B579";
 /// Seconds a projectile that sticks waits before it explodes. No asset
 /// names it (assumption): the volleys that stick (Tracer's Pulse Bomb,
@@ -310,7 +316,18 @@ pub const STICK_FUSE: f64 = 1.0;
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProjectileBallistics {
     pub speed: f64,
+    /// Seconds it flies at most (`m_projectileLifetime`).
     pub lifetime: f64,
+    /// Metres it flies at most, along its path (`m_FEC435C6`; None when 0):
+    /// the client's step (`0x7FF789C82C80`) adds each step's chord to the
+    /// projectile's `+0x50` and cuts the step that would pass the range at
+    /// it, as it cuts the one that would pass the lifetime. An arc's or a
+    /// bounce's path is longer than its straight line, and a projectile its
+    /// graphs slow takes longer over it. Assumption: 0 is no limit (six
+    /// volleys author 0.0, Echo's Sticky Bombs `1C36` and Torbjörn's rivets
+    /// `16C5` among them, which fly; the code read would stop them dead, so
+    /// something not found replaces it).
+    pub range: Option<f64>,
     pub definition: Option<u64>,
     pub direct: Option<HitDefinition>,
     pub blast: Option<Blast>,
@@ -326,7 +343,8 @@ pub struct ProjectileBallistics {
     /// says 0.2 (a later patch, assumption). Hitscan volleys don't set it.
     pub radius: f64,
     /// The arc's downward acceleration in m/s²: the sum of the volley's
-    /// gravity motions (`m_projectileMotions`); 0 flies straight.
+    /// gravity motions (`m_projectileMotions`) that pull in flight
+    /// ([`GRAVITY_MOTION`]); 0 flies straight.
     pub gravity: f64,
     /// A projectile that sticks to the first body or surface it hits and
     /// explodes this many seconds later; None ends where it hits.
@@ -500,11 +518,18 @@ const RAY_PROFILE_REFERENCE: &str = "STU_20DB8AB5";
 /// `09BA`), or when the variable holds no asset.
 pub fn ray_profile(
     node: &Node,
+    evaluate: impl FnMut(&Json) -> Result<Value, EvalError>,
+) -> Option<u64> {
+    profile_reference(node.field("m_C1903771"), evaluate)
+}
+
+/// A ray profile config (`m_C1903771`, `m_8DA39175`): a literal reference,
+/// or a config var that holds the asset; None for none or an empty one.
+fn profile_reference(
+    config: Option<&Json>,
     mut evaluate: impl FnMut(&Json) -> Result<Value, EvalError>,
 ) -> Option<u64> {
-    let config = node
-        .field("m_C1903771")
-        .filter(|config| !config.is_null())?;
+    let config = config.filter(|config| !config.is_null())?;
     let guid = if config.get("$").and_then(Json::as_str) == Some(RAY_PROFILE_REFERENCE) {
         config.get("m_C1903771").and_then(asset_guid)
     } else {
@@ -515,6 +540,10 @@ pub fn ray_profile(
     };
     guid.filter(|guid| *guid != 0)
 }
+
+/// The ray profile an explosion's sight test casts with when its
+/// `m_8DA39175` names none (`019.097`, the default `0x7FF789C97AF0` writes).
+pub const BLAST_SIGHT_PROFILE: u64 = 0x0690_0000_0000_0019;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Blast {
@@ -537,6 +566,22 @@ pub struct Blast {
     /// (the grenade's 50), as those are the public numbers; it reaches
     /// every living body in its rings, allies, enemies and its shooter.
     pub aura: Option<u64>,
+    /// The ray profile of the sight test that decides whether the explosion
+    /// reaches a body: `m_8DA39175`, else [`BLAST_SIGHT_PROFILE`]; None when
+    /// its `m_2A970629` turns the test off (no 1.74 explosion does). The
+    /// client's own-push code (`0x7FF789A433F0`) tests it so before it
+    /// pushes the shooter (`lucy_sim::projectile_flight`).
+    pub sight: Option<u64>,
+    /// How much of the explosion's push its shooter takes: `m_2FE97560`
+    /// when its `m_49F60FB8` is set, else none (0). The client's own push
+    /// (`0x7FF789A433F0`, run by the explosion handler `0x7FF789A3BB10` for
+    /// the projectile's owner alone) gives nothing unless the flag (blob
+    /// `+0x2C`) is set and the scale (blob `+0x44`) isn't 0, and hands the
+    /// scale to the push's builder `0x7FF789C7DC70`. Pharah's rockets
+    /// (`0023`) 1.875, Soldier's Helix Rockets (`0254`) and Junkrat's
+    /// Concussion Mine (`096A`) 1, his grenades (`022B`) and Zarya's
+    /// (`0241`) 0.5; Bastion (`024F`), Sigma (`187F`) and `1BBB` none.
+    pub self_knockback: f64,
 }
 
 /// The push an explosion's ModifyHealth gives a body (`m_modifyHealth`):
@@ -616,13 +661,11 @@ impl ProjectileBallistics {
         if lifetime == 0.0 {
             lifetime = DEFAULT_LIFETIME;
         }
-        let reach = authored_number(node.field("m_FEC435C6"), 0.0, &mut evaluate)?;
-        if reach != 0.0 {
-            lifetime = lifetime.min(reach / speed);
-        }
-        if !lifetime.is_finite() || lifetime <= 0.0 {
+        let range = authored_number(node.field("m_FEC435C6"), 0.0, &mut evaluate)?;
+        if !lifetime.is_finite() || lifetime <= 0.0 || !range.is_finite() || range < 0.0 {
             return Ok(None);
         }
+        let range = (range > 0.0).then_some(range);
         let definition = match node.field("m_projectileEntity.m_entityDef") {
             Some(config) => match evaluate(config)? {
                 Value::Asset(definition) => Some(definition),
@@ -644,6 +687,15 @@ impl ProjectileBallistics {
         let blast = if let Some(hit) = HitDefinition::from_authored(config, &mut evaluate)? {
             let rings = authored_rings(config.get("m_0D30E40C"), "m_B399CACB", 0.0, &mut evaluate)?;
             let self_damage = authored_number(config.get("m_8A3E3883"), 0.0, &mut evaluate)?;
+            let self_knockback = if flag(config.get("m_49F60FB8")) {
+                authored_number(config.get("m_2FE97560"), 0.0, &mut evaluate)?
+            } else {
+                0.0
+            };
+            let sight = (!flag(config.get("m_2A970629"))).then(|| {
+                profile_reference(config.get("m_8DA39175"), &mut evaluate)
+                    .unwrap_or(BLAST_SIGHT_PROFILE)
+            });
             Some(Blast {
                 hit,
                 rings,
@@ -660,6 +712,12 @@ impl ProjectileBallistics {
                     },
                     _ => None,
                 },
+                sight,
+                self_knockback: if self_knockback.is_finite() {
+                    self_knockback.max(0.0)
+                } else {
+                    0.0
+                },
             })
         } else {
             None
@@ -673,7 +731,10 @@ impl ProjectileBallistics {
             for motion in motions.iter().filter(|motion| motion.is_object()) {
                 match motion.get("$").and_then(Json::as_str) {
                     Some(GRAVITY_MOTION) => {
-                        gravity += authored_number(motion.get("m_599AB8D7"), 0.0, &mut evaluate)?;
+                        let pull = authored_number(motion.get("m_599AB8D7"), 0.0, &mut evaluate)?;
+                        if authored_number(motion.get("m_D0C4CF49"), 0.0, &mut evaluate)? == 0.0 {
+                            gravity += pull;
+                        }
                     }
                     class => unmodelled.push(class.unwrap_or("?").to_owned()),
                 }
@@ -696,6 +757,7 @@ impl ProjectileBallistics {
         Ok(Some(Self {
             speed,
             lifetime,
+            range,
             definition,
             direct,
             blast,
@@ -712,7 +774,34 @@ impl ProjectileBallistics {
     pub fn bound(&self) -> f64 {
         self.lifetime + self.fuse.unwrap_or(0.0)
     }
+}
 
+/// A u8 flag of an authored block (`STU_4AA6CA44.m_49F60FB8`): set when 1
+/// (a bool in hand-written data).
+fn flag(value: Option<&Json>) -> bool {
+    value.is_some_and(|value| value.as_u64().is_some_and(|value| value != 0) || value == true)
+}
+
+/// The lift a volley's launch adds to each shot's direction: `m_22CE7F30`
+/// of its launch (`m_5EC1EB38`, on the base `STUStatescriptWeaponVolleyLaunch`,
+/// so every launch class has it), 0 when unset. The projectile setup
+/// `0x7FF789C97AF0` evaluates it into the launch's `+0x8`; the client's
+/// shot direction (`0x7FF789C6EBA0`, every projectile's and pellet's) adds
+/// it to the direction's up part after the launch's spread and rings, then
+/// normalizes: 0.05 on Cassidy's `01E9`, 0.1 on `025F`, `064A`, `09BA`,
+/// `1BBB`, 0.07 on Ashe's `14FD`, 0.015 on Torbjörn's `1683`, a variable
+/// on Junkrat's grenades (`022B`) and Concussion Mine (`096A`), Zarya's
+/// (`0241`), Baptiste's `1932` and Tracer's Pulse Bomb (`0034`); none on
+/// the Training Bots' rockets (`0BA3`).
+pub fn launch_lift(
+    node: &Node,
+    mut evaluate: impl FnMut(&Json) -> Result<Value, EvalError>,
+) -> Result<f64, EvalError> {
+    let lift = authored_number(node.field("m_5EC1EB38.m_22CE7F30"), 0.0, &mut evaluate)?;
+    Ok(if lift.is_finite() { lift } else { 0.0 })
+}
+
+impl ProjectileBallistics {
     /// Whether it does damage where it hits or explodes (combat.py `_shoot`:
     /// `damaging`).
     pub fn damaging(&self) -> bool {
@@ -1312,6 +1401,73 @@ mod tests {
             None,
         );
         assert_eq!(ringless.knockback, None);
+    }
+
+    /// The explosion's self push needs its flag (`m_49F60FB8`) and takes its
+    /// scale (`m_2FE97560`, Pharah's 1.875); its sight test casts with
+    /// `019.097` unless `m_8DA39175` names another, and `m_2A970629` turns
+    /// it off. A volley's range (`m_FEC435C6`) stays apart from its
+    /// lifetime, 0 none; a gravity motion with `m_D0C4CF49` (Echo's Sticky
+    /// Bombs) pulls nothing; the launch's lift reads from `m_22CE7F30`.
+    #[test]
+    fn a_volley_reads_its_range_gravity_lift_and_explosion_switches() {
+        let float = |value: f64| json!({"$":"STUConfigVarFloat","m_value":value});
+        let read = |extra: Json, blast: Json| {
+            let mut fields = json!({"m_projectileSpeed":float(50.0),
+                "m_projectileLifetime":float(5.0),
+                "m_D2D11CE9":{"$":"STU_4AA6CA44",
+                    "m_0D30E40C":[{"m_radius":float(2.5),"m_B399CACB":float(1.0)}],
+                    "m_modifyHealth":{"m_amount":float(120.0)}}});
+            for (name, value) in extra.as_object().unwrap() {
+                fields[name] = value.clone();
+            }
+            for (name, value) in blast.as_object().unwrap() {
+                fields["m_D2D11CE9"][name] = value.clone();
+            }
+            ProjectileBallistics::from_authored(&volley(fields), |value| {
+                evaluate(value, &mut EmptyContext)
+            })
+            .unwrap()
+            .unwrap()
+        };
+        let plain = read(json!({}), json!({}));
+        let blast = plain.blast.as_ref().unwrap();
+        assert_eq!(
+            (blast.sight, blast.self_knockback),
+            (Some(BLAST_SIGHT_PROFILE), 0.0)
+        );
+        assert_eq!((plain.lifetime, plain.range), (f64::from(5.0f32), None));
+        let pharah = read(
+            json!({"m_FEC435C6":float(100.0)}),
+            json!({"m_49F60FB8":1,"m_2FE97560":float(1.875),
+                "m_8DA39175":{"$":"STU_20DB8AB5","m_C1903771":"0x0690000000000002"}}),
+        );
+        let blast = pharah.blast.as_ref().unwrap();
+        assert_eq!(blast.self_knockback, 1.875);
+        assert_eq!(blast.sight, Some(0x0690_0000_0000_0002));
+        assert_eq!(
+            (pharah.lifetime, pharah.range),
+            (f64::from(5.0f32), Some(100.0))
+        );
+        let blind = read(json!({}), json!({"m_2A970629":1,"m_2FE97560":float(1.0)}));
+        let blast = blind.blast.as_ref().unwrap();
+        assert_eq!((blast.sight, blast.self_knockback), (None, 0.0));
+
+        let gravity = |disable: Json| {
+            read(
+                json!({"m_projectileMotions":[{"$":GRAVITY_MOTION,
+                    "m_599AB8D7":float(9.8),"m_D0C4CF49":disable}]}),
+                json!({}),
+            )
+            .gravity
+        };
+        assert_eq!(gravity(Json::Null), f64::from(9.8f32));
+        assert_eq!(gravity(json!({"$":"STUConfigVarBool","m_value":1})), 0.0);
+
+        let lifted = volley(json!({"m_5EC1EB38":{"$":"STU_239B571E","m_22CE7F30":float(0.05)}}));
+        let lift = |node: &Node| launch_lift(node, |value| evaluate(value, &mut EmptyContext));
+        assert_eq!(lift(&lifted).unwrap(), f64::from(0.05f32));
+        assert_eq!(lift(&volley(json!({}))).unwrap(), 0.0);
     }
 
     /// Graph `0D0A` state 2's rings (upstream 7cb4018): 1, 4 and 6 pellets

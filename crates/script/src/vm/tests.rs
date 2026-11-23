@@ -2610,7 +2610,13 @@ fn authored_helix_uses_its_six_second_cooldown_before_the_next_volley() {
     .unwrap()
     .unwrap();
     assert_eq!(rocket.definition, Some(0x0400_0000_0000_072c));
-    assert_eq!((rocket.speed, rocket.lifetime), (50.0, 2.0));
+    // Its lifetime (5 s) and its range (100 m) stay apart: the range ends
+    // the flight along its path (the client's step `0x7FF789C82C80`), not
+    // as the 2 s it takes in a straight line.
+    assert_eq!(
+        (rocket.speed, rocket.lifetime, rocket.range),
+        (50.0, 5.0, Some(100.0))
+    );
     assert_eq!(rocket.radius, f64::from(0.2_f32));
     let direct = rocket.direct.unwrap();
     assert_eq!(
@@ -2627,6 +2633,12 @@ fn authored_helix_uses_its_six_second_cooldown_before_the_next_volley() {
     // push: 4 m/s away and 6 m/s up (each 4 and 6 × Soldier: 76's ruleset
     // value 0x2982, 1.0), at full within 0.5 m, then ×0.75 and ×0.25 at 3 m.
     assert_eq!(blast.self_damage, 0.5);
+    // Its shooter's push: on (`m_49F60FB8` 1), whole (`m_2FE97560` 1); its
+    // sight test with the default `019.097`.
+    assert_eq!(
+        (blast.self_knockback, blast.sight),
+        (1.0, Some(crate::weapons::BLAST_SIGHT_PROFILE))
+    );
     let knockback = blast.knockback.unwrap();
     assert_eq!((knockback.away, knockback.upward), (4.0, 6.0));
     assert_eq!(knockback.away_rings, [(0.5, 1.0), (3.0, 0.75)]);

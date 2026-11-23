@@ -278,16 +278,32 @@ impl RoomState {
                     .map(|bot| bot.spawn.body);
                 for notice in hit.notices.iter().flatten() {
                     if let CombatNotice::Hit { dealt, .. } = notice {
-                        peer.world
-                            .dealt(&graphs, hit.bot, body, *dealt, &hit.tags, false);
+                        peer.world.dealt(
+                            &graphs,
+                            hit.dealer,
+                            hit.bot,
+                            body,
+                            *dealt,
+                            &hit.tags,
+                            false,
+                            &[],
+                        );
                         if let Some(source) = hit.source {
                             peer.world
                                 .source_dealt(source, hit.bot, *dealt, &hit.tags, false);
                         }
                     }
                 }
-                peer.world
-                    .dealt(&graphs, hit.bot, body, hit.healed, &hit.tags, true);
+                peer.world.dealt(
+                    &graphs,
+                    hit.dealer,
+                    hit.bot,
+                    body,
+                    hit.healed,
+                    &hit.tags,
+                    true,
+                    &[],
+                );
                 if let Some(source) = hit.source {
                     peer.world
                         .source_dealt(source, hit.bot, hit.healed, &hit.tags, true);

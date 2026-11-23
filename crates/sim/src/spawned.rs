@@ -723,6 +723,7 @@ mod tests {
                 50.0,
                 &lucy_script::weapons::DamageTags::NONE,
                 orb.heal,
+                &[],
             );
             spawned.receive_message(&GameMessage {
                 sender: ORB,
