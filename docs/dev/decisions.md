@@ -23,10 +23,11 @@ These inputs can't be read from the install while the server runs. They are fixe
 | Item | File | Why it isn't derived |
 | --- | --- | --- |
 | Statescript payload codecs | `statescript_codecs.json` | Our description of what the client's reader code reads per state class, generated with IDA from a client memory image. The program's code is encrypted on disk, so the server can't read it there. |
-| Captured server templates | `retail_templates.json` | Server-side data, decoded from 1.68 reference traffic; never in the client. Being replaced by messages our code builds (agent TemplatesGone). |
-| Server-set queue and Arcade card fields | Parts of `game_queues_174.json` and `arcade_cards_174.json` | The `game_queues` derivation reads the captured templates. Arcade card duration and permanence are set by the server, not the card asset. |
+| Server-set Arcade card fields | Parts of `arcade_cards_174.json` | Arcade card duration and permanence are set by the server, not the card asset. |
 | Rules from client code used by derivations | Constants in the derivations, for example the placeable type flag table in `crates/assets/src/game_maps.rs` | Facts about compiled code. |
 | Research names | `statescript_names.json` | Research-only naming catalog (class aliases, the STU fields that hold a variable, logical buttons, the hero select and HUD graphs, each mode's scripts, the server's variable names), used by `lucy script query`. Upstream research (LizRollin's `statescript_names_174.json`), not read from the client. |
+
+The server sends no data captured from Blizzard's servers. The login messages the reference server replayed from 1.68 traffic (`retail_templates.json`, removed 2026-11-23) are built from the install (`lobby_preload_174.json`, `competitive_seasons_174.json`, the item catalog and its prices) or written as constants in `crates/lobby/src/templates.rs`; live-service data (replay hosts, the real-money store, Battle.net's profanity filter, anti-cheat payloads, hosts and keys) is not sent. What each captured message was: `D:/Work/Coding/refs/reports/RetailTemplates.md`.
 
 Derived since 2026-11-23 (`lucy-assets` derivations `client` and `resource_keys`): the lobby and game link message layouts, the Battle.net descriptors and the lobby state-blob key from the client program's data sections (stored plain on disk), and the event resource keys from the install's `090` assets (D2).
 

@@ -1,7 +1,9 @@
 //! Career statistics and the mode-rules message sent at login.
 //!
-//! Ports `ow174/content/career.py`. The retail stat catalog remains in the
-//! separately prepared templates. Only the two career stat lists are rebuilt.
+//! Ports `ow174/content/career.py`. 27202 carries the career stat lists
+//! twice (`+0x78`, `+0xA8`) and two stat catalogs, each hero's (`+0x90`) and
+//! each map's (`+0xC0`) `062` stats, which the server sends empty (see
+//! [`mode_rules`]).
 //!
 //! Client research: a hero's lifetime "Time Played" is stat 062/021 (seconds)
 //! and "Matches won" 062/039. The career profile's role tables sum a hero stat
@@ -23,7 +25,7 @@ use crate::{
     menu::explicit_hero,
     player_messages::{endorsement, summary},
     ranked::{LeaderboardPlaces, Queue, Ranked, Season, wins_of},
-    templates::{LOBBY, RetailTemplates},
+    templates::LOBBY,
     transport::LobbyMessage,
 };
 use lucy_content::catalog::ItemDb;
@@ -46,20 +48,24 @@ const SEASON_KIND: u64 = 3;
 const SEASON_FLAG: u64 = 0x20;
 const ROLE_QUEUES: [Queue; 3] = [Queue::Tank, Queue::Damage, Queue::Support];
 
+/// 27202: the career stats and two empty stat catalogs. Retail listed each
+/// hero's and each map's tracked stats (`062`); the install has no list of
+/// them (the `062` assets name their heroes for only some stats), and the
+/// client shows the career profile from the stat lists without them
+/// (checked in the game, `D:/Work/Coding/refs/reports/RetailTemplates.md`).
 pub fn mode_rules(
-    templates: &RetailTemplates,
     profile: &Profile,
     heroes: &[u64],
     items: &ItemDb,
     season: Season,
 ) -> io::Result<Fields> {
-    let mut rules = templates
-        .first(MODE_RULES, RULES)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing mode-rules template"))?;
     let stats = Array(career_stats(profile, heroes, items, season)?);
-    rules.insert(0x78, stats.clone());
-    rules.insert(0xa8, stats);
-    Ok(rules)
+    Ok(Fields::from([
+        (0x78, stats.clone()),
+        (0x90, Array(Vec::new())),
+        (0xa8, stats),
+        (0xc0, Array(Vec::new())),
+    ]))
 }
 
 /// What a career profile shows besides the profile itself.
@@ -231,12 +237,7 @@ fn category(stats: IndexMap<u64, Vec<Value>>, key: u64) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use sha2::{Digest, Sha256};
-
     use super::*;
-    use crate::{collection::Collection, ranked::Ranked};
     use lucy_wire::jam::codec::Schemas;
 
     const SEASON: Season = Season {
@@ -304,8 +305,8 @@ mod tests {
     }
 
     #[test]
-    fn clones_the_template_and_uses_a_stable_name_for_non_catalog_heroes() {
-        let templates = RetailTemplates::from_reader(&br#"{"format":1,"server":[["0xB9DCA497",27202,{"+0x78":[],"+0x90":"kept","+0xA8":[]}]]}"#[..]).unwrap();
+    #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
+    fn the_stat_lists_go_twice_and_non_catalog_heroes_count_as_random() {
         let items = roster();
         let heroes = [1, 2, 3, 4, 5, 6, 7];
         let mut profile = Profile {
@@ -313,88 +314,29 @@ mod tests {
             lobby_hero: "random".into(),
             ..Profile::default()
         };
-        let random = mode_rules(&templates, &profile, &heroes, &items, SEASON).unwrap();
+        let random = mode_rules(&profile, &heroes, &items, SEASON).unwrap();
         profile.lobby_hero = "Fictional NPC".into();
-        let npc = mode_rules(&templates, &profile, &heroes, &items, SEASON).unwrap();
+        let npc = mode_rules(&profile, &heroes, &items, SEASON).unwrap();
         assert_eq!(npc, random);
-        assert_eq!(npc[&0x90], Value::String("kept".into()));
         assert_eq!(npc[&0x78], npc[&0xa8]);
         assert_eq!(
-            templates.first(MODE_RULES, RULES).unwrap()[&0x78],
-            Array(Vec::new())
+            npc[&0x78],
+            Array(career_stats(&profile, &heroes, &items, SEASON).unwrap())
         );
+        assert_eq!(npc[&0x90], Array(Vec::new()));
+        assert_eq!(npc[&0xc0], Array(Vec::new()));
         assert!(career_stats(&profile, &[], &items, SEASON).is_err());
-    }
-
-    #[test]
-    #[ignore = "requires the derived 104319 retail templates and catalogs"]
-    fn mode_rules_matches_three_python_104319_message_bodies() {
-        let data = lucy_testkit::runtime_dir().join("data");
-        let templates = RetailTemplates::captured();
-        let items = Arc::new(ItemDb::load(&data).unwrap());
-        let collection = Collection::new(&templates, Arc::clone(&items)).unwrap();
-        let ranked = Ranked::new(&templates).unwrap();
-        let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
-
-        let default = Profile {
-            player_name: "Mode fixture".into(),
-            ..Profile::default()
-        };
-        let mut reaper = Profile {
-            lobby_hero: " Reaper ".into(),
-            season: 18,
-            ..default.clone()
-        };
-        reaper.wins.extend([
-            ("tank".into(), 5.into()),
-            ("damage".into(), 13.into()),
-            ("support".into(), 8.into()),
-        ]);
-        reaper.matches.insert("tank".into(), 4.into());
-        let mut npc = Profile {
-            player_name: "Fävorite 群".into(),
-            lobby_hero: "B.O.B.".into(),
-            season: 555,
-            ..Profile::default()
-        };
-        npc.wins.insert("support".into(), 2.into());
-
-        for (profile, length, digest) in [
-            (
-                default,
-                66_272,
-                "9f995f88d919b841a296a5f1b43c2cca5a53360e6ba83827168f4ee571676b4b",
-            ),
-            (
-                reaper,
-                66_728,
-                "0ac88c4d182c2ab8bffb5759ffca83f61af266fa1e40bc3fe3f0f405a1306f56",
-            ),
-            (
-                npc,
-                66_416,
-                "95009d091e3c450ff56124fa10f7b7a97b9d8cd452227712f75e04e80698c7fa",
-            ),
-        ] {
-            let fields = mode_rules(
-                &templates,
-                &profile,
-                collection.heroes(),
-                &items,
-                ranked.season(&profile),
-            )
+        Schemas::lobby(&lucy_testkit::runtime_dir())
+            .unwrap()
+            .encode(MODE_RULES, RULES, &npc)
             .unwrap();
-            let body = schemas.encode(MODE_RULES, RULES, &fields).unwrap();
-            assert_eq!(body.len(), length);
-            assert_eq!(format!("{:x}", Sha256::digest(body)), digest);
-        }
     }
 
     #[test]
     #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn only_the_players_own_account_gets_a_full_career_profile() {
         let collection = crate::test_catalog::collection();
-        let ranked = Ranked::new(&RetailTemplates::captured()).unwrap();
+        let ranked = crate::test_catalog::ranked();
         let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
         let profile = Profile {
             player_name: "Career".into(),

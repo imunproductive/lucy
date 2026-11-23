@@ -1,4 +1,5 @@
-//! Competitive season and rating projections from the external retail template.
+//! Competitive seasons and rating projections, from the install's season
+//! cards (`data/competitive_seasons_174.json`, `lucy_assets` `seasons.rs`).
 //!
 //! Research behind the ranked state (36300):
 //!
@@ -40,19 +41,22 @@
 //!   before the full state.
 
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
-    io,
+    collections::{BTreeMap, HashSet},
+    fs::File,
+    io::{self, BufReader, Read},
+    path::Path,
 };
 
+use serde::Deserialize;
 use serde_json::{Map, Value as Json};
 
 use crate::{
     accounts::{Profile, saved_integer},
     clock::{DAY, from_stu_datetime, stu_datetime},
     progression::Outcome,
-    templates::RetailTemplates,
     transport::LobbyMessage,
 };
+use lucy_core::guid::parse_guid;
 use lucy_wire::jam::codec::{
     Fields,
     Value::{self, Array, Bool, Float64, Signed, Struct, Unsigned},
@@ -186,6 +190,16 @@ struct Rating {
 }
 
 impl Rating {
+    /// A card the player has no rating on.
+    fn unrated() -> Self {
+        Self {
+            skill: 0,
+            tier: 0,
+            place: 0,
+            placements_played: 0,
+        }
+    }
+
     fn read(profile: &Profile, queue: Queue, places: &LeaderboardPlaces) -> io::Result<Self> {
         let skill = rating_of(profile, queue)?;
         let matches = matches_of(profile, queue)?;
@@ -351,67 +365,100 @@ fn profile_integer(values: &Map<String, Json>, queue: Queue, default: i64) -> io
     })
 }
 
+pub const SEASONS_FILE: &str = "competitive_seasons_174.json";
+
+/// Each numbered season's card (`0C7`), by number: the card whose name
+/// strings read "Season N" (`m_1E4E5957`) and that no other card names as
+/// its own (an open queue card names its role queue season, `m_2593569C`).
+const SEASON_CARDS: [u64; 36] = [
+    0xdd, 0xde, 0xdf, 0xe0, 0xe1, 0xe2, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7, 0xe8, 0xe9, 0xea, 0xeb, 0xec,
+    0xc1, 0xc2, 0xc3, 0xc4, 0x11d, 0x11e, 0x11f, 0x120, 0x121, 0x19d, 0x19e, 0x19f, 0x1a0, 0x1a1,
+    0x1a2, 0x1b3, 0x1b5, 0x1b7, 0x1b9, 0x1bb,
+];
+/// A role queue card's roles, in the order of its role slots (`0C7`
+/// `m_66C923AF`: tank, support, damage), which is retail's order of the
+/// card's ratings.
+const ROLE_QUEUE_ROLES: [u64; 3] = [TANK, SUPPORT, DAMAGE];
+
+/// A season card's record in the derived file.
+#[derive(Deserialize)]
+struct SeasonCard {
+    tiers: Vec<Tier>,
+    dates: [u64; 4],
+    name: Json,
+    title: Json,
+    unlocks: Vec<String>,
+    heroic_unlocks: Vec<String>,
+    heroes: Vec<String>,
+    maps_featured: Vec<String>,
+    featured: Vec<String>,
+    texture: Json,
+    image: Json,
+    maps: Vec<String>,
+    parent: Option<String>,
+    children: Vec<String>,
+    count_a: u64,
+    count_b: u64,
+    flag: bool,
+}
+
+#[derive(Deserialize)]
+struct Tier {
+    lowest: u64,
+    highest: u64,
+    unlocks: Vec<String>,
+}
+
 pub struct Ranked {
-    template: Fields,
     seasons: BTreeMap<u64, Season>,
-    card_templates: HashMap<u64, Fields>,
-    running_templates: HashMap<u64, Fields>,
+    /// Every competitive season's record (36300 `+0x98`), by card, in card
+    /// order.
+    history: BTreeMap<u64, Fields>,
 }
 
 impl Ranked {
-    pub fn new(templates: &RetailTemplates) -> io::Result<Self> {
-        let template = templates
-            .first(RANKED, STATE)
-            .ok_or_else(|| invalid("missing ranked state template"))?;
-        let history = array(&template, 0x98)?;
-        let mut open_cards = HashMap::new();
-        let mut seasons = BTreeMap::new();
-        for entry in history {
-            let entry = structure(entry)?;
-            let parent = integer(entry, 0xf0)?;
-            let card = integer(entry, 0x18)?;
-            if parent != 0 {
-                open_cards.entry(parent).or_insert(card);
+    pub fn load(data_dir: &Path) -> io::Result<Self> {
+        let path = data_dir.join(SEASONS_FILE);
+        let file = File::open(&path).map_err(|error| {
+            io::Error::new(error.kind(), format!("{}: {error}", path.display()))
+        })?;
+        Self::from_reader(BufReader::new(file))
+    }
+
+    pub fn from_reader(reader: impl Read) -> io::Result<Self> {
+        let cards: BTreeMap<String, SeasonCard> = serde_json::from_reader(reader)
+            .map_err(|error| invalid(format!("invalid {SEASONS_FILE}: {error}")))?;
+        let mut history = BTreeMap::new();
+        let mut children = BTreeMap::new();
+        for (key, card) in cards {
+            let id = guid(&key)?;
+            let number = SEASON_CARDS
+                .iter()
+                .position(|&index| CARD_BASE | index == id)
+                .map_or(0, |position| position as u64 + 1);
+            if let Some(child) = card.children.first() {
+                children.insert(id, guid(child)?);
             }
+            history.insert(id, season_record(id, number, &card)?);
         }
-        for entry in history {
-            let entry = structure(entry)?;
-            let number = integer(entry, 0x118)?;
-            if number == 0 {
-                continue;
-            }
-            let card = integer(entry, 0x18)?;
-            let open_card = open_cards.get(&card).copied().filter(|&card| card != 0);
-            seasons.insert(
-                number,
-                Season {
+        let mut seasons = BTreeMap::new();
+        for (number, &index) in (1..).zip(SEASON_CARDS.iter()) {
+            let card = CARD_BASE | index;
+            if history.contains_key(&card) {
+                seasons.insert(
                     number,
-                    card,
-                    open_card,
-                },
-            );
+                    Season {
+                        number,
+                        card,
+                        open_card: children.get(&card).copied(),
+                    },
+                );
+            }
         }
         if !seasons.contains_key(&CURRENT_SEASON) {
-            return Err(invalid("ranked template lacks the current season"));
+            return Err(invalid("the competitive seasons lack the current season"));
         }
-        let card_templates = by_id(array(structure(field(&template, 0x80)?)?, 0)?, 0x18)?;
-        for card in [ROLE_QUEUE, OPEN_QUEUE, COMPETITIVE_CTF] {
-            if !card_templates.contains_key(&card) {
-                return Err(invalid(format!(
-                    "missing competitive rating template {card:#018x}"
-                )));
-            }
-        }
-        let running_templates = by_id(array(&template, 0xb0)?, 0)?;
-        if !running_templates.contains_key(&ROLE_QUEUE) {
-            return Err(invalid("missing running season template"));
-        }
-        Ok(Self {
-            template,
-            seasons,
-            card_templates,
-            running_templates,
-        })
+        Ok(Self { seasons, history })
     }
 
     pub fn season(&self, profile: &Profile) -> Season {
@@ -444,7 +491,9 @@ impl Ranked {
         Ok(Some(rank))
     }
 
-    /// Ratings grouped by card, for the career profile and competitive state.
+    /// Ratings grouped by card, for the career profile and competitive
+    /// state: the season's card (a rating per role from season 18), its
+    /// open queue card and the event cards, a rating each.
     pub fn cards(
         &self,
         profile: &Profile,
@@ -452,32 +501,40 @@ impl Ranked {
         places: &LeaderboardPlaces,
     ) -> io::Result<Vec<Fields>> {
         let season = self.season(profile);
-        let main = if season.has_roles() {
-            ROLE_QUEUE
+        let main: &[u64] = if season.has_roles() {
+            &ROLE_QUEUE_ROLES
         } else {
-            OPEN_QUEUE
+            &[0]
         };
         let cards = [(season.card, main)]
             .into_iter()
-            .chain(season.open_card.map(|card| (card, OPEN_QUEUE)))
-            .chain(event_cards.iter().map(|&card| (card, COMPETITIVE_CTF)));
+            .chain(season.open_card.map(|card| (card, &[0][..])))
+            .chain(event_cards.iter().map(|&card| (card, &[0][..])));
         let mut rated_cards = Vec::new();
-        for (card_id, template_id) in cards {
-            let mut card = self.card_templates[&template_id].clone();
-            card.insert(0x18, Unsigned(card_id));
+        for (card_id, roles) in cards {
+            let mut ratings = Vec::with_capacity(roles.len());
+            for &role in roles {
+                let mut rating = Fields::from([
+                    (0x00, Unsigned(role)),
+                    (0x08, Float64(0.0)),
+                    (0x10, Unsigned(PC_PLATFORM)),
+                    (0x14, Unsigned(PC_POOL)),
+                ]);
+                rating.extend(match season.queue(card_id, role) {
+                    Some(queue) => Rating::read(profile, queue, places)?.fields(),
+                    None => Rating::unrated().fields(),
+                });
+                ratings.push(Struct(rating));
+            }
             let seen =
                 i64::try_from(card_id).is_ok_and(|card| profile.seasons_seen.contains(&card));
-            card.insert(0x2c, Bool(seen));
-            for rating in array_mut(&mut card, 0)? {
-                let rating = structure_mut(rating)?;
-                let role = integer(rating, 0)?;
-                rating.insert(0x10, Unsigned(PC_PLATFORM));
-                rating.insert(0x14, Unsigned(PC_POOL));
-                if let Some(queue) = season.queue(card_id, role) {
-                    rating.extend(Rating::read(profile, queue, places)?.fields());
-                }
-            }
-            rated_cards.push(card);
+            rated_cards.push(Fields::from([
+                (0x00, Array(ratings)),
+                (0x18, Unsigned(card_id)),
+                (0x20, Float64(0.0)),
+                (0x28, Unsigned(0)),
+                (0x2c, Bool(seen)),
+            ]));
         }
         Ok(rated_cards)
     }
@@ -512,6 +569,12 @@ impl Ranked {
         cards.iter().map(party_card).collect()
     }
 
+    /// 36300: the season's card, the ratings, every season up to the
+    /// player's (later seasons and their open queue cards are left out), a
+    /// timer for each season running now (the player's and its open queue,
+    /// and the Arcade's competitive events) with its dates moved so that it
+    /// began a week ago, and the season cards (`+0xC8`) but the running
+    /// events [assumption: retail's list left out only the running event].
     fn state(
         &self,
         season: Season,
@@ -519,10 +582,6 @@ impl Ranked {
         now: u64,
         cards: &[Fields],
     ) -> io::Result<Fields> {
-        let mut value = self.template.clone();
-        value.insert(0x78, Unsigned(season.card));
-        structure_mut(field_mut(&mut value, 0x80)?)?
-            .insert(0, Array(cards.iter().cloned().map(Struct).collect()));
         let later: HashSet<_> = self
             .seasons
             .values()
@@ -535,54 +594,112 @@ impl Ranked {
             .chain(event_cards.iter().copied())
             .filter(|&card| card != 0)
             .collect();
-        let mut updated_history = Vec::new();
+        let mut history = Vec::new();
         let mut timers = Vec::new();
-        for mut entry in std::mem::take(array_mut(&mut value, 0x98)?) {
-            let entry_fields = structure_mut(&mut entry)?;
-            let card = integer(entry_fields, 0x18)?;
+        let mut card_ids = Vec::new();
+        for (&card, entry) in &self.history {
             if later.contains(&card) {
                 continue;
             }
+            let mut entry = entry.clone();
             if running.contains(&card) {
-                timers.push(Struct(self.shift_season(entry_fields, card, now)?));
+                timers.push(Struct(shift_season(&mut entry, card, now)?));
             }
-            updated_history.push(entry);
-        }
-        value.insert(0x98, Array(updated_history));
-        value.insert(0xb0, Array(timers));
-        let card_ids = array_mut(&mut value, 0xc8)?;
-        let mut retained = Vec::with_capacity(card_ids.len());
-        for card in std::mem::take(card_ids) {
-            if !later.contains(&unsigned(&card)?) {
-                retained.push(card);
+            if !event_cards.contains(&card) {
+                card_ids.push(Unsigned(card));
             }
+            history.push(Struct(entry));
         }
-        *card_ids = retained;
-        Ok(value)
+        Ok(Fields::from([
+            (0x78, Unsigned(season.card)),
+            (
+                0x80,
+                Struct(Fields::from([(
+                    0,
+                    Array(cards.iter().cloned().map(Struct).collect()),
+                )])),
+            ),
+            (0x98, Array(history)),
+            (0xb0, Array(timers)),
+            (0xc8, Array(card_ids)),
+        ]))
     }
+}
 
-    fn shift_season(&self, entry: &mut Fields, card: u64, now: u64) -> io::Result<Fields> {
-        let start = season_time(entry, 0x20)?;
-        let shift = i128::from(now) - i128::from(DAYS_INTO_SEASON * DAY) - i128::from(start);
-        for key in SEASON_DATES {
-            let time = i128::from(season_time(entry, key)?) + shift;
-            let time =
-                u64::try_from(time).map_err(|_| invalid("ranked season date out of range"))?;
-            entry.insert(
-                key,
-                Struct(Fields::from([(0, Unsigned(stu_datetime(time)?))])),
-            );
-        }
-        let mut timer = self
-            .running_templates
-            .get(&card)
-            .unwrap_or(&self.running_templates[&ROLE_QUEUE])
-            .clone();
-        let remaining = i128::from(season_time(entry, 0x30)?) - i128::from(now);
-        timer.insert(0, Unsigned(card));
-        timer.insert(8, Float64(remaining as f64));
-        Ok(timer)
+/// A running season's dates moved so that it began [`DAYS_INTO_SEASON`]
+/// days before `now`, and its timer: the card, the seconds left and a flag
+/// (set in every timer retail sent).
+fn shift_season(entry: &mut Fields, card: u64, now: u64) -> io::Result<Fields> {
+    let start = season_time(entry, 0x20)?;
+    let shift = i128::from(now) - i128::from(DAYS_INTO_SEASON * DAY) - i128::from(start);
+    for key in SEASON_DATES {
+        let time = i128::from(season_time(entry, key)?) + shift;
+        let time = u64::try_from(time).map_err(|_| invalid("ranked season date out of range"))?;
+        entry.insert(
+            key,
+            Struct(Fields::from([(0, Unsigned(stu_datetime(time)?))])),
+        );
     }
+    let remaining = i128::from(season_time(entry, 0x30)?) - i128::from(now);
+    Ok(Fields::from([
+        (0x0, Unsigned(card)),
+        (0x8, Float64(remaining as f64)),
+        (0xc, Bool(true)),
+    ]))
+}
+
+/// A season card's record (36300 `+0x98`), from the derived card.
+fn season_record(card: u64, number: u64, source: &SeasonCard) -> io::Result<Fields> {
+    let guids = |keys: &[String]| -> io::Result<Value> {
+        keys.iter()
+            .map(|key| guid(key).map(Unsigned))
+            .collect::<io::Result<_>>()
+            .map(Array)
+    };
+    let optional = |value: &Json| -> io::Result<Value> {
+        Ok(Unsigned(match value {
+            Json::String(key) => guid(key)?,
+            _ => 0,
+        }))
+    };
+    let tiers = source
+        .tiers
+        .iter()
+        .map(|tier| {
+            Ok(Struct(Fields::from([
+                (0x00, guids(&tier.unlocks)?),
+                (0x18, Unsigned(tier.lowest)),
+                (0x1c, Unsigned(tier.highest)),
+            ])))
+        })
+        .collect::<io::Result<_>>()?;
+    let mut record = Fields::from([
+        (0x00, Array(tiers)),
+        (0x18, Unsigned(card)),
+        (0x40, optional(&source.name)?),
+        (0x48, optional(&source.title)?),
+        (0x50, guids(&source.unlocks)?),
+        (0x68, guids(&source.heroic_unlocks)?),
+        (0x80, guids(&source.heroes)?),
+        (0x98, guids(&source.maps_featured)?),
+        (0xb0, optional(&source.texture)?),
+        (0xb8, optional(&source.image)?),
+        (0xc0, guids(&source.featured)?),
+        (0xd8, guids(&source.maps)?),
+        (
+            0xf0,
+            Unsigned(source.parent.as_deref().map(guid).transpose()?.unwrap_or(0)),
+        ),
+        (0xf8, guids(&source.children)?),
+        (0x110, Unsigned(source.count_a)),
+        (0x114, Unsigned(source.count_b)),
+        (0x118, Unsigned(number)),
+        (0x11c, Bool(source.flag)),
+    ]);
+    for (key, date) in SEASON_DATES.into_iter().zip(source.dates) {
+        record.insert(key, Struct(Fields::from([(0, Unsigned(date))])));
+    }
+    Ok(record)
 }
 
 fn party_card(card: &Fields) -> io::Result<Value> {
@@ -618,14 +735,8 @@ fn season_time(entry: &Fields, offset: u32) -> io::Result<u64> {
     from_stu_datetime(integer(structure(field(entry, offset)?)?, 0)?)
 }
 
-fn by_id(entries: &[Value], offset: u32) -> io::Result<HashMap<u64, Fields>> {
-    entries
-        .iter()
-        .map(|value| {
-            let fields = structure(value)?;
-            Ok((integer(fields, offset)?, fields.clone()))
-        })
-        .collect()
+fn guid(key: &str) -> io::Result<u64> {
+    parse_guid(key).ok_or_else(|| invalid(format!("{SEASONS_FILE}: invalid GUID {key:?}")))
 }
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -640,18 +751,7 @@ fn field(fields: &Fields, offset: u32) -> io::Result<&Value> {
     fields.get(&offset).ok_or_else(|| missing(offset))
 }
 
-fn field_mut(fields: &mut Fields, offset: u32) -> io::Result<&mut Value> {
-    fields.get_mut(&offset).ok_or_else(|| missing(offset))
-}
-
 fn structure(value: &Value) -> io::Result<&Fields> {
-    match value {
-        Struct(fields) => Ok(fields),
-        _ => Err(invalid("expected a ranked record")),
-    }
-}
-
-fn structure_mut(value: &mut Value) -> io::Result<&mut Fields> {
     match value {
         Struct(fields) => Ok(fields),
         _ => Err(invalid("expected a ranked record")),
@@ -660,13 +760,6 @@ fn structure_mut(value: &mut Value) -> io::Result<&mut Fields> {
 
 fn array(fields: &Fields, offset: u32) -> io::Result<&[Value]> {
     match field(fields, offset)? {
-        Array(values) => Ok(values),
-        _ => Err(invalid(format!("expected a ranked array at +0x{offset:X}"))),
-    }
-}
-
-fn array_mut(fields: &mut Fields, offset: u32) -> io::Result<&mut Vec<Value>> {
-    match field_mut(fields, offset)? {
         Array(values) => Ok(values),
         _ => Err(invalid(format!("expected a ranked array at +0x{offset:X}"))),
     }
@@ -691,9 +784,8 @@ mod tests {
     use super::*;
 
     use serde_json::json;
-    use sha2::{Digest, Sha256};
 
-    use crate::{clock::server_time, party::PARTY};
+    use crate::{party::PARTY, test_catalog};
     use lucy_wire::jam::codec::Schemas;
 
     #[test]
@@ -860,96 +952,92 @@ mod tests {
         assert_eq!(profile.comp_points, 7000);
     }
 
+    /// The state lists every season up to the player's, times the running
+    /// ones from a week ago (the test seasons last 60 days: 53 days left)
+    /// and leaves the running events out of `+0xC8`.
     #[test]
     #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
-    fn state_card_and_party_rating_messages_match_python_wire_vectors() {
+    fn the_state_lists_seasons_up_to_the_players_and_times_the_running_ones() {
         let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
-        let templates = RetailTemplates::captured();
-        let ranked = Ranked::new(&templates).unwrap();
-        let default = Profile::default();
-        let season_25 = Profile {
-            season: 25,
-            ratings: Map::from_iter([
-                ("tank".into(), json!(3100)),
-                ("open".into(), json!(2500)),
-                ("damage".into(), json!(2600)),
-            ]),
-            matches: Map::from_iter([("damage".into(), json!(2))]),
-            seasons_seen: vec![(CARD_BASE | 0x121) as i64],
-            ..Profile::default()
-        };
+        let ranked = test_catalog::ranked();
+        let card = |index| Unsigned(CARD_BASE | index);
+        let cards = |indexes: &[u64]| indexes.iter().map(|&index| card(index)).collect::<Vec<_>>();
+        let now = 1_790_000_000;
+        let left = Float64((53 * DAY) as f64);
         let season_10 = Profile {
             season: 10,
-            ratings: Map::from_iter([("open".into(), json!(3300)), ("lucio".into(), json!(2800))]),
-            server_date: "2026-09-29".into(),
             ..Profile::default()
         };
-        let late_date = Profile {
-            server_date: "2106-02-06".into(),
-            ..Profile::default()
-        };
-        let now = 1_790_000_000;
-        for (profile, event_cards, places, state_card, expected_len, expected) in [
+        for (profile, event_cards, (number, main), history, timers, listed) in [
             (
-                &default,
+                &Profile::default(),
                 [COMPETITIVE_CTF].as_slice(),
-                LeaderboardPlaces::new(),
-                ROLE_QUEUE,
-                5,
-                "1b16680a48a2a8f5fd48e362b1feaa55ffeca0a6f3f2ca149f3cfe1efe62a60a",
-            ),
-            (
-                &season_25,
-                [COMPETITIVE_CTF].as_slice(),
-                LeaderboardPlaces::from([(Queue::Tank, 7)]),
-                CARD_BASE | 0x121,
-                5,
-                "70a380a23b9794786c427e45edaf6468537bb93e805a57eef18e38af410b0da4",
+                (32, 0x1b3),
+                [0xc2, 0xdd, 0xe6, 0x121, 0x1ad, 0x1b3, 0x1b4, 0x1c3].as_slice(),
+                [0x1b3, 0x1b4, 0x1c3].as_slice(),
+                [0xc2, 0xdd, 0xe6, 0x121, 0x1ad, 0x1b3, 0x1b4].as_slice(),
             ),
             (
                 &season_10,
                 [LUCIO_CUP].as_slice(),
-                LeaderboardPlaces::from([(Queue::Open, 18)]),
-                CARD_BASE | 0xe6,
-                4,
-                "be775ca73c870e2282b98d9e524c36cc856dc26f688aa093d02bd468c0a94688",
-            ),
-            (
-                &late_date,
-                [].as_slice(),
-                LeaderboardPlaces::from([(Queue::Support, 42)]),
-                ROLE_QUEUE,
-                4,
-                "60e8955c5105ed973e8c853563229b6e0f0b7f264edb372edd87193b5ec9d8f9",
+                (10, 0xe6),
+                [0xdd, 0xe6, 0x1ad, 0x1c3].as_slice(),
+                [0xe6, 0x1ad].as_slice(),
+                [0xdd, 0xe6, 0x1c3].as_slice(),
             ),
         ] {
-            let now = server_time(&profile.server_date, now).unwrap();
-            let mut messages = ranked
+            let places = LeaderboardPlaces::new();
+            let messages = ranked
                 .login_messages(profile, event_cards, &places, now)
                 .unwrap();
             let (crc, id, state) = messages.last().unwrap();
             assert_eq!((*crc, *id), (RANKED, STATE));
-            assert_eq!(state[&0x78], Unsigned(state_card));
+            assert_eq!(state[&0x78], card(main));
+            let ids = |offset: u32, key: u32| match &state[&offset] {
+                Array(entries) => entries
+                    .iter()
+                    .map(|entry| match entry {
+                        Struct(fields) => fields[&key].clone(),
+                        other => other.clone(),
+                    })
+                    .collect::<Vec<_>>(),
+                _ => panic!("a list"),
+            };
+            assert_eq!(ids(0x98, 0x18), cards(history));
+            assert_eq!(ids(0xb0, 0), cards(timers));
+            assert_eq!(ids(0xb0, 8), vec![left.clone(); timers.len()]);
+            assert_eq!(ids(0xc8, 0), cards(listed));
+            // The season's number goes with it; its dates moved to a week ago.
+            let Array(entries) = &state[&0x98] else {
+                panic!("seasons")
+            };
+            let Some(Struct(own)) = entries
+                .iter()
+                .find(|entry| matches!(entry, Struct(fields) if fields[&0x18] == card(main)))
+            else {
+                panic!("the player's season")
+            };
+            assert_eq!(own[&0x118], Unsigned(number));
+            assert_eq!(season_time(own, 0x20).unwrap(), now - 7 * DAY);
+
             let ratings = Array(ranked.party_ratings(profile, &places).unwrap());
             let member = Struct(Fields::from([(0x68, ratings)]));
             let party = Struct(Fields::from([(0, Array(vec![member]))]));
-            messages.push((PARTY, 20700, Fields::from([(0x78, party)])));
-            assert_eq!(messages.len(), expected_len);
-
-            // Python Ranked.card_ratings, Ranked.state and a 20700 with only its
-            // party member's rating field populated, normalized to wire index one.
-            let mut digest = Sha256::new();
-            for (crc, id, fields) in messages {
-                let mut wire = schemas.header(crc, 1, id).unwrap();
-                wire.extend(schemas.encode(crc, id, &fields).unwrap());
-                digest.update(crc.to_le_bytes());
-                digest.update(id.to_le_bytes());
-                digest.update(u32::try_from(wire.len()).unwrap().to_le_bytes());
-                digest.update(wire);
+            for (crc, id, fields) in
+                messages
+                    .iter()
+                    .chain([&(PARTY, 20700, Fields::from([(0x78, party)]))])
+            {
+                schemas.encode(*crc, *id, fields).unwrap();
             }
-            assert_eq!(format!("{:x}", digest.finalize()), expected);
         }
 
+        let season_25 = Profile {
+            season: 25,
+            ratings: Map::from_iter([("tank".into(), json!(3100))]),
+            matches: Map::from_iter([("damage".into(), json!(2))]),
+            ..Profile::default()
+        };
         let card = CARD_BASE | 0x121;
         let places = LeaderboardPlaces::from([(Queue::Tank, 7)]);
         assert_eq!(
@@ -968,5 +1056,52 @@ mod tests {
             ranked.rank(&season_25, ROLE_QUEUE, TANK, &places).unwrap(),
             None
         );
+    }
+
+    /// The install's seasons: 1-36 with their cards, open queue cards from
+    /// season 23 (`lucy_assets` `seasons.rs` has the derivation and its
+    /// check against the retail capture).
+    #[test]
+    #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
+    fn the_installs_seasons_are_numbered_with_their_open_queue_cards() {
+        let ranked = Ranked::load(&lucy_testkit::runtime_dir().join("data")).unwrap();
+        let season = |number: i64| {
+            ranked.season(&Profile {
+                season: number,
+                ..Profile::default()
+            })
+        };
+        assert_eq!(ranked.seasons.len(), 36);
+        assert_eq!(ranked.history.len(), 83);
+        for (number, card, open_card) in [
+            (1, 0xdd, None),
+            (18, 0xc2, None),
+            (22, 0x11e, None),
+            (23, 0x11f, Some(0x143)),
+            (32, 0x1b3, Some(0x1b4)),
+            (36, 0x1bb, Some(0x1bc)),
+        ] {
+            assert_eq!(
+                season(number),
+                Season {
+                    number: number as u64,
+                    card: CARD_BASE | card,
+                    open_card: open_card.map(|card| CARD_BASE | card),
+                }
+            );
+        }
+        assert_eq!(season(0).number, CURRENT_SEASON);
+        let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
+        for (crc, id, fields) in ranked
+            .login_messages(
+                &Profile::default(),
+                &[COMPETITIVE_CTF],
+                &LeaderboardPlaces::new(),
+                1_790_000_000,
+            )
+            .unwrap()
+        {
+            schemas.encode(crc, id, &fields).unwrap();
+        }
     }
 }

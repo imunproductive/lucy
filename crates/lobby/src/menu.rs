@@ -3,7 +3,7 @@
 use std::io;
 
 use crate::accounts::Profile;
-use lucy_content::catalog::{HERO_BASE, ItemDb, SKIN_THEME_BASE};
+use lucy_content::catalog::{HERO_BASE, ItemDb};
 use lucy_core::guid::parse_guid;
 
 /// Lobby NPCs by name, with their hero index.
@@ -21,11 +21,6 @@ pub const PVE_NPCS: &[(&str, u64)] = &[
     ("junkenstein shock-tire", 0x176),
     ("junkenstein zombardier", 0x177),
     ("b.o.b.", 0x21d),
-];
-
-// These Anniversary menu themes are absent from the inherited preload.
-const PRELOAD_MENU_THEMES: [u64; 8] = [
-    0x49e1, 0x48a9, 0x49cf, 0x49e4, 0x49d8, 0x49d9, 0x49d1, 0x49a8,
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -122,19 +117,6 @@ pub(crate) fn explicit_hero(choice: &str, heroes: &[u64], items: &ItemDb) -> Opt
         .hero_by_name(choice)
         .or_else(|| guid.and_then(|_| parse_guid(choice)))
         .filter(|hero| heroes.contains(hero))
-}
-
-pub fn extra_preload_themes(items: &ItemDb) -> impl Iterator<Item = u64> + '_ {
-    PRELOAD_MENU_THEMES
-        .into_iter()
-        .map(|index| SKIN_THEME_BASE | index)
-        .chain(
-            items
-                .unlocks
-                .values()
-                .map(|unlock| unlock.skin_theme)
-                .filter(|&theme| theme != 0),
-        )
 }
 
 fn random_index(len: usize) -> io::Result<usize> {

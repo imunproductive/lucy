@@ -355,7 +355,7 @@ fn percent_decode(text: &str) -> String {
 mod tests {
     use super::*;
     use lucy_content::catalog::ItemDb;
-    use lucy_lobby::templates::RetailTemplates;
+    use lucy_lobby::economy::ItemPrices;
     use std::{
         io::{Read, Write},
         net::TcpStream,
@@ -414,15 +414,7 @@ mod tests {
     fn parts(state: &Path) -> DashboardParts {
         let accounts =
             Arc::new(Accounts::new(state.join("profiles"), state.join("profile.json")).unwrap());
-        let templates = RetailTemplates::from_reader(
-            br#"{"format":1,"server":[
-                ["70E5A247",24900,{"+0x80":[],"+0x98":[]}],
-                ["779A8581",24300,{"+0x78":{"+0x30":[]},"+0xF8":{"+0x0":[]}}]
-            ]}"#
-            .as_slice(),
-        )
-        .unwrap();
-        let collection = Collection::new(&templates, Arc::new(ItemDb::default())).unwrap();
+        let collection = Collection::new(Arc::new(ItemDb::default()), ItemPrices::default());
         DashboardParts {
             selected: Arc::new(Mutex::new(accounts.get("Alpha").unwrap())),
             accounts,

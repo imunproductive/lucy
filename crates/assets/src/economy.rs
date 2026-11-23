@@ -16,11 +16,13 @@
 //!   (`m_lootBoxCelebrationOverrides`) and the box type of that box
 //!   (`STUUnlock_LootBox.m_lootboxType`; `ow174/catalog/events.py`).
 //!
-//! The shop's item prices stay those of the retail catalog capture: the
-//! settings price by pool and rarity, but the capture sells most event items
-//! at the base pool's price and only some at the event price, three times as
-//! much (5 of about 33 legendary skins of each event), and the install
-//! doesn't say which.
+//! - `item_prices`: what the shop charges for an item, by currency and
+//!   rarity: `credits` from the base box's credit table, `competitive_points`
+//!   (the golden weapons' one price) and `league_tokens` (the Overwatch
+//!   League items). The settings also price each event box's pool, three
+//!   times the base price; retail charged that only for an event's newest
+//!   items, which the install doesn't mark, so the lobby sells every item at
+//!   the base price (`lucy_lobby::collection`).
 
 use std::path::Path;
 
@@ -39,10 +41,12 @@ const GENERIC_SETTINGS: u16 = 0x054;
 
 /// `Enum_BABC4175::Base`, the standard loot box.
 const BASE_BOX: i64 = 0;
-/// `Enum_14895597` `x709296A6` (0): a price table in credits. The other two
-/// currencies are the golden weapons' competitive points (1: one price,
-/// 3000) and the Overwatch League tokens (2).
+/// `Enum_14895597` `x709296A6` (0): a price table in credits; 1, the
+/// golden weapons' competitive points (one price); 2, the Overwatch League
+/// tokens.
 const CREDITS: i64 = 0;
+const COMPETITIVE_POINTS: i64 = 1;
+const LEAGUE_TOKENS: i64 = 2;
 
 /// `STUUnlockRarity`, the rarities a box holds.
 const RARITIES: [(i64, &str); 4] = [(0, "Common"), (1, "Rare"), (2, "Epic"), (3, "Legendary")];
@@ -54,6 +58,7 @@ pub(crate) fn derive(install: &Install, _out: &Path) -> Result<Vec<Output>> {
         "duplicate_credits": duplicate_credits(progression)?,
         "credit_drops": credit_drops(install, progression)?,
         "celebration_boxes": celebration_boxes(install, progression)?,
+        "item_prices": item_prices(progression)?,
     });
     Ok(vec![Output::json(PATH, &table)])
 }
@@ -112,4 +117,41 @@ fn celebration_boxes(install: &Install, progression: Node) -> Result<Json> {
         );
     }
     Ok(Json::Object(boxes))
+}
+
+fn item_prices(progression: Node) -> Result<Json> {
+    let table = |currency: i64, base_box: bool| {
+        progression
+            .nodes("m_0C6A363E")
+            .find(|table| {
+                table.int("m_227307C8") == currency
+                    && (!base_box || table.int("m_A9D270A9") == BASE_BOX)
+            })
+            .ok_or_else(|| {
+                asset_error(format!(
+                    "054/0018 has no price table in currency {currency}"
+                ))
+            })
+    };
+    let by_rarity = |table: Node| -> Result<Json> {
+        let mut prices = Map::new();
+        for &(rarity, name) in &RARITIES {
+            let price = table
+                .nodes("m_4C6FDF24")
+                .find(|price| price.int("m_rarity") == rarity)
+                .ok_or_else(|| asset_error(format!("054/0018 has no {name} price")))?;
+            prices.insert(name.into(), price.int("m_CE91A110").into());
+        }
+        Ok(Json::Object(prices))
+    };
+    let points = table(COMPETITIVE_POINTS, false)?
+        .nodes("m_4C6FDF24")
+        .next()
+        .ok_or_else(|| asset_error("054/0018 has no competitive point price"))?
+        .int("m_CE91A110");
+    Ok(json!({
+        "credits": by_rarity(table(CREDITS, true)?)?,
+        "competitive_points": points,
+        "league_tokens": by_rarity(table(LEAGUE_TOKENS, false)?)?,
+    }))
 }

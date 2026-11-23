@@ -1125,7 +1125,6 @@ enum PreparedFixture {
 
 fn exercise_prepared_world(fixture: PreparedFixture) {
     use crate::practice::{SoloPracticeHandoff, dispatch_scene};
-    use lucy_content::catalog::ItemDb;
     use lucy_lobby::{
         accounts::Accounts,
         collection::Collection,
@@ -1133,7 +1132,6 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
         handoff::{HANDOFF, HANDOFF_MESSAGE},
         login::Identity,
         session::PreparedLogin,
-        templates::RetailTemplates,
     };
     use lucy_sim::{
         body_script::fixture_projectile_factory, bots::BOT_ENTITY, scene_assets::SceneAssets,
@@ -1146,11 +1144,7 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
     let schemas = Arc::new(Schemas::game(&lucy_testkit::runtime_dir()).unwrap());
     let lobby = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
     let assets = SceneAssets::load(runtime).unwrap();
-    let collection = Collection::new(
-        &RetailTemplates::captured(),
-        Arc::new(ItemDb::load(&data).unwrap()),
-    )
-    .unwrap();
+    let collection = Collection::load(&data).unwrap();
     let temporary = tempfile::tempdir().unwrap();
     let accounts = Accounts::new(
         temporary.path().join("profiles"),

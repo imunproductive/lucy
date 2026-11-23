@@ -14,7 +14,7 @@ use std::{
     time::Duration,
 };
 
-use lucy_content::{catalog::ItemDb, maps::GameMap};
+use lucy_content::maps::GameMap;
 use lucy_core::bits::BitReader;
 use lucy_lobby::{
     accounts::{Account, Accounts},
@@ -27,7 +27,7 @@ use lucy_lobby::{
     ranked::Ranked,
     session::PreparedLogin,
     social::{PartyId, Social},
-    templates::RetailTemplates,
+    templates::InstallContent,
     transport::LobbyMessage,
 };
 use lucy_sim::scene_assets::SceneAssets;
@@ -69,8 +69,7 @@ const LEAVE_GAME: u32 = 20304;
 static SHARED: LazyLock<(Arc<SceneAssets>, Arc<Collection>)> = LazyLock::new(|| {
     let runtime = lucy_testkit::runtime_dir();
     let data = runtime.join("data");
-    let items = Arc::new(ItemDb::load(&data).unwrap());
-    let collection = Collection::new(&RetailTemplates::captured(), items).unwrap();
+    let collection = Collection::load(&data).unwrap();
     (
         Arc::new(SceneAssets::load_deferred(&runtime).unwrap()),
         Arc::new(collection),
@@ -110,7 +109,6 @@ impl Fixture {
         let runtime = lucy_testkit::runtime_dir();
         let data = runtime.join("data");
         let state = tempfile::tempdir().unwrap();
-        let templates = RetailTemplates::captured();
         let (assets, collection) = SHARED.clone();
         let accounts = Accounts::new(
             state.path().join("profiles"),
@@ -134,12 +132,12 @@ impl Fixture {
             signing_key: crate::game_data::lobby_state_blob_key(&lucy_testkit::runtime_dir())
                 .unwrap(),
             schemas: Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap(),
-            presence: Presence::new(&templates).unwrap(),
-            ranked: Ranked::new(&templates).unwrap(),
-            arcade: Arcade::load(data.join("arcade_cards_174.json"), &templates).unwrap(),
-            celebrations: Celebrations::load(&data, &templates, Arc::clone(&economy)).unwrap(),
+            presence: Presence,
+            ranked: Ranked::load(&data).unwrap(),
+            arcade: Arcade::load(data.join("arcade_cards_174.json")).unwrap(),
+            celebrations: Celebrations::load(&data, Arc::clone(&economy)).unwrap(),
             xp: lucy_lobby::xp_table::XpTable::load(&data).unwrap(),
-            templates,
+            install_content: InstallContent::load(&data).unwrap(),
             services: Arc::new(Services::new(&collection, economy)),
             collection,
             extra_preload: Vec::new(),

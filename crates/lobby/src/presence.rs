@@ -1,36 +1,39 @@
-//! Account and game-account presence for the lobby, personalized from external templates.
+//! Account and game-account presence for the lobby, built from a table of
+//! the Battle.net presence fields the client reads.
 //!
-//! Presence records go in 27100 +0xA8 and 27113. Their values are protobuf
-//! blobs that hold the recorded account ids in three forms: fixed64 fields,
-//! the `"<id>#1"` game account name, and varints inside a Variant
-//! message_value (the Overwatch player id `{1: 1, 2: high, 3: low}`, which the
-//! client uses for invites and whispers). A field key is `{program "BN",
-//! group, field, unique id}`; field 1 of group 2 (a game account) is its
-//! online bool. Times are Variant ints in microseconds since 1970.
+//! Presence records go in 27100 +0xA8 and 27113: an entity id (`+0x0`), its
+//! owner (`+0x10`) and fields (`+0x20`), each a key and a value, both
+//! Battle.net protobuf messages. A key is `{1: program, 2: group, 3: field,
+//! 4: unique id}` (program 16974, "BN"); a value is a Variant (`2` bool, `3`
+//! int, `5` string, `7` message, `8` four-character code, `9` uint, `10`
+//! entity id). Group 1 is the account, group 2 a game account (field 1 its
+//! online bool). Times are Variant ints in microseconds since 1970.
+//!
+//! A player has three records: the account, the Battle.net App's game
+//! account and the Overwatch ("Pro") game account, whose ids our server
+//! makes from the account id ([`APP_ACCOUNT_BITS`], [`PRO_ACCOUNT_BITS`]).
+//! The fields and their order are those retail's lobby sent (the 1.68
+//! capture); the values are the player's.
 //!
 //! The status bools of the account record (group 1): the client reads its own
 //! status from them (0x7FF7896145E0 via 0x7FF789613F90: 7 away, 11 busy, 12
 //! appear offline, none set is online), which the status dropdown (27011
 //! +0x78) and the name card show. A friend's colour (0x7FF789616670) is away
 //! on 7, busy on 11, else online while one of the friend's game accounts is.
-//! The capture carries only 12, as false; all three always go out, so going
-//! back to online clears them.
+//! All three always go out, so going back to online clears them.
 
-use std::{collections::HashSet, io};
+use std::io;
 
-use prost::encoding::{
-    DecodeContext, WireType, decode_key, decode_varint, encode_key, encode_varint, skip_field,
-};
+use prost::encoding::{WireType, encode_key, encode_varint};
 
 use crate::{
     accounts::{Profile, battle_tag},
     login::Identity,
-    templates::{RETAIL_ACCOUNT, RetailTemplates, personalize_fields},
     transport::LobbyMessage,
 };
 use lucy_wire::jam::codec::{
     Fields,
-    Value::{self, Array, Blob, Signed, Struct, Unsigned},
+    Value::{self, Array, Blob, Struct, Unsigned},
 };
 
 pub const FRIENDS: u32 = 0xf470_e2ab;
@@ -40,20 +43,79 @@ pub const STATUS_BUSY: u8 = 3;
 pub const STATUS_OFFLINE: u8 = 4;
 const UPDATE: u32 = 27113;
 
-const RETAIL_APP_ACCOUNT: u64 = 0x0000_0002;
-const RETAIL_PRO_ACCOUNT: u64 = 0x0000_0003;
-const RETAIL_FULL_NAME: &[u8] = b"ExampleUser";
+/// The id bits that make a player's App and Overwatch game account ids from
+/// the account id.
 const APP_ACCOUNT_BITS: u64 = 0x0a0a_0000;
 pub const PRO_ACCOUNT_BITS: u64 = 0x0b0b_0000;
+/// The high halves of the entity ids: an account, the App's game account
+/// (program "App") and Overwatch's ("Pro").
+const ACCOUNT_HIGH: u64 = 0x0100_0000_0000_0000;
+const APP_HIGH: u64 = 0x0200_0002_0041_7070;
+const PRO_HIGH: u64 = 0x0200_0002_0050_726f;
 
 const PRESENCE_PROGRAM: u64 = 16_974;
+/// The program of the Overwatch player id field ("Pro").
+const PRO_PROGRAM: u64 = 0x0050_726f;
 const ACCOUNT_GROUP: u64 = 1;
-const GAME_ACCOUNT_ONLINE: &[u8] = b"\x08\xce\x84\x01\x10\x02\x18\x01\x20\x00";
-const BOOL_VARIANT: u8 = 0x10;
-const INT_VARIANT: u8 = 0x18;
-const MESSAGE_VARIANT: u8 = 0x3a;
+const GAME_ACCOUNT_GROUP: u64 = 2;
+/// The unique id in the key of each of the account's game account fields
+/// (group 1, field 3), App's then Overwatch's: values retail's lobby sent;
+/// the client only matches keys.
+const APP_ENTRY: u64 = 9_965_679_503_634_278_804;
+const PRO_ENTRY: u64 = 2_908_323_939_972_234_345;
+/// Game account fields 15 and 17: values retail sent for both game accounts
+/// (field 15 5728622, 17 and 13 2, 14 and 16 1).
+const GAME_ACCOUNT_15: u64 = 5_728_622;
+/// The App's field 8: `{1: "App", 2: fixed32 0x72707273, 3: 0}`, as retail
+/// sent it.
+const APP_FIELD_8: &[u8] = b"\x0d\x70\x70\x41\x00\x15\x73\x72\x70\x72\x18\x00";
 const MICROSECONDS: u64 = 1_000_000;
-const YEAR_2001: u64 = 978_307_200 * MICROSECONDS;
+
+/// A presence value (a Battle.net Variant).
+enum Variant {
+    Bool(bool),
+    /// A time, the record's.
+    Time,
+    Uint(u64),
+    String(Vec<u8>),
+    Message(Vec<u8>),
+    FourCc(&'static str),
+    Entity(u64, u64),
+}
+
+impl Variant {
+    fn encode(&self, time: u64) -> Vec<u8> {
+        let mut value = Vec::new();
+        let bytes = |value: &mut Vec<u8>, number: u32, bytes: &[u8]| {
+            encode_key(number, WireType::LengthDelimited, value);
+            encode_varint(bytes.len() as u64, value);
+            value.extend_from_slice(bytes);
+        };
+        match self {
+            Self::Bool(flag) => return bool_variant(*flag),
+            Self::Time => {
+                encode_key(3, WireType::Varint, &mut value);
+                encode_varint(time, &mut value);
+            }
+            Self::Uint(number) => {
+                encode_key(9, WireType::Varint, &mut value);
+                encode_varint(*number, &mut value);
+            }
+            Self::String(text) => bytes(&mut value, 5, text),
+            Self::Message(message) => bytes(&mut value, 7, message),
+            Self::FourCc(code) => bytes(&mut value, 8, code.as_bytes()),
+            Self::Entity(high, low) => {
+                let mut entity = Vec::new();
+                encode_key(1, WireType::SixtyFourBit, &mut entity);
+                entity.extend_from_slice(&high.to_le_bytes());
+                encode_key(2, WireType::SixtyFourBit, &mut entity);
+                entity.extend_from_slice(&low.to_le_bytes());
+                bytes(&mut value, 10, &entity);
+            }
+        }
+        value
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum View {
@@ -61,33 +123,9 @@ pub enum View {
     Friend,
 }
 
-pub struct Presence {
-    templates: Vec<Fields>,
-}
+pub struct Presence;
 
 impl Presence {
-    pub fn new(templates: &RetailTemplates) -> io::Result<Self> {
-        let mut seen = HashSet::new();
-        let mut records = Vec::new();
-        for (_, mut message) in templates.all(FRIENDS, Some(UPDATE)) {
-            let Some(Array(values)) = message.remove(&0x78) else {
-                return Err(invalid("presence update has no record list"));
-            };
-            let Some(Struct(record)) = values.into_iter().next() else {
-                return Err(invalid("presence update has no first record"));
-            };
-            let Some(Array(fields)) = record.get(&0x20) else {
-                return Err(invalid("presence record has no field list"));
-            };
-            let id = record_id(&record)?;
-            // The capture contains partial updates after the first full account record.
-            if fields.len() > 3 && seen.insert(id) {
-                records.push(record);
-            }
-        }
-        Ok(Self { templates: records })
-    }
-
     /// The account, app and game records visible to the caller. Seconds are
     /// passed in explicitly so a batch uses a single wall clock value.
     pub fn records(
@@ -99,7 +137,7 @@ impl Presence {
         now: u64,
         view: View,
     ) -> io::Result<Vec<Value>> {
-        let timestamp = [profile.last_online, created]
+        let time = [profile.last_online, created]
             .into_iter()
             .find(|&time| time != 0)
             .map(u64::try_from)
@@ -109,41 +147,132 @@ impl Presence {
             .checked_mul(MICROSECONDS)
             .ok_or_else(|| invalid("presence timestamp exceeds the wire range"))?;
         let account = u64::from(account_lo);
-        let ids = [
-            (RETAIL_ACCOUNT, account),
-            (RETAIL_APP_ACCOUNT, account ^ APP_ACCOUNT_BITS),
-            (RETAIL_PRO_ACCOUNT, account ^ PRO_ACCOUNT_BITS),
-        ];
+        let app = account ^ APP_ACCOUNT_BITS;
+        let pro = account ^ PRO_ACCOUNT_BITS;
         let tag = battle_tag(&profile.player_name, account_lo);
+        // The tag field keeps at most 127 bytes (one-byte length).
+        let tag = tag.as_bytes()[..tag.len().min(0x7f)].to_vec();
         let online = view == View::Own || status != STATUS_OFFLINE;
-        let flags = [
-            (7, Some(status == STATUS_AWAY)),
-            (11, Some(status == STATUS_BUSY)),
-            (12, Some(view == View::Own && status == STATUS_OFFLINE)),
-        ];
-        let mut records = Vec::with_capacity(self.templates.len());
-        for template in &self.templates {
-            let original_id = record_id(template)?;
-            let mut record = template.clone();
-            personalize_fields(&mut record, &tag, account_lo);
-            let Some(Struct(id)) = record.get_mut(&0) else {
-                return Err(invalid("presence record has no account identifier"));
-            };
-            id.insert(0, Unsigned(replace_id(original_id, &ids)));
-            let Some(Array(fields)) = record.get_mut(&0x20) else {
-                return Err(invalid("presence record has no field list"));
-            };
-            personalize_record_fields(
-                fields,
-                &ids,
-                &profile.player_name,
-                timestamp,
-                online,
-                flags,
-            )?;
-            records.push(Struct(record));
+        let game_account = format!("{account}#1").into_bytes();
+        let mut player_id = Vec::new();
+        for (number, value) in [(1, 1), (2, ACCOUNT_HIGH), (3, account)] {
+            encode_key(number, WireType::Varint, &mut player_id);
+            encode_varint(value, &mut player_id);
         }
-        Ok(records)
+        use Variant::*;
+        let account_fields = vec![
+            (PRESENCE_PROGRAM, ACCOUNT_GROUP, 12, 0, Bool(false)),
+            (PRESENCE_PROGRAM, ACCOUNT_GROUP, 4, 0, String(tag.clone())),
+            (
+                PRESENCE_PROGRAM,
+                ACCOUNT_GROUP,
+                3,
+                APP_ENTRY,
+                Entity(APP_HIGH, app),
+            ),
+            (
+                PRESENCE_PROGRAM,
+                ACCOUNT_GROUP,
+                1,
+                0,
+                String(profile.player_name.clone().into_bytes()),
+            ),
+            (
+                PRESENCE_PROGRAM,
+                ACCOUNT_GROUP,
+                3,
+                PRO_ENTRY,
+                Entity(PRO_HIGH, pro),
+            ),
+            (PRESENCE_PROGRAM, ACCOUNT_GROUP, 6, 0, Time),
+        ];
+        let game = |field: u64, value| (PRESENCE_PROGRAM, GAME_ACCOUNT_GROUP, field, 0, value);
+        let app_fields = vec![
+            game(17, Uint(2)),
+            game(13, Uint(2)),
+            game(10, Bool(false)),
+            game(11, Time),
+            game(1, Bool(online)),
+            game(12, Bool(false)),
+            game(5, String(tag.clone())),
+            game(3, FourCc("App")),
+            game(7, Entity(ACCOUNT_HIGH, account)),
+            game(8, Message(APP_FIELD_8.to_vec())),
+            game(16, Uint(1)),
+            game(15, Uint(GAME_ACCOUNT_15)),
+            game(4, Time),
+            game(6, String(game_account.clone())),
+            game(14, Uint(1)),
+            game(9, Time),
+        ];
+        let pro_fields = vec![
+            game(3, FourCc("Pro")),
+            game(7, Entity(ACCOUNT_HIGH, account)),
+            game(16, Uint(1)),
+            game(17, Uint(2)),
+            game(13, Uint(2)),
+            game(15, Uint(GAME_ACCOUNT_15)),
+            (PRO_PROGRAM, GAME_ACCOUNT_GROUP, 3, 0, Message(player_id)),
+            game(10, Bool(false)),
+            game(11, Time),
+            game(1, Bool(online)),
+            game(4, Time),
+            game(6, String(game_account)),
+            game(14, Uint(1)),
+            game(12, Bool(false)),
+            game(5, String(tag)),
+        ];
+        let entity =
+            |high: u64, low: u64| Struct(Fields::from([(0, Unsigned(low)), (8, Unsigned(high))]));
+        let flags = [
+            (12, status == STATUS_OFFLINE && view == View::Own),
+            (7, status == STATUS_AWAY),
+            (11, status == STATUS_BUSY),
+        ];
+        let record = |id: Value, owner: Value, table: Vec<(u64, u64, u64, u64, Variant)>| {
+            let mut fields: Vec<Value> = table
+                .into_iter()
+                .map(|(program, group, field, unique, value)| {
+                    let value = match value {
+                        // The account's status flags (module documentation).
+                        Bool(_) if group == ACCOUNT_GROUP && program == PRESENCE_PROGRAM => flags
+                            .iter()
+                            .find(|&&(flag, _)| flag == field)
+                            .map_or_else(|| value.encode(time), |&(_, on)| bool_variant(on)),
+                        value => value.encode(time),
+                    };
+                    presence_field(field_key(program, group, field, unique), value)
+                })
+                .collect();
+            if fields.len() == 6 {
+                // The account record: the two status flags it lacks, added
+                // with only their key and value.
+                for &(flag, on) in &flags[1..] {
+                    fields.push(Struct(Fields::from([
+                        (8, Blob(field_key(PRESENCE_PROGRAM, ACCOUNT_GROUP, flag, 0))),
+                        (0x30, Blob(bool_variant(on))),
+                    ])));
+                }
+            }
+            Struct(Fields::from([
+                (0, id),
+                (0x10, owner),
+                (0x20, Array(fields)),
+            ]))
+        };
+        Ok(vec![
+            record(entity(ACCOUNT_HIGH, account), entity(0, 0), account_fields),
+            record(
+                entity(APP_HIGH, app),
+                entity(ACCOUNT_HIGH, account),
+                app_fields,
+            ),
+            record(
+                entity(PRO_HIGH, pro),
+                entity(ACCOUNT_HIGH, account),
+                pro_fields,
+            ),
+        ])
     }
 
     pub fn own(&self, profile: &Profile, identity: Identity, now: u64) -> io::Result<LobbyMessage> {
@@ -159,202 +288,30 @@ impl Presence {
     }
 }
 
-type Ids = [(u64, u64); 3];
-type Flags = [(u64, Option<bool>); 3];
-
-fn record_id(record: &Fields) -> io::Result<u64> {
-    let Some(Struct(id)) = record.get(&0) else {
-        return Err(invalid("presence record has no account identifier"));
-    };
-    match id.get(&0) {
-        Some(Unsigned(value)) => Ok(*value),
-        Some(Signed(value)) => u64::try_from(*value).map_err(|_| invalid("negative presence ID")),
-        _ => Err(invalid("presence record has no account ID")),
-    }
+fn presence_field(key: Vec<u8>, value: Vec<u8>) -> Value {
+    Struct(Fields::from([
+        (0, Unsigned(0)),
+        (8, Blob(key)),
+        (0x30, Blob(value)),
+    ]))
 }
 
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
-fn personalize_record_fields(
-    fields: &mut Vec<Value>,
-    ids: &Ids,
-    name: &str,
-    timestamp: u64,
-    online: bool,
-    mut flags: Flags,
-) -> io::Result<()> {
-    let mut is_account = false;
-    for entry in fields.iter_mut() {
-        let Struct(field) = entry else {
-            return Err(invalid("presence field is not a record"));
-        };
-        let Some(Blob(key)) = field.get_mut(&8) else {
-            return Err(invalid("presence field is missing its key"));
-        };
-        rewrite_ids(key, ids);
-        let is_game_online = key.as_slice() == GAME_ACCOUNT_ONLINE;
-        let (group, id) = key_group_field(key);
-        let Some(Blob(value)) = field.get_mut(&0x30) else {
-            return Err(invalid("presence field is missing its value"));
-        };
-        rewrite_ids(value, ids);
-        replace_short_string(value, RETAIL_FULL_NAME, name.as_bytes());
-        replace_timestamp(value, timestamp);
-        if !online && is_game_online {
-            *value = bool_variant(false);
-        }
-        if group == Some(ACCOUNT_GROUP) {
-            is_account = true;
-            if let Some((_, setting)) = flags.iter_mut().find(|(field, _)| Some(*field) == id) {
-                if let Some(enabled) = setting.take() {
-                    *value = bool_variant(enabled);
-                }
-            }
-        }
-    }
-    if is_account {
-        for (field, setting) in flags {
-            if let Some(enabled) = setting {
-                fields.push(Struct(Fields::from([
-                    (8, Blob(field_key(ACCOUNT_GROUP, field))),
-                    (0x30, Blob(bool_variant(enabled))),
-                ])));
-            }
-        }
-    }
-    Ok(())
-}
-
+/// A Variant bool (field 2).
 fn bool_variant(value: bool) -> Vec<u8> {
-    vec![BOOL_VARIANT, u8::from(value)]
+    vec![0x10, u8::from(value)]
 }
 
-fn field_key(group: u64, field: u64) -> Vec<u8> {
+fn field_key(program: u64, group: u64, field: u64, unique: u64) -> Vec<u8> {
     let mut key = Vec::new();
-    for (number, value) in [(1, PRESENCE_PROGRAM), (2, group), (3, field), (4, 0)] {
+    for (number, value) in [(1, program), (2, group), (3, field), (4, unique)] {
         encode_key(number, WireType::Varint, &mut key);
         encode_varint(value, &mut key);
     }
     key
-}
-
-fn key_group_field(mut blob: &[u8]) -> (Option<u64>, Option<u64>) {
-    let mut group = None;
-    let mut field = None;
-    while !blob.is_empty() {
-        let Ok((number, wire)) = decode_key(&mut blob) else {
-            break;
-        };
-        if wire == WireType::Varint {
-            let Ok(value) = decode_varint(&mut blob) else {
-                break;
-            };
-            match number {
-                2 => group = Some(value),
-                3 => field = Some(value),
-                _ => (),
-            }
-        } else if !skip_non_varint(wire, number, &mut blob) {
-            break;
-        }
-    }
-    (group, field)
-}
-
-fn skip_non_varint(wire: WireType, number: u32, blob: &mut &[u8]) -> bool {
-    matches!(
-        wire,
-        WireType::LengthDelimited | WireType::SixtyFourBit | WireType::ThirtyTwoBit
-    ) && skip_field(wire, number, blob, DecodeContext::default()).is_ok()
-}
-
-fn replace_timestamp(value: &mut Vec<u8>, timestamp: u64) {
-    let Some(mut body) = value.strip_prefix(&[INT_VARIANT]) else {
-        return;
-    };
-    let Ok(old) = decode_varint(&mut body) else {
-        return;
-    };
-    if body.is_empty() && old >= YEAR_2001 {
-        value.truncate(1);
-        encode_varint(timestamp, value);
-    }
-}
-
-fn replace_id(value: u64, ids: &Ids) -> u64 {
-    ids.iter()
-        .find_map(|&(old, new)| (old == value).then_some(new))
-        .unwrap_or(value)
-}
-
-fn rewrite_ids(blob: &mut Vec<u8>, ids: &Ids) {
-    for &(old, new) in ids {
-        let old_bytes = old.to_le_bytes();
-        let new_bytes = new.to_le_bytes();
-        let mut tail = blob.as_mut_slice();
-        while let Some(index) = tail
-            .windows(old_bytes.len())
-            .position(|bytes| bytes == old_bytes)
-        {
-            tail[index..index + old_bytes.len()].copy_from_slice(&new_bytes);
-            tail = &mut tail[index + old_bytes.len()..];
-        }
-        replace_short_string(
-            blob,
-            format!("{old}#1").as_bytes(),
-            format!("{new}#1").as_bytes(),
-        );
-    }
-    if let Some(updated) = rewrite_variant_message(blob, ids) {
-        *blob = updated;
-    }
-}
-
-fn replace_short_string(blob: &mut Vec<u8>, old: &[u8], new: &[u8]) {
-    let Some(index) = blob.windows(old.len()).position(|bytes| bytes == old) else {
-        return;
-    };
-    if index < 2 || usize::from(blob[index - 1]) != old.len() {
-        return;
-    }
-    let mut replacement = Vec::new();
-    encode_varint(new.len() as u64, &mut replacement);
-    replacement.extend_from_slice(new);
-    blob.splice(index - 1..index + old.len(), replacement);
-}
-
-fn rewrite_variant_message(blob: &[u8], ids: &Ids) -> Option<Vec<u8>> {
-    let mut body = blob.strip_prefix(&[MESSAGE_VARIANT])?;
-    let size = decode_varint(&mut body).ok()?;
-    if size != body.len() as u64 {
-        return None;
-    }
-    let mut fields = Vec::new();
-    let mut changed = false;
-    while !body.is_empty() {
-        let start = body;
-        let (number, wire) = decode_key(&mut body).ok()?;
-        if wire == WireType::Varint {
-            let original = decode_varint(&mut body).ok()?;
-            let value = replace_id(original, ids);
-            changed |= value != original;
-            encode_key(number, wire, &mut fields);
-            encode_varint(value, &mut fields);
-        } else if skip_non_varint(wire, number, &mut body) {
-            fields.extend_from_slice(&start[..start.len() - body.len()]);
-        } else {
-            return None;
-        }
-    }
-    if !changed {
-        return None;
-    }
-    let mut message = vec![MESSAGE_VARIANT];
-    encode_varint(fields.len() as u64, &mut message);
-    message.extend(fields);
-    Some(message)
 }
 
 #[cfg(test)]
@@ -365,79 +322,70 @@ mod tests {
 
     use lucy_wire::jam::codec::Schemas;
 
-    const IDS: Ids = [(128, 2), (200, 3), (300, 4)];
-
-    #[test]
-    fn rewrites_fixed_width_strings_and_message_varints() {
-        let mut fixed = vec![0x09];
-        fixed.extend_from_slice(&128u64.to_le_bytes());
-        rewrite_ids(&mut fixed, &IDS);
-        assert_eq!(&fixed[1..], &2u64.to_le_bytes());
-
-        let mut string = b"\x0a\x05128#1".to_vec();
-        rewrite_ids(&mut string, &IDS);
-        assert_eq!(string, b"\x0a\x032#1");
-
-        let mut message = b"\x3a\x05\x08\x01\x18\x80\x01".to_vec();
-        rewrite_ids(&mut message, &IDS);
-        assert_eq!(message, b"\x3a\x04\x08\x01\x18\x02");
-
-        let mut trailing = b"\x3a\x05\x08\x01\x18\x80\x01\x00".to_vec();
-        rewrite_ids(&mut trailing, &IDS);
-        assert_eq!(trailing, b"\x3a\x05\x08\x01\x18\x80\x01\x00");
+    /// Each record's fields, as `(group, field, value)`.
+    fn fields(record: &Value) -> Vec<(u64, u64, Vec<u8>)> {
+        let Struct(record) = record else {
+            panic!("a record")
+        };
+        let Array(fields) = &record[&0x20] else {
+            panic!("fields")
+        };
+        fields
+            .iter()
+            .map(|field| {
+                let Struct(field) = field else {
+                    panic!("a field")
+                };
+                let (Blob(key), Blob(value)) = (&field[&8], &field[&0x30]) else {
+                    panic!("blobs")
+                };
+                (key[5].into(), key[7].into(), value.clone())
+            })
+            .collect()
     }
 
     #[test]
     fn own_account_flags_and_friend_game_account_status_have_distinct_fields() {
-        let presence_field =
-            |key, value| Struct(Fields::from([(8, Blob(key)), (0x30, Blob(value))]));
-        let mut own = vec![presence_field(field_key(1, 12), bool_variant(false))];
-        personalize_record_fields(
-            &mut own,
-            &IDS,
-            "Local",
-            1_700_000_000_000_000,
-            true,
-            [(7, Some(false)), (11, Some(false)), (12, Some(true))],
-        )
-        .unwrap();
-        assert_eq!(
-            own,
-            [
-                presence_field(field_key(1, 12), bool_variant(true)),
-                presence_field(field_key(1, 7), bool_variant(false)),
-                presence_field(field_key(1, 11), bool_variant(false)),
-            ]
-        );
-
-        let mut friend = vec![presence_field(
-            GAME_ACCOUNT_ONLINE.to_vec(),
-            bool_variant(true),
-        )];
-        personalize_record_fields(
-            &mut friend,
-            &IDS,
-            "Local",
-            1_700_000_000_000_000,
-            false,
-            [(7, Some(false)), (11, Some(false)), (12, Some(false))],
-        )
-        .unwrap();
-        assert_eq!(
-            friend,
-            [presence_field(
-                GAME_ACCOUNT_ONLINE.to_vec(),
-                bool_variant(false)
-            )]
-        );
+        let profile = Profile {
+            player_name: "Local".into(),
+            ..Profile::default()
+        };
+        let records = |status, view| {
+            Presence
+                .records(&profile, 0x1234, status, 0, 1_700_000_000, view)
+                .unwrap()
+        };
+        let flag = |records: &[Value], group: u64, field: u64| {
+            let fields = fields(&records[usize::from(group != 1)]);
+            fields
+                .into_iter()
+                .filter(|&(g, f, _)| (g, f) == (group, field))
+                .map(|(_, _, value)| value)
+                .collect::<Vec<_>>()
+        };
+        // Appear offline: the own account's flag 12 is set, 7 and 11 sent clear.
+        let own = records(STATUS_OFFLINE, View::Own);
+        assert_eq!(flag(&own, 1, 12), [bool_variant(true)]);
+        assert_eq!(flag(&own, 1, 7), [bool_variant(false)]);
+        assert_eq!(flag(&own, 1, 11), [bool_variant(false)]);
+        assert_eq!(flag(&own, 2, 1), [bool_variant(true)]);
+        // A friend sees an offline player's game account offline, and no
+        // appear-offline flag.
+        let friend = records(STATUS_OFFLINE, View::Friend);
+        assert_eq!(flag(&friend, 1, 12), [bool_variant(false)]);
+        assert_eq!(flag(&friend, 2, 1), [bool_variant(false)]);
+        let busy = records(STATUS_BUSY, View::Friend);
+        assert_eq!(flag(&busy, 1, 11), [bool_variant(true)]);
+        assert_eq!(flag(&busy, 2, 1), [bool_variant(true)]);
     }
 
     #[test]
     #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn own_and_friend_presence_match_python_wire_values() {
+        // The table reproduces, value for value, the records the Python
+        // server made by personalizing the retail capture.
         let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
-        let templates = RetailTemplates::captured();
-        let presence = Presence::new(&templates).unwrap();
+        let presence = Presence;
         let profile = Profile {
             player_name: "Local Tester".into(),
             last_online: 1_700_000_000,

@@ -10,10 +10,6 @@
 /// program's code is encrypted on disk, so the server can't read it there).
 pub const STATESCRIPT_CODECS: &str = include_str!("../data/statescript_codecs.json");
 
-/// Server messages decoded from 1.68 reference traffic: catalogs, prices,
-/// rules and defaults the client never contained.
-pub const RETAIL_TEMPLATES: &str = include_str!("../data/retail_templates.json");
-
 /// Research names for the statescript graphs (`lucy script query`): class
 /// aliases, the STU fields that hold a variable, logical buttons, the hero
 /// select and HUD graphs, each game mode's scripts and the variable names the

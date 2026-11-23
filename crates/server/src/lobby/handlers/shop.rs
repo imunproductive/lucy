@@ -136,8 +136,9 @@ fn purchase(peer: &mut Peer<'_, '_>, fields: Fields) -> io::Result<()> {
     Ok(())
 }
 
-/// The real-money store page: the recorded STORE messages, localized.
+/// The real-money store page: no products, in the account region's
+/// currency.
 fn store(peer: &mut Peer<'_, '_>, _: Fields) -> io::Result<()> {
     let region = peer.login.account.profile().region.clone();
-    peer.send_all(&lookups::store(&peer.lobby.templates, &region))
+    peer.send_all(&lookups::store(&region))
 }
