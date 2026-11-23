@@ -27,9 +27,9 @@ impl Machine {
                 entity,
                 variables,
                 instances: Instances::default(),
-                pending_timers: IndexMap::new(),
-                bindings: IndexMap::new(),
-                resolved_bindings: IndexMap::new(),
+                pending_timers: IdMap::default(),
+                bindings: IdMap::default(),
+                resolved_bindings: IdMap::default(),
                 diagnostics: Vec::new(),
                 assumptions: Vec::new(),
                 frame_actions: Vec::new(),
@@ -319,14 +319,14 @@ fn pending_timers_of(queues: &Timeline<Event>, id: u16) -> impl Iterator<Item = 
 /// replace as it goes: nothing is allocated while each entry matches the
 /// old map's next one; from the first difference the new map is made.
 struct Rebuild<'a, K, V> {
-    old: &'a IndexMap<K, V>,
+    old: &'a IdMap<K, V>,
     /// How many of the old map's entries matched so far.
     kept: usize,
-    new: Option<IndexMap<K, V>>,
+    new: Option<IdMap<K, V>>,
 }
 
 impl<'a, K: Clone + Eq + std::hash::Hash, V: Clone> Rebuild<'a, K, V> {
-    fn new(old: &'a IndexMap<K, V>) -> Self {
+    fn new(old: &'a IdMap<K, V>) -> Self {
         Self {
             old,
             kept: 0,
@@ -358,7 +358,7 @@ impl<'a, K: Clone + Eq + std::hash::Hash, V: Clone> Rebuild<'a, K, V> {
     }
 
     /// The new map, or `None` when it equals the old one.
-    fn finish(self) -> Option<IndexMap<K, V>> {
+    fn finish(self) -> Option<IdMap<K, V>> {
         match self.new {
             Some(new) => Some(new),
             None if self.kept == self.old.len() => None,
@@ -366,8 +366,8 @@ impl<'a, K: Clone + Eq + std::hash::Hash, V: Clone> Rebuild<'a, K, V> {
         }
     }
 
-    fn kept_entries(&self) -> IndexMap<K, V> {
-        let mut kept = IndexMap::with_capacity(self.old.len());
+    fn kept_entries(&self) -> IdMap<K, V> {
+        let mut kept = IdMap::with_capacity_and_hasher(self.old.len(), Default::default());
         kept.extend(
             self.old
                 .iter()
@@ -381,8 +381,8 @@ impl<'a, K: Clone + Eq + std::hash::Hash, V: Clone> Rebuild<'a, K, V> {
 /// The owners of the entries that differ between `a` and `b` (either
 /// order), into `out`.
 fn changed_owners<K: Eq + std::hash::Hash, V>(
-    a: &IndexMap<K, V>,
-    b: &IndexMap<K, V>,
+    a: &IdMap<K, V>,
+    b: &IdMap<K, V>,
     owner: impl Fn(&K) -> u16,
     same: impl Fn(&V, &V) -> bool,
     out: &mut Vec<u16>,
