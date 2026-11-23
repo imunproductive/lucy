@@ -36,6 +36,7 @@ use lucy_sim::{ai::Difficulty, match_flow::ASSAULT, scene_assets::SceneAssets};
 use lucy_wire::{
     commands::{FIRE, JUMP, MAX_COMMANDS},
     link::{LinkCipher, MAX_DATAGRAM, ReceiveWindow},
+    messages::Encoded,
 };
 use std::{
     net::{Ipv4Addr, UdpSocket as GameSocket},
@@ -299,7 +300,7 @@ impl Game {
         self.wire.send(self.cipher.seal(&packet).unwrap());
     }
 
-    fn reliable(&mut self, message: Vec<u8>) {
+    fn reliable(&mut self, message: Encoded) {
         let mut payload = BitWriter::new();
         write_channel(&mut payload, &[(self.ordinal, message)], &[]).unwrap();
         self.ordinal += 1;

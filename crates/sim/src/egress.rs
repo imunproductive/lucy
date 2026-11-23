@@ -4,8 +4,9 @@ use std::{borrow::Borrow, collections::VecDeque, error::Error, fmt, mem};
 
 use lucy_wire::entity::{EntityUpdate, FrameCandidates, SelectedFrame, WorldError, select_frame};
 use lucy_wire::link::delivery;
+use lucy_wire::messages::Encoded;
 
-type Reliable = (u32, Vec<u8>);
+type Reliable = (u32, Encoded);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct OrdinalExhausted;
@@ -90,7 +91,7 @@ struct InFlight<T> {
 pub struct GameEgress<T> {
     next_reliable: u64,
     reliable: VecDeque<Reliable>,
-    unreliable: VecDeque<Vec<u8>>,
+    unreliable: VecDeque<Encoded>,
     in_flight: VecDeque<InFlight<T>>,
 }
 
@@ -106,14 +107,14 @@ impl<T> Default for GameEgress<T> {
 }
 
 impl<T> GameEgress<T> {
-    pub fn queue_reliable(&mut self, message: Vec<u8>) -> Result<u32, OrdinalExhausted> {
+    pub fn queue_reliable(&mut self, message: Encoded) -> Result<u32, OrdinalExhausted> {
         let ordinal = u32::try_from(self.next_reliable).map_err(|_| OrdinalExhausted)?;
         self.reliable.push_back((ordinal, message));
         self.next_reliable += 1;
         Ok(ordinal)
     }
 
-    pub fn queue_unreliable(&mut self, message: Vec<u8>) {
+    pub fn queue_unreliable(&mut self, message: Encoded) {
         self.unreliable.push_back(message);
     }
 

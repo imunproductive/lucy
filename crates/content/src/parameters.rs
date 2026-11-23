@@ -14,6 +14,8 @@ pub const CLIENT_GAME_MESSAGE: u32 = 21616;
 pub const PICK_HERO: u64 = 0x0240_0000_0000_1361;
 pub const OPEN_OR_CLOSE: u64 = 0x0240_0000_0000_1360;
 const HERO_ASSET_TYPE: u16 = 0x02e0;
+/// `1361.025`'s hero parameter `005D` (an `0A4` GUID).
+const HERO_PARAMETER: u64 = 0x0a40_0000_0000_005d;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ClientGameMessage<'a> {
@@ -58,6 +60,7 @@ impl<'a> ClientGameMessage<'a> {
         heroes: &'catalog HeroCatalog,
     ) -> Option<HeroSelectRequest<'catalog>> {
         match self.guid {
+            PICK_HERO if self.parameters.null_hero() => Some(HeroSelectRequest::ChangeHero),
             PICK_HERO => Some(HeroSelectRequest::Pick(
                 self.parameters
                     .find_asset(HERO_ASSET_TYPE, |guid| heroes.get(guid)),
@@ -74,6 +77,10 @@ impl<'a> ClientGameMessage<'a> {
 pub enum HeroSelectRequest<'a> {
     /// A recognized pick without a known hero has no gameplay effect.
     Pick(Option<&'a Hero>),
+    /// "Change Hero" while the heroes assemble: a pick of the null hero
+    /// (`005D` a hero asset of GUID 0, which `288B` rid24 takes as no
+    /// pick: #2114e false).
+    ChangeHero,
     /// Without a readable bool, the client request toggles the current screen.
     OpenOrClose(Option<bool>),
 }
@@ -111,6 +118,25 @@ impl<'a> Parameters<'a> {
             [.., 1, 1] => Some(true),
             _ => None,
         }
+    }
+
+    /// Whether the blob's `005D` (the hero, `0A4` parameter
+    /// `0x0A4000000000005D`) is the null hero: an asset of GUID 0, alone or
+    /// as its array's one item (the client sends each parameter as an
+    /// array, [`Self::rows`]).
+    pub fn null_hero(self) -> bool {
+        self.rows().is_some_and(|rows| {
+            rows.iter().any(|(key, value)| {
+                *key == HERO_PARAMETER
+                    && match value {
+                        ParameterValue::Asset(guid) => *guid == 0,
+                        ParameterValue::Array(items) => {
+                            matches!(items[..], [ParameterValue::Asset(0)])
+                        }
+                        _ => false,
+                    }
+            })
+        })
     }
 
     /// Find the first known unaligned asset of this type. This matches the
@@ -339,6 +365,21 @@ mod tests {
         assert_eq!(
             known.hero_select(&heroes),
             Some(HeroSelectRequest::Pick(Some(heroes.get(SOLDIER).unwrap())))
+        );
+        // "Change Hero": the captured pick's one `005D` row with the null
+        // hero (GUID 0), then the two entities.
+        let mut null = vec![
+            0x00, 0x00, 0x00, 0x00, 0x01, 0xc1, 0x5d, 0x40, 0x0a, 0x0c, 0x01, 0xff, 0x04,
+        ];
+        null.extend([0; 8]);
+        null.extend([0x00, 0x01, 0x00, 0xa0, 0x00, 0x02, 0x00, 0xa0]);
+        let change = ClientGameMessage {
+            parameters: Parameters::new(&null),
+            ..pick
+        };
+        assert_eq!(
+            change.hero_select(&heroes),
+            Some(HeroSelectRequest::ChangeHero)
         );
     }
 

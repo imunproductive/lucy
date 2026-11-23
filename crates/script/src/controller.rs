@@ -907,7 +907,8 @@ const BODY_DEAD: u32 = crate::bot::DEAD_FLAG;
 /// The client's hero select request (21616 to `288B`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HeroSelectRequest {
-    /// `1361.025` {`005D` hero}.
+    /// `1361.025` {`005D` hero}; 0, the null hero, is "Change Hero" as the
+    /// heroes assemble.
     Pick(u64),
     /// `1360.025` {`05A2` open}.
     OpenOrClose(bool),
@@ -1062,6 +1063,12 @@ mod tests {
         let open = script.hero_select(20, HeroSelectRequest::OpenOrClose(true));
         assert_eq!(open.unwrap(), state(true, None));
         let pick = script.hero_select(30, HeroSelectRequest::Pick(SOLDIER));
+        assert_eq!(pick.unwrap(), state(true, Some(SOLDIER)));
+        // "Change Hero" (the null hero): rid24 takes back the pick; the
+        // screen stays open for the next one.
+        let change = script.hero_select(31, HeroSelectRequest::Pick(0));
+        assert_eq!(change.unwrap(), state(true, None));
+        let pick = script.hero_select(32, HeroSelectRequest::Pick(SOLDIER));
         assert_eq!(pick.unwrap(), state(true, Some(SOLDIER)));
         projects(&script);
         // `070B` with the hero's role (node 44, `STU_BE1161C0`) and `08BE`
