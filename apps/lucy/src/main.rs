@@ -7,6 +7,8 @@ mod assets;
 mod banner;
 mod doctor;
 mod import;
+// `join` starts the game (Windows only); its server checks are tested everywhere.
+#[cfg(any(windows, test))]
 mod join;
 mod logging;
 mod play;
