@@ -135,10 +135,7 @@ impl GroundProbe {
                 .min(top_speed(settings, pose.crouched));
             reach = settings.step_down.max(self.slope_tan * dt * speed * 1.1);
         }
-        let (hit, shape) = highest(
-            rays.ground(x, z, top, y - reach, category),
-            world.ground(x, z, top, y - reach, category),
-        );
+        let (hit, shape) = ground_ray(rays, world, x, z, top, y - reach, category);
         let mut result = ProbeResult {
             ground: None,
             non_ground_under: hit.is_some_and(|hit| hit.surface & NOT_GROUND != 0),
@@ -281,11 +278,14 @@ impl GroundProbe {
         for _ in 0..5 {
             let x = hx + (dx * RAY_SPREAD + nx);
             let z = hz + (dz * RAY_SPREAD + nz);
-            let (x64, z64) = (f64::from(x), f64::from(z));
-            let top = f64::from(start[1]);
-            if let (Some(hit), _) = highest(
-                rays.ground(x64, z64, top, bottom, category),
-                world.ground(x64, z64, top, bottom, category),
+            if let (Some(hit), _) = ground_ray(
+                rays,
+                world,
+                f64::from(x),
+                f64::from(z),
+                f64::from(start[1]),
+                bottom,
+                category,
             ) {
                 let ground =
                     hit.surface & NOT_GROUND == 0 && hit.normal[1] > f64::from(self.slope_cos32);
@@ -302,23 +302,38 @@ impl GroundProbe {
     }
 }
 
-/// The higher of the map's ground and a placeable's (with its shape).
-fn highest(
-    map: Option<GroundHit>,
-    placed: Option<(GroundHit, u32)>,
-) -> (Option<GroundHit>, Option<u32>) {
-    match (map, placed) {
-        (Some(map), Some((hit, _))) if map.y >= hit.y => (Some(map), None),
-        (_, Some((hit, shape))) => (Some(hit), Some(shape)),
-        (map, None) => (map, None),
-    }
-}
-
 pub fn pogo(settings: &MoverSettings, crouched: bool) -> f64 {
     if crouched {
         settings.crouch_pogo
     } else {
         settings.stand_pogo
+    }
+}
+
+/// The highest ground under `(x, z)` between `bottom` and `top`: the map's
+/// triangles (the movement cache's index, its props included) and the
+/// standing server placeables' models (`ContactWorld::ground`), which the
+/// client's ray meets alike (its physics world holds both). On the
+/// Practice Range's Training Partner console the centre ray met nothing
+/// within reach, so the disc's sweep caught the console's upper block,
+/// half a metre above the face the client's ray stood him on (refs
+/// `MapEntities.md` "RangeConsole"). With the placeable's shape, when the
+/// ground is one (a platform the mover rides, `mover::platform`).
+fn ground_ray(
+    rays: &TriangleIndex,
+    world: &ContactWorld,
+    x: f64,
+    z: f64,
+    top: f64,
+    bottom: f64,
+    category: u16,
+) -> (Option<GroundHit>, Option<u32>) {
+    let map = rays.ground(x, z, top, bottom, category);
+    match world.ground(x, z, top, bottom, category) {
+        Some((placed, shape)) if map.is_none_or(|map| placed.y > map.y) => {
+            (Some(placed), Some(shape))
+        }
+        _ => (map, None),
     }
 }
 

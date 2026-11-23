@@ -186,7 +186,7 @@ use lucy_physics::{
     collision::{
         cache::{HalfEdge, Hull, Mesh, Placement as CachePlacement, Shape, Triangle},
         index::SceneTriangle,
-        scene::{CollisionScene, SceneError},
+        scene::{CollisionScene, SceneError, probe_triangles},
     },
     contact::{
         math::ContactFrame,
@@ -666,11 +666,17 @@ impl PlaceableBody {
 
     /// Its shapes in the world as the client places them
     /// ([`ModelPose::place`]), each in its frame times its scale as the
-    /// movement cache places a prop's (`ContactWorld::from_movement_cache`).
-    /// A shape on a path or an animated part of an idle animation is a
-    /// moving shape, at the placeable's frame until the match poses it
-    /// ([`Self::moving`]). A platform's shapes name it ([`Platform`]: the
-    /// entity, the shape's node, that node's place scaled as the shape).
+    /// movement cache places a prop's (`ContactWorld::from_movement_cache`),
+    /// with its triangles for the mover's ground rays as the movement
+    /// cache's triangle index keeps a prop's (`StaticShape::with_ground`):
+    /// the client's ray meets them, so a mover stands on the face under
+    /// its centre, not on what the disc's sweep catches beside it (the
+    /// Training Partner console's top, refs `MapEntities.md`
+    /// "RangeConsole"). A shape on a path or an animated part of an idle
+    /// animation is a moving shape, at the placeable's frame until the
+    /// match poses it ([`Self::moving`]). A platform's shapes name it
+    /// ([`Platform`]: the entity, the shape's node, that node's place
+    /// scaled as the shape).
     pub fn shapes(&self) -> Result<Vec<StaticShape>, ContactWorldError> {
         self.placed()
             .map(|(shape, place)| {
@@ -686,7 +692,9 @@ impl PlaceableBody {
                         scaled_solid(solid, scale).ok_or(ContactWorldError::InvalidGeometry)?
                     }
                 };
-                let placed = StaticShape::new(geometry, Some(frame))?;
+                let ground = probe_triangles(&shape.cache_shape(), scale)
+                    .map_err(|_| ContactWorldError::InvalidGeometry)?;
+                let placed = StaticShape::new(geometry, Some(frame))?.with_ground(ground)?;
                 let placed = match self.platform {
                     Some(factor) => placed.on_platform(Platform {
                         entity: self.entity(),

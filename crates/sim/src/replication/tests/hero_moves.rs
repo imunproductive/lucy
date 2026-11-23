@@ -2118,6 +2118,116 @@ fn doomfist_slides_round_the_range_console_instead_of_walking_through() {
     assert_eq!(poses[&5739], ([35.8056640625, 2.025390625, 17.78125], true));
 }
 
+/// Doomfist on top of the Training Partner console (game session u1,
+/// 2026-11-23, the user playing; refs `MapEntities.md` "RangeConsole").
+/// The console's top is uneven: faces at 2.95-3.2 m round a block whose
+/// top is 3.53-3.75 m. The mover's ground probe casts a ray down from the
+/// capsule's lower sphere and sweeps a disc only when the ray finds no
+/// walkable ground. The client's ray meets the console's mesh; the
+/// server's met only the map's triangles (the movement cache's index), so
+/// its disc caught the upper block's rim: standing still by the block,
+/// his client stood on the face under his feet and the server held him
+/// 0.46 m up on the block (the camera pulled up and down), and landing,
+/// his client stood on a face where the server's body still fell. Each
+/// replay runs the live server's commands; before the fix it equalled the
+/// live server on every frame, now it leaves it on the frame where his
+/// client did, as his client did.
+#[test]
+#[ignore = "requires the derived 104319 data and the Practice Range collision"]
+fn doomfist_stands_on_the_range_consoles_top_where_his_client_did() {
+    /// A command: frame, forward, right, yaw, pitch, buttons, extra.
+    type Input = (u32, i8, i8, i32, i32, u32, u16);
+    /// His feet each frame of `input`, from `feet` at rest.
+    fn replay(doomfist: &mut Player, feet: [f64; 3], input: &[Input]) -> BTreeMap<u32, [f64; 3]> {
+        let body = doomfist.scene.heroes().get(DOOMFIST).unwrap().body;
+        let yaw = input[0].3;
+        doomfist.world.mover = Some(doomfist.scene.player_mover_at(body, 0, feet, yaw).unwrap());
+        doomfist.idle(60, yaw);
+        // His client's frame numbers modulo 5 (a frame's search heights).
+        doomfist.idle((input[0].0 % 5 + 5 - (doomfist.frame + 1) % 5) % 5, yaw);
+        assert_eq!(doomfist.position(), feet);
+        let mut poses = BTreeMap::new();
+        for &(frame, forward, right, yaw, pitch, buttons, extra) in input {
+            doomfist.step(Command {
+                forward,
+                right,
+                yaw,
+                pitch,
+                buttons,
+                extra,
+                ..Command::default()
+            });
+            poses.insert(frame, doomfist.position());
+        }
+        poses
+    }
+    let mut doomfist = Player::spawn(DOOMFIST);
+    // From the floor south of it, a held jump at the console. The live
+    // server's body was still in the air at 50332 at (34.9736328125,
+    // 2.943359375, 17.6650390625) and slid along the console's side until
+    // it stood at 3.127 m beside the block (50352).
+    #[rustfmt::skip]
+    let jump: [Input; 31] = [
+        (50308, 127, 0, -6427, 4650, 0x40, 161),
+        (50309, 127, 0, -6427, 4650, 0x40, 161), (50310, 127, 0, -6427, 4650, 0x40, 161),
+        (50311, 127, 0, -6409, 4794, 0x40, 161), (50312, 127, 0, -6409, 4794, 0x40040, 162),
+        (50313, 127, 0, -6337, 4956, 0x40040, 162), (50314, 127, 0, -6319, 4974, 0x40, 163),
+        (50315, 127, 0, -6301, 5064, 0x40, 163), (50316, 127, 0, -6283, 5136, 0x40, 163),
+        (50317, 127, 0, -6247, 5208, 0x40, 163), (50318, 127, 0, -6175, 5407, 0x40, 163),
+        (50319, 127, 0, -6175, 5407, 0x40000, 166), (50320, 127, 0, -6121, 5515, 0x40000, 166),
+        (50321, 127, 0, -6085, 5623, 0x40000, 166), (50322, 127, 0, -6031, 5731, 0x40000, 166),
+        (50323, 127, 0, -6031, 5731, 0x40000, 166), (50324, 127, 0, -6031, 5731, 0x40000, 166),
+        (50325, 127, 0, -6031, 5731, 0x40000, 166), (50326, 127, 0, -6031, 5731, 0x40000, 166),
+        (50327, 127, 0, -6031, 5731, 0x40000, 166), (50328, 127, 0, -5905, 6200, 0x0, 170),
+        (50329, 127, 0, -5869, 6290, 0x0, 170), (50330, 127, 0, -5851, 6344, 0x0, 170),
+        (50331, 127, 0, -5815, 6488, 0x40000, 175), (50332, 127, 0, -5815, 6632, 0x40000, 175),
+        (50333, 127, 0, -5797, 6722, 0x40000, 175), (50334, 127, 0, -5797, 6830, 0x40000, 175),
+        (50335, 127, 0, -5779, 6975, 0x40000, 175), (50336, 127, 0, -5779, 7137, 0x40000, 175),
+        (50337, 127, 0, -5779, 7245, 0x40000, 175), (50338, 127, 0, -5797, 7443, 0x40000, 175),
+    ];
+    let poses = replay(&mut doomfist, [35.08203125, 2.0, 16.8271484375], &jump);
+    // The live server's last frame in the air before the face, then his
+    // client's own prediction: on the face, then up onto the block.
+    assert_eq!(poses[&50331], [34.9853515625, 2.958984375, 17.60546875]);
+    let client = [
+        [34.962890625, 3.03515625, 17.6767578125],
+        [34.9345703125, 3.068359375, 17.751953125],
+        [34.90234375, 3.1025390625, 17.82421875],
+        [34.8720703125, 3.146484375, 17.8916015625],
+        [34.8359375, 3.6337890625, 17.9609375],
+        [34.794921875, 3.6669921875, 18.02734375],
+        [34.75390625, 3.7001953125, 18.09375],
+    ];
+    for (frame, feet) in (50332..).zip(client) {
+        assert_eq!(poses[&frame], feet, "frame {frame}");
+    }
+    // Standing on the face by the block, a step forward, then still. Both
+    // his client and the live server stepped up onto the block's rim at
+    // 50403 (the ray finds nothing under feet in the air, so the disc
+    // does); at 50404 his client's ray found the face under him and he
+    // stood there again, the live server kept him on the rim at
+    // 3.5810546875 m.
+    #[rustfmt::skip]
+    let stand: [Input; 13] = [
+        (50392, 127, 0, -15601, 10507, 0x40000, 172), (50393, 127, 0, -15583, 10507, 0x0, 171),
+        (50394, 127, 0, -15493, 10561, 0x0, 171), (50395, 127, 0, -15421, 10615, 0x40000, 171),
+        (50396, 127, 0, -15421, 10615, 0x40000, 170), (50397, 127, 0, -15421, 10615, 0x0, 169),
+        (50398, 127, 0, -15421, 10615, 0x0, 169), (50399, 127, 0, -15421, 10615, 0x40000, 168),
+        (50400, 0, 0, -15421, 10615, 0x40000, 167), (50401, 0, 0, -15421, 10615, 0x0, 167),
+        (50402, 0, 0, -15421, 10615, 0x40000, 167), (50403, 0, 0, -15421, 10615, 0x40000, 166),
+        (50404, 0, 0, -15421, 10615, 0x0, 165),
+    ];
+    let poses = replay(
+        &mut doomfist,
+        [35.3994140625, 3.1279296875, 17.9140625],
+        &stand,
+    );
+    assert_eq!(poses[&50400], [34.896484375, 3.119140625, 17.869140625]);
+    assert_eq!(poses[&50402], [34.884765625, 3.1240234375, 17.8642578125]);
+    assert_eq!(poses[&50403], [34.884765625, 3.5810546875, 17.8642578125]);
+    assert_eq!(poses[&50404], [34.884765625, 3.1181640625, 17.8642578125]);
+}
+
 /// Meteor Strike (`0C51`) through his client's own run (game m1, release of
 /// day/doomfist16; Doomfist.md §24): from the Range spawn facing -30183
 /// with a full meter, Q (3 frames), forward from 91 frames after it to 210
