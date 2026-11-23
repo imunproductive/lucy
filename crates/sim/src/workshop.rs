@@ -62,6 +62,7 @@ use lucy_workshop::{
         World,
     },
     logic::events,
+    memo::Reads,
     value::{Color, EntityId, Text, Value},
 };
 
@@ -159,6 +160,9 @@ struct Running {
     reevaluated: Vec<bool>,
     /// The parameters it has now.
     sent: Vec<Wire>,
+    /// What each reevaluated parameter's last evaluation read
+    /// ([`Engine::reevaluate_params`]).
+    kept: Vec<Option<Reads>>,
 }
 
 /// A variable as the engine wrote it and as it went to the entity.
@@ -525,20 +529,41 @@ impl Host<'_, '_> {
             .map(|(&handle, _)| handle)
             .collect();
         for handle in due {
+            let mut kept =
+                std::mem::take(&mut self.actions.get_mut(&handle).expect("due action").kept);
             let running = &self.actions[&handle];
             let (source, context) = (
                 Arc::clone(&running.call.source),
                 running.call.context.clone(),
             );
-            let params = engine.reevaluate_params(&*self, &source, &context, &running.reevaluated);
-            let kinds = param_kinds(self.catalog, running.call.action);
+            let params = engine.reevaluate_params(
+                &*self,
+                &source,
+                &context,
+                &running.reevaluated,
+                &mut kept,
+            );
             let running = self.actions.get_mut(&handle).expect("due action");
+            running.kept = kept;
+            let mut kinds = None;
             let mut changed = Vec::new();
-            for (index, param) in params.iter().enumerate() {
+            for (index, param) in params.into_iter().enumerate() {
                 let Some(param) = param else {
                     continue;
                 };
-                let value = parameter(self.catalog, kinds.get(index).copied(), param);
+                // The same parameter as last evaluated, bit for bit, goes
+                // out the same: its wire value (a text rendered, a tree
+                // built) is the one sent.
+                let Some(evaluated) = running.call.params.get_mut(index) else {
+                    continue;
+                };
+                if evaluated.identical(&param) {
+                    continue;
+                }
+                let kinds =
+                    kinds.get_or_insert_with(|| param_kinds(self.catalog, running.call.action));
+                let value = parameter(self.catalog, kinds.get(index).copied(), &param);
+                *evaluated = param;
                 if let Some(sent) = running.sent.get_mut(index)
                     && !sent.identical(&value)
                 {
@@ -558,11 +583,20 @@ impl Host<'_, '_> {
     /// The variable `stored` as the engine wrote it, while the entity still
     /// has what was written; else the entity's value now (a chase moved
     /// it). Workshop variables start at 0.
-    fn read(stored: Option<&Stored>, now: Wire) -> Value {
+    fn read(stored: Option<&Stored>, now: &Wire) -> Value {
         match stored {
-            Some(stored) if stored.wire.identical(&now) => stored.value.clone(),
-            _ if now == Wire::Null => Value::Number(0.0),
-            _ => from_wire(&now),
+            Some(stored) if stored.wire.identical(now) => stored.value.clone(),
+            _ if *now == Wire::Null => Value::Number(0.0),
+            _ => from_wire(now),
+        }
+    }
+
+    /// Whether [`Self::read`] gives `value` bit for bit, without a copy.
+    fn read_is(stored: Option<&Stored>, now: &Wire, value: &Value) -> bool {
+        match stored {
+            Some(stored) if stored.wire.identical(now) => stored.value.identical(value),
+            _ if *now == Wire::Null => Value::Number(0.0).identical(value),
+            _ => from_wire(now).identical(value),
         }
     }
 }
@@ -995,7 +1029,7 @@ impl Variables for Host<'_, '_> {
     fn global(&self, index: u8) -> Value {
         Self::read(
             self.globals.get(&index),
-            self.script.workshop_global(i64::from(index)),
+            &self.script.workshop_global_ref(i64::from(index)),
         )
     }
     fn set_global(&mut self, index: u8, value: Value) {
@@ -1011,10 +1045,10 @@ impl Variables for Host<'_, '_> {
     fn player(&self, player: EntityId, index: u8) -> Value {
         let now = self
             .index(player)
-            .and_then(|at| self.players[at].world.workshop_variable(index));
+            .and_then(|at| self.players[at].world.workshop_variable_ref(index));
         let stored = self.player_variables.get(&(player, index));
         match now {
-            Some(now) => Self::read(stored, now),
+            Some(now) => Self::read(stored, &now),
             None => stored.map_or(Value::Number(0.0), |stored| stored.value.clone()),
         }
     }
@@ -1030,6 +1064,25 @@ impl Variables for Host<'_, '_> {
         }
         self.player_variables
             .insert((player, index), Stored { value, wire });
+    }
+    fn global_is(&self, index: u8, value: &Value) -> bool {
+        Self::read_is(
+            self.globals.get(&index),
+            &self.script.workshop_global_ref(i64::from(index)),
+            value,
+        )
+    }
+    fn player_is(&self, player: EntityId, index: u8, value: &Value) -> bool {
+        let now = self
+            .index(player)
+            .and_then(|at| self.players[at].world.workshop_variable_ref(index));
+        let stored = self.player_variables.get(&(player, index));
+        match now {
+            Some(now) => Self::read_is(stored, &now, value),
+            None => stored.map_or(Value::Number(0.0).identical(value), |stored| {
+                stored.value.identical(value)
+            }),
+        }
     }
 }
 
@@ -1058,6 +1111,7 @@ impl Actions for Host<'_, '_> {
                         call,
                         reevaluated,
                         sent,
+                        kept: Vec::new(),
                     },
                 );
             }

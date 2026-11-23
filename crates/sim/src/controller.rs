@@ -228,12 +228,14 @@ impl Controller {
             .project_cached(snapshot, View::Owner, None, kept)?
             .clone();
         let open = input.keep_open || script.hero_select_state().is_some_and(|state| state.open);
-        projected.set_entity_variable(OPEN_SELECT, Some(Value::Bool(open)));
-        projected.set_entity_variable(SELECT_SHOWN, Some(Value::Bool(open)));
-        projected.set_entity_variable(
-            CURRENT_HERO,
-            input.hero.filter(|&hero| hero != 0).map(Value::Asset),
-        );
+        projected.set_entity_variables([
+            (OPEN_SELECT, Some(Value::Bool(open))),
+            (SELECT_SHOWN, Some(Value::Bool(open))),
+            (
+                CURRENT_HERO,
+                input.hero.filter(|&hero| hero != 0).map(Value::Asset),
+            ),
+        ]);
         let instances: Vec<_> = projected.instance_graphs().collect();
         for (id, graph) in instances {
             match graph {

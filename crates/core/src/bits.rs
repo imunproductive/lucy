@@ -105,7 +105,7 @@ impl BitWriter {
     }
 
     pub fn bit(&mut self, flag: bool) {
-        self.extend_bits(&[u8::from(flag)], 1);
+        self.push(u64::from(flag), 1);
     }
 
     pub fn bits(&mut self, value: u64, width: usize) -> Result<(), BitError> {
@@ -113,7 +113,11 @@ impl BitWriter {
         if value & !mask != 0 {
             return Err(BitError::ValueDoesNotFit { value, width });
         }
-        self.extend_bits(&value.to_le_bytes(), width);
+        if width <= PUSH_BITS {
+            self.push(value, width);
+        } else {
+            self.extend_bits(&value.to_le_bytes(), width);
+        }
         Ok(())
     }
 
@@ -176,23 +180,46 @@ impl BitWriter {
     }
 
     fn widths(&mut self, value: u32, [small, middle, large]: [usize; 3], short_flag: bool) {
-        let width = if value < 1 << small {
-            self.bit(short_flag);
-            small
+        // The width's flag bits first, then the value: one write.
+        let (short, long) = (u64::from(short_flag), u64::from(!short_flag));
+        let (flags, flag_bits, width) = if value < 1 << small {
+            (short, 1, small)
         } else if value < 1 << middle {
-            self.bit(!short_flag);
-            self.bit(short_flag);
-            middle
+            (long | short << 1, 2, middle)
         } else {
-            self.bit(!short_flag);
-            self.bit(!short_flag);
-            large
+            (long | long << 1, 2, large)
         };
-        self.extend_bits(&value.to_le_bytes(), width);
+        let value = u64::from(value) & low_bits(width);
+        self.push(flags | value << flag_bits, flag_bits + width);
+    }
+
+    /// Append the low `width` bits of `value` (at most [`PUSH_BITS`]; the
+    /// bits above must be clear): one shift and at most eight bytes.
+    fn push(&mut self, value: u64, width: usize) {
+        debug_assert!(width <= PUSH_BITS && value & !low_bits(width) == 0);
+        let shift = self.bit_len % 8;
+        let bytes = (value << shift).to_le_bytes();
+        self.bit_len += width;
+        // A partial last byte holds the low bits; the bits above it are
+        // clear, so the value's first bits go in with an or.
+        let mut from = 0;
+        if shift != 0 {
+            let last = self.data.len() - 1;
+            self.data[last] |= bytes[0];
+            from = 1;
+        }
+        let added = self.bit_len.div_ceil(8) - self.data.len();
+        self.data.extend_from_slice(&bytes[from..from + added]);
     }
 
     fn extend_bits(&mut self, source: &[u8], width: usize) {
         let bytes = width.div_ceil(8);
+        if width <= PUSH_BITS {
+            let mut word = [0; 8];
+            word[..bytes].copy_from_slice(&source[..bytes]);
+            self.push(u64::from_le_bytes(word) & low_bits(width), width);
+            return;
+        }
         let start = self.bit_len / 8;
         let shift = self.bit_len % 8;
         self.bit_len += width;
@@ -215,6 +242,18 @@ impl BitWriter {
                 self.data[index + 1] |= byte >> (8 - shift);
             }
         }
+    }
+}
+
+/// The widest [`BitWriter::push`]: shifted by up to 7 bits it still fits
+/// a `u64`.
+const PUSH_BITS: usize = 56;
+
+fn low_bits(width: usize) -> u64 {
+    if width >= 64 {
+        u64::MAX
+    } else {
+        (1 << width) - 1
     }
 }
 

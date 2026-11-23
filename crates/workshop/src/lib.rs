@@ -17,6 +17,7 @@ pub mod engine;
 pub mod eval;
 pub mod host;
 pub mod logic;
+pub mod memo;
 pub mod text;
 pub mod value;
 

@@ -1825,6 +1825,58 @@ pub(crate) const CREATOR: u32 = 27;
 /// message filters test (`0C90` st4/st8 `param(9) != owner()`).
 const MESSAGE_SENDER: u32 = 9;
 
+/// A map keyed by ids (instances, states, variables), in insertion order,
+/// with a multiply hash ([`IdHasher`]): SipHash, the default, was several
+/// per cent of a 12-player Workshop match's tick for keys no client
+/// chooses.
+pub type IdMap<K, V> = IndexMap<K, V, std::hash::BuildHasherDefault<IdHasher>>;
+
+/// The hash of [`IdMap`]: each integer added and multiplied in (the
+/// multiplier and the final rotation of `rustc-hash` 2).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct IdHasher(u64);
+
+impl IdHasher {
+    fn add(&mut self, word: u64) {
+        self.0 = self
+            .0
+            .wrapping_add(word)
+            .wrapping_mul(0xf135_7aea_2e62_a9c5);
+    }
+}
+
+impl std::hash::Hasher for IdHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.add(u64::from(byte));
+        }
+    }
+
+    fn write_u8(&mut self, value: u8) {
+        self.add(u64::from(value));
+    }
+
+    fn write_u16(&mut self, value: u16) {
+        self.add(u64::from(value));
+    }
+
+    fn write_u32(&mut self, value: u32) {
+        self.add(u64::from(value));
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        self.add(value);
+    }
+
+    fn write_usize(&mut self, value: usize) {
+        self.add(value as u64);
+    }
+
+    fn finish(&self) -> u64 {
+        self.0.rotate_left(26)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Instance {
     pub graph: u32,
@@ -1835,7 +1887,7 @@ pub struct Instance {
     /// When the instance was created.
     pub start_ms: u64,
     pub variables: Variables,
-    pub states: IndexMap<u16, State>,
+    pub states: IdMap<u16, State>,
     /// A scope instance's link to the scope state that opened it on
     /// another entity (`vm/scopes.rs`).
     pub scope: Option<ScopeLink>,
@@ -1858,7 +1910,7 @@ impl Instance {
 /// leave it behind; reads go through the map ([`std::ops::Deref`]).
 #[derive(Debug, Default)]
 pub struct Instances {
-    map: IndexMap<u16, Instance>,
+    map: IdMap<u16, Instance>,
     /// The last revision given out.
     writes: u64,
 }
@@ -1897,7 +1949,7 @@ impl Instances {
 }
 
 impl std::ops::Deref for Instances {
-    type Target = IndexMap<u16, Instance>;
+    type Target = IdMap<u16, Instance>;
 
     fn deref(&self) -> &Self::Target {
         &self.map
@@ -1962,11 +2014,11 @@ pub struct Snapshot {
     pub variables: Variables,
     pub instances: Instances,
     /// Pending state timers and finishes in their per-instance execution order.
-    pub pending_timers: IndexMap<u16, Vec<PendingTimer>>,
+    pub pending_timers: IdMap<u16, Vec<PendingTimer>>,
     /// Stack links by (instance or zero for the entity, variable).
-    pub bindings: IndexMap<(u16, u32), Vec<StackBinding>>,
+    pub bindings: IdMap<(u16, u32), Vec<StackBinding>>,
     /// Effective linked values, separate from their stored bases.
-    pub resolved_bindings: IndexMap<(u16, u32), Value>,
+    pub resolved_bindings: IdMap<(u16, u32), Value>,
     pub diagnostics: Vec<Diagnostic>,
     /// Unverified answers given so far, each site and class once.
     pub assumptions: Vec<Assumption>,
@@ -3383,7 +3435,7 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
                 source,
                 start_ms: self.machine.now_ms,
                 variables,
-                states: IndexMap::new(),
+                states: IdMap::default(),
                 scope,
                 revision: 0,
             },
@@ -4708,6 +4760,10 @@ fn source_key(instance: u16, variable: Variable) -> VarKey {
 }
 
 fn stored(snapshot: &Snapshot, key: VarKey) -> Value {
+    stored_ref(snapshot, key).cloned().unwrap_or(Value::Null)
+}
+
+fn stored_ref(snapshot: &Snapshot, key: VarKey) -> Option<&Value> {
     match key {
         VarKey::Entity(id) => snapshot.variables.get(&id),
         VarKey::Instance(instance, id) => snapshot
@@ -4715,8 +4771,6 @@ fn stored(snapshot: &Snapshot, key: VarKey) -> Value {
             .get(&instance)
             .and_then(|instance| instance.variables.get(&id)),
     }
-    .cloned()
-    .unwrap_or(Value::Null)
 }
 
 fn shot_delay(ordinal: u32, rate: f64) -> u64 {

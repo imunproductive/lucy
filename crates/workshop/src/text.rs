@@ -43,8 +43,8 @@ use std::{error, fmt};
 use crate::{
     catalog::{Catalog, Id, Param, ParamKind, UNWRITTEN},
     logic::{
-        Action, Arg, Compare, Condition, Event, Logic, Rule, Value, WorkshopSetting, actions,
-        default_arg, events, ids,
+        Action, Arg, Compare, Condition, Event, Logic, NumberLiteral, Rule, Value, WorkshopSetting,
+        actions, default_arg, events, ids,
     },
 };
 
@@ -942,7 +942,7 @@ impl<'a> Parser<'a> {
                 None => return self.error("expected an integer"),
             },
             ParamKind::Number => match self.number() {
-                Some(number) => Arg::Number(number as f32),
+                Some(number) => Arg::Number(NumberLiteral::new(number as f32)),
                 None => return self.error("expected a number"),
             },
             ParamKind::Flags => match self.number() {
