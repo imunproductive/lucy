@@ -439,26 +439,31 @@ pub(crate) fn bound_variable_list(
     own: u16,
     bindings: &Bindings,
 ) -> Result<(), WireError> {
-    out.bit(!variables.is_empty());
-    if !variables.is_empty() {
-        let mut emit = |id, value: &Value| {
+    let mut entries: Vec<_> = variables.iter().map(|(&id, value)| (id, value)).collect();
+    if encoding.compact() {
+        entries.sort_unstable_by_key(|&(id, _)| id);
+    }
+    bound_variable_entries(out, &entries, encoding, own, bindings)
+}
+
+/// [`bound_variable_list`] of `entries` as they go: in id order for the
+/// compact encoding.
+pub(crate) fn bound_variable_entries(
+    out: &mut BitWriter,
+    entries: &[(u32, &Value)],
+    encoding: ValueEncoding,
+    own: u16,
+    bindings: &Bindings,
+) -> Result<(), WireError> {
+    out.bit(!entries.is_empty());
+    if !entries.is_empty() {
+        for &(id, value) in entries {
             if id == 0 {
                 return Err(WireError::InvalidVariable);
             }
             out.w_var(id);
             let links = bindings.get(&id).map_or(&[][..], Vec::as_slice);
-            bound_variable(out, value, encoding, own, links)
-        };
-        if encoding.compact() {
-            let mut ids: Vec<_> = variables.keys().copied().collect();
-            ids.sort_unstable();
-            for id in ids {
-                emit(id, &variables[&id])?;
-            }
-        } else {
-            for (&id, value) in variables {
-                emit(id, value)?;
-            }
+            bound_variable(out, value, encoding, own, links)?;
         }
         out.w_var(0);
     }

@@ -625,9 +625,9 @@ fn initial_owner_delta_matches_python_stack_bindings_and_payloads() {
     let delta = encoder
         .differences(baseline, &python, &BTreeSet::new(), &BTreeSet::new())
         .unwrap();
-    assert_eq!(delta.variables.values[&7], Value::Integer(31));
+    assert_eq!(*delta.variables.value(7), Value::Integer(31));
     assert_eq!(
-        delta.instances[&1].variables.values[&100],
+        *delta.instances[&1].variables.value(100),
         Value::Integer(17)
     );
     check(
@@ -644,13 +644,13 @@ fn initial_owner_delta_matches_python_stack_bindings_and_payloads() {
     let delta = encoder
         .differences(&owner, &unbound, &BTreeSet::new(), &BTreeSet::new())
         .unwrap();
-    assert_eq!(delta.variables.values[&7], Value::Integer(4));
+    assert_eq!(*delta.variables.value(7), Value::Integer(4));
     assert_eq!(
-        delta.instances[&1].variables.values[&100],
+        *delta.instances[&1].variables.value(100),
         Value::Integer(9)
     );
-    assert!(delta.variables.bindings.is_empty());
-    assert!(delta.instances[&1].variables.bindings.is_empty());
+    assert!(!delta.variables.has_links());
+    assert!(!delta.instances[&1].variables.has_links());
 }
 
 /// A Stack that adds to its own variable (Ana's `0B94` st77: `#23184e +
