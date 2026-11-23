@@ -22,7 +22,7 @@ fn derived(path: &str) -> Output {
         .find(|derivation| derivation.name == "graphs")
         .unwrap();
     // The derivation reads other derivations' outputs (the placed entities
-    // of `game_map_areas_174.json`, since 5866ba3, which no pack has), so it
+    // of `game_map_areas_174.json`, since 0bb50f3, which no pack has), so it
     // runs over the derived cache, not the pack.
     (graphs.derive)(&install, &lucy_testkit::runtime_dir())
         .unwrap()
@@ -64,7 +64,7 @@ fn hero_bundle_matches_the_pack() {
 /// AI weapon button; the derivation adds the same graphs as to the hero
 /// bundle (volley-spawned and match flow graphs), each bot entity's target
 /// tags, which the pack doesn't have, and the definitions of the map's
-/// placed entities whose scripts the server runs (since 5866ba3, from
+/// placed entities whose scripts the server runs (since 0bb50f3, from
 /// `game_map_areas_174.json`), so the pack's entities are a subset.
 #[test]
 #[ignore = "requires an Overwatch 1.74 install and a runtime pack (just test-assets <install> <pack>)"]

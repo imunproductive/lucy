@@ -54,7 +54,7 @@ fn game_maps_matches_the_pack() {
         path: output.path.clone(),
         bytes: serde_json::to_vec(&derived).unwrap(),
     };
-    // The pack's `mirrored` lists went in 4a50b2b (stage A: the server
+    // The pack's `mirrored` lists went in af71e54 (stage A: the server
     // placeables are in `game_map_areas` now); compare without them.
     let mut oracle: Value =
         serde_json::from_slice(&std::fs::read(pack.join(&output.path)).unwrap()).unwrap();

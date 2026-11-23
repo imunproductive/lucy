@@ -2998,7 +2998,7 @@ fn practice_world<const N: usize>(
 }
 
 /// A hero change in the Practice Range and back (the user's report of
-/// 2026-11-19, release a043c3c): Soldier: 76 (the first pick), reopen,
+/// 2026-11-19, release 385edf5): Soldier: 76 (the first pick), reopen,
 /// Tracer, reopen, Soldier: 76. Each pick replaces the body (the old one
 /// destroyed), the reopened screen shows the hero he plays (#940e) and no
 /// pick, and the first hero is his to pick again. Since the Range's mode
