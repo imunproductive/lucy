@@ -50,6 +50,7 @@ Do not run the full game-install suites (`just test-game`, `just test-slow`) for
 | `just dashboard-test` | in `web/dashboard`: `npm test`, `npm run check`, `npm run verify-dist` | The dashboard's API client tests, its type check, and a check that the committed `dist/` is a fresh build |
 | `just dashboard-build` | in `web/dashboard`: `npm run build` | Builds the dashboard into `web/dashboard/dist/`, which the server embeds |
 | `just build` | `cargo build --workspace --release --locked` | Release build of `lucy.exe` and `owwfd_relay.dll` |
+| `just dist <version>` | `python tools/dist/dist.py <version>` | The release zip, its SHA-256 and the release notes in `dist/` ([releasing](releasing.md)) |
 | `just test-game <install>` | ignored tests with `LUCY_GAME_DIR`, optimised, without the slow group, side by side; then the `serial_` tests one at a time | Tests that read the install; the integrator runs them after a batch of merges |
 | `just test-slow <install>` | ignored `slow_` tests, optimised | The game-install tests that play a whole match or run over a minute; the integrator runs them with `test-game` |
 | `just test-named <install> <crate> <filter> [gametest]` | ignored tests of one crate whose names contain the filter; debug build unless `gametest` is given | The game-install tests of the area you work on |

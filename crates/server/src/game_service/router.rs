@@ -187,6 +187,10 @@ pub(super) struct Router {
     /// The match flow's timers for the rooms that open (tests shorten
     /// them).
     timers: Timers,
+    /// The seed of every match's AI heroes on the test's virtual clock
+    /// (`lockstep.rs`), so a test plays the same match each run; none: the
+    /// OS's for each match ([`super::ai::seed`]).
+    pub(super) ai_seed: Option<u64>,
 }
 
 impl Router {
@@ -203,6 +207,7 @@ impl Router {
             next_connection: 1,
             results: Vec::new(),
             timers: Timers::default(),
+            ai_seed: None,
         }
     }
 
@@ -310,6 +315,7 @@ impl Router {
         let settings = RoomSettings {
             schemas: Arc::clone(&self.schemas),
             timers: self.timers,
+            ai_seed: self.ai_seed,
             events: Events {
                 id,
                 sender: self.events.clone(),
