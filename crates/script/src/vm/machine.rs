@@ -233,18 +233,30 @@ impl Machine {
     }
 
     pub(super) fn value(&self, key: VarKey, below: Option<StateKey>) -> Value {
-        self.links
-            .get(&key)
-            .and_then(|entries| {
-                entries
-                    .iter()
-                    .take_while(|entry| Some(entry.state) != below)
-                    .last()
-            })
-            .map_or_else(
-                || stored(&self.snapshot, key),
-                |entry| self.link_value(entry),
-            )
+        self.value_ref(key, below).into_owned()
+    }
+
+    /// [`Self::value`], borrowed where the machine holds it as it is (a
+    /// stored value, a fixed link or a state's output).
+    pub(super) fn value_ref(
+        &self,
+        key: VarKey,
+        below: Option<StateKey>,
+    ) -> std::borrow::Cow<'_, Value> {
+        use std::borrow::Cow;
+        let top = self.links.get(&key).and_then(|entries| {
+            entries
+                .iter()
+                .take_while(|entry| Some(entry.state) != below)
+                .last()
+        });
+        match top {
+            Some(entry) => match &entry.output {
+                LinkValue::Fixed(value) | LinkValue::Output { value, .. } => Cow::Borrowed(value),
+                _ => Cow::Owned(self.link_value(entry)),
+            },
+            None => stored_ref(&self.snapshot, key).map_or(Cow::Owned(Value::Null), Cow::Borrowed),
+        }
     }
 
     pub(super) fn link_value(&self, entry: &VariableLink) -> Value {

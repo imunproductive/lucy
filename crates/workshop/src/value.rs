@@ -103,6 +103,16 @@ impl Value {
         }
     }
 
+    /// [`Self::array`] of a value no longer needed: its items moved, not
+    /// copied.
+    pub fn into_array(self) -> Vec<Value> {
+        match self {
+            Self::Array(items) => items,
+            Self::Null => Vec::new(),
+            other => vec![other],
+        }
+    }
+
     pub fn entity(&self) -> Option<EntityId> {
         match self {
             Self::Entity(entity) => Some(*entity),

@@ -531,14 +531,25 @@ impl Host<'_, '_> {
                 running.call.context.clone(),
             );
             let params = engine.reevaluate_params(&*self, &source, &context, &running.reevaluated);
-            let kinds = param_kinds(self.catalog, running.call.action);
             let running = self.actions.get_mut(&handle).expect("due action");
+            let mut kinds = None;
             let mut changed = Vec::new();
-            for (index, param) in params.iter().enumerate() {
+            for (index, param) in params.into_iter().enumerate() {
                 let Some(param) = param else {
                     continue;
                 };
-                let value = parameter(self.catalog, kinds.get(index).copied(), param);
+                // The same parameter as last evaluated, bit for bit, goes
+                // out the same: its wire value (a text rendered, a tree
+                // built) is the one sent.
+                let Some(evaluated) = running.call.params.get_mut(index) else {
+                    continue;
+                };
+                if same_param(evaluated, &param) {
+                    continue;
+                }
+                let kinds = kinds.get_or_insert_with(|| param_kinds(self.catalog, running.call.action));
+                let value = parameter(self.catalog, kinds.get(index).copied(), &param);
+                *evaluated = param;
                 if let Some(sent) = running.sent.get_mut(index)
                     && !sent.identical(&value)
                 {
@@ -558,11 +569,11 @@ impl Host<'_, '_> {
     /// The variable `stored` as the engine wrote it, while the entity still
     /// has what was written; else the entity's value now (a chase moved
     /// it). Workshop variables start at 0.
-    fn read(stored: Option<&Stored>, now: Wire) -> Value {
+    fn read(stored: Option<&Stored>, now: &Wire) -> Value {
         match stored {
-            Some(stored) if stored.wire.identical(&now) => stored.value.clone(),
-            _ if now == Wire::Null => Value::Number(0.0),
-            _ => from_wire(&now),
+            Some(stored) if stored.wire.identical(now) => stored.value.clone(),
+            _ if *now == Wire::Null => Value::Number(0.0),
+            _ => from_wire(now),
         }
     }
 }
@@ -571,6 +582,59 @@ impl Host<'_, '_> {
 /// ([`workshop_variable`]: `FF7F` to `FFFE`).
 fn workshop_index(id: u32) -> Option<u8> {
     (0..=127u8).find(|&index| workshop_variable(i64::from(index)) == id)
+}
+
+/// The same parameter bit for bit (unlike `==`, 0.0 and -0.0 differ, as
+/// they do on the wire; a NaN is never the same).
+fn same_param(a: &Param, b: &Param) -> bool {
+    match (a, b) {
+        (Param::Value(a), Param::Value(b)) => same_value(a, b),
+        (
+            Param::PerViewer {
+                value: a,
+                viewers: a_viewers,
+            },
+            Param::PerViewer {
+                value: b,
+                viewers: b_viewers,
+            },
+        ) => {
+            same_value(a, b)
+                && a_viewers.len() == b_viewers.len()
+                && a_viewers
+                    .iter()
+                    .zip(b_viewers)
+                    .all(|((a_viewer, a), (b_viewer, b))| a_viewer == b_viewer && same_value(a, b))
+        }
+        _ => false,
+    }
+}
+
+fn same_value(a: &Value, b: &Value) -> bool {
+    let numbers = |a: &[f64], b: &[f64]| a.iter().zip(b).all(|(a, b)| a.to_bits() == b.to_bits());
+    let all = |a: &[Value], b: &[Value]| a.len() == b.len() && a.iter().zip(b).all(|(a, b)| same_value(a, b));
+    match (a, b) {
+        (Value::Number(a), Value::Number(b)) => a.to_bits() == b.to_bits() && !a.is_nan(),
+        (Value::Vector(a), Value::Vector(b)) => numbers(a, b) && !a.iter().any(|c| c.is_nan()),
+        (Value::Color(Color::Rgba(a)), Value::Color(Color::Rgba(b))) => {
+            numbers(a, b) && !a.iter().any(|c| c.is_nan())
+        }
+        (Value::Array(a), Value::Array(b)) => all(a, b),
+        (
+            Value::Text(Text::Custom { template: a, args: a_args }),
+            Value::Text(Text::Custom { template: b, args: b_args }),
+        ) => a == b && all(a_args, b_args),
+        (
+            Value::Text(Text::Predefined { index: a, args: a_args }),
+            Value::Text(Text::Predefined { index: b, args: b_args }),
+        ) => a == b && all(a_args, b_args),
+        (
+            Value::Number(_) | Value::Vector(_) | Value::Array(_) | Value::Color(Color::Rgba(_)),
+            _,
+        )
+        | (Value::Text(Text::Custom { .. } | Text::Predefined { .. }), _) => false,
+        _ => a == b,
+    }
 }
 
 /// The catalog kinds of action `action`'s parameters.
@@ -995,7 +1059,7 @@ impl Variables for Host<'_, '_> {
     fn global(&self, index: u8) -> Value {
         Self::read(
             self.globals.get(&index),
-            self.script.workshop_global(i64::from(index)),
+            &self.script.workshop_global_ref(i64::from(index)),
         )
     }
     fn set_global(&mut self, index: u8, value: Value) {
@@ -1011,10 +1075,10 @@ impl Variables for Host<'_, '_> {
     fn player(&self, player: EntityId, index: u8) -> Value {
         let now = self
             .index(player)
-            .and_then(|at| self.players[at].world.workshop_variable(index));
+            .and_then(|at| self.players[at].world.workshop_variable_ref(index));
         let stored = self.player_variables.get(&(player, index));
         match now {
-            Some(now) => Self::read(stored, now),
+            Some(now) => Self::read(stored, &now),
             None => stored.map_or(Value::Number(0.0), |stored| stored.value.clone()),
         }
     }

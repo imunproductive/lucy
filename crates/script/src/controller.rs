@@ -759,8 +759,14 @@ impl ControllerScript {
     /// entity variable ([`crate::expr::workshop_variable`]), where the
     /// chase helper `1CCF` moves it too.
     pub fn workshop_variable(&self, index: i64) -> Value {
+        self.workshop_variable_ref(index).into_owned()
+    }
+
+    /// [`Self::workshop_variable`], borrowed where the script holds it as
+    /// it is.
+    pub fn workshop_variable_ref(&self, index: i64) -> std::borrow::Cow<'_, Value> {
         self.component
-            .entity_value(crate::expr::workshop_variable(index))
+            .entity_value_ref(crate::expr::workshop_variable(index))
     }
 
     /// Set Workshop player variable `index` of this player.

@@ -137,7 +137,7 @@ pub enum Arg {
     Hero(u64),
     Bool(bool),
     Int(i64),
-    Number(f32),
+    Number(NumberLiteral),
     Variable(u8),
     CustomString(String),
     Enum(Id),
@@ -153,6 +153,34 @@ pub enum Arg {
     WaitBehavior(u8),
 }
 
+/// A number literal: the `f32` the logic stores, and the value it
+/// evaluates to, worked out once (widened through its shortest decimal,
+/// so `0.016` stays 0.016).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NumberLiteral {
+    stored: f32,
+    value: f64,
+}
+
+impl NumberLiteral {
+    pub fn new(stored: f32) -> Self {
+        Self {
+            stored,
+            value: crate::eval::widen(stored),
+        }
+    }
+
+    /// The literal as the logic stores it.
+    pub fn stored(self) -> f32 {
+        self.stored
+    }
+
+    /// The Workshop number it evaluates to.
+    pub fn value(self) -> f64 {
+        self.value
+    }
+}
+
 /// A value tree: a catalog value and its parameters.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Value {
@@ -166,7 +194,7 @@ impl Value {
     }
 
     pub fn number(number: f32) -> Self {
-        Self::new(ids::NUMBER, vec![Arg::Number(number)])
+        Self::new(ids::NUMBER, vec![Arg::Number(NumberLiteral::new(number))])
     }
 }
 
@@ -331,7 +359,7 @@ pub fn default_arg(catalog: &Catalog, param: &Param) -> Arg {
     match param.kind {
         ParamKind::Bool => Arg::Bool(param.default != 0.0),
         ParamKind::Int => Arg::Int(param.default as i64),
-        ParamKind::Number => Arg::Number(param.default as f32),
+        ParamKind::Number => Arg::Number(NumberLiteral::new(param.default as f32)),
         ParamKind::Enum => Arg::Enum(
             param
                 .enum_default

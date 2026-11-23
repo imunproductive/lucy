@@ -4708,6 +4708,10 @@ fn source_key(instance: u16, variable: Variable) -> VarKey {
 }
 
 fn stored(snapshot: &Snapshot, key: VarKey) -> Value {
+    stored_ref(snapshot, key).cloned().unwrap_or(Value::Null)
+}
+
+fn stored_ref(snapshot: &Snapshot, key: VarKey) -> Option<&Value> {
     match key {
         VarKey::Entity(id) => snapshot.variables.get(&id),
         VarKey::Instance(instance, id) => snapshot
@@ -4715,8 +4719,6 @@ fn stored(snapshot: &Snapshot, key: VarKey) -> Value {
             .get(&instance)
             .and_then(|instance| instance.variables.get(&id)),
     }
-    .cloned()
-    .unwrap_or(Value::Null)
 }
 
 fn shot_delay(ordinal: u32, rate: f64) -> u64 {
