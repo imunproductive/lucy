@@ -341,6 +341,12 @@ impl Component {
         self.machine.value(VarKey::Entity(id), None)
     }
 
+    /// [`Self::entity_value`], borrowed where the machine holds it as it
+    /// is.
+    pub fn entity_value_ref(&self, id: u32) -> std::borrow::Cow<'_, Value> {
+        self.machine.value_ref(VarKey::Entity(id), None)
+    }
+
     /// Another entity played `request.graph` on this one
     /// ([`World::play_script`]): played here as its `PlayScript` would.
     pub fn play_script(

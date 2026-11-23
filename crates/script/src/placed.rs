@@ -886,17 +886,27 @@ impl MapEntityWorld {
     /// attacking team #10795e), over the mode's own values. The states
     /// that read one that changed take the change.
     pub fn set_mode_variables(&mut self, variables: &Variables) {
-        let changed: Vec<u32> = variables
-            .iter()
-            .filter(|&(id, value)| self.mode_variables.get(id) != Some(value))
-            .map(|(&id, _)| id)
-            .chain(
-                self.mode_variables
-                    .keys()
-                    .filter(|&id| !variables.contains_key(id))
-                    .copied(),
-            )
-            .collect();
+        // Usually the same ids in the same order: entry by entry.
+        let changed: Vec<u32> = if variables.keys().eq(self.mode_variables.keys()) {
+            variables
+                .iter()
+                .zip(self.mode_variables.values())
+                .filter(|((_, value), was)| value != was)
+                .map(|((&id, _), _)| id)
+                .collect()
+        } else {
+            variables
+                .iter()
+                .filter(|&(id, value)| self.mode_variables.get(id) != Some(value))
+                .map(|(&id, _)| id)
+                .chain(
+                    self.mode_variables
+                        .keys()
+                        .filter(|&id| !variables.contains_key(id))
+                        .copied(),
+                )
+                .collect()
+        };
         if changed.is_empty() {
             return;
         }

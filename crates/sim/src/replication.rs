@@ -5136,6 +5136,16 @@ impl WorldDelivery {
         )
     }
 
+    /// [`Self::workshop_variable`], borrowed where the script holds it as
+    /// it is.
+    pub fn workshop_variable_ref(&self, index: u8) -> Option<std::borrow::Cow<'_, ScriptValue>> {
+        Some(
+            self.controller_script
+                .as_ref()?
+                .workshop_variable_ref(i64::from(index)),
+        )
+    }
+
     /// The controller's script at `tick`, before the Workshop's rules read
     /// his variables (a chase moves them with time).
     pub fn advance_controller_to(&mut self, tick: u32) {
