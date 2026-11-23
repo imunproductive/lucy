@@ -148,6 +148,17 @@ pub trait Variables {
     fn set_global(&mut self, index: u8, value: Value);
     fn player(&self, player: EntityId, index: u8) -> Value;
     fn set_player(&mut self, player: EntityId, index: u8, value: Value);
+
+    /// Whether global variable `index` is `value` bit for bit
+    /// ([`Value::identical`]); a store can tell without a copy.
+    fn global_is(&self, index: u8, value: &Value) -> bool {
+        self.global(index).identical(value)
+    }
+
+    /// As [`Self::global_is`], for a player variable.
+    fn player_is(&self, player: EntityId, index: u8, value: &Value) -> bool {
+        self.player(player, index).identical(value)
+    }
 }
 
 pub type ActionHandle = u64;
@@ -172,6 +183,33 @@ impl Param {
     pub fn value(&self) -> &Value {
         match self {
             Self::Value(value) | Self::PerViewer { value, .. } => value,
+        }
+    }
+
+    /// The same parameter bit for bit ([`Value::identical`]).
+    pub fn identical(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Value(a), Self::Value(b)) => a.identical(b),
+            (
+                Self::PerViewer {
+                    value: a,
+                    viewers: a_viewers,
+                },
+                Self::PerViewer {
+                    value: b,
+                    viewers: b_viewers,
+                },
+            ) => {
+                a.identical(b)
+                    && a_viewers.len() == b_viewers.len()
+                    && a_viewers
+                        .iter()
+                        .zip(b_viewers)
+                        .all(|((a_viewer, a), (b_viewer, b))| {
+                            a_viewer == b_viewer && a.identical(b)
+                        })
+            }
+            _ => false,
         }
     }
 }

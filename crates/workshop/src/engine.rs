@@ -46,8 +46,9 @@ use std::{
 use crate::{
     catalog::{Catalog, Id},
     eval::{self, Rng, Scope, arithmetic, compare},
-    host::{ActionCall, ActionHandle, Context, GameEvent, Host, Param},
-    logic::{self, Action, Arg, Condition, Event, Logic, WorkshopSetting, actions, events},
+    host::{ActionCall, ActionHandle, Context, GameEvent, Host, Param, Variables, World},
+    logic::{Action, Arg, Condition, Event, Logic, WorkshopSetting, actions, events},
+    memo::{self, Reads, Recorder, names_any},
     value::{EntityId, Value},
 };
 
@@ -428,7 +429,12 @@ impl Engine {
     }
 
     /// Whether every enabled condition of `rule` holds.
-    fn conditions<H: Host + ?Sized>(&mut self, rule: usize, context: &Context, host: &H) -> bool {
+    fn conditions<H: World + Variables + ?Sized>(
+        &mut self,
+        rule: usize,
+        context: &Context,
+        host: &H,
+    ) -> bool {
         let catalog = Arc::clone(&self.catalog);
         let settings = std::mem::take(&mut self.settings);
         let elapsed = self.elapsed();
@@ -449,7 +455,12 @@ impl Engine {
         holds
     }
 
-    fn evaluate<H: Host + ?Sized>(&mut self, context: &Context, host: &H, arg: &Arg) -> Value {
+    fn evaluate<H: World + Variables + ?Sized>(
+        &mut self,
+        context: &Context,
+        host: &H,
+        arg: &Arg,
+    ) -> Value {
         let catalog = Arc::clone(&self.catalog);
         let settings = std::mem::take(&mut self.settings);
         let elapsed = self.elapsed();
@@ -488,29 +499,49 @@ impl Engine {
     /// if every parameter was. The rest were evaluated each tick only to
     /// be dropped: a 12-player C32S2 match's HUD texts, each parameter
     /// that names Local Player once per player.
-    pub fn reevaluate_params<H: Host + ?Sized>(
+    ///
+    /// `kept` holds, by index, what each wanted parameter's last
+    /// evaluation read ([`Reads`]): while every read gives the same
+    /// answer, evaluating it again would give what it gave then, so it
+    /// isn't evaluated and comes back as none, as for a parameter not
+    /// wanted (about 99 % of a C32S2 match's, each tick).
+    pub fn reevaluate_params<H: World + Variables + ?Sized>(
         &mut self,
         host: &H,
         action: &Action,
         context: &Context,
         wanted: &[bool],
+        kept: &mut Vec<Option<Reads>>,
     ) -> Vec<Option<Param>> {
+        kept.resize_with(action.args.len(), || None);
         action
             .args
             .iter()
+            .zip(kept.iter_mut())
             .enumerate()
-            .map(|(index, arg)| {
-                let due = wanted.get(index).copied().unwrap_or(false);
-                if !due && !draws_random(arg) {
+            .map(|(index, (arg, kept))| {
+                if !wanted.get(index).copied().unwrap_or(false) {
+                    if draws_random(arg) {
+                        self.evaluate_param(host, arg, context);
+                    }
                     return None;
                 }
-                let param = self.evaluate_param(host, arg, context);
-                due.then_some(param)
+                if kept.as_ref().is_some_and(|reads| reads.hold(host)) {
+                    return None;
+                }
+                if !memo::memoizable(arg) {
+                    *kept = None;
+                    return Some(self.evaluate_param(host, arg, context));
+                }
+                let recorder = Recorder::new(host);
+                let param = self.evaluate_param(&recorder, arg, context);
+                *kept = recorder.finish();
+                Some(param)
             })
             .collect()
     }
 
-    fn evaluate_param<H: Host + ?Sized>(
+    fn evaluate_param<H: World + Variables + ?Sized>(
         &mut self,
         host: &H,
         arg: &Arg,
@@ -1136,26 +1167,21 @@ impl Engine {
 
 /// Whether `arg` uses value `id` anywhere.
 fn names(arg: &Arg, id: Id) -> bool {
-    let value_names =
-        |value: &logic::Value| value.id == id || value.args.iter().any(|arg| names(arg, id));
-    match arg {
-        Arg::Value(value) => value_names(value),
-        Arg::Array(values) => values.iter().any(value_names),
-        _ => false,
-    }
+    names_any(arg, &[id])
 }
 
 /// Whether evaluating `arg` may draw from the engine's random source.
 fn draws_random(arg: &Arg) -> bool {
     use eval::ids::{RANDOM_INTEGER, RANDOM_REAL, RANDOM_VALUE_IN_ARRAY, RANDOMIZED_ARRAY};
-    [
-        RANDOM_INTEGER,
-        RANDOM_REAL,
-        RANDOM_VALUE_IN_ARRAY,
-        RANDOMIZED_ARRAY,
-    ]
-    .into_iter()
-    .any(|id| names(arg, id))
+    names_any(
+        arg,
+        &[
+            RANDOM_INTEGER,
+            RANDOM_REAL,
+            RANDOM_VALUE_IN_ARRAY,
+            RANDOMIZED_ARRAY,
+        ],
+    )
 }
 
 #[derive(Clone, Copy)]

@@ -38,7 +38,10 @@ use lucy_wire::jam::codec::{Fields, Value as Jam};
 
 use crate::{
     catalog::{Catalog, Id, Param, ParamKind},
-    logic::{self, Action, Arg, Compare, Condition, Event, Logic, Rule, Value, WorkshopSetting},
+    logic::{
+        self, Action, Arg, Compare, Condition, Event, Logic, NumberLiteral, Rule, Value,
+        WorkshopSetting,
+    },
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -225,7 +228,7 @@ fn literal(kind: ParamKind, word: u64, strings: &[String]) -> Result<Arg> {
         ParamKind::Team => Arg::Team(word as u8),
         ParamKind::Bool => Arg::Bool(word != 0),
         ParamKind::Int => Arg::Int(i64::from(word as u32 as i32)),
-        ParamKind::Number => Arg::Number(f32::from_bits(word as u32)),
+        ParamKind::Number => Arg::Number(NumberLiteral::new(f32::from_bits(word as u32))),
         ParamKind::Variable => Arg::Variable(word as u8),
         ParamKind::CustomString => {
             Arg::CustomString(strings.get(word as usize).cloned().unwrap_or_default())
@@ -633,7 +636,7 @@ fn literal_word(arg: &Arg) -> u64 {
     match arg {
         Arg::Bool(value) => u64::from(*value),
         Arg::Int(value) => u64::from(*value as i32 as u32),
-        Arg::Number(value) => u64::from(value.to_bits()),
+        Arg::Number(value) => u64::from(value.stored().to_bits()),
         Arg::Enum(id) | Arg::Button(id) => IDENTIFIER | u64::from(*id),
         Arg::Map(map) => u64::from(*map),
         Arg::GameMode(guid) | Arg::Hero(guid) | Arg::Flags(guid) => *guid,

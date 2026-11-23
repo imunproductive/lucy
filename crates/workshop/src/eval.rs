@@ -379,7 +379,7 @@ impl<H: World + Variables + ?Sized> Eval<'_, '_, H> {
             Arg::Hero(hero) => Value::Hero(*hero),
             Arg::Bool(value) => Value::Bool(*value),
             Arg::Int(value) => Value::Number(*value as f64),
-            Arg::Number(value) => Value::Number(widen(*value)),
+            Arg::Number(value) => Value::Number(value.value()),
             Arg::Variable(index) | Arg::Subroutine(index) => Value::Number(f64::from(*index)),
             Arg::CustomString(text) => Value::Text(Text::Custom {
                 template: text.clone(),
@@ -652,7 +652,7 @@ impl<H: World + Variables + ?Sized> Eval<'_, '_, H> {
                 Value::Number(min + self.scope.rng.unit() * (max - min))
             }
             RANDOM_VALUE_IN_ARRAY => {
-                let items = self.at(value, 0).array();
+                let items = self.at(value, 0).into_array();
                 if items.is_empty() {
                     Value::Null
                 } else {
@@ -661,7 +661,7 @@ impl<H: World + Variables + ?Sized> Eval<'_, '_, H> {
                 }
             }
             RANDOMIZED_ARRAY => {
-                let mut items = self.at(value, 0).array();
+                let mut items = self.at(value, 0).into_array();
                 for i in (1..items.len()).rev() {
                     let j = (self.scope.rng.unit() * (i + 1) as f64) as usize;
                     items.swap(i, j.min(i));
@@ -743,23 +743,23 @@ impl<H: World + Variables + ?Sized> Eval<'_, '_, H> {
             }
 
             VALUE_IN_ARRAY => {
-                let items = self.at(value, 0).array();
+                let items = self.at(value, 0).into_array();
                 let index = self.number(value, 1);
                 if index < 0.0 {
                     Value::Null
                 } else {
-                    items.get(index as usize).cloned().unwrap_or(Value::Null)
+                    items.into_iter().nth(index as usize).unwrap_or(Value::Null)
                 }
             }
-            COUNT_OF => Value::Number(self.at(value, 0).array().len() as f64),
+            COUNT_OF => Value::Number(self.at(value, 0).into_array().len() as f64),
             APPEND_TO_ARRAY => {
-                let mut items = self.at(value, 0).array();
-                items.extend(self.at(value, 1).array());
+                let mut items = self.at(value, 0).into_array();
+                items.extend(self.at(value, 1).into_array());
                 Value::Array(items)
             }
             REMOVE_FROM_ARRAY => {
-                let items = self.at(value, 0).array();
-                let removed = self.at(value, 1).array();
+                let items = self.at(value, 0).into_array();
+                let removed = self.at(value, 1).into_array();
                 Value::Array(
                     items
                         .into_iter()
@@ -768,7 +768,7 @@ impl<H: World + Variables + ?Sized> Eval<'_, '_, H> {
                 )
             }
             ARRAY_CONTAINS => {
-                let items = self.at(value, 0).array();
+                let items = self.at(value, 0).into_array();
                 let wanted = self.at(value, 1);
                 Value::Bool(items.iter().any(|item| item.equals(&wanted)))
             }
@@ -779,7 +779,7 @@ impl<H: World + Variables + ?Sized> Eval<'_, '_, H> {
             // whole, it is -1 and the clear sends the player to
             // checkpoint 0].
             INDEX_OF_ARRAY_VALUE => {
-                let items = self.at(value, 0).array();
+                let items = self.at(value, 0).into_array();
                 let wanted = self.at(value, 1);
                 let find = |wanted: &Value| items.iter().position(|item| item.equals(wanted));
                 let found = find(&wanted).or_else(|| match &wanted {
@@ -789,25 +789,20 @@ impl<H: World + Variables + ?Sized> Eval<'_, '_, H> {
                 Value::Number(found.map_or(-1.0, |index| index as f64))
             }
             ARRAY_SLICE => {
-                let items = self.at(value, 0).array();
+                let items = self.at(value, 0).into_array();
                 let start = self.number(value, 1).max(0.0) as usize;
                 let count = self.number(value, 2).max(0.0) as usize;
                 Value::Array(items.into_iter().skip(start).take(count).collect())
             }
             FIRST_OF => self
                 .at(value, 0)
-                .array()
-                .first()
-                .cloned()
+                .into_array()
+                .into_iter()
+                .next()
                 .unwrap_or(Value::Null),
-            LAST_OF => self
-                .at(value, 0)
-                .array()
-                .last()
-                .cloned()
-                .unwrap_or(Value::Null),
+            LAST_OF => self.at(value, 0).into_array().pop().unwrap_or(Value::Null),
             FILTERED_ARRAY | IS_TRUE_FOR_ANY | IS_TRUE_FOR_ALL => {
-                let items = self.at(value, 0).array();
+                let items = self.at(value, 0).into_array();
                 let verdicts: Vec<bool> = self
                     .each(&items, value, 1)
                     .iter()
@@ -826,7 +821,7 @@ impl<H: World + Variables + ?Sized> Eval<'_, '_, H> {
                 }
             }
             SORTED_ARRAY => {
-                let items = self.at(value, 0).array();
+                let items = self.at(value, 0).into_array();
                 let ranks: Vec<f64> = self
                     .each(&items, value, 1)
                     .iter()
@@ -842,7 +837,7 @@ impl<H: World + Variables + ?Sized> Eval<'_, '_, H> {
                 )
             }
             MAPPED_ARRAY => {
-                let items = self.at(value, 0).array();
+                let items = self.at(value, 0).into_array();
                 Value::Array(self.each(&items, value, 1))
             }
 
@@ -1267,7 +1262,7 @@ fn literal_text(text: String) -> Value {
 
 /// A literal as written: `f32` widened through its shortest decimal, so
 /// `0.016` stays 0.016.
-fn widen(number: f32) -> f64 {
+pub(crate) fn widen(number: f32) -> f64 {
     number.to_string().parse().unwrap_or(f64::from(number))
 }
 

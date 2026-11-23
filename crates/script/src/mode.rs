@@ -974,7 +974,14 @@ impl ModeScript {
     /// Workshop global variable `index` as the graphs see it: the mode
     /// entity's entity variable (a chase's value included).
     pub fn workshop_global(&self, index: i64) -> Value {
-        self.entity_value(crate::expr::workshop_variable(index))
+        self.workshop_global_ref(index).into_owned()
+    }
+
+    /// [`Self::workshop_global`], borrowed where the script holds it as it
+    /// is.
+    pub fn workshop_global_ref(&self, index: i64) -> std::borrow::Cow<'_, Value> {
+        self.component
+            .entity_value_ref(crate::expr::workshop_variable(index))
     }
 
     /// The mode entity's variable `id` now (a Create action's last created
