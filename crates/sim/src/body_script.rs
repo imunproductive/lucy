@@ -778,6 +778,10 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
         self.world.map_variables = Some(Arc::clone(variables));
     }
 
+    fn set_cosmetics(&mut self, cosmetics: lucy_script::wheel::Cosmetics) {
+        self.world.cosmetics = cosmetics;
+    }
+
     /// The killer's possessor as the body's graphs would ask it
     /// (`STU_DB742151`): its own controller (an AI hero's AI entity) for a
     /// self-kill, else the controller the match lists for the killing body.

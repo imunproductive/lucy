@@ -16,6 +16,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value, value::RawValue};
 
 use lucy_core::guid::parse_guid;
+use lucy_wire::entity::WheelLoadout;
 
 use crate::{
     ai_definitions::{AI_DEFINITIONS_FILE, AiDefinitions},
@@ -23,6 +24,7 @@ use crate::{
     expr::{ConfigTable, Variable},
     rulesets::{self, Rulesets},
     weapons::{TUNABLES_FILE, Tunables},
+    wheel::Cosmetics,
 };
 
 pub const MAX_GRAPH_BYTES: u64 = 128 * 1024 * 1024;
@@ -541,6 +543,10 @@ struct Bundle<'a> {
     auras: BTreeMap<String, Value>,
     #[serde(default)]
     callout_textures: BTreeMap<String, String>,
+    #[serde(default)]
+    emote_assets: BTreeMap<String, [String; 2]>,
+    #[serde(default)]
+    voice_line_effects: BTreeMap<String, String>,
 }
 
 impl<'a> Bundle<'a> {
@@ -690,6 +696,10 @@ pub struct GraphStore {
     /// The communication wheel's callout texture of each action (`054/01A5`,
     /// [`GraphStore::callout_texture`]).
     callout_textures: BTreeMap<u64, u64>,
+    /// Each emote unlock's animation alias and blend tree set, and each
+    /// voice line unlock's effect ([`GraphStore::wheel_cosmetics`]).
+    emote_assets: BTreeMap<u64, (u64, u64)>,
+    voice_line_effects: BTreeMap<u64, u64>,
 }
 
 impl GraphStore {
@@ -769,6 +779,18 @@ impl GraphStore {
                 ))
             })
             .collect::<io::Result<_>>()?;
+        let guid =
+            |text: &str| parse_guid(text).ok_or_else(|| invalid("a wheel asset must be a GUID"));
+        let emote_assets = keyed_by_guid(bundle.emote_assets)?
+            .into_iter()
+            .map(|(unlock, [alias, blend_trees])| {
+                Ok((unlock, (guid(&alias)?, guid(&blend_trees)?)))
+            })
+            .collect::<io::Result<_>>()?;
+        let voice_line_effects = keyed_by_guid(bundle.voice_line_effects)?
+            .into_iter()
+            .map(|(unlock, effect)| Ok((unlock, guid(&effect)?)))
+            .collect::<io::Result<_>>()?;
         Ok(Self {
             graphs,
             bodies: keyed_by_guid(bundle.bodies)?,
@@ -787,6 +809,8 @@ impl GraphStore {
             ability_buttons,
             workshop_values,
             callout_textures,
+            emote_assets,
+            voice_line_effects,
         })
     }
 
@@ -822,6 +846,25 @@ impl GraphStore {
     /// action (`0A9`), zero for none.
     pub fn callout_texture(&self, action: u64) -> u64 {
         self.callout_textures.get(&action).copied().unwrap_or(0)
+    }
+
+    /// What the client's wheel evaluators answer for a player with
+    /// `equipped` (his component 65): the sprays themselves
+    /// (`STU_17B517B9`), each emote unlock's animation alias
+    /// (`STU_250DEABD`, `STUUnlock_Emote.m_emote`) and blend tree set
+    /// (`STU_DF7C7C63`, `m_emoteBlendTreeSet`), and each voice line
+    /// unlock's effect (`STU_2977339D`, the unlock's `+0x120`:
+    /// `STUUnlock_VoiceLine.m_F57B051E`). An unknown unlock answers 0.
+    pub fn wheel_cosmetics(&self, equipped: &WheelLoadout) -> Cosmetics {
+        let emote = |unlock: &u64| self.emote_assets.get(unlock).copied().unwrap_or_default();
+        Cosmetics {
+            emote_aliases: equipped.emotes.each_ref().map(|unlock| emote(unlock).0),
+            emote_blend_trees: equipped.emotes.each_ref().map(|unlock| emote(unlock).1),
+            spray_unlocks: equipped.sprays,
+            voice_effects: equipped
+                .voice_lines
+                .map(|unlock| self.voice_line_effects.get(&unlock).copied().unwrap_or(0)),
+        }
     }
 
     /// A bundle of the runtime `data` folder with the folder's ruleset

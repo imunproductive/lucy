@@ -4,7 +4,7 @@ What the server reads, where each input comes from, and the facts needed to rebu
 
 ## Runtime files
 
-The server derives its game data from the install (`crates/assets`, see [architecture](architecture.md#data-flow)) into `<state>/cache/104319`, in the format of the prepared runtime pack the inherited server read, so the loaders read it unchanged. A stamp file (`derived.txt`) records the build, build config, locale and derivations version; a cache with another stamp is derived again. The prepared pack stays as the oracle each derivation is checked against (`just test-assets`, `lucy assets diff --pack`). The fixed data is embedded in the binary (`crates/fixed`).
+The server derives its game data from the install (`crates/assets`, see [architecture](architecture.md#data-flow)) into `<state>/cache/104319`, in the format of the prepared runtime pack the inherited server read, so the loaders read it unchanged. A stamp file (`derived.txt`) records the build, build config, locale, derivations version and the hash of the derivations' code; a cache with another stamp is derived again. The prepared pack stays as the oracle each derivation is checked against (`just test-assets`, `lucy assets diff --pack`). The fixed data is embedded in the binary (`crates/fixed`).
 
 | File | Content | Made by | Inputs |
 | --- | --- | --- | --- |

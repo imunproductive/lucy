@@ -49,10 +49,9 @@ pub const PLAY_SCRIPTS: [((u32, u16), u32); 4] = [
     ((0x069a, 9), 0x1040),
 ];
 
-/// The graphs whose networked actions go to the clients as frame actions:
-/// the callouts (`STU_7106C356`) and the effects with a remote index
-/// (upstream `replicate_wheel_event`).
-pub const ACTION_GRAPHS: [u32; 3] = [0x02cf, 0x05ad, 0x0686];
+/// The wheel's graphs, whose voice criteria the body's voice set answers
+/// (`PlayerWorld::criteria`).
+pub const GRAPHS: [u32; 3] = [0x02cf, 0x05ad, 0x0686];
 
 /// The categories of an action (the `.096` records); none for an action
 /// outside the wheel.
@@ -110,8 +109,8 @@ pub fn played_graph(graph: u32, node: u16) -> Option<u32> {
 }
 
 /// The equipped wheel cosmetics of a body, four slots each, zero for an
-/// empty slot (the profile's loadout for the hero, upstream
-/// `Collection.wheel_cosmetics`).
+/// empty slot: what the graphs read of the player's component 65
+/// ([`crate::graph::GraphStore::wheel_cosmetics`]).
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Cosmetics {
     /// `.014` animation aliases of the equipped emotes (`STU_250DEABD`).

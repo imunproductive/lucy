@@ -173,8 +173,11 @@ pub(crate) struct RemoteBody<'a> {
     /// Its mover's gravity scale, which its movement records carry.
     pub gravity: f64,
     pub skin: SkinTheme,
-    /// The server's copy of the body's movement state.
+    /// The server's copy of the body's movement state, in the world.
     pub pose: Movement,
+    /// That state as its records carry it: on a platform, in the
+    /// platform's frame with the platform as parent (`Mover::record`).
+    pub record: Movement,
     /// Its current pools; None = the hero's own.
     pub vitals: Option<&'a Vitals>,
     /// Counts the changes of its pools: a client that has another count
@@ -923,7 +926,7 @@ impl Others {
                 (seen.id == body.id && seen.lifetime == Lifetime::Live && seen.sent).then(|| {
                     EntityUpdate {
                         entity: body.id.entity,
-                        movement: Some(remote_movement(body.pose, context.tick, body.gravity)),
+                        movement: Some(remote_movement(body.record, context.tick, body.gravity)),
                         ..EntityUpdate::default()
                     }
                 })
@@ -1243,11 +1246,12 @@ impl Others {
             body: body.id.entity,
             hero: body.hero.guid,
             skin: (body.skin.guid != 0).then_some(body.skin.guid),
+            wheel: other.card.wheel.get(&body.hero.guid).copied(),
         };
         output.records.push((
             EntityUpdate {
                 entity: other.entity,
-                operation: Some(Operation::Update(possession.components().into())),
+                operation: Some(Operation::Update(possession.components())),
                 ..EntityUpdate::default()
             },
             OtherDelivery::Possession {
@@ -1473,6 +1477,7 @@ mod tests {
             gravity: 1.75,
             skin: SkinTheme::default(),
             pose: Movement::default(),
+            record: Movement::default(),
             vitals: None,
             health: 0,
             tags: None,

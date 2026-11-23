@@ -718,11 +718,16 @@ mod tests {
         );
         let last = 100 + orb.pool as u32;
         for tick in 101..=last {
+            let dealt = if orb.heal {
+                lucy_script::ultimate::Dealt::Healing
+            } else {
+                lucy_script::ultimate::Dealt::Damage { critical: false }
+            };
             let (message, parameters) = lucy_script::ultimate::dealt_message(
                 OTHER,
                 50.0,
                 &lucy_script::weapons::DamageTags::NONE,
-                orb.heal,
+                dealt,
                 &[],
             );
             spawned.receive_message(&GameMessage {

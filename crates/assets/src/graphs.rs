@@ -258,6 +258,9 @@ fn bundle(install: &Install, out: &Path, bots: bool) -> Result<Bundle> {
     data.insert("missing".into(), json!(missing));
     data.insert("auras".into(), Json::Object(auras));
     data.insert("callout_textures".into(), callout_textures(install)?);
+    let (emotes, voice_lines) = wheel_cosmetics(install)?;
+    data.insert("emote_assets".into(), emotes);
+    data.insert("voice_line_effects".into(), voice_lines);
     data.insert("graphs".into(), Json::Array(graphs.into_values().collect()));
     if !entities.is_empty() {
         data.insert("entities".into(), Json::Object(entities));
@@ -361,6 +364,60 @@ fn read_json(path: &Path) -> Result<Json> {
         fs::read(path).map_err(|error| asset_error(format!("{}: {error}", path.display())))?;
     serde_json::from_slice(&bytes)
         .map_err(|error| asset_error(format!("{}: {error}", path.display())))
+}
+
+/// Unlocks (`0A5`).
+const UNLOCK: u16 = 0x0a5;
+
+/// What the communication wheel's evaluators read of the unlocks a player
+/// equipped (his component 65), as `"0x…"` keys: each emote unlock's
+/// (`STUUnlock_Emote`) animation alias `m_emote` and blend tree set
+/// `m_emoteBlendTreeSet`, and each voice line unlock's
+/// (`STUUnlock_VoiceLine`) effect `m_F57B051E`: the asset reference at
+/// `+0x118`, whose GUID is the `+0x120` `Eval_STU_2977339D` plays
+/// (0x7FF78984D1F0; `python -m tools.owindex STU_8A9D1F89`).
+fn wheel_cosmetics(install: &Install) -> Result<(Json, Json)> {
+    use crate::game_queues::{Node, key, load, typed};
+    let mut emotes = Map::new();
+    let mut voice_lines = Map::new();
+    for (index, asset) in load(install, UNLOCK)? {
+        let Some(unlock) = asset
+            .instances
+            .iter()
+            .flatten()
+            .map(|object| Node::of(&asset, object))
+            .find(|node| {
+                matches!(
+                    node.class_name(),
+                    Some("STUUnlock_Emote" | "STUUnlock_VoiceLine")
+                )
+            })
+        else {
+            continue;
+        };
+        let guid = key(typed(index, UNLOCK));
+        match unlock.class_name() {
+            Some("STUUnlock_Emote") => {
+                let (alias, blend_trees) =
+                    (unlock.guid("m_emote"), unlock.guid("m_emoteBlendTreeSet"));
+                if alias != 0 && blend_trees != 0 {
+                    emotes.insert(guid, json!([key(alias), key(blend_trees)]));
+                }
+            }
+            _ => {
+                let effect = unlock.guid("m_F57B051E");
+                if effect != 0 {
+                    voice_lines.insert(guid, key(effect).into());
+                }
+            }
+        }
+    }
+    if emotes.is_empty() || voice_lines.is_empty() {
+        return Err(asset_error(
+            "the install has no emote or voice line unlocks",
+        ));
+    }
+    Ok((Json::Object(emotes), Json::Object(voice_lines)))
 }
 
 /// The install's assets of the types the bundles read, by index.

@@ -54,6 +54,7 @@ use lucy_physics::static_ray::Vec3;
 use lucy_script::{
     ai_definitions::AiControl,
     bot::{DAMAGE_AMOUNT, DAMAGE_DIRECTION, DAMAGE_SOURCE, DAMAGE_TAGS, DAMAGED, DIED},
+    ultimate::Dealt,
     vitals::{Death, Vitals},
     vm::{
         ASSIST_DEFENSIVE, ASSIST_OFFENSIVE, AssistLink, AuraChange, BodyEffects, CombatMod,
@@ -2294,8 +2295,12 @@ pub fn apply_player_hits(
             world.send_hit_messages(&hit, &damage, &assisters);
         }
         // His body's `0B8B` decides the charge, his own blow's too (none:
-        // rid28, the body hit must be hostile to him).
+        // rid28, the body hit must be hostile to him); its `01C7` plays the
+        // hit's sound, the critical one for a critical hit.
         if let Some(world) = shooter.and_then(|shooter| players[shooter].world.as_deref_mut()) {
+            let dealt = Dealt::Damage {
+                critical: hit.critical,
+            };
             world.dealt(
                 &scene.shared_graphs(),
                 hit.shooter.source,
@@ -2303,11 +2308,11 @@ pub fn apply_player_hits(
                 victim_body,
                 damage.dealt,
                 &hit.tags,
-                false,
+                dealt,
                 &damage.drained,
             );
             if let Some(source) = hit.source {
-                world.source_dealt(source, hit.body, damage.dealt, &hit.tags, false);
+                world.source_dealt(source, hit.body, damage.dealt, &hit.tags, dealt);
             }
         }
         if let Some(shooter) = killer.filter(|_| !hit.environment) {
@@ -2489,11 +2494,11 @@ fn credit_healing(
                 target_body,
                 healed,
                 tags,
-                true,
+                Dealt::Healing,
                 &[],
             );
             if let Some(source) = source {
-                world.source_dealt(source, target, healed, tags, true);
+                world.source_dealt(source, target, healed, tags, Dealt::Healing);
             }
         }
     }

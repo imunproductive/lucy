@@ -397,6 +397,7 @@ mod tests {
                 move_to: None,
                 turn_rate: None,
                 nav_path: None,
+                parent: None,
             }));
             let correction = history.candidate(7010, true).unwrap().update();
             assert_eq!(correction.entity, ENTITY);

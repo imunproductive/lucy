@@ -316,8 +316,7 @@ impl World for PlayerWorld {
     fn criteria(&mut self, site: Site, raised: RaisedCriteria) {
         if site.entity == self.entity
             && self.speaks_for(raised.target)
-            && (crate::wheel::ACTION_GRAPHS.contains(&site.graph)
-                || REACTION_GRAPHS.contains(&site.graph))
+            && (crate::wheel::GRAPHS.contains(&site.graph) || REACTION_GRAPHS.contains(&site.graph))
         {
             self.criteria.push(raised);
         }

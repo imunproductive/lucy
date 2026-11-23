@@ -306,6 +306,9 @@ fn layout(index: u8) -> Result<&'static [Field], WorldError> {
         51 => &HEALTH,
         64 => &STATS,
         74 => &[Id, I16, I8, U8, U8, I8, U8, U8, U8],
+        // A player's equipped wheel cosmetics, mirror `STU_61125755`
+        // ([`WheelLoadout`]).
+        65 => &[Id, Id, Id, Id, Id, Id, Id, Id, Id, Id, Id, Id, Id, U8],
         75 => &[Id; 6],
         // STUTargetTagComponent's mirror `STU_DFCEF231`: the tags added
         // (`m_15252ECF`, component +0x100) and the tags suppressed
@@ -497,6 +500,20 @@ pub struct Movement {
     /// The path walk's record, present exactly while `flags` has
     /// [`NAV_PATH`].
     pub nav_path: Option<NavPathRecord>,
+    /// The platform the body stands on (`+0x360` entity, `+0x364` node),
+    /// when it rides one: then `position` and `velocity` are in its frame
+    /// (`lucy_physics` mover platform notes). The owner's client compares
+    /// both exactly.
+    pub parent: Option<MovementParent>,
+}
+
+/// The parent block of a movement state: the entity a body rides and the
+/// skeleton node of it whose frame its position is in (0 for the
+/// entity's own).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MovementParent {
+    pub entity: u32,
+    pub node: u32,
 }
 
 /// What a running `MoveTo` move (mover behaviour of kind 1) keeps in the
@@ -801,10 +818,13 @@ pub fn write_movement(
         None => out.bit(false),
     }
     out.bits(0, 3)?; // Flags 0x40000, 0x100, 0x200.
+    let parent = state
+        .parent
+        .or(parent.map(|entity| MovementParent { entity, node: 0 }));
     out.bit(parent.is_some());
     if let Some(parent) = parent {
-        out.bits(u64::from(parent), 32)?;
-        out.bits(0, 32)?; // Scene-node matrix index.
+        out.bits(u64::from(parent.entity), 32)?;
+        out.bits(u64::from(parent.node), 32)?;
     }
     delta(out, i64::from(state.spring[0]), &[8, 12, 17])?;
     delta(out, speed, &[8, 10, 24])?;
@@ -842,6 +862,43 @@ pub fn movement_record(state: &Movement, tick: Option<u32>) -> Result<BitWriter,
 pub struct SkinTheme {
     pub guid: u64,
     pub golden: bool,
+}
+
+/// Component 65: what a player has equipped on the communication wheel
+/// for his hero, four slots each, as `0A5` unlock GUIDs, 0 for an empty
+/// slot (mirror `STU_61125755` at component `+0x58`, `python -m
+/// tools.owindex comp65`, BotVoice.md "Client tools pass 2"). The client's
+/// slot accessors read fields 0-3 `m_31609FC9` as the sprays
+/// (0x7FF789ADC960), 5-8 `m_CD12DDE1` as the emotes (0x7FF789ADC930,
+/// `Eval_STU_250DEABD`) and 9-12 `m_EB6C8032` as the voice lines
+/// (0x7FF789ADC980, `Eval_STU_2977339D`, an `STUUnlock_VoiceLine`). With
+/// no component 65 on the player, `STU_2977339D` falls back to the hero's
+/// default lines. Field 4 `m_9AF2F23F` and field 13 `m_E37D86BD` (a u8)
+/// have no reader found and stay unset.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct WheelLoadout {
+    pub sprays: [u64; 4],
+    pub emotes: [u64; 4],
+    pub voice_lines: [u64; 4],
+}
+
+impl WheelLoadout {
+    pub const COMPONENT: u8 = 65;
+
+    /// Its component 65, every slot set (an empty one to 0), so that a
+    /// hero change clears what the last hero had.
+    pub fn component(&self) -> Component {
+        let slots = |guids: [u64; 4]| guids.map(|guid| Some(ComponentValue::Id(guid)));
+        let mut fields = Vec::with_capacity(13);
+        fields.extend(slots(self.sprays));
+        fields.push(None);
+        fields.extend(slots(self.emotes));
+        fields.extend(slots(self.voice_lines));
+        Component {
+            index: Self::COMPONENT,
+            fields,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
