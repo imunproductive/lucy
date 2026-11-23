@@ -181,10 +181,27 @@ impl ProjectedSnapshot {
     /// leave it out), without Stack links: what the frames carry for
     /// content the server doesn't run.
     pub fn set_entity_variable(&mut self, id: u32, value: Option<Value>) {
-        let mut variables = self.variables.variables.clone();
-        variables.set(id, value);
+        self.set_entity_variables([(id, value)]);
+    }
+
+    /// [`Self::set_entity_variable`] for each of `values`: one new
+    /// allocation for them all, none when the projection holds each
+    /// already.
+    pub fn set_entity_variables(&mut self, values: impl IntoIterator<Item = (u32, Option<Value>)>) {
+        let mut edited: Option<ProjectedVariables> = None;
+        for (id, value) in values {
+            let current = edited.as_ref().unwrap_or(&self.variables.variables);
+            if current.holds(id, value.as_ref()) {
+                continue;
+            }
+            edited
+                .get_or_insert_with(|| self.variables.variables.clone())
+                .set(id, value);
+        }
         // A new allocation: comparisons kept for the old one stay its own.
-        self.variables = EntityVariables::new(variables);
+        if let Some(variables) = edited {
+            self.variables = EntityVariables::new(variables);
+        }
     }
 
     /// Tests: the entity variables to change, in a new allocation.
@@ -199,7 +216,9 @@ impl ProjectedSnapshot {
     /// As [`Self::set_entity_variable`], for an instance's variable;
     /// nothing without the instance.
     pub fn set_instance_variable(&mut self, instance: u16, id: u32, value: Option<Value>) {
-        if let Some(instance) = self.instances.get_mut(&instance) {
+        if let Some(instance) = self.instances.get_mut(&instance)
+            && !instance.variables.holds(id, value.as_ref())
+        {
             edit_instance(instance).variables.set(id, value);
         }
     }
@@ -713,6 +732,19 @@ impl ProjectedVariables {
             owner,
             &self.bindings,
         )
+    }
+
+    /// Whether [`Self::set`] with these would change nothing: the variable
+    /// unbound, with this value bit for bit (or absent for none).
+    fn holds(&self, variable: u32, value: Option<&Value>) -> bool {
+        !self.bindings.contains_key(&variable)
+            && match value {
+                Some(value) => self
+                    .values
+                    .get(&variable)
+                    .is_some_and(|now| now.identical(value)),
+                None => !self.values.contains_key(&variable),
+            }
     }
 
     fn set(&mut self, variable: u32, value: Option<Value>) {
