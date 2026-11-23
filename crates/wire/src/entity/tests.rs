@@ -464,8 +464,8 @@ fn mixed_frame_matches_python_at_every_component_and_channel_boundary() {
         0x1234_5678,
         0x0004_0001,
         0,
-        &[(7, vec![0, 2, 0xab])],
-        &[vec![2, 1, 0xcd]],
+        &[(7, Encoded::whole(vec![0, 2, 0xab]))],
+        &[Encoded::whole(vec![2, 1, 0xcd])],
         &[&create, &update, &destroy, &chunk_only, &empty],
     )
     .unwrap();
@@ -486,8 +486,11 @@ fn mixed_frame_matches_python_at_every_component_and_channel_boundary() {
 
 #[test]
 fn budget_reuses_trimmed_space_and_only_displaces_remote_movement() {
-    let reliable = [(1, vec![0; 720]), (2, vec![0; 700])];
-    let unreliable = [vec![0; 300], vec![0; 200]];
+    let reliable = [
+        (1, Encoded::whole(vec![0; 720])),
+        (2, Encoded::whole(vec![0; 700])),
+    ];
+    let unreliable = [Encoded::whole(vec![0; 300]), Encoded::whole(vec![0; 200])];
     let queued = [entity(0x8000_0077, Operation::Placeable(0x77, Vec::new()))];
     let mut chunk = BitWriter::new();
     chunk.raw(&[0; 180]);
@@ -702,7 +705,7 @@ fn a_record_that_fits_only_alone_goes_before_the_owner_correction() {
 
 #[test]
 fn rejects_over_budget_oldest_records_and_malformed_components() {
-    let reliable = [(1, vec![0; MAX_PAYLOAD])];
+    let reliable = [(1, Encoded::whole(vec![0; MAX_PAYLOAD]))];
     let oversized = [entity(
         0x8000_0077,
         Operation::Update(vec![component(

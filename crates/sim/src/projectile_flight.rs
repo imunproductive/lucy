@@ -672,6 +672,7 @@ mod tests {
                 knockback: Some(Knockback {
                     away: 4.0,
                     upward: 6.0,
+                    lift: 0.0,
                     away_rings: vec![(0.5, 1.0), (3.0, 0.75)],
                     upward_rings: vec![(0.5, 1.0), (3.0, 0.25)],
                 }),

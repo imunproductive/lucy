@@ -73,7 +73,7 @@ fn practice_bots_start_one_script_per_update_and_the_firing_bots_shoot() {
     let mut tick = FIRST_TICK;
     for prepared in 1..=count {
         assert!(!scene.bot_scripts_ready());
-        scene.step_bots(tick);
+        scene.step_bots(tick, &[]);
         assert_eq!(scene.bot_scripts().pending(), count - prepared);
         tick += 1;
     }
@@ -99,7 +99,7 @@ fn practice_bots_start_one_script_per_update_and_the_firing_bots_shoot() {
     let mut shooters = BTreeSet::new();
     let mut live = BTreeSet::new();
     for _ in 0..600 {
-        scene.step_bots(tick);
+        scene.step_bots(tick, &[]);
         for shot in scene.bot_weapons(tick) {
             assert_eq!(shot.tick, tick);
             let BotShotKind::Projectile(projectile) = shot.kind else {
@@ -139,7 +139,7 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
     let mut scene = practice_scene();
     let mut tick = FIRST_TICK;
     while !scene.bot_scripts_ready() {
-        scene.step_bots(tick);
+        scene.step_bots(tick, &[]);
         tick += 1;
     }
     let card = PlayerCard::default();
@@ -346,7 +346,7 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
     let mut ids = crate::projectiles::SeenIds::new();
     loop {
         tick += 1;
-        scene.step_bots(tick);
+        scene.step_bots(tick, &[]);
         let rocket = scene
             .bot_weapons(tick)
             .iter()
@@ -453,7 +453,7 @@ fn a_bots_killing_hit_reaches_its_script_before_its_death() {
     let mut scene = practice_scene();
     let mut tick = FIRST_TICK;
     while !scene.bot_scripts_ready() {
-        scene.step_bots(tick);
+        scene.step_bots(tick, &[]);
         tick += 1;
     }
     scene.take_bot_events();
@@ -533,7 +533,7 @@ fn a_firing_bots_rocket_hits_the_player_in_front_of_it() {
     shooter.yaw = 16384.0;
     let (source, team) = (shooter.entity, shooter.spawn.team);
     while !scene.bot_scripts_ready() {
-        scene.step_bots(tick);
+        scene.step_bots(tick, &[]);
         tick += 1;
     }
     let body = OWNER | 1;
@@ -558,7 +558,7 @@ fn a_firing_bots_rocket_hits_the_player_in_front_of_it() {
     let mut combat = Combat::new(&scene);
     let mut hits = Vec::new();
     for _ in 0..600 {
-        scene.step_bots(tick);
+        scene.step_bots(tick, &[]);
         combat.record_poses(&scene, std::slice::from_ref(&player), tick);
         let context = ShotContext {
             quanta: RETAIL_QUANTA,
@@ -617,7 +617,7 @@ fn nano_boost_halves_the_damage_a_bot_takes_and_boosts_what_it_deals() {
     let mut scene = practice_scene();
     let mut tick = FIRST_TICK;
     while !scene.bot_scripts_ready() {
-        scene.step_bots(tick);
+        scene.step_bots(tick, &[]);
         tick += 1;
     }
     let team = |team| {
@@ -713,7 +713,7 @@ fn a_bots_target_tags_go_out_as_its_component_76() {
     let mut scene = practice_scene();
     let mut tick = FIRST_TICK;
     while !scene.bot_scripts_ready() {
-        scene.step_bots(tick);
+        scene.step_bots(tick, &[]);
         tick += 1;
     }
     let card = PlayerCard::default();
@@ -846,7 +846,7 @@ fn the_damaging_orbs_aura_hurts_a_bot_for_its_thrower() {
     let mut scene = practice_scene();
     let mut tick = FIRST_TICK;
     while !scene.bot_scripts_ready() {
-        scene.step_bots(tick);
+        scene.step_bots(tick, &[]);
         tick += 1;
     }
     let bot = scene.bots().iter().find(|bot| bot.spawn.team == 1).unwrap();

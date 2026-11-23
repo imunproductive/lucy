@@ -981,8 +981,18 @@ impl RoomState {
         let mut bot_events = Vec::new();
         let mut bot_voices = Vec::new();
         if simulate {
+            // The players' living bodies, where their commands so far left
+            // them, block the bots of the other teams.
+            let players: Vec<_> = self
+                .peers
+                .iter()
+                .filter_map(|(connection, peer)| {
+                    let team = self.room.players[self.seats[connection]].info.team;
+                    Some((team, peer.world.body_capsule()?))
+                })
+                .collect();
             if let Some(world) = &mut self.room.world {
-                world.scene.step_bots(tick);
+                world.scene.step_bots(tick, &players);
             }
             self.update_combat(tick, now);
             let mut dummies = Vec::new();
