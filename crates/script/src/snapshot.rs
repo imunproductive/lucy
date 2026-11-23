@@ -412,6 +412,42 @@ impl ProjectedInstance {
             && self.states == other.states
             && self.events == other.events
     }
+
+    /// The same projection bit for bit (unlike `==`, 0.0 and -0.0
+    /// differ), each map in the same order: whatever is written from one
+    /// is written the same from the other.
+    fn identical(&self, other: &Self) -> bool {
+        fn values<'a>(
+            a: impl ExactSizeIterator<Item = (&'a String, &'a Value)>,
+            b: impl ExactSizeIterator<Item = (&'a String, &'a Value)>,
+        ) -> bool {
+            a.len() == b.len()
+                && a.zip(b)
+                    .all(|((a_key, a), (b_key, b))| a_key == b_key && a.identical(b))
+        }
+        self.graph == other.graph
+            && self.creator == other.creator
+            && self.parent == other.parent
+            && self.scope == other.scope
+            && self.variables.values.len() == other.variables.values.len()
+            && self
+                .variables
+                .values
+                .iter()
+                .zip(&other.variables.values)
+                .all(|((a_id, a), (b_id, b))| a_id == b_id && a.identical(b))
+            && self.variables.bindings == other.variables.bindings
+            && self.states.len() == other.states.len()
+            && self.states.iter().zip(&other.states).all(|((a_raw, a), (b_raw, b))| {
+                a_raw == b_raw
+                    && a.active == b.active
+                    && a.activation == b.activation
+                    && a.volley == b.volley
+                    && a.chase_steps == b.chase_steps
+                    && values(a.payload.iter(), b.payload.iter())
+            })
+            && self.events == other.events
+    }
 }
 
 /// [`ProjectedInstance::self_same`], worked out once. It takes no part
@@ -1351,25 +1387,32 @@ impl<'a> SnapshotEncoder<'a> {
                     },
                 );
             }
+            let projected = ProjectedInstance {
+                graph: instance.graph,
+                creator: (instance.source != snapshot.entity).then_some(instance.source),
+                parent: instance.parent,
+                scope: instance.scope.as_ref().map(|scope| wire::ScopeDescriptor {
+                    scope: scope.id,
+                    entity: scope.source.entity,
+                    instance: scope.source.instance,
+                    state: scope.source.state,
+                }),
+                variables,
+                states,
+                events,
+                self_same: SelfSame::default(),
+                reflexive: SelfSame::default(),
+                compared: Compared::default(),
+            };
+            // An instance whose revision moved without a change it projects
+            // keeps its share (and the comparisons made to it).
+            let kept = stamps
+                .as_ref()
+                .and_then(|(kept, _)| kept.as_ref()?.projected.instances.get(&id))
+                .filter(|kept| kept.identical(&projected));
             instances.insert(
                 id,
-                Arc::new(ProjectedInstance {
-                    graph: instance.graph,
-                    creator: (instance.source != snapshot.entity).then_some(instance.source),
-                    parent: instance.parent,
-                    scope: instance.scope.as_ref().map(|scope| wire::ScopeDescriptor {
-                        scope: scope.id,
-                        entity: scope.source.entity,
-                        instance: scope.source.instance,
-                        state: scope.source.state,
-                    }),
-                    variables,
-                    states,
-                    events,
-                    self_same: SelfSame::default(),
-                    reflexive: SelfSame::default(),
-                    compared: Compared::default(),
-                }),
+                kept.map_or_else(|| Arc::new(projected), Arc::clone),
             );
         }
         // The entity's variables as the kept projection has them, shared
