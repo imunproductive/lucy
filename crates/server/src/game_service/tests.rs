@@ -3326,13 +3326,18 @@ fn a_reinhardt_training_partner_comes_once_with_the_consoles_spawn_effect() {
 /// The Range's Training Partner console (`265F`).
 const CONSOLE: u32 = 0x8000_010B;
 
-/// A partner's feet on the console's pad `3992` (34.24, 1.99, 22.97): x
-/// and z within 1 mm, y within 0.1 m.
+/// A partner's feet on the console's pad `3992` (placed at (34.24, 1.99,
+/// 22.97), scale 0.6): x and z within 1 mm of its placement, y within
+/// 0.1 m of its top. The pad's mesh (category 1, mask 0x119A: both teams'
+/// movers) rises 0.6 × 0.2505 m over its placement, and the mover's ground
+/// ray stands a body on it as the client's does (refs `MapEntities.md`
+/// "RangeConsole"): the partner's feet rest at 2.1416 m.
 fn on_the_pad(feet: [f64; 3]) -> bool {
     const PAD: [f64; 3] = [34.24001, 1.9917264, 22.972233];
+    const TOP: f64 = 1.9917264 + 0.6 * 0.2504736;
     (feet[0] - PAD[0]).abs() < 1e-3
         && (feet[2] - PAD[2]).abs() < 1e-3
-        && (feet[1] - PAD[1]).abs() < 0.1
+        && (feet[1] - TOP).abs() < 0.1
 }
 
 /// A Range whose player picked a Training Partner at the console
