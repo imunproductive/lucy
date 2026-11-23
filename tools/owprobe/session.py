@@ -36,7 +36,7 @@ def _pids_of(image):
 
 
 # The agents' shared cache of derived game data, one folder per derivation stamp (build, build config, locale,
-# `DERIVATIONS_VERSION`), so a session copies a current one instead of deriving it again (minutes).
+# `DERIVATIONS_VERSION`, the hash of the derivations' code), so a session copies a current one instead of deriving it again (minutes).
 AGENT_SEED = Path(os.environ.get("LUCY_AGENT_SEED") or r"D:/Temp/lucy-agent-seed")
 
 

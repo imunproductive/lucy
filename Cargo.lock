@@ -623,6 +623,7 @@ dependencies = [
  "lucy-stu",
  "lucy-testkit",
  "lucy-wire",
+ "md-5",
  "serde_json",
  "sha2 0.10.9",
 ]

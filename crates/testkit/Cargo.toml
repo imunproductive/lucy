@@ -11,6 +11,3 @@ license.workspace = true
 md-5.workspace = true
 lucy-assets.workspace = true
 serde_json.workspace = true
-
-[build-dependencies]
-md-5.workspace = true

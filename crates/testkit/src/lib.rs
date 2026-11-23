@@ -19,9 +19,6 @@ use std::{
 
 use lucy_assets::cache::{self, BUILD};
 
-/// The hash of the derivations' code (`build.rs`): the derived data of one
-/// code is kept apart from another's.
-const DERIVATIONS_KEY: &str = env!("LUCY_DERIVATIONS_KEY");
 /// How long the derived data of other code is kept after its last use.
 const KEEP_UNUSED: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
@@ -68,7 +65,7 @@ pub fn runtime_dir() -> PathBuf {
                 PathBuf::from,
             )
             .join(BUILD);
-        let pack = builds.join(DERIVATIONS_KEY);
+        let pack = builds.join(cache::DERIVATIONS_KEY);
         let missing = !pack.is_dir();
         cache::ensure_pack(&game_dir(), "enUS", &pack)
             .unwrap_or_else(|error| panic!("cannot derive the game data: {error}"));

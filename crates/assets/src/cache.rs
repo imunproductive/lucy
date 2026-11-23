@@ -2,7 +2,7 @@
 //!
 //! The server reads its game data from `<state>/cache/104319`, a folder in
 //! the runtime pack's layout. It is derived from the install on the first
-//! start and again whenever the install's build or the derivations change.
+//! start and again whenever the install's build or the derivations' code change.
 
 use std::{
     fs::{self, File},
@@ -16,8 +16,13 @@ use crate::{Install, Result, asset_error, build};
 
 /// The build the derivations read.
 pub const BUILD: &str = "104319";
-/// Bump when a derivation's output changes, so caches are derived again.
+/// Bump when a derivation's output changes; it names the format in the docs
+/// and the changelog. Staleness is decided by [`DERIVATIONS_KEY`].
 pub const DERIVATIONS_VERSION: u32 = 57;
+/// A hash of the code the derived files depend on (the library sources of
+/// `assets`, `casc`, `fixed` and `stu`, `build.rs`): a cache derived by other
+/// code is derived again, even under the same [`DERIVATIONS_VERSION`].
+pub const DERIVATIONS_KEY: &str = env!("LUCY_DERIVATIONS_KEY");
 const STAMP: &str = "derived.txt";
 
 /// The derived pack for `install` under `cache_root`, derived first if it is
@@ -96,7 +101,7 @@ fn remove_folder(path: &Path) -> io::Result<()> {
 }
 
 /// What the derived files depend on: the install's build and locale and the
-/// derivations themselves.
+/// derivations themselves (their version and their code's hash).
 fn stamp(install: &Path, locale: &str) -> Result<String> {
     let info = BuildInfo::read(install)
         .map_err(|error| asset_error(format!("{}: {error}", install.display())))?;
@@ -110,6 +115,6 @@ fn stamp(install: &Path, locale: &str) -> Result<String> {
         )));
     }
     Ok(format!(
-        "build {version}\nbuild config {key}\nlocale {locale}\nderivations {DERIVATIONS_VERSION}\n"
+        "build {version}\nbuild config {key}\nlocale {locale}\nderivations {DERIVATIONS_VERSION}\ncode {DERIVATIONS_KEY}\n"
     ))
 }
