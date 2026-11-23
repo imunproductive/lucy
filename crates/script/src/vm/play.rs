@@ -289,7 +289,9 @@ impl<W: World + ?Sized> Vm<'_, '_, '_, W> {
                 (owner, variable.id, self.machine.value(key, None))
             })
             .collect();
-        let instance_start_ms = self.machine.snapshot.instances[&id].start_ms;
+        let instance = &self.machine.snapshot.instances[&id];
+        let instance_start_ms = instance.start_ms;
+        let owner = self.machine.in_message || wheel::GRAPHS.contains(&instance.graph);
         let actions = &mut self.machine.snapshot.frame_actions;
         let serial = actions.last().map_or(1, |last| last.serial.wrapping_add(1));
         actions.push(FrameAction {
@@ -299,6 +301,7 @@ impl<W: World + ?Sized> Vm<'_, '_, '_, W> {
             node: node.pos,
             time_ms: self.machine.now_ms,
             values: Arc::new(values),
+            owner,
         });
         if actions.len() > MAX_FRAME_ACTIONS {
             actions.remove(0);

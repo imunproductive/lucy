@@ -1438,7 +1438,7 @@ impl<'a> SnapshotEncoder<'a> {
             },
             None => Arc::clone(kept.expect("only a kept projection is kept")),
         };
-        let actions = self.project_actions(snapshot, &instances, fresh_until_ms)?;
+        let actions = self.project_actions(snapshot, &instances, view, fresh_until_ms)?;
         Ok(ProjectedSnapshot {
             entity: snapshot.entity,
             view,
@@ -1455,15 +1455,22 @@ impl<'a> SnapshotEncoder<'a> {
 
     /// The networked actions the frames may still carry: of a live instance
     /// (the same one, not a reused id), at most [`ACTION_LIFETIME_MS`] old;
-    /// `0686`'s only while its root wait runs (upstream `callout_snapshot`).
+    /// `0686`'s only while its root wait runs (upstream `callout_snapshot`);
+    /// for the owner only those his client can't have run itself
+    /// ([`crate::vm::FrameAction::owner`]).
     fn project_actions(
         &self,
         snapshot: &Snapshot,
         instances: &BTreeMap<u16, Arc<ProjectedInstance>>,
+        view: View,
         fresh_until_ms: &mut u64,
     ) -> Result<Vec<ProjectedAction>, SnapshotError> {
         let mut actions = Vec::new();
-        for action in &snapshot.frame_actions {
+        for action in snapshot
+            .frame_actions
+            .iter()
+            .filter(|action| view == View::Observer || action.owner)
+        {
             let Some(instance) = snapshot
                 .instances
                 .get(&action.instance)

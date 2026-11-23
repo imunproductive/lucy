@@ -2111,6 +2111,15 @@ pub struct FrameAction {
     /// (instance, or 0 for the entity's; variable; value). The frame
     /// that carries it lists them so (upstream `9c5e550c`).
     pub values: Arc<Vec<(u16, u32, Value)>>,
+    /// Whether the owner's client gets it too: the client predicts its own
+    /// body's graphs and runs their actions itself, and an owner frame's
+    /// pulse ran them again (game check 2026-11-23: Soldier: 76's Helix
+    /// Rocket effect `0016` rid31 ran twice, once predicted, once from the
+    /// pulse). So only what it can't have run goes to it: the actions that
+    /// ran for a game message the server gave the entity (`01C7` on
+    /// `0012.025`, the wheel's choice `02A3`) and the wheel's graphs'
+    /// (`wheel::GRAPHS`, as before).
+    pub owner: bool,
 }
 
 impl Snapshot {
@@ -2714,7 +2723,10 @@ impl Component {
             self.machine
                 .queue_entries(&self.graphs, None, sender, message, parameters)?;
         if entries != 0 {
-            self.run_now(world)?;
+            self.machine.in_message = true;
+            let ran = self.run_now(world);
+            self.machine.in_message = false;
+            ran?;
         }
         Ok(entries)
     }
@@ -3277,6 +3289,10 @@ struct Machine {
     command_buttons: u32,
     held_buttons: Vec<u8>,
     owner_dead: bool,
+    /// Whether what runs now runs for a game message the server gave the
+    /// entity ([`Component::receive_message`]), which its owner's client
+    /// can't have predicted ([`FrameAction::owner`]).
+    in_message: bool,
     /// The button edge whose listening states re-check their transitions
     /// now (the client's host `+1083`/`+1084` while it dispatches a button
     /// event to them; `vm/buttons.rs` `recheck_button_conditions`).
