@@ -34,7 +34,7 @@ fn scene() -> (PreparedScene, u32) {
     let mut scene = assets.prepare(GameMap::practice_range()).unwrap();
     let mut tick = FIRST_TICK;
     while !scene.bot_scripts_ready() {
-        scene.step_bots(tick);
+        scene.step_bots(tick, &[]);
         tick += 1;
     }
     (scene, tick)

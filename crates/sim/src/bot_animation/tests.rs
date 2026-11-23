@@ -267,7 +267,7 @@ mod game {
     /// The bots' tick as the match runs it: they walk, then their scripts
     /// run what is due (the patrol's waits).
     fn step(scene: &mut PreparedScene, tick: u32) {
-        scene.step_bots(tick);
+        scene.step_bots(tick, &[]);
         scene.advance_live_bots(tick);
     }
 
@@ -293,7 +293,7 @@ mod game {
         let mut heights = Vec::new();
         // 4 s of 16 ms ticks.
         for tick in 1000..1250 {
-            scene.step_bots(tick);
+            scene.step_bots(tick, &[]);
             heights.push(head(&scene, slot));
         }
         let low = heights.iter().copied().fold(f64::INFINITY, f64::min);
@@ -303,7 +303,7 @@ mod game {
         assert!((high - 2.007).abs() < 0.002, "{low} {high} {mean}");
         assert!((mean - 1.972).abs() < 0.002, "{low} {high} {mean}");
         // One loop later the bob is where it was.
-        scene.step_bots(1250);
+        scene.step_bots(1250, &[]);
         assert!((head(&scene, slot) - heights[0]).abs() < 1e-3);
     }
 

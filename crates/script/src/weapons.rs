@@ -584,51 +584,77 @@ pub struct Blast {
     pub self_knockback: f64,
 }
 
-/// The push an explosion's ModifyHealth gives a body (`m_modifyHealth`):
-/// `m_E33EFEE1` metres per second away from it (along the line from the
-/// explosion to the body), and `m_10399AE7` more upward, each scaled by the
-/// ModifyHealth's knockback rings (`m_knockbackRings`,
-/// `STUStatescriptModifyHealthKnockbackRing`) at the body's distance.
-/// leafall903/ORPHEUS (MIT) `heavy_assault.py` `_push` reads the pair the
-/// same way for a melee hit.
+/// The push a ModifyHealth gives a body (`m_modifyHealth`; an explosion's,
+/// or a graph's with knockback rings), as the client computes it
+/// (`0x7FF789C7B3C0`, fed by `0x7FF789C7DC70` from the ModifyHealth's
+/// runtime record that `0x7FF789C953A0` fills;
+/// `D:/Work/Coding/refs/reports/OwnerPrediction.md` "BotsFixes"):
+/// `m_E33EFEE1` metres a second away along the ground, `m_10399AE7` times
+/// the vertical part of the unit line from the push's origin to the body
+/// upward, at least `m_583C208B` upward, each scaled by the knockback rings
+/// (`m_knockbackRings`, `STUStatescriptModifyHealthKnockbackRing`:
+/// `m_579D7CFF` away, `m_10399AE7` upward; the client never reads
+/// `m_9102DA3F`) at the body's distance.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Knockback {
+    /// `m_E33EFEE1`.
     pub away: f64,
+    /// `m_10399AE7`.
     pub upward: f64,
-    /// Each ring's radius and its scale of the push away, `m_579D7CFF`
-    /// (assumption: the ring's three scalars are unnamed; `m_9102DA3F` is
-    /// absent from Pharah's and Sigma's rings, which have the other two, so
-    /// it isn't read), by radius.
+    /// `m_583C208B`: the least upward speed, while the upward ring scale
+    /// is above 0 (Concussion Mine `096A`: 15 away and 15 up).
+    pub lift: f64,
+    /// Each ring's radius and its scale of the push away, `m_579D7CFF`, by
+    /// radius.
     pub away_rings: Vec<(f64, f64)>,
-    /// Each ring's radius and its upward scale, `m_10399AE7` (assumption:
-    /// the ring field shares its name with the upward speed), by radius.
+    /// Each ring's radius and its upward scale, `m_10399AE7`, by radius.
     pub upward_rings: Vec<(f64, f64)>,
 }
 
+/// Below this a speed pushes nothing (the client's push needs
+/// `|m_E33EFEE1|` or `|m_10399AE7|` above it, `0x7FF789C7B439`;
+/// `m_583C208B` alone never pushes).
+const PUSH_GATE: f64 = 0.004;
+
 impl Knockback {
-    /// The speeds away and upward at `distance` from the explosion, each
-    /// between its rings as an explosion's damage is (assumption: no asset
-    /// says how they blend); none past the last ring.
-    pub fn at(&self, distance: f64) -> Option<(f64, f64)> {
-        let away = self.away * ring_scale(&self.away_rings, distance);
-        let upward = self.upward * ring_scale(&self.upward_rings, distance);
-        (away > 0.0 || upward > 0.0).then_some((away, upward))
+    /// The push on a body `distance` from the origin along the unit `line`
+    /// (origin to body), times `scale` (the explosion's knockback scale; 1
+    /// for a graph's ModifyHealth), as the client's `0x7FF789C7B3C0`:
+    /// away × ring along the line's ground part, `line.y` × `m_10399AE7` ×
+    /// ring upward, both times `scale`, then upward at least `m_583C208B`
+    /// (`fmaxf`, unscaled) where the upward ring scale is above 0. Rings
+    /// are taken between as an explosion's damage (the client's
+    /// interpolation); none past the last ring.
+    pub fn push(&self, line: [f64; 3], distance: f64, scale: f64) -> Option<[f64; 3]> {
+        let away = self.away * ring_scale(&self.away_rings, distance) * scale;
+        let rise = ring_scale(&self.upward_rings, distance);
+        let flat = line[0].hypot(line[2]);
+        let [x, z] = if flat > 0.0 {
+            [line[0] / flat, line[2] / flat]
+        } else {
+            [0.0, 0.0]
+        };
+        let mut upward = line[1] * rise * self.upward * scale;
+        if rise > 0.0 {
+            upward = upward.max(self.lift);
+        }
+        let push = [away * x, upward, away * z];
+        (push != [0.0; 3]).then_some(push)
     }
 
-    /// The push of an explosion's ModifyHealth (`modify`). None without
-    /// rings, or when either speed isn't a finite number of at least 0 or
-    /// both are 0 (`_push` pushes nothing then; Sigma's `187F` pull,
-    /// −0.75, is left out with it). A ring's absent scale is 1 (assumption).
-    fn from_authored(
+    /// The push of a ModifyHealth `modify` with knockback rings: none
+    /// without rings, when a speed isn't finite, or when neither
+    /// `m_E33EFEE1` nor `m_10399AE7` reaches [`PUSH_GATE`] (Sigma's `187F`
+    /// pull, −0.75 away, pushes). A ring's absent scale is 1 (assumption).
+    pub(crate) fn from_authored(
         modify: &Json,
         evaluate: &mut impl FnMut(&Json) -> Result<Value, EvalError>,
     ) -> Result<Option<Self>, EvalError> {
         let away = authored_number(modify.get("m_E33EFEE1"), 0.0, evaluate)?;
         let upward = authored_number(modify.get("m_10399AE7"), 0.0, evaluate)?;
-        if ![away, upward]
-            .iter()
-            .all(|speed| speed.is_finite() && *speed >= 0.0)
-            || (away == 0.0 && upward == 0.0)
+        let lift = authored_number(modify.get("m_583C208B"), 0.0, evaluate)?;
+        if ![away, upward, lift].iter().all(|speed| speed.is_finite())
+            || (away.abs() <= PUSH_GATE && upward.abs() <= PUSH_GATE)
         {
             return Ok(None);
         }
@@ -638,6 +664,7 @@ impl Knockback {
         Ok((!away_rings.is_empty()).then_some(Self {
             away,
             upward,
+            lift,
             away_rings,
             upward_rings,
         }))
@@ -1356,9 +1383,9 @@ mod tests {
 
     /// An explosion's self-damage scale and push, shaped like Pharah's
     /// rockets' (`0023`: 5 and 8 m/s, no `m_9102DA3F` in the rings); a ring
-    /// scale left out is 1. A pull (Sigma's `187F`, −0.75) or a push
-    /// without rings is none, and an explosion without `m_8A3E3883` doesn't
-    /// hurt its shooter.
+    /// scale left out is 1. A pull (Sigma's `187F`, −0.75) pushes the other
+    /// way, a push without rings is none, and an explosion without
+    /// `m_8A3E3883` doesn't hurt its shooter.
     #[test]
     fn an_explosion_reads_its_self_damage_and_push() {
         let float = |value: f64| json!({"$":"STUConfigVarFloat","m_value":value});
@@ -1388,14 +1415,42 @@ mod tests {
         // A float config var is a float32.
         let scale = f64::from(0.8f32);
         assert_eq!(knockback.upward_rings, [(0.5, scale), (2.5, 0.0)]);
-        assert_eq!(knockback.at(0.5), Some((5.0, 8.0 * scale)));
-        assert_eq!(knockback.at(2.5), None);
+        // The client's push: 5 along the ground part of the line, its
+        // vertical part × 8 × the ring's 0.8 up (a body 45° above the
+        // burst, within the first ring).
+        let half = std::f64::consts::FRAC_1_SQRT_2;
+        assert_eq!(
+            knockback.push([half, half, 0.0], 0.5, 1.0),
+            Some([5.0, half * scale * 8.0, 0.0])
+        );
+        assert_eq!(knockback.push([half, half, 0.0], 2.5, 1.0), None);
+        // A pull is a push the other way: the client pushes for any speed
+        // beyond 0.004 (before, a pull was left out).
         let pull = rocket(
             json!({"m_amount":float(50.0),"m_E33EFEE1":float(-0.75),"m_10399AE7":float(1.0),
                 "m_knockbackRings":[ring(0.5, Some(0.8), 1.0)]}),
             None,
         );
-        assert_eq!((pull.self_damage, pull.knockback), (0.0, None));
+        assert_eq!(pull.self_damage, 0.0);
+        let pulled = pull.knockback.unwrap().push([1.0, 0.0, 0.0], 0.0, 1.0);
+        assert_eq!(pulled, Some([-0.75 * scale, 0.0, 0.0]));
+        // `m_583C208B` is the least upward speed, unscaled (the
+        // Concussion Mine's 15 away and 15 up throw a body level with the
+        // burst upward), and alone it pushes nothing.
+        let mine = rocket(
+            json!({"m_amount":float(120.0),"m_E33EFEE1":float(15.0),"m_583C208B":float(15.0),
+                "m_knockbackRings":[ring(3.0, None, 1.0)]}),
+            None,
+        )
+        .knockback
+        .unwrap();
+        assert_eq!(mine.push([1.0, 0.0, 0.0], 1.0, 0.5), Some([7.5, 15.0, 0.0]));
+        let lift_alone = rocket(
+            json!({"m_amount":float(120.0),"m_583C208B":float(15.0),
+                "m_knockbackRings":[ring(3.0, None, 1.0)]}),
+            None,
+        );
+        assert_eq!(lift_alone.knockback, None);
         let ringless = rocket(
             json!({"m_amount":float(50.0),"m_E33EFEE1":float(5.0),"m_10399AE7":float(8.0)}),
             None,

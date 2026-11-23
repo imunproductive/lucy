@@ -128,10 +128,11 @@ fn bot_health_replaces_stale_packets_and_respawn_keeps_creation_order() {
     assert!(world.identity_ready(new));
 }
 
-/// A bot can be struck by a client's command only once the datagram with
-/// its first movement record arrived (the client draws it from its movement
-/// records) and the command came in a later datagram; a lost first record
-/// waits for the next one. Its create's arrival alone isn't enough.
+/// A bot can be struck by a client's command, and block his body, only once
+/// the datagram with its first movement record arrived (the client draws it
+/// from its movement records) and the command came in a later datagram; a
+/// lost first record waits for the next one. Its create's arrival alone
+/// isn't enough.
 #[test]
 fn a_bot_is_struck_only_by_commands_made_after_its_first_movement_arrived() {
     use crate::bots::BOT_ENTITY;
@@ -180,6 +181,30 @@ fn a_bot_is_struck_only_by_commands_made_after_its_first_movement_arrived() {
     assert!(!world.bot_shown(bot, 107));
     assert!(world.bot_shown(bot, 108));
     assert!(world.bot_shown(other, 108));
+    // The bodies that block his body: another player's for every command,
+    // a bot only for the commands made with it drawn (after 107), one his
+    // client doesn't draw for none.
+    let capsule = |x: f32| CapsulePose {
+        position: [x, 0.0, 0.0],
+        radius: 0.4,
+        top: 1.6,
+    };
+    world.set_blockers(vec![
+        Blocker {
+            capsule: capsule(3.0),
+            bot: Some(bot),
+        },
+        Blocker {
+            capsule: capsule(2.0),
+            bot: Some(BOT_ENTITY + 2),
+        },
+        Blocker {
+            capsule: capsule(1.0),
+            bot: None,
+        },
+    ]);
+    assert_eq!(world.blockers, [capsule(1.0), capsule(3.0)]);
+    assert_eq!(world.blockers_from, [None, Some(107)]);
 
     // A replacement starts again. Its first record (datagram 7) is lost;
     // 8 went while 7 was pending, so the next one counted is 9's.

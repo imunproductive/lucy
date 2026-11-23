@@ -2643,9 +2643,23 @@ fn authored_helix_uses_its_six_second_cooldown_before_the_next_volley() {
     assert_eq!((knockback.away, knockback.upward), (4.0, 6.0));
     assert_eq!(knockback.away_rings, [(0.5, 1.0), (3.0, 0.75)]);
     assert_eq!(knockback.upward_rings, [(0.5, 1.0), (3.0, 0.25)]);
-    assert_eq!(knockback.at(0.0), Some((4.0, 6.0)));
-    assert_eq!(knockback.at(1.75), Some((3.5, 3.75)));
-    assert_eq!(knockback.at(3.5), None);
+    // Between the rings at 1.75 m: ×0.875 away, ×0.625 up; none past 3 m.
+    assert_eq!(
+        knockback.push([1.0, 0.0, 0.0], 1.75, 1.0),
+        Some([3.5, 0.0, 0.0])
+    );
+    assert_eq!(
+        knockback.push([0.0, 1.0, 0.0], 1.75, 1.0),
+        Some([0.0, 3.75, 0.0])
+    );
+    assert_eq!(knockback.push([1.0, 0.0, 0.0], 3.5, 1.0), None);
+    // No least upward speed (`m_583C208B` unset): a rocket at his feet
+    // throws him up at 6 m/s, not 4 + 6 (the client's push).
+    assert_eq!(knockback.lift, 0.0);
+    assert_eq!(
+        knockback.push([0.0, 1.0, 0.0], 0.0, 1.0),
+        Some([0.0, 6.0, 0.0])
+    );
 }
 
 /// Moira's Biotic Orb (`10E4`): E, then the primary fire throws the

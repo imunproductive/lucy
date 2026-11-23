@@ -650,24 +650,21 @@ impl ProjectileFlight {
     }
 
     /// Its explosion's push on a body at `pose` (none before it exploded),
-    /// times `scale`: `m_E33EFEE1` along the straight line from the
-    /// explosion to the body's centre (half its height above the feet;
-    /// along the projectile's flight when they meet), plus `m_10399AE7`
-    /// upward, each by the knockback rings at the body's distance. The
-    /// line is in 3D, not in the ground plane, as the volleys' data says:
-    /// Junkrat's Concussion Mine (`096A`) pushes 15 m/s with no upward speed
-    /// at all, yet throws him up when it bursts under him; so a Helix Rocket
-    /// at his feet sends him up at 4 + 6 m/s (assumption: which point of
-    /// the body the client aims the line at isn't known).
+    /// times `scale` (the explosion's self-push scale for its shooter, 1
+    /// for others): the client's formula ([`lucy_script::weapons::Knockback::push`],
+    /// `0x7FF789C7B3C0`) along the line from the explosion to the body's
+    /// centre (half its height above the feet; along the projectile's
+    /// flight when they meet), at the body's distance.
     fn push_at(&self, pose: &TargetPose, scale: f64) -> Option<Vec3> {
         let blast = self.ballistics.blast.as_ref().filter(|_| self.exploded)?;
         if scale <= 0.0 {
             return None;
         }
         let distance = pose.surface_distance(self.position);
-        let (away, upward) = blast.knockback.as_ref()?.at(distance)?;
-        let [x, y, z] = self.blast_line(pose);
-        Some([away * x, away * y + upward, away * z].map(|part| part * scale))
+        blast
+            .knockback
+            .as_ref()?
+            .push(self.blast_line(pose), distance, scale)
     }
 
     /// Whether its explosion sees a body at `pose`, as the client's own push
@@ -834,6 +831,7 @@ mod tests {
                 knockback: Some(Knockback {
                     away: 4.0,
                     upward: 6.0,
+                    lift: 0.0,
                     away_rings: vec![(0.5, 1.0), (3.0, 0.75)],
                     upward_rings: vec![(0.5, 1.0), (3.0, 0.25)],
                 }),
@@ -1145,10 +1143,10 @@ mod tests {
     }
 
     /// A Helix Rocket fired straight down from the eye bursts on the floor
-    /// at its shooter's feet: he takes half its 80 and goes up at 4 m/s
-    /// (along the line to his centre, straight up) plus 6 m/s, times the
-    /// explosion's self-push scale (Pharah's 1.875 sends him up at 18.75;
-    /// without the flag, none, the damage all the same). Fired level at a
+    /// at its shooter's feet: he takes half its 80 and goes up at the line's
+    /// vertical part × 6 m/s (the client's push, `Knockback::push`), times
+    /// the explosion's self-push scale (Pharah's 1.875; without the flag,
+    /// none, the damage all the same). Fired level at a
     /// wall 1 m ahead, it pushes him back from the wall and down along the
     /// line from the burst to his centre, plus up, by the knockback rings
     /// at his distance; a body behind that wall it doesn't reach. A rocket
@@ -1168,11 +1166,13 @@ mod tests {
         };
         let blast = at_feet(1.0);
         assert!(blast.distance < 1e-9);
+        // Straight up the line's vertical part × 6 (`m_10399AE7`), times the
+        // self-push scale; the push away has no ground part there.
         assert_eq!(
             (blast.damage, blast.loadout, blast.knockback),
-            (40.0, Some(LOADOUT), Some([0.0, 10.0, 0.0]))
+            (40.0, Some(LOADOUT), Some([0.0, 6.0, 0.0]))
         );
-        assert_eq!(at_feet(1.875).knockback, Some([0.0, 18.75, 0.0]));
+        assert_eq!(at_feet(1.875).knockback, Some([0.0, 11.25, 0.0]));
         let unpushed = at_feet(0.0);
         assert_eq!((unpushed.damage, unpushed.knockback), (40.0, None));
 
@@ -1185,20 +1185,20 @@ mod tests {
         // From the capsule's top end, 1.5 m up, less its radius.
         assert!((blast.distance - (1.0f64.hypot(0.05) - 0.5)).abs() < 1e-12);
         assert_eq!(blast.damage, 40.0);
-        let (away, up) = helix()
+        // The line from the burst (1.55 m up, 1 m ahead) to his centre (1 m
+        // up): pushed back along the ground; its downward part is floored at
+        // `m_583C208B` (0) while the upward ring holds.
+        let length = 0.55f64.hypot(1.0);
+        let line = [0.0, -0.55 / length, -1.0 / length];
+        let expected = helix()
             .blast
             .unwrap()
             .knockback
             .unwrap()
-            .at(blast.distance)
-            .unwrap();
-        assert!(away < 4.0 && up < 6.0);
-        // The line from the burst (1.55 m up, 1 m ahead) to his centre (1 m up).
-        let length = 0.55f64.hypot(1.0);
-        let [_, y, z] = blast.knockback.unwrap();
-        assert_eq!(blast.knockback.unwrap()[0], 0.0);
-        assert!((y - (up - away * 0.55 / length)).abs() < 1e-12);
-        assert!((z + away / length).abs() < 1e-12);
+            .push(line, blast.distance, 1.0);
+        assert_eq!(blast.knockback, expected);
+        let [x, y, z] = expected.unwrap();
+        assert!(x == 0.0 && y == 0.0 && z < 0.0);
         assert_eq!(
             flight.own_blast(&target(0.0, 1.5), cast(&wall)).unwrap(),
             None

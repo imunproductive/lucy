@@ -54,7 +54,7 @@ use lucy_content::{
 };
 use lucy_core::tick::{MAX_LEASE_FRAME, TICK_PERIOD};
 use lucy_physics::{
-    contact::cache::CapsulePose,
+    contact::{cache::CapsulePose, triangle::SKIN},
     mover::correction::CorrectionHistory,
     mover::kinematics::{
         HOLD_INPUT_FRAMES, Poses, held, neutral, poses as kinematics_poses, repeated,
@@ -295,6 +295,19 @@ pub fn blocks(free_for_all: bool, team: u8, other: u8) -> bool {
     free_for_all || team != other
 }
 
+/// A capsule that blocks a player's body ([`blocks`]): another player's
+/// body, or a training bot's (`bot`, its entity), which blocks only the
+/// commands his client made with the bot drawn
+/// ([`WorldDelivery::bot_shown`]): before, his client predicted his body
+/// through the place where the server already had it (a respawned bot),
+/// and his body stuck where his screen showed nothing (upstream 2ece33ce,
+/// leafall903/ORPHEUS (MIT)).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Blocker {
+    pub capsule: CapsulePose,
+    pub bot: Option<u32>,
+}
+
 /// The capsules that block the body of a player of `team` ([`blocks`]),
 /// where they are now: the other players' living bodies (`others`, each
 /// with his team) and the living training bots.
@@ -302,19 +315,39 @@ pub fn blockers<'a>(
     scene: &PreparedScene,
     team: u8,
     others: impl IntoIterator<Item = (u8, &'a WorldDelivery)>,
-) -> Vec<CapsulePose> {
+) -> Vec<Blocker> {
     let free_for_all = scene.map().free_for_all;
     let enemy = |other| blocks(free_for_all, team, other);
     let bots = scene
         .bot_capsules()
-        .filter(|&(other, _)| enemy(other))
-        .map(|(_, capsule)| capsule);
+        .filter(|&(other, _, _)| enemy(other))
+        .map(|(_, entity, capsule)| Blocker {
+            capsule,
+            bot: Some(entity),
+        });
     others
         .into_iter()
         .filter(|&(other, _)| enemy(other))
         .filter_map(|(_, world)| world.body_capsule())
+        .map(|capsule| Blocker { capsule, bot: None })
         .chain(bots)
         .collect()
+}
+
+/// Whether two upright capsules touch: their segments no farther apart
+/// than their radii and twice the contact skin
+/// (`lucy_physics::contact::triangle::SKIN`, the gap within which the
+/// mover's contacts hold a body; twice, for rounding).
+fn touching(one: CapsulePose, other: CapsulePose) -> bool {
+    let flat = f64::from(one.position[0] - other.position[0])
+        .hypot(f64::from(one.position[2] - other.position[2]));
+    let span = |capsule: CapsulePose| {
+        let low = f64::from(capsule.position[1] + capsule.radius);
+        (low, low.max(f64::from(capsule.position[1] + capsule.top)))
+    };
+    let ((low, high), (other_low, other_high)) = (span(one), span(other));
+    let rise = (other_low - high).max(low - other_high).max(0.0);
+    flat.hypot(rise) <= f64::from(one.radius + other.radius + 2.0 * SKIN)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -773,6 +806,21 @@ impl BodyScript {
             hook = ?hook,
             "owner pose"
         );
+    }
+
+    /// Its body met an enemy's (a player's or a bot's) at `frame`: its
+    /// owner gets his body's records from there for [`RECORD_TAIL_MS`]
+    /// (an uncorrected hero's window; a corrected one gets them anyway).
+    /// His client met that body where it drew it, behind where the server
+    /// has it while it moves, so its prediction of the block can differ;
+    /// without a record the difference stayed until he died (upstream
+    /// 5c007f26, leafall903/ORPHEUS (MIT), corrects the frame of an actor
+    /// contact the same way).
+    fn met_enemy(&mut self, frame: u32) {
+        let tail = RECORD_TAIL_MS.div_ceil(self.runtime.frame_ms());
+        if let Some(history) = &mut self.corrections {
+            history.open(frame, frame.saturating_add(tail));
+        }
     }
 
     /// One frame of the body's script, its searches that rewind seeing the
@@ -1925,8 +1973,10 @@ pub struct WorldDelivery {
     input: InputQueue,
     mover: Option<Mover>,
     /// The other bodies that block the moves of this player's body
-    /// ([`WorldDelivery::set_blockers`]).
+    /// ([`WorldDelivery::set_blockers`]), and the frame after which each
+    /// blocks his commands (none: all of them), in that order.
     blockers: Vec<CapsulePose>,
+    blockers_from: Vec<Option<u32>>,
     body_script: Option<BodyScript>,
     /// The body's script stopped on a fault: a pick of the same hero gets a
     /// new body with a new script (match.py `body_script_failed`).
@@ -2199,6 +2249,7 @@ impl WorldDelivery {
             input: InputQueue::default(),
             mover: None,
             blockers: Vec::new(),
+            blockers_from: Vec::new(),
             body_script: None,
             script_failed: false,
             projectile_destroys: HashMap::new(),
@@ -2924,12 +2975,21 @@ impl WorldDelivery {
     /// of the targets to the shooter's view would place the bot by its
     /// history instead.
     pub fn bot_shown(&self, entity: u32, frame: u32) -> bool {
-        self.identity_ready(entity)
-            && matches!(
-                self.bot_sights.get(&entity),
-                Some(BotSight::Shown(from))
-                    if from.is_none_or(|from| (frame.wrapping_sub(from) as i32) > 0)
-            )
+        self.bot_drawn(entity)
+            .is_some_and(|from| from.is_none_or(|from| (frame.wrapping_sub(from) as i32) > 0))
+    }
+
+    /// The frame after which this client's commands were made with bot
+    /// `entity` drawn (none: all of them); none while he doesn't have it
+    /// drawn ([`Self::bot_shown`]).
+    fn bot_drawn(&self, entity: u32) -> Option<Option<u32>> {
+        if !self.identity_ready(entity) {
+            return None;
+        }
+        match self.bot_sights.get(&entity) {
+            Some(&BotSight::Shown(from)) => Some(from),
+            _ => None,
+        }
     }
 
     /// The client's ACK window of a datagram (`ack`, `ack_bits`), for the
@@ -4146,6 +4206,7 @@ impl WorldDelivery {
             guid = format_args!("{:016X}", message.guid),
             request = ?request.map(|request| match request {
                 HeroSelectRequest::Pick(hero) => format!("pick {:016X}", hero.map_or(0, |hero| hero.guid)),
+                HeroSelectRequest::ChangeHero => "change hero".to_owned(),
                 HeroSelectRequest::OpenOrClose(wanted) => format!("open/close {wanted:?}"),
             }),
             "game message"
@@ -4208,7 +4269,13 @@ impl WorldDelivery {
                 self.keep_open &= open;
                 self.select_request(tick, SelectRequest::OpenOrClose(open));
             }
-            _ => {}
+            // "Change Hero" as the heroes assemble: the null hero, which
+            // `288B` rid24 takes as no pick (#2114e off), so the screen
+            // lets him pick again. His body stays until the next pick.
+            Some(HeroSelectRequest::ChangeHero) => {
+                self.select_request(tick, SelectRequest::Pick(0));
+            }
+            Some(HeroSelectRequest::Pick(None)) | None => {}
         }
         Ok(())
     }
@@ -4567,10 +4634,30 @@ impl WorldDelivery {
         Some(self.mover.as_ref()?.capsule())
     }
 
-    /// The capsules of the living bodies that block this player's body
-    /// ([`blocks`]) where they are now, for the commands it runs next.
-    pub fn set_blockers(&mut self, blockers: Vec<CapsulePose>) {
-        self.blockers = blockers;
+    /// The living bodies that block this player's body ([`blocks`]) where
+    /// they are now, for the commands it runs next: a bot only for the
+    /// commands his client made with it drawn ([`Blocker`]).
+    pub fn set_blockers(&mut self, blockers: Vec<Blocker>) {
+        let mut capsules = std::mem::take(&mut self.blockers);
+        let mut from = std::mem::take(&mut self.blockers_from);
+        capsules.clear();
+        from.clear();
+        let mut drawn: Vec<_> = blockers
+            .into_iter()
+            .filter_map(|blocker| {
+                let after = blocker.bot.map_or(Some(None), |bot| self.bot_drawn(bot))?;
+                Some((after, blocker.capsule))
+            })
+            .collect();
+        // Those for every command first, then by the frame they start
+        // after: each command meets a prefix ([`Self::advance_command`]).
+        drawn.sort_by_key(|&(after, _)| after);
+        for (after, capsule) in drawn {
+            from.push(after);
+            capsules.push(capsule);
+        }
+        self.blockers = capsules;
+        self.blockers_from = from;
     }
 
     /// The player's body as a target this tick (combat.py `_targets`: a
@@ -6395,7 +6482,13 @@ impl WorldDelivery {
             }
             return Ok((used, pending.poses.len() == 0));
         }
-        mover.set_peers(&self.blockers);
+        // The bodies this command meets: those that block every command,
+        // and the bots his client had drawn when it made this one.
+        let meeting = self.blockers_from.partition_point(|from| {
+            from.is_none_or(|from| (command.frame.wrapping_sub(from) as i32) > 0)
+        });
+        let peers = &self.blockers[..meeting];
+        mover.set_peers(peers);
         let rays = scene.movement_index();
         let quanta = (dt * 1_000_000.0).round() as u32;
         // A jump or a landing cancels another's knock ([`KnockCredit`]).
@@ -6452,6 +6545,10 @@ impl WorldDelivery {
                     Ok(hits) => {
                         shots.extend(hits);
                         start_motions(mover, script.runtime.take_motions(), dt);
+                        let capsule = mover.capsule();
+                        if peers.iter().any(|&peer| touching(capsule, peer)) {
+                            script.met_enemy(command.frame);
+                        }
                     }
                     Err(error) => {
                         mover.track_modifiers(command.frame, &BTreeMap::new());

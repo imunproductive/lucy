@@ -475,9 +475,11 @@ fn rise(
 /// The height an enemy's Helix Rocket (graph `0254` node 35's numbers)
 /// lifts the body in 20 ticks, as the match runs it: it flies straight
 /// down 0.8 m beside his feet and bursts on the ground, 0.4 m from his
-/// capsule, within the 0.5 m knockback ring (4 m/s away from the burst, 6
-/// m/s up); the room's combat deals its hits, then hands its pushes to the
-/// victim's mover (`apply_player_pushes`).
+/// capsule, within the 0.5 m knockback ring: the client's push (4 m/s away
+/// along the ground, the line's vertical part × 6 m/s up, about 4.7 m/s
+/// here, so about 0.6 m; before the client's formula, 4 + 6 m/s took him
+/// over 1 m); the room's combat deals its hits, then hands its pushes to
+/// the victim's mover (`apply_player_pushes`).
 fn blasted(
     world: &mut WorldDelivery,
     scene: &mut PreparedScene,
@@ -512,6 +514,7 @@ fn blasted(
             knockback: Some(Knockback {
                 away: 4.0,
                 upward: 6.0,
+                lift: 0.0,
                 away_rings: vec![(0.5, 1.0), (3.0, 0.75)],
                 upward_rings: vec![(0.5, 1.0), (3.0, 0.25)],
             }),
@@ -602,7 +605,7 @@ fn explosions_push_him_only_outside_the_spawn_room() {
     assert!(lifted > 1.0, "{lifted} m up on the range");
     place(&mut world, &scene, outside, 0);
     let lifted = blasted(&mut world, &mut scene, &viewer, &mut tick);
-    assert!(lifted > 1.0, "{lifted} m up on the range");
+    assert!(lifted > 0.5, "{lifted} m up on the range");
     assert!(world.health_share().unwrap() < 1.0, "the burst hurts him");
 }
 
@@ -771,7 +774,7 @@ fn a_fall_after_an_enemys_knock_is_the_enemys_kill() {
     let mut tick = FIRST_TICK;
     let now = Duration::from_secs(5);
     let lifted = blasted(&mut world, &mut scene, &viewer, &mut tick);
-    assert!(lifted > 1.0, "{lifted} m up on the range");
+    assert!(lifted > 0.5, "{lifted} m up on the range");
     assert_eq!(
         world.knocked_by(body, now).map(|by| by.source),
         Some(ENEMY | 1)

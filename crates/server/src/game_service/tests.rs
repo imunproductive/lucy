@@ -3869,10 +3869,13 @@ fn another_client_sees_a_players_helix_rocket() {
 /// `ProjectileFlight::own_blast`, `Mover::push`): a Helix Rocket fired at
 /// the floor just ahead of Soldier: 76's feet (70° down) hurts and lifts
 /// him as graph `0254` node 35 says: 80 × 1 (within 1 m) × the self-damage
-/// scale 0.5 = 40 of his 200, and within the 0.5 m knockback ring 4 m/s
-/// along the line from the burst to his centre (up and back) plus 6 m/s
-/// up. His server mover flies it as a jump: more than 2 m up, at most
-/// (4 + 6)² / 2g = 100/35 m, and he lands behind where he stood, away from
+/// scale 0.5 = 40 of his 200, and within the 0.5 m knockback ring the
+/// client's push (`Knockback::push`, `0x7FF789C7B3C0`): 4 m/s back along the
+/// ground and the line's vertical part × 6 m/s up, times the self-push
+/// scale 1. His server mover flies it as a jump: more than 0.5 m up, at
+/// most 6² / 2g = 36/35 m (the game, 2026-11-23: about 1 m, as his client
+/// predicts it; before the client's formula, 4 + 6 m/s gave over 2 m), and
+/// he lands behind where he stood, away from
 /// the burst. He gets no hit notice (25001) for it. He fires outside his
 /// spawn room, where he is not invulnerable.
 #[test]
@@ -3913,7 +3916,7 @@ fn a_helix_at_soldiers_feet_hurts_him_and_lifts_him() {
         soldier.pump(&schemas);
     };
     assert!(
-        top - floor > 2.0 && top - floor <= 100.0 / 35.0 + 0.05,
+        top - floor > 0.5 && top - floor <= 36.0 / 35.0 + 0.05,
         "{} m up",
         top - floor
     );

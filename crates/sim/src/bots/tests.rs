@@ -257,6 +257,35 @@ fn patrol_uses_the_shared_capsule_and_team_mask() {
     assert!(blocked.velocity[2].abs() < 0.05);
 }
 
+/// An enemy player standing on a bot's way stops its walk against his
+/// capsule: it keeps walking (no end for its script) until he steps aside,
+/// then reaches its point.
+#[test]
+fn a_player_in_the_way_holds_a_walk_until_he_steps_aside() {
+    let (_, world) = flat_floor();
+    let settings = MoverSettings::default();
+    let goal = [0.0, 0.0, 6.0];
+    let mut bot = walker(goal);
+    bot.attach_collision(&settings, world, 0x10);
+    bot.set_peers([standing_capsule(&settings, [0.0, 0.0, 3.0])]);
+    for tick in 1..=300 {
+        let ended = bot.step(tick, Some(goal), |_, _, _, _| Some(0.0), &PATHS);
+        assert_eq!(ended, None, "tick {tick}");
+    }
+    // Its capsule stops against his, within the contact's touch distance
+    // (`lucy_physics::contact::triangle::TOUCH`, 0.005 m).
+    let radius = f64::from(standing_capsule(&settings, [0.0; 3]).radius);
+    let gap = 3.0 - bot.position[2] - 2.0 * radius;
+    assert!(gap.abs() <= 0.005 + 1e-6, "{:?}, gap {gap}", bot.position);
+    assert!(bot.walking());
+    bot.set_peers([]);
+    let ended: Vec<_> = (301..=500)
+        .filter_map(|tick| bot.step(tick, Some(goal), |_, _, _, _| Some(0.0), &PATHS))
+        .collect();
+    assert_eq!(ended.len(), 1);
+    assert_eq!(bot.position, goal);
+}
+
 #[test]
 fn death_stops_the_bot_and_respawn_restarts_the_route_after_create() {
     let goal = Some([0.0, 0.0, 10.0]);
@@ -624,7 +653,7 @@ fn practice_range_patrols_walk_around_what_blocks_the_straight_way() {
     // 8000880C's route of three: 3 s, the 10 m and 13 m legs at 6 m/s with
     // 1 s between; 40 s leaves room for the turns.
     for tick in FIRST_TICK..FIRST_TICK + 40 * 1000 / TICK_PERIOD.as_millis() as u32 {
-        scene.step_bots(tick);
+        scene.step_bots(tick, &[]);
         scene.advance_live_bots(tick);
         for (index, &slot) in blocked.iter().enumerate() {
             let bot = &scene.bots()[slot];

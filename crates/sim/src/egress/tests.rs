@@ -3,9 +3,13 @@ use lucy_core::bits::{BitReader, BitWriter};
 use lucy_physics::mover::correction::CorrectionHistory;
 use lucy_wire::entity::{MAX_ENTITY_RECORDS, MAX_PAYLOAD, Movement, Operation};
 use lucy_wire::jam::codec::Schemas;
-use lucy_wire::messages::read_channel;
+use lucy_wire::messages::{Encoded, read_channel};
 
 const MESSAGE: [u8; 2] = [1, 2];
+
+fn message() -> Encoded {
+    Encoded::whole(MESSAGE.to_vec())
+}
 
 fn frame_records<'a>(
     queued: &'a [EntityUpdate],
@@ -32,10 +36,10 @@ fn destroy(id: u32) -> EntityUpdate {
 #[test]
 fn transport_failure_retains_message_and_record_candidates() {
     let mut egress = GameEgress::default();
-    let reliable = MESSAGE.to_vec();
-    let original = reliable.as_ptr();
+    let reliable = message();
+    let original = reliable.bytes().as_ptr();
     egress.queue_reliable(reliable).unwrap();
-    egress.queue_unreliable(MESSAGE.to_vec());
+    egress.queue_unreliable(message());
     let queued = [destroy(1)];
     let mut sequence = 0;
     let mut attempted = None;
@@ -54,7 +58,7 @@ fn transport_failure_retains_message_and_record_candidates() {
         Err(SendError::Transport(std::io::ErrorKind::WouldBlock))
     ));
     assert!(egress.in_flight.is_empty());
-    assert_eq!(egress.reliable[0].1.as_ptr(), original);
+    assert_eq!(egress.reliable[0].1.bytes().as_ptr(), original);
     assert_eq!(egress.unreliable.len(), 1);
 
     let sent = egress
@@ -72,7 +76,7 @@ fn transport_failure_retains_message_and_record_candidates() {
     assert_eq!(sent.records, [RecordSource::Queued(0)]);
     assert!(egress.reliable.is_empty());
     assert!(egress.unreliable.is_empty());
-    assert_eq!(egress.in_flight[0].reliable[0].1.as_ptr(), original);
+    assert_eq!(egress.in_flight[0].reliable[0].1.bytes().as_ptr(), original);
 }
 
 #[test]
@@ -81,10 +85,10 @@ fn loss_requeues_reliable_bytes_once_and_ownership_waits_for_the_prefix() {
     struct Token(u32);
 
     let mut egress = GameEgress::default();
-    let first = MESSAGE.to_vec();
-    let original = first.as_ptr();
+    let first = message();
+    let original = first.bytes().as_ptr();
     assert_eq!(egress.queue_reliable(first).unwrap(), 0);
-    egress.queue_unreliable(MESSAGE.to_vec());
+    egress.queue_unreliable(message());
     egress
         .send_frame(
             frame_records(&[destroy(1)], &[]),
@@ -93,7 +97,7 @@ fn loss_requeues_reliable_bytes_once_and_ownership_waits_for_the_prefix() {
             |_| Ok::<_, ()>(10),
         )
         .unwrap();
-    let ownership = egress.queue_reliable(MESSAGE.to_vec()).unwrap();
+    let ownership = egress.queue_reliable(message()).unwrap();
     assert_eq!(ownership, 1);
     egress
         .send_frame(
@@ -103,7 +107,7 @@ fn loss_requeues_reliable_bytes_once_and_ownership_waits_for_the_prefix() {
             |_| Ok::<_, ()>(11),
         )
         .unwrap();
-    assert_eq!(egress.queue_reliable(MESSAGE.to_vec()).unwrap(), 2);
+    assert_eq!(egress.queue_reliable(message()).unwrap(), 2);
 
     let report = egress.acknowledge(12, 1);
     assert_eq!(report.requeued_reliable, 1);
@@ -124,7 +128,7 @@ fn loss_requeues_reliable_bytes_once_and_ownership_waits_for_the_prefix() {
     );
     assert_eq!(egress.oldest_pending_reliable(), 0);
     assert!(!egress.delivered_through(ownership));
-    assert_eq!(egress.reliable[0].1.as_ptr(), original);
+    assert_eq!(egress.reliable[0].1.bytes().as_ptr(), original);
     assert!(egress.unreliable.is_empty());
     assert!(egress.acknowledge(12, 1).packets.is_empty());
     assert_eq!(egress.reliable.len(), 2);
@@ -201,8 +205,10 @@ fn reports_acknowledgements_in_send_order_across_packet_rollover() {
 #[test]
 fn an_unsendable_oldest_reliable_never_reaches_transport() {
     let mut egress = GameEgress::<()>::default();
-    egress.queue_reliable(vec![0; MAX_PAYLOAD]).unwrap();
-    egress.queue_unreliable(MESSAGE.to_vec());
+    egress
+        .queue_reliable(Encoded::whole(vec![0; MAX_PAYLOAD]))
+        .unwrap();
+    egress.queue_unreliable(message());
     let result = egress.send_frame(
         frame_records(&[destroy(1)], &[]),
         |_| 0,
@@ -222,9 +228,11 @@ fn an_unsendable_oldest_reliable_never_reaches_transport() {
 fn reliable_only_fits_the_message_prefix_and_leaves_other_candidates() {
     let mut egress = GameEgress::<RecordSource>::default();
     for _ in 0..2 {
-        egress.queue_reliable(vec![0; MAX_PAYLOAD * 3 / 4]).unwrap();
+        egress
+            .queue_reliable(Encoded::whole(vec![0; MAX_PAYLOAD * 3 / 4]))
+            .unwrap();
     }
-    egress.queue_unreliable(MESSAGE.to_vec());
+    egress.queue_unreliable(message());
     let queued = [destroy(1)];
     let records = FrameRecords {
         reliable_only: true,
@@ -314,11 +322,8 @@ fn reliable_ordinals_cannot_wrap() {
         next_reliable: u64::from(u32::MAX),
         ..GameEgress::default()
     };
-    assert_eq!(egress.queue_reliable(MESSAGE.to_vec()), Ok(u32::MAX));
-    assert_eq!(
-        egress.queue_reliable(MESSAGE.to_vec()),
-        Err(OrdinalExhausted)
-    );
+    assert_eq!(egress.queue_reliable(message()), Ok(u32::MAX));
+    assert_eq!(egress.queue_reliable(message()), Err(OrdinalExhausted));
     assert_eq!(egress.reliable.len(), 1);
 }
 

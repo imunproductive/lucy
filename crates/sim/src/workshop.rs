@@ -237,10 +237,10 @@ impl WorkshopRun {
     ///   there, so taking it from the loadout is an assumption. Null for a
     ///   hit without one (an environment kill, a health pack's heal).
     /// - Knockback: an explosion's push between players, a ModifyHealth's
-    ///   push vector (Soundwave's, `lucy_script::vm::HealthChange::knockback`)
-    ///   and the knockbacks the bodies' graphs report (`STU_AFBB59E9`:
-    ///   Rocket Punch's victim graph `0D07`). A ModifyHealth's knockback
-    ///   rings (uppercut, slam, quick melee) push nobody yet.
+    ///   push (Soundwave's vector, or its knockback rings: uppercut, slam,
+    ///   quick melee; `lucy_script::vm::HealthChange::knockback`) and the
+    ///   knockbacks the bodies' graphs report (`STU_AFBB59E9`: Rocket
+    ///   Punch's victim graph `0D07`).
     pub fn player_events(&mut self, happened: &[PlayerEvent]) {
         let _workshop = lucy_core::phase::enter(lucy_core::phase::Phase::Workshop);
         for event in happened {
