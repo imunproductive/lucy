@@ -55,8 +55,9 @@ fn extracted_general_unlocks_matches_the_pack() {
 /// for `Hollywood (Halloween)`). The install's strings decode plainly, and
 /// DataTool (rev `7afe5f52`) run as `list-maps --json` on this install writes
 /// what the derivation writes. Everything else (GUIDs, enums, game modes,
-/// celebrations) matches. The test pins every differing value as
-/// `path<TAB>derived<TAB>pack`.
+/// celebrations) matches. The test pins every differing place and its kind,
+/// `path<TAB>empty` (the pack has `""`) or `path<TAB>season` (the pack has
+/// the derived name without its last ` (…)`), without the install's text.
 #[test]
 #[ignore = "requires an Overwatch 1.74 install and a runtime pack (just test-assets <install> <pack>)"]
 fn extracted_maps_matches_the_pack() {
@@ -66,6 +67,7 @@ fn extracted_maps_matches_the_pack() {
     let pack: Value = serde_json::from_slice(&pack).unwrap();
     let mut found = Vec::new();
     differences(&derived, &pack, "", &mut found);
+    let found: Vec<String> = found.iter().map(|line| difference_kind(line)).collect();
     let known: Vec<&str> = include_str!("lists/extracted_maps_differences.tsv")
         .lines()
         .collect();
@@ -73,6 +75,33 @@ fn extracted_maps_matches_the_pack() {
         found, known,
         "{path} differs from the pack beyond the pinned strings"
     );
+}
+
+/// `path<TAB>derived<TAB>pack` as `path<TAB>empty`, `path<TAB>season`, or
+/// unchanged when it is neither.
+fn difference_kind(line: &str) -> String {
+    let mut parts = line.splitn(3, '\t');
+    let (Some(path), Some(derived), Some(pack)) = (parts.next(), parts.next(), parts.next()) else {
+        return line.to_owned();
+    };
+    let text = |json: &str| {
+        serde_json::from_str::<Value>(json)
+            .ok()?
+            .as_str()
+            .map(str::to_owned)
+    };
+    let kind = match (text(derived), text(pack)) {
+        (Some(_), Some(pack)) if pack.is_empty() => "empty",
+        (Some(derived), Some(pack))
+            if derived
+                .strip_prefix(&pack)
+                .is_some_and(|season| season.starts_with(" (") && season.ends_with(')')) =>
+        {
+            "season"
+        }
+        _ => return line.to_owned(),
+    };
+    format!("{path}\t{kind}")
 }
 
 /// Every place two JSON values differ, as `path<TAB>derived<TAB>pack`.

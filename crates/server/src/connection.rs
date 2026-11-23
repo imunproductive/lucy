@@ -572,10 +572,11 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn encoded_lobby_ticket_authenticates_a_loopback_udp_peer() {
         use lucy_lobby::handoff::{HANDOFF, HANDOFF_MESSAGE};
 
-        let schemas = Schemas::lobby();
+        let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
         let server_socket = UdpSocket::bind("127.0.0.1:0").unwrap();
         let client_socket = UdpSocket::bind("127.0.0.1:0").unwrap();
         for socket in [&server_socket, &client_socket] {

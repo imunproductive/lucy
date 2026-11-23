@@ -80,6 +80,11 @@ load game archive filter="load_":
 test-assets game runtime:
     $env:LUCY_GAME_DIR = '{{game}}'; $env:LUCY_RUNTIME_DIR = '{{runtime}}'; cargo test -p lucy-assets --release --locked -- --ignored matches_the_pack
 
+# A fresh clone of the committed tree (tools/fresh_clone.py): ships no derived file, builds into an
+# empty target folder, derives every file from the install into an empty state folder and starts.
+fresh-clone game:
+    python tools/fresh_clone.py '{{game}}'
+
 # Ignored tests that compare the asset reader with a DataTool XML export of the install.
 test-datatool game dump:
     $env:LUCY_GAME_DIR = '{{game}}'; $env:LUCY_DATATOOL_DUMP = '{{dump}}'; cargo test -p lucy-stu --release --locked -- --ignored datatool

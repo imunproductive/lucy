@@ -40,7 +40,7 @@ use crate::{
     clock::{DAY, stu_datetime},
     collection::Collection,
     economy::{Economy, EventBox},
-    templates::{IN_CONNECT, RetailTemplates},
+    templates::IN_CONNECT,
     transport::LobbyMessage,
 };
 use lucy_content::catalog::{ItemDb, UNLOCK_BASE};
@@ -253,40 +253,22 @@ struct VariantMap {
 type MapSwaps = BTreeMap<u64, Vec<(u64, u64)>>;
 
 pub struct Celebrations {
-    captured_names: Vec<u64>,
-    captured_bytes: Vec<u8>,
     resource_keys: BTreeMap<u64, ResourceKey>,
     map_swaps: MapSwaps,
     economy: Arc<Economy>,
 }
 
 impl Celebrations {
-    pub fn load(
-        data_dir: &Path,
-        templates: &RetailTemplates,
-        economy: Arc<Economy>,
-    ) -> io::Result<Self> {
+    pub fn load(data_dir: &Path, economy: Arc<Economy>) -> io::Result<Self> {
         Self::from_readers(
-            lucy_fixed::RESOURCE_KEYS.as_bytes(),
+            BufReader::new(File::open(data_dir.join("resource_keys.json"))?),
             BufReader::new(File::open(data_dir.join("extracted_maps.json"))?),
-            templates,
             economy,
         )
     }
 
-    fn from_readers(
-        keys: impl Read,
-        maps: impl Read,
-        templates: &RetailTemplates,
-        economy: Arc<Economy>,
-    ) -> io::Result<Self> {
-        let template = templates
-            .first(IN_CONNECT, CONTENT_KEYS)
-            .ok_or_else(|| invalid("missing content-key template"))?;
-        let (captured_names, captured_bytes) = template_prefix(&template)?;
+    fn from_readers(keys: impl Read, maps: impl Read, economy: Arc<Economy>) -> io::Result<Self> {
         Ok(Self {
-            captured_names,
-            captured_bytes,
             resource_keys: read_keys(keys)?,
             map_swaps: read_map_swaps(maps)?,
             economy,
@@ -453,9 +435,9 @@ impl Celebrations {
     }
 
     fn content_keys(&self, events: &[Event], challenge: Option<&Challenge>) -> Fields {
-        let mut names = self.captured_names.clone();
-        let mut bytes = self.captured_bytes.clone();
-        let mut seen: HashSet<_> = names.iter().copied().collect();
+        let mut names = Vec::new();
+        let mut bytes = Vec::new();
+        let mut seen = HashSet::new();
         let prioritized = events
             .iter()
             .map(|event| event.key)
@@ -606,43 +588,12 @@ fn hex_id(text: &str) -> Option<u64> {
     }
 }
 
-fn template_prefix(fields: &Fields) -> io::Result<(Vec<u64>, Vec<u8>)> {
-    let malformed = || invalid("invalid content-key template");
-    let Some(Array(names)) = fields.get(&0x78) else {
-        return Err(malformed());
-    };
-    let names = names
-        .iter()
-        .map(|value| match value {
-            Unsigned(name) => Ok(*name),
-            _ => Err(malformed()),
-        })
-        .collect::<io::Result<Vec<_>>>()?;
-    let bytes = match fields.get(&0x90) {
-        Some(Value::Blob(bytes)) => bytes.clone(),
-        Some(Array(bytes)) => bytes
-            .iter()
-            .map(|value| match value {
-                Unsigned(byte) => u8::try_from(*byte).map_err(|_| malformed()),
-                _ => Err(malformed()),
-            })
-            .collect::<io::Result<_>>()?,
-        _ => return Err(malformed()),
-    };
-    if names.len().checked_mul(KEY_LENGTH) != Some(bytes.len()) {
-        return Err(malformed());
-    }
-    Ok((names, bytes))
-}
-
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
 #[cfg(test)]
 mod tests {
-
-    use sha2::{Digest, Sha256};
 
     use super::*;
     use crate::clock::server_time;
@@ -669,13 +620,6 @@ mod tests {
     }
 
     fn fixture() -> Celebrations {
-        let templates = RetailTemplates::from_reader(
-            &br#"{
-            "format":1,"server":[["0xF5FF548A",20504,{"+0x78":[9],
-            "+0x90":{"$bytes":"09090909090909090909090909090909"},"+0xA8":[] }]]
-        }"#[..],
-        )
-        .unwrap();
         let keys = &br#"{
             "198":{"name":"b2","key":"b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"},
             "1":{"name":"a1","key":"11111111111111111111111111111111"},
@@ -690,7 +634,7 @@ mod tests {
             "03.0CE":{"CelebrationVariants":null},
             "04.0CE":{}
         }"#[..];
-        Celebrations::from_readers(keys, maps, &templates, crate::test_catalog::economy()).unwrap()
+        Celebrations::from_readers(keys, maps, crate::test_catalog::economy()).unwrap()
     }
 
     fn tracer_rewards() -> ItemDb {
@@ -710,6 +654,7 @@ mod tests {
                     available_in: String::new(),
                     skin_theme: 0,
                     esports_team: String::new(),
+                    level: None,
                 },
             );
         }
@@ -741,14 +686,16 @@ mod tests {
         };
         let items = tracer_rewards();
         let [(_, _, keys), ..] = celebrations.login_messages(&profile, &items, now).unwrap();
+        // The event's and challenge's keys first, then the catalog's in id
+        // order, each name once (key 3 is named 9).
         assert_eq!(
             keys[&0x78],
-            Array([9, 0xa1, 0xb2, 0xc3].map(Unsigned).to_vec())
+            Array([0xa1, 0xb2, 9, 0xc3].map(Unsigned).to_vec())
         );
         assert_eq!(
             keys[&0x90],
             Array(
-                [9, 0xa1, 0xb2, 0xc3]
+                [0xa1, 0xb2, 0x33, 0xc3]
                     .into_iter()
                     .flat_map(|byte| std::iter::repeat_n(Unsigned(byte), KEY_LENGTH))
                     .collect()
@@ -764,9 +711,10 @@ mod tests {
         let [(_, _, fallback), ..] = celebrations.login_messages(&empty, &items, 0).unwrap();
         assert_eq!(
             fallback[&0x78],
-            Array([9, 0xa1, 0xc3, 0xb2].map(Unsigned).to_vec())
+            Array([0xa1, 9, 0xc3, 0xb2].map(Unsigned).to_vec())
         );
-        assert_eq!(as_array(&fallback[&0x90])[KEY_LENGTH], Unsigned(0x11));
+        assert_eq!(as_array(&fallback[&0x90])[0], Unsigned(0x11));
+        assert_eq!(as_array(&fallback[&0x90])[KEY_LENGTH], Unsigned(0x33));
     }
 
     #[test]
@@ -960,8 +908,7 @@ mod tests {
     fn the_installs_event_boxes_are_pythons() {
         let data = lucy_testkit::runtime_dir().join("data");
         let economy = Arc::new(Economy::load(&data).unwrap());
-        let celebrations =
-            Celebrations::load(&data, &RetailTemplates::captured(), economy).unwrap();
+        let celebrations = Celebrations::load(&data, economy).unwrap();
         let python: [(&str, i32, &[u16]); 8] = [
             ("lunar", 4, &[0x0d5a, 0x4f50]),
             ("halloween", 2, &[0x0c23]),
@@ -1007,15 +954,19 @@ mod tests {
         }
     }
 
+    /// The event records and challenge progress are Python's (their lengths
+    /// and bytes did not depend on the retail capture: the Python digests
+    /// covered the capture's 20504 key prefix too, which is gone, so each
+    /// message is checked on its own). The content keys are every named
+    /// resource key once, the events' and challenge's first.
     #[test]
-    #[ignore = "requires the derived 104319 resource catalog and lobby templates"]
-    fn login_messages_match_python_for_events_challenges_and_content_key_order() {
+    #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
+    fn login_messages_for_events_challenges_and_content_key_order() {
         let data = lucy_testkit::runtime_dir().join("data");
-        let templates = RetailTemplates::captured();
         let economy = Arc::new(Economy::load(&data).unwrap());
-        let celebrations = Celebrations::load(&data, &templates, economy).unwrap();
+        let celebrations = Celebrations::load(&data, economy).unwrap();
         let items = ItemDb::load(&data).unwrap();
-        let schemas = Schemas::lobby();
+        let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
         let empty = Profile {
             events: Vec::new(),
             server_date: "2022-09-16".into(),
@@ -1054,37 +1005,49 @@ mod tests {
             server_date: "2020-02-29".into(),
             ..empty.clone()
         };
-        for (profile, lengths, expected) in [
-            (
-                empty,
-                [4112, 4, 4],
-                "0994d10d4eb80c4d575a303c262b441a66b4687f9e045ab8272d89f15fe4c59b",
-            ),
-            (
-                all,
-                [4112, 1742, 20],
-                "bb44f0050624baca671315e0b92ebfc9914dbf86ec8cb9c90435223630d50088",
-            ),
-            (
-                kana,
-                [4112, 448, 20],
-                "a744b4c7df0336d9995ed3f86b6b6c74fb028eb57bc4e4734a3df41f2b1990b4",
-            ),
-        ] {
+        let named: HashSet<_> = celebrations
+            .resource_keys
+            .values()
+            .map(|key| key.name)
+            .filter(|&name| name != 0)
+            .collect();
+        for (profile, lengths) in [(empty, [4, 4]), (all, [1742, 20]), (kana, [448, 20])] {
             let now = server_time(&profile.server_date, 0).unwrap();
-            let mut digest = Sha256::new();
-            for ((crc, id, fields), length) in celebrations
-                .login_messages(&profile, &items, now)
-                .unwrap()
-                .into_iter()
-                .zip(lengths)
-            {
-                let body = schemas.encode(crc, id, &fields).unwrap();
-                assert_eq!(body.len(), length);
-                digest.update((length as u32).to_le_bytes());
-                digest.update(body);
+            let [(_, _, keys), records, progress] =
+                celebrations.login_messages(&profile, &items, now).unwrap();
+            assert_eq!(as_array(&keys[&0x78]).len(), named.len());
+            assert_eq!(as_array(&keys[&0x90]).len(), named.len() * KEY_LENGTH);
+            // Each event record names its key as 20504 does, with the bytes
+            // of its resource key asset: the client finds the key by name
+            // (the names of keys the install doesn't name are their GUIDs;
+            // the Lunar New Year menu showed with them, 2026-11-23).
+            let names = as_array(&keys[&0x78]);
+            let bytes = as_array(&keys[&0x90]);
+            for record in as_array(&records.2[&0x78]) {
+                let record = as_struct(record);
+                let (Unsigned(name), Unsigned(guid)) = (&record[&0x30], &record[&0x38]) else {
+                    panic!("a record's key name and id are unsigned")
+                };
+                if *guid == 0 {
+                    continue;
+                }
+                let key = &celebrations.resource_keys[&(guid & 0xFFFF_FFFF_FFFF)];
+                assert_eq!(*name, key.name);
+                let at = names
+                    .iter()
+                    .position(|sent| *sent == Unsigned(*name))
+                    .expect("the record's key goes in 20504");
+                let sent: Vec<_> = key
+                    .bytes
+                    .iter()
+                    .map(|&byte| Unsigned(u64::from(byte)))
+                    .collect();
+                assert_eq!(bytes[at * KEY_LENGTH..][..KEY_LENGTH], sent[..]);
             }
-            assert_eq!(format!("{:x}", digest.finalize()), expected);
+            for ((crc, id, fields), length) in [records, progress].into_iter().zip(lengths) {
+                assert_eq!(schemas.encode(crc, id, &fields).unwrap().len(), length);
+            }
+            schemas.encode(IN_CONNECT, CONTENT_KEYS, &keys).unwrap();
         }
     }
 }

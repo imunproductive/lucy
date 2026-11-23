@@ -65,7 +65,7 @@ fn the_bot_answers_only_when_the_switch_is_on() {
     let state = tempfile::tempdir().unwrap();
     let (mut server, time) = start(&state);
     let dashboard = server.dashboard_addr().unwrap();
-    let schemas = Schemas::lobby();
+    let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
     let mut alpha = logged_in(&schemas, &server);
 
     assert_eq!(channel_texts(&mut alpha), ["hi"]);

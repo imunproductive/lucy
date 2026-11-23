@@ -1,7 +1,7 @@
 //! The install's assets for derivations: raw bytes, decoded structured data
 //! and display strings, by GUID.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use lucy_casc::Game;
 pub use lucy_casc::{guid_name, guid_type};
@@ -14,6 +14,7 @@ const STRING: u16 = 0x07C;
 pub struct Install {
     game: Game,
     locale: String,
+    root: PathBuf,
 }
 
 impl Install {
@@ -25,7 +26,19 @@ impl Install {
         Ok(Self {
             game,
             locale: locale.to_owned(),
+            root: install.to_owned(),
         })
+    }
+
+    /// The client program: `_retail_/Overwatch.exe`, or `Overwatch.exe`
+    /// beside `.build.info`.
+    pub fn client_program(&self) -> PathBuf {
+        let retail = self.root.join("_retail_").join("Overwatch.exe");
+        if retail.is_file() {
+            retail
+        } else {
+            self.root.join("Overwatch.exe")
+        }
     }
 
     pub fn game(&self) -> &Game {

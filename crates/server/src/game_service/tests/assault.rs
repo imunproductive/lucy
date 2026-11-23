@@ -81,6 +81,8 @@ fn assault_runs_on_its_mode_graph_on_every_map_a_queue_offers() {
             0x0fd0_0000_0000_0124,
         ])
     );
-    assert_eq!(played.len(), 38, "{played:?}");
+    // Competitive `002B`, Open Queue `010B` and `0124` offer all five Assault
+    // maps, as their season cards' game modes do.
+    assert_eq!(played.len(), 44, "{played:?}");
     assert!(gaps.is_empty(), "{gaps:#?}");
 }

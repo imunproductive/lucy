@@ -1,7 +1,7 @@
 use serde_json::{Map, json};
 
 use super::*;
-use crate::{ranked::CURRENT_SEASON, templates::RetailTemplates, test_catalog};
+use crate::{ranked::CURRENT_SEASON, test_catalog};
 
 fn player(name: &str, region: &str, ratings: &[(&str, i64, i64)]) -> Player {
     let map = |index: usize| -> Map<String, serde_json::Value> {
@@ -97,7 +97,7 @@ fn rows(page: &LobbyMessage) -> Vec<(String, Fields)> {
 
 #[test]
 fn a_page_lists_the_filters_players_best_first() {
-    let ranked = Ranked::new(&RetailTemplates::captured()).unwrap();
+    let ranked = test_catalog::ranked();
     let collection = test_catalog::collection();
     let players = players();
     let me = &players[1];

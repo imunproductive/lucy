@@ -43,7 +43,7 @@ fn the_host_sets_the_time_pauses_kicks_declares_a_winner_and_stops_an_assault_ma
     let map = catalog
         .game_map(hanamura.guid, ASSAULT, "Assault", false, &[6, 6])
         .expect("Hanamura in Assault");
-    let schemas = Arc::new(Schemas::game());
+    let schemas = Arc::new(Schemas::game(&lucy_testkit::runtime_dir()).unwrap());
     let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     let player = |tag: &str, team, account| WorldPlayer {
         player: MatchPlayer {

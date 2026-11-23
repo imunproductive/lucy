@@ -124,6 +124,11 @@ impl Storage {
         &self.info
     }
 
+    /// The name the install's keyring gives `key`, if it has it.
+    pub fn key_name(&self, key: &[u8; 16]) -> Option<u64> {
+        self.keys.name_of(key)
+    }
+
     /// The decoded file with this encoding key.
     pub fn read_ekey(&self, ekey: &[u8; 16]) -> Result<Vec<u8>> {
         let location = self

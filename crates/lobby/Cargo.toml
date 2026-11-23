@@ -8,7 +8,6 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
-lucy-fixed.workspace = true
 crc32fast.workspace = true
 getrandom.workspace = true
 indexmap.workspace = true

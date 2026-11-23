@@ -24,7 +24,10 @@ const QUEUE: u32 = 0xb4f8_bc62;
 const QUEUE_POPPED: u64 = 1;
 const GAME_QUEUE: u64 = 4;
 const GAME_FOUND: i64 = 4;
-const GENERAL_CHANNEL: [u64; 2] = [0x8b0c, 0x8000_0000_0000_0000];
+/// The General chat channel's id, ours: both halves with the top bit set,
+/// which no match id (`lobby::match_id` clears it) nor team channel
+/// ([`team_channel_id`] keeps the second half's clear) has.
+const GENERAL_CHANNEL: [u64; 2] = [1 << 63, 1 << 63];
 
 fn chat_channel(id: [u64; 2], kind: u64) -> Fields {
     Fields::from([

@@ -107,7 +107,7 @@ flowchart LR
 4. **assets.** Runs the derivations in dependency order (`DERIVATIONS`). Each writes one file in the format of the old prepared runtime pack. Collision for a map other than the Practice Range is built when a match on that map first starts.
 5. **Cache.** The files go to `<state>/cache/104319/`. A stamp (`derived.txt`) holds the build version, build config key, locale and derivations version. Another stamp makes the next start derive again. A full derivation takes about two minutes in a release build.
 6. **Loaders.** `content`, `script`, `physics` and `sim::scene_assets` load the cache files. `server::game_data` lists the files the server needs.
-7. **Fixed data.** Some inputs are not in the install: message schemas, statescript payload codecs, Battle.net descriptors, the lobby state-blob key, the captured server templates, resource keys and the research names. They are embedded from `crates/fixed/data`.
+7. **Fixed data.** A few inputs can't be read from the install at run time: the statescript payload codecs (our description of the client's encrypted code), the captured server templates and the research names. They are embedded from `crates/fixed/data`. The message layouts, Battle.net descriptors and lobby state-blob key come from the client program's data sections (derivation `client`), the event resource keys from the install's `090` assets (derivation `resource_keys`).
 
 [data-sources.md](data-sources.md) lists each file, its inputs and the oracle it was checked against.
 

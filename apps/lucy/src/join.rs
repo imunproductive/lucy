@@ -125,6 +125,12 @@ mod client {
         let tag = battle_tag_on(lobby, &address, &name)?;
         let game = play::game(settings)?;
         close_running_copy(&game)?;
+        let protocol = lucy_assets::client::bnet_descriptors(&game)
+            .map_err(io::Error::other)
+            .and_then(|set| {
+                Protocol::from_bytes(&set)
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+            })?;
         let relay = play::relay_dll()?;
         let account = u64::from(account_id_for(&name));
         let player = Player {
@@ -138,7 +144,7 @@ mod client {
             local(settings.ports.stall),
             local(settings.ports.rpc),
             lobby,
-            Arc::new(Protocol::client()),
+            Arc::new(protocol),
             move |_| player.clone(),
         )
         .map_err(|error| {

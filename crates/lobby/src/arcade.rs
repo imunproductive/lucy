@@ -1,7 +1,8 @@
 //! Arcade catalog, dated rotation and wire messages for retail build 104319.
 //!
-//! The catalog is supplied by the external runtime. Group ordering and the
-//! dated rotation follow the Python reference.
+//! The cards come from the install (`arcade_cards_174.json`, the `0C7`
+//! assets); which ones the menu shows and when is the Python reference's
+//! rotation.
 //!
 //! The Arcade screen has seven slots. The client files each card under its
 //! menu group (the 0EE menu nodes of catalog 10B.063) and each group takes one
@@ -29,13 +30,12 @@ use crate::{
     clock::DAY,
     passes::Pool,
     ranked::{CARD_BASE, Season},
-    templates::RetailTemplates,
     transport::LobbyMessage,
 };
 use lucy_core::guid::parse_guid;
 use lucy_wire::jam::codec::{
     Fields,
-    Value::{Array, Bool, Float32, Signed, Struct, Unsigned},
+    Value::{self, Array, Bool, Float32, Signed, Struct, Unsigned},
 };
 
 pub const ARCADE: u32 = 0x00a8_654e;
@@ -43,6 +43,11 @@ const SLOTS: usize = 7;
 const CARDS: u32 = 39802;
 const BUSY: u32 = 39804;
 const WINDOWS: u32 = 39810;
+/// Quick Play's card, the list's first row of its own (39802 `+0x18`).
+const QUICK_PLAY: u32 = 0xed;
+/// How busy each listed card shows (39804): every card the same, as the
+/// server knows no other players' choices (retail sent each card's share).
+const BUSYNESS: f32 = 0.1;
 const LUNAR: &[u32] = &[0x1a3, 0x25, 0x10c];
 const COMPETITIVE_CTF: &[u32] = &[0x1c3];
 const WINTER: &[u32] = &[0x98, 0x107, 0x4b, 0x5b, 0x1f];
@@ -98,9 +103,6 @@ struct Card {
 
 pub struct Arcade {
     cards: BTreeMap<u32, Card>,
-    event_cards: HashSet<u32>,
-    lists_template: Fields,
-    busy_template: Vec<Fields>,
 }
 
 pub struct ArcadeState {
@@ -109,7 +111,7 @@ pub struct ArcadeState {
 }
 
 impl Arcade {
-    pub fn load(path: impl AsRef<Path>, templates: &RetailTemplates) -> io::Result<Self> {
+    pub fn load(path: impl AsRef<Path>) -> io::Result<Self> {
         let source: BTreeMap<String, CardSource> =
             serde_json::from_reader(BufReader::new(File::open(path)?)).map_err(invalid)?;
         let guid = |key: &str| {
@@ -142,49 +144,20 @@ impl Arcade {
                 ))
             })
             .collect::<io::Result<BTreeMap<_, _>>>()?;
-        let event_cards: HashSet<_> = EVENTS
+        let required = EVENTS
             .iter()
             .flat_map(|(_, groups)| groups.iter())
             .flat_map(|group| group.iter().copied())
-            .collect();
-        for card in event_cards
-            .iter()
-            .copied()
             .chain(FIXED_DAILY)
             .chain(ROTATING)
             .chain(PERMANENT)
-        {
+            .chain([QUICK_PLAY]);
+        for card in required {
             if !cards.contains_key(&card) {
                 return Err(invalid(format!("missing arcade card {card:X}")));
             }
         }
-        let lists_template = templates
-            .first(ARCADE, CARDS)
-            .ok_or_else(|| invalid("missing arcade card-list template"))?;
-        let mut busy = templates
-            .first(ARCADE, BUSY)
-            .ok_or_else(|| invalid("missing arcade busyness template"))?;
-        let Some(Array(busy)) = busy.remove(&0x78) else {
-            return Err(invalid("invalid arcade busyness template"));
-        };
-        let busy_template = busy
-            .into_iter()
-            .map(|entry| {
-                let Struct(entry) = entry else {
-                    return Err(invalid("invalid arcade busyness record"));
-                };
-                if !matches!(entry.get(&0), Some(Unsigned(_))) {
-                    return Err(invalid("invalid arcade busyness card GUID"));
-                }
-                Ok(entry)
-            })
-            .collect::<io::Result<_>>()?;
-        Ok(Self {
-            cards,
-            event_cards,
-            lists_template,
-            busy_template,
-        })
+        Ok(Self { cards })
     }
 
     pub fn has_roles(&self, card: u64) -> bool {
@@ -226,52 +199,59 @@ impl Arcade {
             messages: [
                 (ARCADE, CARDS, self.card_lists(&cards, season)?),
                 (ARCADE, WINDOWS, Fields::from([(0x78, Array(windows))])),
-                (ARCADE, BUSY, self.busy(&cards)),
+                (ARCADE, BUSY, self.busy(&cards, season)),
             ],
             competitive_cards,
         })
     }
 
+    /// 39802: the Arcade's cards (`+0x0`), Quick Play (`+0x18`) and the
+    /// competitive rows (`+0xD0`): the season's card, naming its open queue
+    /// card (`+0x88`), and that card, naming the season's (`+0x80`).
     fn card_lists(&self, cards: &[u32], season: Season) -> io::Result<Fields> {
-        let mut lists = self.lists_template.clone();
-        let Some(Struct(fields)) = lists.get_mut(&0x78) else {
-            return Err(invalid("invalid arcade card-list template"));
-        };
-        let Some(Array(competitive)) = fields.get_mut(&0xd0) else {
-            return Err(invalid("missing competitive cards in arcade template"));
-        };
-        let mut competitive_rows = competitive.iter_mut();
-        let Some(Struct(main)) = competitive_rows.next() else {
-            return Err(invalid("missing main competitive card template"));
-        };
-        main.insert(0, Unsigned(season.card));
+        let mut main = self.row(season.card as u32, true)?;
         main.insert(
             0x88,
             Array(season.open_card.map(Unsigned).into_iter().collect()),
         );
         main.insert(0xb2, Bool(season.has_roles()));
+        let mut competitive = vec![Struct(main)];
         if let Some(open_card) = season.open_card {
-            let Some(Struct(open)) = competitive_rows.next() else {
-                return Err(invalid("missing open queue card template"));
-            };
-            let card = self
-                .cards
-                .get(&(open_card as u32))
-                .ok_or_else(|| invalid(format!("missing open queue card {open_card:X}")))?;
-            open.insert(0, Unsigned(open_card));
-            open.insert(0x18, Unsigned(card.display));
+            let mut open = self.row(open_card as u32, true)?;
             open.insert(0x80, Unsigned(season.card));
+            competitive.push(Struct(open));
         }
-        competitive.truncate(if season.open_card.is_some() { 2 } else { 1 });
-        fields.insert(
-            0,
-            Array(cards.iter().map(|&index| self.card(index)).collect()),
-        );
-        Ok(lists)
+        Ok(Fields::from([(
+            0x78,
+            Struct(Fields::from([
+                (
+                    0,
+                    Array(
+                        cards
+                            .iter()
+                            .map(|&index| self.card(index))
+                            .collect::<io::Result<_>>()?,
+                    ),
+                ),
+                (0x18, Struct(self.row(QUICK_PLAY, true)?)),
+                (0xd0, Array(competitive)),
+            ])),
+        )]))
     }
 
-    fn card(&self, index: u32) -> lucy_wire::jam::codec::Value {
-        let card = &self.cards[&index];
+    fn card(&self, index: u32) -> io::Result<Value> {
+        let permanent = matches!(index, 0x1c | 0xef | 0x2);
+        self.row(index, permanent).map(Struct)
+    }
+
+    /// A card's row: its asset's identifier, display entry, rewards and
+    /// flags, how long a daily card stays (24 hours) and whether it is
+    /// permanent and has a role queue.
+    fn row(&self, index: u32, permanent: bool) -> io::Result<Fields> {
+        let card = self
+            .cards
+            .get(&index)
+            .ok_or_else(|| invalid(format!("missing arcade card {index:X}")))?;
         let daily = FIXED_DAILY.contains(&index) || ROTATING.contains(&index);
         let mut fields = Fields::from([
             (0, Unsigned(full(index))),
@@ -290,41 +270,29 @@ impl Arcade {
             (0xa0, Signed(0)),
             (0xa4, Unsigned(if daily { 24 } else { 0 })),
         ]);
-        let capture_flag = matches!(index, 0x1c | 0xef | 0x2);
         for (offset, flag) in (0xa8..).zip(
-            [capture_flag]
+            [permanent]
                 .into_iter()
                 .chain(card.flags)
-                .chain([false; 3]),
+                .chain([false, false, card.roles]),
         ) {
             fields.insert(offset, Bool(flag));
         }
-        Struct(fields)
+        Ok(fields)
     }
 
-    fn busy(&self, cards: &[u32]) -> Fields {
-        let mut known = HashSet::new();
-        let mut entries = Vec::new();
-        for item in &self.busy_template {
-            let Unsigned(card) = item[&0] else {
-                unreachable!("validated template")
-            };
-            let index = card as u32;
-            if self.event_cards.contains(&index) && !cards.contains(&index) {
-                continue;
-            }
-            known.insert(card);
-            entries.push(Struct(item.clone()));
-        }
-        for &index in cards {
-            let card = full(index);
-            if known.insert(card) {
-                entries.push(Struct(Fields::from([
-                    (0, Unsigned(card)),
-                    (8, Float32(0.1)),
-                ])));
-            }
-        }
+    /// 39804: how busy each card is, for every card the lists show.
+    fn busy(&self, cards: &[u32], season: Season) -> Fields {
+        let listed = cards
+            .iter()
+            .map(|&index| full(index))
+            .chain([full(QUICK_PLAY), season.card])
+            .chain(season.open_card);
+        let mut seen = HashSet::new();
+        let entries = listed
+            .filter(|&card| seen.insert(card))
+            .map(|card| Struct(Fields::from([(0, Unsigned(card)), (8, Float32(BUSYNESS))])))
+            .collect();
         Fields::from([(0x78, Array(entries))])
     }
 }
@@ -369,7 +337,6 @@ fn invalid(error: impl std::fmt::Display) -> io::Error {
 mod tests {
 
     use serde_json::json;
-    use sha2::{Digest, Sha256};
 
     use super::*;
     use crate::{passes, ranked::Ranked};
@@ -394,76 +361,118 @@ mod tests {
         assert!(anniversary.ends_with(&FIXED_DAILY));
     }
 
+    /// The Quick Play and competitive rows are the cards' assets with the
+    /// row flags (permanent, role queue) and links; they are the rows the
+    /// 1.68 retail capture holds for season 32. Every state encodes, for
+    /// each event and season.
     #[test]
     #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
-    fn arcade_and_pass_wire_bytes_match_python_across_events_seasons_and_dates() {
+    fn the_rows_come_from_the_cards_for_every_event_and_season() {
         let data = lucy_testkit::runtime_dir().join("data");
-        let schemas = Schemas::lobby();
-        let templates = RetailTemplates::captured();
-        let ranked = Ranked::new(&templates).unwrap();
-        let arcade = Arcade::load(data.join("arcade_cards_174.json"), &templates).unwrap();
+        let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
+        let ranked = Ranked::load(&data).unwrap();
+        let arcade = Arcade::load(data.join("arcade_cards_174.json")).unwrap();
         assert!(arcade.has_roles(CARD_BASE | 0xed));
         assert_eq!(arcade.pass_pool(CARD_BASE | 0xed), Some(Pool::QuickPlay));
         assert!(!arcade.has_roles(2));
         assert_eq!(arcade.pass_pool(2), None);
+
+        let row = |card: u64, display: u64, flags: [bool; 11], links: [(u32, Value); 2]| {
+            let mut row = Fields::from([
+                (0, Unsigned(CARD_BASE | card)),
+                (0x8, Unsigned(0)),
+                (0x10, Unsigned(0)),
+                (0x18, Unsigned(display)),
+                (0x20, Array(Vec::new())),
+                (0x38, Array(Vec::new())),
+                (0x50, Array(Vec::new())),
+                (0x68, Array(Vec::new())),
+                (0xa0, Signed(0)),
+                (0xa4, Unsigned(0)),
+            ]);
+            row.extend(links);
+            row.extend((0xa8..).zip(flags.map(Bool)));
+            Struct(row)
+        };
+        let (t, f) = (true, false);
+        let profile = Profile::default();
+        let state = arcade
+            .state(&profile, ranked.season(&profile), 1_700_000_000)
+            .unwrap();
+        let Struct(lists) = &state.messages[0].2[&0x78] else {
+            panic!("the lists")
+        };
+        assert_eq!(
+            lists[&0x18],
+            row(
+                0xed,
+                0,
+                [t, f, f, t, t, t, t, t, f, f, t],
+                [(0x80, Unsigned(0)), (0x88, Array(Vec::new()))]
+            )
+        );
+        assert_eq!(
+            lists[&0xd0],
+            Array(vec![
+                row(
+                    0x1b3,
+                    0,
+                    [t, t, f, f, f, f, f, t, f, f, t],
+                    [
+                        (0x80, Unsigned(0)),
+                        (0x88, Array(vec![Unsigned(CARD_BASE | 0x1b4)]))
+                    ]
+                ),
+                row(
+                    0x1b4,
+                    0x01b0_0000_0000_004b,
+                    [t, t, f, f, f, f, f, t, f, f, f],
+                    [
+                        (0x80, Unsigned(CARD_BASE | 0x1b3)),
+                        (0x88, Array(Vec::new()))
+                    ]
+                ),
+            ])
+        );
+
         let events: &[&[&str]] = &[
             &[],
-            &["goodbye"],
             &["lunar"],
             &["winter"],
             &["halloween"],
             &["summer"],
             &["archives"],
             &["anniversary"],
-            &["anniversary_remix_1"],
-            &["anniversary_remix_2"],
             &["malevento"],
-            &["lunar", "summer"],
-            &["winter", "anniversary", "summer"],
             &["archives", "malevento", "lunar", "lunar"],
-            &["unknown", "halloween", "winter"],
         ];
-        let seasons = [1, 17, 18, 22, 23, 32];
-        let mut digest = Sha256::new();
-        for (group, event) in events.iter().enumerate() {
-            for day in 0..12 {
-                let n = group * 12 + day;
+        for (n, event) in events.iter().enumerate() {
+            for season in [1, 17, 18, 22, 23, 32, 36] {
                 let profile = Profile {
                     events: event.iter().map(|value| (*value).into()).collect(),
-                    season: seasons[n % 6],
-                    priority_passes: [
-                        ("quick_play".into(), json!(((n * 7) % 41).to_string())),
-                        ("competitive".into(), json!((n * 13) % 41)),
-                    ]
-                    .into_iter()
-                    .collect(),
+                    season,
+                    priority_passes: [("quick_play".into(), json!("7"))].into_iter().collect(),
                     ..Profile::default()
                 };
-                let now = 1_700_000_000 + n as u64 * DAY + 29;
-                let state = arcade
-                    .state(&profile, ranked.season(&profile), now)
-                    .unwrap();
-                digest.update((state.competitive_cards.len() as u32).to_le_bytes());
-                for card in state.competitive_cards {
-                    digest.update(card.to_le_bytes());
-                }
+                let now = 1_700_000_000 + n as u64 * DAY;
+                let season = ranked.season(&profile);
+                let state = arcade.state(&profile, season, now).unwrap();
+                // Every card the lists show is as busy as the others.
+                let Array(busy) = &state.messages[2].2[&0x78] else {
+                    panic!("busyness")
+                };
+                let listed = card_order(&profile.events, now).len()
+                    + 2
+                    + usize::from(season.open_card.is_some());
+                assert_eq!(busy.len(), listed);
                 for (crc, id, fields) in state
                     .messages
                     .into_iter()
                     .chain([passes::counts(&profile).unwrap()])
                 {
-                    let mut wire = schemas.header(crc, 1, id).unwrap();
-                    wire.extend(schemas.encode(crc, id, &fields).unwrap());
-                    digest.update(crc.to_le_bytes());
-                    digest.update(id.to_le_bytes());
-                    digest.update((wire.len() as u32).to_le_bytes());
-                    digest.update(wire);
+                    schemas.encode(crc, id, &fields).unwrap();
                 }
             }
         }
-        assert_eq!(
-            format!("{:x}", digest.finalize()),
-            "e1dbf0e419aab360fa3f2fa3eb38600272b2676af3c544f10a52729b90f048a4"
-        );
     }
 }

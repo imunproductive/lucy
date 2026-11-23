@@ -202,6 +202,10 @@ impl Field {
 
 type RawSchemas = BTreeMap<String, BTreeMap<u32, Vec<Field>>>;
 
+/// Where the game data folder holds the lobby and game link layouts.
+pub const LOBBY_SCHEMAS: &str = "data/lobby_schemas.json";
+pub const GAME_SCHEMAS: &str = "data/game_schemas.json";
+
 /// Wire layouts keyed by protocol CRC and message ID. Field vectors preserve schema order.
 #[derive(Debug)]
 pub struct Schemas {
@@ -215,14 +219,21 @@ impl Schemas {
         (messages, self.groups.len())
     }
 
-    /// The client's lobby message layouts.
-    pub fn lobby() -> Self {
-        Self::from_json(lucy_fixed::LOBBY_SCHEMAS).expect("the embedded lobby schemas parse")
+    /// The client's lobby message layouts, as `lucy_assets` derives them
+    /// from the client program into the game data folder `runtime`.
+    pub fn lobby(runtime: &Path) -> Result<Self, CodecError> {
+        Self::load(runtime.join(LOBBY_SCHEMAS))
     }
 
-    /// The client's game link message layouts.
-    pub fn game() -> Self {
-        Self::from_json(lucy_fixed::GAME_SCHEMAS).expect("the embedded game schemas parse")
+    /// The client's game link message layouts (as [`Self::lobby`]). The
+    /// first load also gives the channel writer
+    /// ([`crate::messages::write_channel`]) the layouts it finds a frame's
+    /// last field end with.
+    pub fn game(runtime: &Path) -> Result<Self, CodecError> {
+        let path = runtime.join(GAME_SCHEMAS);
+        let schemas = Self::load(&path)?;
+        crate::messages::keep_game_schemas(|| Self::load(&path));
+        Ok(schemas)
     }
 
     pub fn from_json(json: &str) -> Result<Self, CodecError> {
@@ -648,8 +659,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn lobby_wire_vectors_match_python() {
-        let schemas = Schemas::lobby();
+        let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
         let login = 0x3c7e3468;
         let mut fields = schemas.empty(login, 21800).unwrap();
         fields.insert(0x78, Value::String("Player".into()));
@@ -685,8 +697,12 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn all_shipped_lobby_and_game_schemas_round_trip_defaults() {
-        for schemas in [Schemas::lobby(), Schemas::game()] {
+        for schemas in [
+            Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap(),
+            Schemas::game(&lucy_testkit::runtime_dir()).unwrap(),
+        ] {
             for (crc, group) in &schemas.groups {
                 for id in group.keys() {
                     let default_body = schemas.encode(*crc, *id, &Fields::new()).unwrap();

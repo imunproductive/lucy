@@ -8,7 +8,6 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
-lucy-fixed.workspace = true
 aes-gcm.workspace = true
 getrandom.workspace = true
 hmac.workspace = true

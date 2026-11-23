@@ -104,7 +104,7 @@ fn two_players_befriend_party_chat_and_find_the_bot_group() {
     let (mut server, _) = start(&state);
     let lobby = SocketAddr::from(server.lobby_addr());
     let dashboard = server.dashboard_addr().unwrap();
-    let schemas = Schemas::lobby();
+    let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
     let bot = account_id_for("Bot");
     let (alpha_lo, beta_lo) = (account_id_for("Alpha"), account_id_for("Beta"));
 
@@ -305,7 +305,7 @@ fn team_chat_system_lines_and_a_kick_from_the_dashboard() {
     let (mut server, time) = start(&state);
     let lobby = SocketAddr::from(server.lobby_addr());
     let dashboard = server.dashboard_addr().unwrap();
-    let schemas = Schemas::lobby();
+    let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
     let mut alpha = login(&schemas, lobby, "Alpha");
     let joined_general = alpha.expect(CHAT_IN, 20402)[&0x78].clone();
     let mut beta = login(&schemas, lobby, "Beta");

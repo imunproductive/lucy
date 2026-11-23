@@ -412,7 +412,7 @@ mod tests {
     #[ignore = "requires derived 104319 game schemas and hero catalog"]
     fn reliable_21616_messages_match_the_python_reader_and_hero_select_requests() {
         let data = lucy_testkit::runtime_dir().join("data");
-        let schemas = Schemas::game();
+        let schemas = Schemas::game(&lucy_testkit::runtime_dir()).unwrap();
         let heroes = HeroCatalog::load(data.join("game_heroes_174.json")).unwrap();
         // Python game.messages.write_channel with synthetic entity IDs and the
         // known pick/open parameter bytes from tests/test_game_statescript.py.

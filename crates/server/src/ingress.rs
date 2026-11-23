@@ -501,8 +501,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn matches_a_python_mixed_frame_with_the_runtime_schema() {
-        let schemas = Schemas::game();
+        let schemas = Schemas::game(&lucy_testkit::runtime_dir()).unwrap();
         // Python write_channel + tests/test_game_commands.py::record(5000).
         let frame = [
             0x23, 0, 0, 0, 0, 0, 1, 2, 1, 10, 3, 0, 0, 0, 2, 0, 0, 0, 111, 0, 0, 0, 0, 0, 0, 0,

@@ -385,8 +385,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn prepared_player_message_wire_bytes_match_python() {
-        let schemas = Schemas::lobby();
+        let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
         let digest = |messages: &[LobbyMessage]| {
             let mut hash = Sha256::new();
             for (crc, id, fields) in messages {
