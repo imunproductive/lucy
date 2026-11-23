@@ -84,7 +84,7 @@ use lucy_physics::{
 use lucy_script::bot::{BOT_MOVEMENT_SAMPLE, PATROL_GRAPH, Patrol};
 use lucy_script::vm::Motion;
 use lucy_wire::commands::Command;
-use lucy_wire::entity::{Movement, NO_INPUT};
+use lucy_wire::entity::{Movement, NO_INPUT, POSITION_UNITS};
 
 use crate::{
     bot_animation::{AnimRequest, BodyRig, BotAnimation},
@@ -337,9 +337,21 @@ impl PatrolCollision {
         navigate::walkable(&self.body, self.lift, ground, from, to)
     }
 
-    fn advance(&mut self, from: [f64; 3], to: [f64; 3], dt: f64) -> [f64; 3] {
+    /// Walk its capsule from one point toward the other, meeting the
+    /// characters `peers` on the way as the client's character move does
+    /// (`lucy_physics::contact::body`): it slides along a capsule it
+    /// meets, or stops against it.
+    fn advance(
+        &mut self,
+        from: [f64; 3],
+        to: [f64; 3],
+        dt: f64,
+        peers: &[CapsulePose],
+    ) -> [f64; 3] {
         let start = standing_origin(from, self.lift);
         self.body.teleport(start);
+        self.body
+            .set_peers(peers.iter().map(|peer| peer.world_capsule()));
         let delta = sub(standing_origin(to, self.lift), start);
         match self.body.move_capsule(delta, dt as f32) {
             Ok(moved) if moved.position == add(start, delta) => to,
@@ -385,6 +397,9 @@ pub struct Bot {
     animation: Option<BotAnimation>,
     /// Its flight after a knockback ([`Bot::knock`]).
     flight: Option<BotFlight>,
+    /// The bodies that block its walk and flight now, the enemy players'
+    /// ([`Self::set_peers`]).
+    peers: Vec<CapsulePose>,
 }
 
 /// A knocked bot's body on a mover of its own (the body's
@@ -433,6 +448,7 @@ impl Bot {
             records_from: None,
             animation: None,
             flight: None,
+            peers: Vec::new(),
             spawn,
         }
     }
@@ -547,13 +563,17 @@ impl Bot {
     }
 
     /// A knocked body's frames up to `tick` on its mover, with no input; it
-    /// lands once its mover has it on the ground and still. Then its walk
-    /// goes on from there ([`Self::step`]).
+    /// lands once its mover has it on the ground and still as its movement
+    /// record gives it to the client (each speed in [`POSITION_UNITS`]
+    /// steps, the record's precision): friction leaves a residue far below
+    /// one step (`x - x / speed * speed`), which no frame removes again.
+    /// Then its walk goes on from there ([`Self::step`]).
     pub(crate) fn fly(&mut self, tick: u32, rays: &TriangleIndex) {
         let Some(flight) = &mut self.flight else {
             return;
         };
         let seconds = TICK_PERIOD.as_secs_f64();
+        flight.mover.set_peers(&self.peers);
         let frames = tick.saturating_sub(flight.last_tick).min(CATCH_UP);
         for frame in tick - frames + 1..=tick {
             let command = Command {
@@ -572,8 +592,9 @@ impl Bot {
         let pose = flight.mover.pose();
         self.position = pose.position;
         self.velocity = pose.velocity;
+        let still = |speed: f64| (speed * POSITION_UNITS).round_ties_even() == 0.0;
         let [vx, _, vz] = pose.velocity;
-        if self.movement_sample() & 1 == 0 && vx == 0.0 && vz == 0.0 {
+        if self.movement_sample() & 1 == 0 && still(vx) && still(vz) {
             self.flight = None;
             self.velocity = [0.0; 3];
             if let Some(collision) = &mut self.collision {
@@ -833,8 +854,9 @@ impl Bot {
             self.floor(nx, y, nz, ground)
         };
         let intended = [nx, ny, nz];
+        let peers = &self.peers;
         let [nx, ny, nz] = self.collision.as_mut().map_or(intended, |collision| {
-            collision.advance(self.position, intended, dt)
+            collision.advance(self.position, intended, dt, peers)
         });
         self.position = [nx, ny, nz];
         self.velocity = [(nx - x) / dt, (ny - y) / dt, (nz - z) / dt];
@@ -864,6 +886,21 @@ impl Bot {
             ((x - sx).hypot(z - sz) / whole).min(1.0)
         };
         sy + (ty - sy) * gone
+    }
+
+    /// The bodies that block its walk and flight from now on: the enemy
+    /// players' (`replication::blocks`), where they are after their
+    /// commands of this tick (the bots step after the players, upstream
+    /// 8ac2eb1b, leafall903/ORPHEUS (MIT)). A walk a player blocks goes on:
+    /// its keys stay held and its capsule slides along his or stops against
+    /// him, as the client's character move takes any character's input
+    /// (the AI heroes' and the players' movers), and it ends only on its
+    /// point, so its script waits while he stands there. The retail
+    /// server's own walk (`STU_ECAEE401`'s native, a stub on the client)
+    /// isn't known.
+    pub(crate) fn set_peers(&mut self, peers: impl IntoIterator<Item = CapsulePose>) {
+        self.peers.clear();
+        self.peers.extend(peers);
     }
 
     pub fn walking(&self) -> bool {
