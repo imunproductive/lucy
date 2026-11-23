@@ -639,6 +639,11 @@ pub trait OwnerBodyRuntime: Send {
     /// read of other entities.
     fn set_map_variables(&mut self, _variables: &Arc<[(u32, Variables)]>) {}
 
+    /// What the player has equipped on the communication wheel for the
+    /// body's hero, which the wheel's graphs read (`STU_250DEABD`,
+    /// `STU_DF7C7C63`, `STU_17B517B9`, `STU_2977339D`).
+    fn set_cosmetics(&mut self, _cosmetics: lucy_script::wheel::Cosmetics) {}
+
     /// The death layer's parameters of the death message for a kill by the
     /// body `killer` ([`DeathCamera`]), as the body's world knows the
     /// killer and the body; none: the body runs no script that reads them.
@@ -5422,8 +5427,8 @@ impl WorldDelivery {
             .map_or_else(Vec::new, |script| script.runtime.take_aura_changes())
     }
 
-    /// The player's living body dealt `amount` of damage (or healing, with
-    /// `heal`) to `target`, a body of definition `target_body`, in a health
+    /// The player's living body dealt `amount` of damage or healing
+    /// (`dealt`) to `target`, a body of definition `target_body`, in a health
     /// change tagged `tags`: its body takes `0012.025` (or `0044.025`), as
     /// from the retail server, and its graph `0B8B` charges the ultimate
     /// for it (`lucy_script::ultimate`). The body learns the target's
@@ -5436,7 +5441,7 @@ impl WorldDelivery {
         target_body: Option<u64>,
         amount: f64,
         tags: &DamageTags,
-        heal: bool,
+        dealt: lucy_script::ultimate::Dealt,
     ) {
         if self.death.is_some() || amount <= 0.0 {
             return;
@@ -5455,7 +5460,7 @@ impl WorldDelivery {
                     .unwrap_or_default();
                 script.runtime.set_victim_tags(target, target_tags);
                 let (message, parameters) =
-                    lucy_script::ultimate::dealt_message(target, amount, tags, heal);
+                    lucy_script::ultimate::dealt_message(target, amount, tags, dealt);
                 script
                     .runtime
                     .receive_message(body.id.entity, message, parameters)
@@ -5481,13 +5486,13 @@ impl WorldDelivery {
         target: u32,
         amount: f64,
         tags: &DamageTags,
-        heal: bool,
+        dealt: lucy_script::ultimate::Dealt,
     ) {
         if amount <= 0.0 {
             return;
         }
         let (message, parameters) =
-            lucy_script::ultimate::dealt_message(target, amount, tags, heal);
+            lucy_script::ultimate::dealt_message(target, amount, tags, dealt);
         self.modified.push(GameMessage {
             sender: source,
             target: source,
@@ -6633,6 +6638,7 @@ impl WorldDelivery {
         // A new body is alive (`scene` module notes).
         let body_filter = body_filter(team_bit, false);
         let start_frame = self.input.processed.unwrap_or(tick);
+        let wheel = viewer.card.wheel.get(&hero.guid).copied();
         let mut script = scene
             .owner_body_runtime(
                 hero,
@@ -6653,6 +6659,9 @@ impl WorldDelivery {
             .flatten()
             .and_then(|mut runtime| {
                 runtime.set_target_candidates(&self.target_candidates);
+                if let Some(wheel) = &wheel {
+                    runtime.set_cosmetics(scene.graphs().wheel_cosmetics(wheel));
+                }
                 runtime.set_pickups(&self.pickups);
                 runtime.set_map_variables(&self.map_variables);
                 // The body starts with the defaults; what the client sent
@@ -6696,6 +6705,7 @@ impl WorldDelivery {
             body: entity,
             hero: hero.guid,
             skin: (skin.guid != 0).then_some(skin.guid),
+            wheel,
         };
         let placed = here.is_none() && !self.headless;
 
@@ -6779,7 +6789,7 @@ impl WorldDelivery {
         self.push(Record::new(
             EntityUpdate {
                 entity: self.owner,
-                operation: Some(Operation::Update(possession.components().into())),
+                operation: Some(Operation::Update(possession.components())),
                 ..EntityUpdate::default()
             },
             Delivery::Possession(id),

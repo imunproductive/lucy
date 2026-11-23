@@ -262,19 +262,36 @@ impl<W: World + ?Sized> Vm<'_, '_, '_, W> {
         }
     }
 
-    /// A networked wheel action ran, or a Workshop action graph's
-    /// (an instance with its parameters `#18739`: Small and Big Message's
-    /// `STU_100EF8C2`, which the client runs from the frames with the
-    /// instance's `#18739` and `#20176`): keep it for the clients' frames.
+    /// A networked action with a remote index ran: keep it for the
+    /// clients' frames, with the values its remote sync list
+    /// (`m_BF5B22B7`, `STUStatescriptRemoteSyncVar`: the variable
+    /// `m_0D09D2D9`, its scope `m_56341592`, 0 the instance's, 1 the
+    /// entity's) has as it runs. A remote index (`m_remoteSyncNodes`) is
+    /// how the server tells the clients that the node ran: the client
+    /// runs the node it names from the frame's remote messages (104319
+    /// A0CCA0), and the owner's client records the actions it predicted
+    /// itself (the base run, 0x7FF78AA7EBA0, host vt+312 with the node's
+    /// uid). Any entity's graphs: the mode entity's (`0F4A`'s music and
+    /// countdown messages), a body's (`01C7`'s hit and elimination
+    /// effects), the wheel's, a Workshop action's (Small and Big
+    /// Message's `STU_100EF8C2`).
     pub(super) fn record_frame_action(&mut self, id: u16, node: &Node) {
-        let instance = &self.machine.snapshot.instances[&id];
-        if node.remote < 0
-            || !(wheel::ACTION_GRAPHS.contains(&instance.graph)
-                || instance.variables.contains_key(&ACTION_PARAMETERS))
-        {
+        if node.remote < 0 || !node.is_action() || !node.is_networked() {
             return;
         }
+        let values = remote_sync_variables(node)
+            .map(|variable| {
+                let key = source_key(id, variable);
+                let owner = match variable.scope {
+                    Scope::Instance => id,
+                    Scope::Entity => 0,
+                };
+                (owner, variable.id, self.machine.value(key, None))
+            })
+            .collect();
+        let instance = &self.machine.snapshot.instances[&id];
         let instance_start_ms = instance.start_ms;
+        let owner = self.machine.in_message || wheel::GRAPHS.contains(&instance.graph);
         let actions = &mut self.machine.snapshot.frame_actions;
         let serial = actions.last().map_or(1, |last| last.serial.wrapping_add(1));
         actions.push(FrameAction {
@@ -283,9 +300,33 @@ impl<W: World + ?Sized> Vm<'_, '_, '_, W> {
             instance_start_ms,
             node: node.pos,
             time_ms: self.machine.now_ms,
+            values: Arc::new(values),
+            owner,
         });
         if actions.len() > MAX_FRAME_ACTIONS {
             actions.remove(0);
         }
     }
+}
+
+/// The variables a networked action's remote sync list names
+/// ([`Vm::record_frame_action`]); a row of another shape names none.
+fn remote_sync_variables(node: &Node) -> impl Iterator<Item = Variable> + '_ {
+    array_field(&node.fields, "m_BF5B22B7")
+        .iter()
+        .filter(|row| field(row, "$").as_str() == Some("STUStatescriptRemoteSyncVar"))
+        .filter_map(|row| {
+            let id = asset_guid(field(row, "m_0D09D2D9"))
+                .filter(|guid| guid >> 48 == 0x0d80 && *guid as u16 != 0)?
+                as u16;
+            let scope = match field(row, "m_56341592").as_u64()? {
+                0 => Scope::Instance,
+                1 => Scope::Entity,
+                _ => return None,
+            };
+            Some(Variable {
+                scope,
+                id: u32::from(id),
+            })
+        })
 }

@@ -120,6 +120,17 @@ pub(super) fn world_player(
                 .map(|skin| (hero.guid, skin))
         })
         .collect::<io::Result<_>>()?;
+    let wheel = lobby
+        .assets
+        .heroes()
+        .heroes()
+        .map(|hero| {
+            lobby
+                .collection
+                .wheel_loadout(&profile, hero.guid)
+                .map(|wheel| (hero.guid, wheel))
+        })
+        .collect::<io::Result<_>>()?;
     let world_card = PlayerCard {
         account: identity.account_id(),
         battle_tag: battle_tag(&profile.player_name, account.account_lo),
@@ -134,6 +145,7 @@ pub(super) fn world_player(
         }),
         role: (role != 0).then(|| i8::try_from(role).unwrap_or(0)),
         skins,
+        wheel,
         record: record.clone(),
     };
     let player = MatchPlayer {

@@ -183,6 +183,15 @@ pub(crate) fn dispatch_scene(
                                 .map(|skin| (hero.guid, skin))
                         })
                         .collect::<io::Result<_>>()?,
+                    wheel: assets
+                        .heroes()
+                        .heroes()
+                        .map(|hero| {
+                            collection
+                                .wheel_loadout(&profile, hero.guid)
+                                .map(|wheel| (hero.guid, wheel))
+                        })
+                        .collect::<io::Result<_>>()?,
                     // The lobby's card, which every client of the match gets
                     // in 20308 (ow174/lobby/matchmaker.py `_card`).
                     record: player_messages::record(&profile, login.identity, portrait_frame, now),

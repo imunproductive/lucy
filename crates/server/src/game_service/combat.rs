@@ -4,7 +4,7 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use indexmap::IndexMap;
-use lucy_script::vm::AuraChange;
+use lucy_script::{ultimate::Dealt, vm::AuraChange};
 use lucy_sim::{
     bot_script::{BotShotKind, SeenRocket},
     combat::{
@@ -263,7 +263,7 @@ impl RoomState {
             }
         }
         // Each hit to the shooter's body as damage dealt or healing done:
-        // its `0B8B` charges the ultimate.
+        // its `0B8B` charges the ultimate, its `01C7` plays the hit's sound.
         let scene = self.room.world.as_ref().map(|world| &world.scene);
         if let (Some(scene), Some(peer)) = (
             scene,
@@ -277,20 +277,30 @@ impl RoomState {
                     .find(|bot| bot.entity == hit.bot)
                     .map(|bot| bot.spawn.body);
                 for notice in hit.notices.iter().flatten() {
-                    if let CombatNotice::Hit { dealt, .. } = notice {
+                    if let CombatNotice::Hit {
+                        dealt, critical, ..
+                    } = *notice
+                    {
+                        let kind = Dealt::Damage { critical };
                         peer.world
-                            .dealt(&graphs, hit.bot, body, *dealt, &hit.tags, false);
+                            .dealt(&graphs, hit.bot, body, dealt, &hit.tags, kind);
                         if let Some(source) = hit.source {
                             peer.world
-                                .source_dealt(source, hit.bot, *dealt, &hit.tags, false);
+                                .source_dealt(source, hit.bot, dealt, &hit.tags, kind);
                         }
                     }
                 }
-                peer.world
-                    .dealt(&graphs, hit.bot, body, hit.healed, &hit.tags, true);
+                peer.world.dealt(
+                    &graphs,
+                    hit.bot,
+                    body,
+                    hit.healed,
+                    &hit.tags,
+                    Dealt::Healing,
+                );
                 if let Some(source) = hit.source {
                     peer.world
-                        .source_dealt(source, hit.bot, hit.healed, &hit.tags, true);
+                        .source_dealt(source, hit.bot, hit.healed, &hit.tags, Dealt::Healing);
                 }
             }
         }

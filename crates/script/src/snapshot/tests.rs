@@ -353,7 +353,7 @@ fn a_plain_state_whose_payload_is_a_link_goes_out_with_no_link() {
             .unwrap();
         assert!(delta.instances[&1].states.contains_key(&2));
         encoder
-            .delta_frame(&owner, &delta, DeltaKind::InitialOwner(1001), 16, None)
+            .delta_frame(&owner, &delta, DeltaKind::InitialOwner(1001), 16, &[])
             .unwrap();
     }
     let link = codecs
@@ -631,9 +631,7 @@ fn initial_owner_delta_matches_python_stack_bindings_and_payloads() {
         Value::Integer(17)
     );
     check(
-        &encoder
-            .delta_frame(&python, &delta, kind, 16, None)
-            .unwrap(),
+        &encoder.delta_frame(&python, &delta, kind, 16, &[]).unwrap(),
         222,
         "2a7d40af40003a908f89004e0189008012116000f0db11009b981800",
     );
@@ -2002,6 +2000,73 @@ fn an_observer_delta_carries_only_what_the_queued_chunks_hold_beyond_the_base() 
     assert_eq!(keys(&stream, three.last), BTreeSet::from([entity]));
 }
 
+/// Every action the client hasn't acknowledged goes in a delta, under the
+/// stamp of the chunk that first carried it, with the values its remote
+/// sync list had as it ran; the delivered projection holds those values,
+/// so the next delta lists the current ones. An action whose values differ
+/// from an earlier one's waits for a later frame.
+#[test]
+fn a_delta_carries_the_unacknowledged_actions_with_the_values_they_ran_with() {
+    let (graphs, snapshot) = fixture();
+    let codecs = CodecTable::from_json(CODECS).unwrap();
+    let encoder = SnapshotEncoder::new(&graphs, &codecs);
+    let observer = encoder.project(&snapshot, View::Observer).unwrap();
+    let mut stream = BodyStream::new(ENTITY);
+    let baseline = encoder.queue_full(&mut stream, &observer).unwrap();
+    stream.create_arrived();
+    stream.arrived(baseline.last);
+    let action = |serial, value| ProjectedAction {
+        serial,
+        instance: 1,
+        graph: 42,
+        raw: 1,
+        remote: 1,
+        values: Arc::new(vec![(1, 100, Value::Integer(value))]),
+    };
+    let mut current = observer.clone();
+    current.actions = vec![action(1, 5), action(2, 5), action(3, 6)];
+    let kind = DeltaKind::Observer { resend: false };
+    let variable = ChangeKey::Variable(1, 100);
+    let send = |stream: &mut BodyStream<ProjectedSnapshot>| {
+        let chunk = encoder
+            .queue_delta(stream, &current, kind, 16)
+            .unwrap()
+            .unwrap();
+        let (_, delivered, keys) = stream
+            .pending()
+            .find(|(number, _, _)| *number == chunk.last)
+            .unwrap();
+        let held = delivered.instance_variable(1, 100).cloned();
+        (chunk.last, keys.clone(), held)
+    };
+    let (first, keys, held) = send(&mut stream);
+    // The actions' keys under `stamp`, and the variable's.
+    let with = |serials: &[u32], stamp: u32| -> BTreeSet<ChangeKey> {
+        serials
+            .iter()
+            .map(|&serial| ChangeKey::Action { serial, stamp })
+            .chain([variable])
+            .collect()
+    };
+    assert_eq!(keys, with(&[1, 2], first));
+    assert_eq!(held, Some(Value::Integer(5)));
+    stream.sent(first);
+    // Not acknowledged yet: the same actions again, under the first stamp.
+    let (second, keys, _) = send(&mut stream);
+    assert_eq!(keys, with(&[1, 2], first));
+    stream.sent(second);
+    stream.arrived(first);
+    stream.arrived(second);
+    let (third, keys, held) = send(&mut stream);
+    assert_eq!(keys, with(&[3], third));
+    assert_eq!(held, Some(Value::Integer(6)));
+    stream.sent(third);
+    stream.arrived(third);
+    let (_, keys, held) = send(&mut stream);
+    assert_eq!(keys, BTreeSet::from([variable]));
+    assert_eq!(held, Some(Value::Integer(17)));
+}
+
 #[test]
 fn owner_timer_replacement_preserves_signed_time_steps_and_fifo_ties() {
     let (graphs, snapshot) = fixture();
@@ -2241,7 +2306,7 @@ fn actual_shared_ui_graph_baselines_match_python() {
             .differences(base, &owner, &BTreeSet::new(), &BTreeSet::new())
             .unwrap();
         let frame = encoder
-            .delta_frame(&owner, &delta, DeltaKind::InitialOwner(1000), 16, None)
+            .delta_frame(&owner, &delta, DeltaKind::InitialOwner(1000), 16, &[])
             .unwrap();
         assert_eq!(frame.bit_len(), delta_bits);
         assert_eq!(

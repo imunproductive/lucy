@@ -63,7 +63,7 @@ use crate::{
 use lucy_content::catalog::{ItemDb, Unlock};
 use lucy_core::guid::parse_guid;
 use lucy_wire::{
-    entity::SkinTheme,
+    entity::{SkinTheme, WheelLoadout},
     jam::codec::{
         Fields, MAX_ARRAY_COUNT,
         Value::{self, Array, Bool, Signed, Struct, Unsigned},
@@ -419,6 +419,27 @@ impl Collection {
         Ok(SkinTheme {
             guid: item(0x38).map_or(0, |skin| skin.skin_theme),
             golden: item(0x50).is_some_and(|weapon| weapon.name == "GOLDEN"),
+        })
+    }
+
+    /// The hero's equipped sprays, emotes and voice lines (loadout slots
+    /// `+0x58`, `+0x88`, `+0x70`), the first four of each, for the
+    /// player's component 65 in a match.
+    pub fn wheel_loadout(&self, profile: &Profile, hero: u64) -> io::Result<WheelLoadout> {
+        let loadout = self.loadout(profile, hero)?;
+        let slots = |slot: u32| -> io::Result<[u64; 4]> {
+            let mut guids = [0; 4];
+            if loadout.contains_key(&slot) {
+                for (guid, value) in guids.iter_mut().zip(array(&loadout, slot)?) {
+                    *guid = unsigned(value)?;
+                }
+            }
+            Ok(guids)
+        };
+        Ok(WheelLoadout {
+            sprays: slots(0x58)?,
+            emotes: slots(0x88)?,
+            voice_lines: slots(0x70)?,
         })
     }
 

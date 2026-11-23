@@ -200,7 +200,7 @@ use lucy_wire::{
     entity::{
         Component, ComponentValue, Create, CreateFrame, EntityUpdate, FRAME_ZERO_BACK,
         GAME_MODE_ENTITY, Movement, Operation, PLAYER_PATH, SkinTheme, WITH_PARTICIPANT,
-        WITH_SCALE, WITH_TRANSFORM,
+        WITH_SCALE, WITH_TRANSFORM, WheelLoadout,
     },
     jam::codec::Fields,
 };
@@ -292,6 +292,7 @@ pub fn bot_controller_create(bot: &Bot, slot: usize) -> io::Result<EntityUpdate>
             body: bot.entity,
             hero: bot.spawn.hero,
             skin: None,
+            wheel: None,
         }
         .components(),
     );
@@ -319,11 +320,15 @@ pub struct Possession {
     pub body: u32,
     pub hero: u64,
     pub skin: Option<u64>,
+    /// The player's equipped wheel cosmetics for the hero (component 65);
+    /// none for a player whose loadout the match doesn't have (a bot):
+    /// then the client plays the hero's default voice lines.
+    pub wheel: Option<WheelLoadout>,
 }
 
 impl Possession {
-    pub fn components(self) -> [Component; 2] {
-        [
+    pub fn components(self) -> Vec<Component> {
+        let mut components = vec![
             fields(44, vec![Some(ComponentValue::Entity(self.body)); 3]),
             fields(
                 75,
@@ -334,7 +339,9 @@ impl Possession {
                     Some(ComponentValue::Id(self.hero)),
                 ],
             ),
-        ]
+        ];
+        components.extend(self.wheel.map(|wheel| wheel.component()));
+        components
     }
 }
 
@@ -359,6 +366,9 @@ pub struct PlayerCard {
     pub ranked: Option<(i16, i16, i8)>,
     pub role: Option<i8>,
     pub skins: HashMap<u64, SkinTheme>,
+    /// Each hero's equipped sprays, emotes and voice lines, as
+    /// [`Self::skins`].
+    pub wheel: HashMap<u64, WheelLoadout>,
     /// The lobby's player record, the 20308 card every client of the match
     /// gets (ow174/content/player.py `record`). Empty: ids and name only.
     pub record: Fields,
