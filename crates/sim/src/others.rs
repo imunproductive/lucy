@@ -118,12 +118,9 @@ impl ObserverActivity {
                 if codecs.node_codec(node).is_some_and(Codec::stec)
                     && (state.active || state.activation != 0)
                 {
-                    activity.stec.push((
-                        (id, raw),
-                        state.active,
-                        state.activation,
-                        state.start_ms,
-                    ));
+                    activity
+                        .stec
+                        .push(((id, raw), state.active, state.activation, state.start_ms));
                 }
             }
         }

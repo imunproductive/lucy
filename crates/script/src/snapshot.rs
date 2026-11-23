@@ -438,14 +438,18 @@ impl ProjectedInstance {
                 .all(|((a_id, a), (b_id, b))| a_id == b_id && a.identical(b))
             && self.variables.bindings == other.variables.bindings
             && self.states.len() == other.states.len()
-            && self.states.iter().zip(&other.states).all(|((a_raw, a), (b_raw, b))| {
-                a_raw == b_raw
-                    && a.active == b.active
-                    && a.activation == b.activation
-                    && a.volley == b.volley
-                    && a.chase_steps == b.chase_steps
-                    && values(a.payload.iter(), b.payload.iter())
-            })
+            && self
+                .states
+                .iter()
+                .zip(&other.states)
+                .all(|((a_raw, a), (b_raw, b))| {
+                    a_raw == b_raw
+                        && a.active == b.active
+                        && a.activation == b.activation
+                        && a.volley == b.volley
+                        && a.chase_steps == b.chase_steps
+                        && values(a.payload.iter(), b.payload.iter())
+                })
             && self.events == other.events
     }
 }
@@ -1410,10 +1414,7 @@ impl<'a> SnapshotEncoder<'a> {
                 .as_ref()
                 .and_then(|(kept, _)| kept.as_ref()?.projected.instances.get(&id))
                 .filter(|kept| kept.identical(&projected));
-            instances.insert(
-                id,
-                kept.map_or_else(|| Arc::new(projected), Arc::clone),
-            );
+            instances.insert(id, kept.map_or_else(|| Arc::new(projected), Arc::clone));
         }
         // The entity's variables as the kept projection has them, shared
         // (with the comparisons made to them) while none changed.

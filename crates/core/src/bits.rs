@@ -250,7 +250,11 @@ impl BitWriter {
 const PUSH_BITS: usize = 56;
 
 fn low_bits(width: usize) -> u64 {
-    if width >= 64 { u64::MAX } else { (1 << width) - 1 }
+    if width >= 64 {
+        u64::MAX
+    } else {
+        (1 << width) - 1
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
