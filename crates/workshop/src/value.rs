@@ -70,6 +70,51 @@ pub enum Text {
 }
 
 impl Value {
+    /// The same value bit for bit: unlike `==`, 0.0 and -0.0 differ, and a
+    /// NaN is the same as the same NaN. Whatever is worked out from one is
+    /// worked out the same from the other.
+    pub fn identical(&self, other: &Self) -> bool {
+        fn numbers(a: &[f64], b: &[f64]) -> bool {
+            a.iter().zip(b).all(|(a, b)| a.to_bits() == b.to_bits())
+        }
+        fn all(a: &[Value], b: &[Value]) -> bool {
+            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| a.identical(b))
+        }
+        match (self, other) {
+            (Self::Number(a), Self::Number(b)) => a.to_bits() == b.to_bits(),
+            (Self::Vector(a), Self::Vector(b)) => numbers(a, b),
+            (Self::Color(Color::Rgba(a)), Self::Color(Color::Rgba(b))) => numbers(a, b),
+            (Self::Array(a), Self::Array(b)) => all(a, b),
+            (
+                Self::Text(Text::Custom {
+                    template: a,
+                    args: a_args,
+                }),
+                Self::Text(Text::Custom {
+                    template: b,
+                    args: b_args,
+                }),
+            ) => a == b && all(a_args, b_args),
+            (
+                Self::Text(Text::Predefined {
+                    index: a,
+                    args: a_args,
+                }),
+                Self::Text(Text::Predefined {
+                    index: b,
+                    args: b_args,
+                }),
+            ) => a == b && all(a_args, b_args),
+            (
+                Self::Number(_) | Self::Vector(_) | Self::Array(_) | Self::Color(Color::Rgba(_)),
+                _,
+            )
+            | (Self::Text(Text::Custom { .. } | Text::Predefined { .. }), _) => false,
+            // No number in these: `==` is bit for bit.
+            _ => self == other,
+        }
+    }
+
     /// Whether the value counts as true: a non-zero number or vector, any
     /// entity, a non-empty array or string [assumption for arrays and
     /// strings].

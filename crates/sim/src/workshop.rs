@@ -62,6 +62,7 @@ use lucy_workshop::{
         World,
     },
     logic::events,
+    memo::Reads,
     value::{Color, EntityId, Text, Value},
 };
 
@@ -159,6 +160,9 @@ struct Running {
     reevaluated: Vec<bool>,
     /// The parameters it has now.
     sent: Vec<Wire>,
+    /// What each reevaluated parameter's last evaluation read
+    /// ([`Engine::reevaluate_params`]).
+    kept: Vec<Option<Reads>>,
 }
 
 /// A variable as the engine wrote it and as it went to the entity.
@@ -525,13 +529,22 @@ impl Host<'_, '_> {
             .map(|(&handle, _)| handle)
             .collect();
         for handle in due {
+            let mut kept =
+                std::mem::take(&mut self.actions.get_mut(&handle).expect("due action").kept);
             let running = &self.actions[&handle];
             let (source, context) = (
                 Arc::clone(&running.call.source),
                 running.call.context.clone(),
             );
-            let params = engine.reevaluate_params(&*self, &source, &context, &running.reevaluated);
+            let params = engine.reevaluate_params(
+                &*self,
+                &source,
+                &context,
+                &running.reevaluated,
+                &mut kept,
+            );
             let running = self.actions.get_mut(&handle).expect("due action");
+            running.kept = kept;
             let mut kinds = None;
             let mut changed = Vec::new();
             for (index, param) in params.into_iter().enumerate() {
@@ -544,10 +557,11 @@ impl Host<'_, '_> {
                 let Some(evaluated) = running.call.params.get_mut(index) else {
                     continue;
                 };
-                if same_param(evaluated, &param) {
+                if evaluated.identical(&param) {
                     continue;
                 }
-                let kinds = kinds.get_or_insert_with(|| param_kinds(self.catalog, running.call.action));
+                let kinds =
+                    kinds.get_or_insert_with(|| param_kinds(self.catalog, running.call.action));
                 let value = parameter(self.catalog, kinds.get(index).copied(), &param);
                 *evaluated = param;
                 if let Some(sent) = running.sent.get_mut(index)
@@ -576,65 +590,21 @@ impl Host<'_, '_> {
             _ => from_wire(now),
         }
     }
+
+    /// Whether [`Self::read`] gives `value` bit for bit, without a copy.
+    fn read_is(stored: Option<&Stored>, now: &Wire, value: &Value) -> bool {
+        match stored {
+            Some(stored) if stored.wire.identical(now) => stored.value.identical(value),
+            _ if *now == Wire::Null => Value::Number(0.0).identical(value),
+            _ => from_wire(now).identical(value),
+        }
+    }
 }
 
 /// The Workshop variable index of entity variable `id`
 /// ([`workshop_variable`]: `FF7F` to `FFFE`).
 fn workshop_index(id: u32) -> Option<u8> {
     (0..=127u8).find(|&index| workshop_variable(i64::from(index)) == id)
-}
-
-/// The same parameter bit for bit (unlike `==`, 0.0 and -0.0 differ, as
-/// they do on the wire; a NaN is never the same).
-fn same_param(a: &Param, b: &Param) -> bool {
-    match (a, b) {
-        (Param::Value(a), Param::Value(b)) => same_value(a, b),
-        (
-            Param::PerViewer {
-                value: a,
-                viewers: a_viewers,
-            },
-            Param::PerViewer {
-                value: b,
-                viewers: b_viewers,
-            },
-        ) => {
-            same_value(a, b)
-                && a_viewers.len() == b_viewers.len()
-                && a_viewers
-                    .iter()
-                    .zip(b_viewers)
-                    .all(|((a_viewer, a), (b_viewer, b))| a_viewer == b_viewer && same_value(a, b))
-        }
-        _ => false,
-    }
-}
-
-fn same_value(a: &Value, b: &Value) -> bool {
-    let numbers = |a: &[f64], b: &[f64]| a.iter().zip(b).all(|(a, b)| a.to_bits() == b.to_bits());
-    let all = |a: &[Value], b: &[Value]| a.len() == b.len() && a.iter().zip(b).all(|(a, b)| same_value(a, b));
-    match (a, b) {
-        (Value::Number(a), Value::Number(b)) => a.to_bits() == b.to_bits() && !a.is_nan(),
-        (Value::Vector(a), Value::Vector(b)) => numbers(a, b) && !a.iter().any(|c| c.is_nan()),
-        (Value::Color(Color::Rgba(a)), Value::Color(Color::Rgba(b))) => {
-            numbers(a, b) && !a.iter().any(|c| c.is_nan())
-        }
-        (Value::Array(a), Value::Array(b)) => all(a, b),
-        (
-            Value::Text(Text::Custom { template: a, args: a_args }),
-            Value::Text(Text::Custom { template: b, args: b_args }),
-        ) => a == b && all(a_args, b_args),
-        (
-            Value::Text(Text::Predefined { index: a, args: a_args }),
-            Value::Text(Text::Predefined { index: b, args: b_args }),
-        ) => a == b && all(a_args, b_args),
-        (
-            Value::Number(_) | Value::Vector(_) | Value::Array(_) | Value::Color(Color::Rgba(_)),
-            _,
-        )
-        | (Value::Text(Text::Custom { .. } | Text::Predefined { .. }), _) => false,
-        _ => a == b,
-    }
 }
 
 /// The catalog kinds of action `action`'s parameters.
@@ -1095,6 +1065,25 @@ impl Variables for Host<'_, '_> {
         self.player_variables
             .insert((player, index), Stored { value, wire });
     }
+    fn global_is(&self, index: u8, value: &Value) -> bool {
+        Self::read_is(
+            self.globals.get(&index),
+            &self.script.workshop_global_ref(i64::from(index)),
+            value,
+        )
+    }
+    fn player_is(&self, player: EntityId, index: u8, value: &Value) -> bool {
+        let now = self
+            .index(player)
+            .and_then(|at| self.players[at].world.workshop_variable_ref(index));
+        let stored = self.player_variables.get(&(player, index));
+        match now {
+            Some(now) => Self::read_is(stored, &now, value),
+            None => stored.map_or(Value::Number(0.0).identical(value), |stored| {
+                stored.value.identical(value)
+            }),
+        }
+    }
 }
 
 impl Actions for Host<'_, '_> {
@@ -1122,6 +1111,7 @@ impl Actions for Host<'_, '_> {
                         call,
                         reevaluated,
                         sent,
+                        kept: Vec::new(),
                     },
                 );
             }

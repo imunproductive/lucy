@@ -748,10 +748,7 @@ impl<H: World + Variables + ?Sized> Eval<'_, '_, H> {
                 if index < 0.0 {
                     Value::Null
                 } else {
-                    items
-                        .into_iter()
-                        .nth(index as usize)
-                        .unwrap_or(Value::Null)
+                    items.into_iter().nth(index as usize).unwrap_or(Value::Null)
                 }
             }
             COUNT_OF => Value::Number(self.at(value, 0).into_array().len() as f64),
