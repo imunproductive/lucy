@@ -56,6 +56,7 @@ Do not run the full game-install suites (`just test-game`, `just test-slow`) for
 | `just test-named <install> <crate> <filter> [gametest]` | ignored tests of one crate whose names contain the filter; debug build unless `gametest` is given | The game-install tests of the area you work on |
 | `just test-affected <install>` | every test, ignored ones included, of the crates `tools/affected.py` names, without `slow_` and `serial_` | An agent's own check before reporting |
 | `just test-assets <install> <pack>` | ignored `matches_the_pack` tests of `lucy-assets` | Derivations against a prepared pack |
+| `just fresh-clone <install>` | `tools/fresh_clone.py`: the committed tree in a temporary folder, checked to ship no derived file, built into an empty target folder; every file derived from the install into an empty state folder; `lucy server` started on free loopback ports until its banner | A fresh clone runs from nothing but the install (about 15-20 minutes) |
 | `just test-datatool <install> <dump>` | ignored `datatool` tests of `lucy-stu` | The asset reader against a DataTool export |
 | `just test-dpk <install> <archive>` | ignored `dpk_archive` tests of `lucy-workshop`, `lucy-sim` and `lucy-server`, optimised (`gametest`) | The Workshop parser and engine over the Doomfist parkour scripts; C32S2 in a simulated match and in a hosted one |
 | `just test-windows` | ignored tests of `lucy-launcher` | Loads the relay DLL into a stand-in process |

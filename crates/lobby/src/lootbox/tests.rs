@@ -211,8 +211,9 @@ fn opening_every_box_reports_the_new_items_without_a_refill() {
 }
 
 #[test]
+#[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn the_box_messages_match_python() {
-    let schemas = Schemas::lobby();
+    let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
     let drops = [
         Drop {
             hero: HERO,

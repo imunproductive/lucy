@@ -1,6 +1,6 @@
 use super::*;
 use lucy_content::catalog::{ItemDb, UNLOCK_BASE};
-use lucy_lobby::templates::RetailTemplates;
+use lucy_lobby::economy::ItemPrices;
 
 const ICON: u64 = UNLOCK_BASE | 0x10;
 const FRAME: u64 = UNLOCK_BASE | 0x20;
@@ -29,26 +29,14 @@ impl Fixture {
         .unwrap();
         accounts.get("Alpha").unwrap();
         let selected = Mutex::new(accounts.get("Beta").unwrap());
-        let templates = RetailTemplates::from_reader(
-            format!(
-                r#"{{"format":1,"server":[
-                    ["70E5A247",24900,{{"+0x80":[],"+0x98":[]}}],
-                    ["779A8581",24300,{{"+0x78":{{"+0x30":[]}},"+0xF8":{{"+0x0":[
-                        {{"+0x0":{FRAME},"+0x10":601,"+0x14":0,"+0x16":0}},
-                        {{"+0x0":{SPRAY},"+0x10":0,"+0x14":100,"+0x16":0}},
-                        {{"+0x0":{OWL_ICON},"+0x10":0,"+0x14":50,"+0x16":-1}}
-                    ]}}}}]
-                ]}}"#
-            )
-            .as_bytes(),
-        )
-        .unwrap();
         let mut items = ItemDb::default();
-        for (guid, name, item_type, categories) in [
-            (ICON, "Ring", "Icon", &[][..]),
-            (FRAME, "Silver", "PortraitFrame", &[]),
-            (SPRAY, "Tag", "Spray", &[]),
-            (OWL_ICON, "Team", "Icon", &["OWL"]),
+        // The frame unlocks at level 601; the spray is a base box item, the
+        // Overwatch League icon no box's.
+        for (guid, name, item_type, categories, box_type, level) in [
+            (ICON, "Ring", "Icon", &[][..], None, None),
+            (FRAME, "Silver", "PortraitFrame", &[], None, Some(601)),
+            (SPRAY, "Tag", "Spray", &[], Some("Base"), None),
+            (OWL_ICON, "Team", "Icon", &["OWL"], None, None),
         ] {
             items.unlocks.insert(
                 guid,
@@ -59,15 +47,21 @@ impl Fixture {
                     rarity: "Common".into(),
                     hero: None,
                     source: String::new(),
-                    box_type: None,
+                    box_type: box_type.map(Into::into),
                     categories: categories.iter().map(|&category| category.into()).collect(),
                     available_in: String::new(),
                     skin_theme: 0,
                     esports_team: String::new(),
+                    level,
                 },
             );
         }
-        let collection = Collection::new(&templates, Arc::new(items)).unwrap();
+        let prices = ItemPrices {
+            credits: [("Common".into(), 100)].into(),
+            competitive_points: 3000,
+            league_tokens: [("Common".into(), 50)].into(),
+        };
+        let collection = Collection::new(Arc::new(items), prices);
         Self {
             state,
             accounts,

@@ -395,6 +395,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn a_search_by_code_finds_the_game_with_those_settings() {
         let lookup = |code: &str| {
             Filter::of(&search(Fields::from([
@@ -408,7 +409,7 @@ mod tests {
                 (0x6e, Signed(3)),
             ])))
         };
-        let schemas = Schemas::lobby();
+        let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
         let found = results(&lookup("c32s2"), &[game()]);
         assert_eq!(found.2[&0x85], Signed(3));
         assert!(matches!(&found.2[&0x88], Array(entries) if entries.len() == 1));

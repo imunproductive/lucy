@@ -95,7 +95,7 @@ fn one_player_to_start_pops_the_queue_and_hands_the_game_off() {
         )
     );
 
-    let schemas = Schemas::lobby();
+    let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
     let mut client = Client::connect(&schemas, SocketAddr::from(server.lobby_addr()), &GROUPS);
     let key = Fields::from([(
         0,

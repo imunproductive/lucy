@@ -7,10 +7,8 @@
 //! card it writes the name, the rulesets (game mode, players per team,
 //! free-for-all), the role slots, the maps and the largest party. The client
 //! ships only 4 of the 43 catalogs the cards name. For the other cards the
-//! maps come from the retail capture (message 36300 of
-//! [`lucy_fixed::RETAIL_TEMPLATES`] lists each competitive card with its
-//! maps), or else from the map headers that support the card's modes,
-//! narrowed to the maps its Arcade tags name. `maps_source` says which.
+//! maps are the map headers that support the card's modes, narrowed to the
+//! maps its Arcade tags name. `maps_source` says which.
 
 use std::{
     cell::RefCell,
@@ -40,9 +38,6 @@ const CODE_NAMES: &[(u64, &str)] = &[
 const MODE_PVE: i64 = 3;
 /// `STUMapType::PVE`, a map header's type.
 const MAP_PVE: i64 = 2;
-
-/// The message of the retail capture that lists the competitive cards.
-const RANKED_CARDS: u64 = 36300;
 
 pub(crate) fn derive(install: &Install, _out: &Path) -> Result<Vec<Output>> {
     let queues = Queues::new(install)?;
@@ -326,8 +321,6 @@ struct Queues<'a> {
     menu_names: HashMap<u64, String>,
     /// Each card's tags in the Arcade menu, by card index.
     menu_tags: HashMap<u64, Vec<String>>,
-    /// The maps of each catalog in the retail capture, by catalog GUID.
-    captured: HashMap<u64, Vec<u64>>,
     /// The headers each event version of a map replaces, by header index.
     variant_of: HashMap<u64, BTreeSet<u64>>,
     /// The map names each catalog's cards show in the Arcade ("MAPS:
@@ -348,13 +341,11 @@ impl<'a> Queues<'a> {
             titles: load(install, 0x0D9)?,
             menu_names: HashMap::new(),
             menu_tags: HashMap::new(),
-            captured: HashMap::new(),
             variant_of: HashMap::new(),
             tag_maps: HashMap::new(),
         };
         (queues.menu_names, queues.menu_tags) =
             queues.menu(&load(install, 0x0EE)?, &load(install, 0x0CC)?)?;
-        queues.captured = queues.captured()?;
         queues.variant_of = queues.variants()?;
         for (index, asset) in &queues.cards {
             let catalog = Node::root(asset)?.guid("m_catalog");
@@ -433,35 +424,6 @@ impl<'a> Queues<'a> {
             card_tags.insert(card, found);
         }
         Ok((names, card_tags))
-    }
-
-    /// The maps of each catalog the retail capture shows: message 36300
-    /// lists the competitive cards (`+0x98`), each with its card (`+0x18`)
-    /// and maps (`+0xD8`).
-    fn captured(&self) -> Result<HashMap<u64, Vec<u64>>> {
-        let templates: Json = serde_json::from_str(lucy_fixed::RETAIL_TEMPLATES)
-            .map_err(|error| asset_error(format!("retail templates: {error}")))?;
-        let ranked = templates["server"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|message| message[1].as_u64() == Some(RANKED_CARDS))
-            .ok_or_else(|| asset_error("the retail templates lack message 36300"))?;
-        let mut maps = HashMap::new();
-        for entry in ranked[2]["+0x98"].as_array().into_iter().flatten() {
-            let Some(card) = entry["+0x18"]
-                .as_u64()
-                .and_then(|card| self.cards.get(&(card & INDEX)))
-            else {
-                continue;
-            };
-            let catalog = Node::root(card)?.guid("m_catalog");
-            if catalog != 0 {
-                let found = entry["+0xD8"].as_array().into_iter().flatten();
-                maps.insert(catalog, found.filter_map(Json::as_u64).collect());
-            }
-        }
-        Ok(maps)
     }
 
     /// Event versions of maps (Winter, Halloween, Lunar New Year) and the
@@ -653,8 +615,6 @@ impl<'a> Queues<'a> {
                 })
                 .collect();
             ("catalog", found)
-        } else if let Some(found) = self.captured.get(&catalog) {
-            ("retail capture", found.clone())
         } else {
             self.derived(catalog, modes)?
         };

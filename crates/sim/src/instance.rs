@@ -194,11 +194,12 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn map_load_and_roster_updates_match_python_for_teams_and_free_for_all() {
         use lucy_wire::{jam::codec::Schemas, messages::encode};
         use sha2::{Digest, Sha256};
 
-        let schemas = Schemas::game();
+        let schemas = Schemas::game(&lucy_testkit::runtime_dir()).unwrap();
         let members = members();
         // Python's Range was mode 0018 with one player; ours is 005A for a
         // party (`maps.rs` `PYTHON_PRACTICE_RANGE_MODE`), so the comparison

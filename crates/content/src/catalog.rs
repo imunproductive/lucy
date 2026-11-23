@@ -5,8 +5,6 @@ use std::{collections::HashMap, fs, io, path::Path};
 use indexmap::IndexMap;
 use serde::{Deserialize, de::DeserializeOwned};
 
-use lucy_wire::jam::codec::{Fields, Value};
-
 pub const UNLOCK_BASE: u64 = 0x0250_0000_0000_0000;
 pub const SKIN_THEME_BASE: u64 = 0x0a50_0000_0000_0000;
 pub const HERO_BASE: u64 = 0x02e0_0000_0000_0000;
@@ -25,6 +23,9 @@ pub struct Unlock {
     pub available_in: String,
     pub skin_theme: u64,
     pub esports_team: String,
+    /// The account or hero level that unlocks the item (a `LevelUnlocks` or
+    /// `AdditionalUnlocks` group); 0 for a default item.
+    pub level: Option<i64>,
 }
 
 #[derive(Debug, Default)]
@@ -66,6 +67,7 @@ struct RawEntry {
     esports_team: Option<String>,
     unlocks: Option<Vec<RawEntry>>,
     loot_box_type: Option<String>,
+    level: Option<i64>,
 }
 
 fn read_optional<T: DeserializeOwned + Default>(path: &Path) -> io::Result<T> {
@@ -157,10 +159,16 @@ impl ItemDb {
             for mut entry in entries.unwrap_or_default() {
                 if let Some(unlocks) = entry.unlocks.take() {
                     for unlock in unlocks {
-                        self.add(unlock, hero, &source, entry.loot_box_type.as_deref())?;
+                        self.add(
+                            unlock,
+                            hero,
+                            &source,
+                            entry.loot_box_type.as_deref(),
+                            entry.level,
+                        )?;
                     }
                 } else {
-                    self.add(entry, hero, &source, None)?;
+                    self.add(entry, hero, &source, None, None)?;
                 }
             }
         }
@@ -173,6 +181,7 @@ impl ItemDb {
         hero: Option<&str>,
         source: &str,
         box_type: Option<&str>,
+        level: Option<i64>,
     ) -> io::Result<()> {
         let Some(guid) = entry.guid.as_deref().and_then(unlock_guid) else {
             return Ok(());
@@ -193,6 +202,7 @@ impl ItemDb {
             available_in: entry.available_in.unwrap_or_default(),
             skin_theme,
             esports_team: entry.esports_team.unwrap_or_default(),
+            level,
         });
         Ok(())
     }
@@ -262,32 +272,17 @@ impl ItemDb {
     }
 }
 
-pub const RUB_CURRENCY: u64 = 643;
-pub const RUB_COUNTRY: &str = "RUS";
-pub const DEFAULT_REGION: &str = "US";
-pub const DEFAULT_GAME_REGION: &str = "americas";
-
+/// ISO 4217 currency codes (840, 978, 826, 643), sent in the store message.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Region {
     pub code: &'static str,
     pub label: &'static str,
     pub country: &'static str,
     pub currency: u64,
-    pub template: &'static str,
-    pub decimal_comma: bool,
 }
 
-impl Region {
-    pub fn display(&self, amount: f64) -> String {
-        let text = format!("{amount:.2}");
-        let text = if self.decimal_comma {
-            text.replace('.', ",")
-        } else {
-            text
-        };
-        self.template.replace("{}", &text)
-    }
-}
+pub const DEFAULT_REGION: &str = "US";
+pub const DEFAULT_GAME_REGION: &str = "americas";
 
 pub const REGIONS: [Region; 4] = [
     Region {
@@ -295,32 +290,24 @@ pub const REGIONS: [Region; 4] = [
         label: "United States (USD)",
         country: "USA",
         currency: 840,
-        template: "${}",
-        decimal_comma: false,
     },
     Region {
         code: "EU",
         label: "Europe (EUR)",
         country: "DEU",
         currency: 978,
-        template: "{} \u{20ac}",
-        decimal_comma: true,
     },
     Region {
         code: "GB",
         label: "United Kingdom (GBP)",
         country: "GBR",
         currency: 826,
-        template: "\u{a3}{}",
-        decimal_comma: false,
     },
     Region {
         code: "RU",
         label: "Russia (RUB)",
-        country: RUB_COUNTRY,
-        currency: RUB_CURRENCY,
-        template: "{} RUB",
-        decimal_comma: true,
+        country: "RUS",
+        currency: 643,
     },
 ];
 /// Game regions, the servers a player plays on. The lobby sends the number in
@@ -340,92 +327,6 @@ pub fn region_of(code: &str) -> &'static Region {
         .iter()
         .find(|region| region.code == code)
         .unwrap_or(&REGIONS[0])
-}
-
-// Captured whole RUB prices and the local bundle amounts in cents.
-const TIERS: [(u16, u16, u16); 5] = [
-    (119, 199, 179),
-    (299, 499, 449),
-    (599, 999, 899),
-    (1199, 1999, 1799),
-    (2399, 3999, 3599),
-];
-
-/// The captured retail store lists real-money bundles priced in RUB. A price
-/// record holds the amount twice in 1/10000 units (+0x0, +0x8), the currency
-/// (+0x10) and the display text twice (+0x18, +0x40); the store message has
-/// its own currency code next to its product list.
-pub fn localize(value: &Value, code: &str) -> Value {
-    let mut localized = value.clone();
-    let region = region_of(code);
-    if region.currency != RUB_CURRENCY {
-        localize_value(&mut localized, region);
-    }
-    localized
-}
-
-pub fn localize_fields(fields: &Fields, code: &str) -> Fields {
-    let mut localized = fields.clone();
-    let region = region_of(code);
-    if region.currency != RUB_CURRENCY {
-        localize_struct(&mut localized, region);
-    }
-    localized
-}
-
-fn localize_value(value: &mut Value, region: &Region) {
-    match value {
-        Value::Struct(fields) => localize_struct(fields, region),
-        Value::Array(items) => {
-            for item in items {
-                localize_value(item, region);
-            }
-        }
-        Value::String(text) if text == RUB_COUNTRY => *text = region.country.into(),
-        _ => (),
-    }
-}
-
-fn localize_struct(fields: &mut Fields, region: &Region) {
-    if let Some(cents) = price_cents(fields, region) {
-        let amount = Value::Unsigned(u64::from(cents) * 100);
-        let text = Value::String(region.display(f64::from(cents) / 100.0));
-        fields.insert(0x00, amount.clone());
-        fields.insert(0x08, amount);
-        fields.insert(0x10, Value::Unsigned(region.currency));
-        fields.insert(0x18, text.clone());
-        fields.insert(0x40, text);
-        return;
-    }
-    for item in fields.values_mut() {
-        localize_value(item, region);
-    }
-    if is_rub(fields.get(&0x78)) && matches!(fields.get(&0x80), Some(Value::Array(_))) {
-        fields.insert(0x78, Value::Unsigned(region.currency));
-    }
-}
-
-fn is_rub(value: Option<&Value>) -> bool {
-    matches!(value, Some(Value::Unsigned(RUB_CURRENCY)))
-        || matches!(value, Some(Value::Signed(currency)) if *currency == RUB_CURRENCY as i64)
-}
-
-fn price_cents(fields: &Fields, region: &Region) -> Option<u16> {
-    if !is_rub(fields.get(&0x10)) {
-        return None;
-    }
-    let Value::String(text) = fields.get(&0x18)? else {
-        return None;
-    };
-    let head = text.split(' ').next()?.split(',').next()?;
-    if !head.bytes().all(|byte| byte.is_ascii_digit()) {
-        return None;
-    }
-    let rub = head.parse::<u16>().ok()?;
-    TIERS
-        .iter()
-        .find(|(tier, _, _)| *tier == rub)
-        .map(|(_, usd, gbp)| if region.code == "GB" { *gbp } else { *usd })
 }
 
 #[cfg(test)]
@@ -465,13 +366,16 @@ mod tests {
         fs::write(
             data.path().join("extracted_general_unlocks.json"),
             r#"{"Default":[{"GUID":"00F0.0A5","Name":"Repeated again"},
-                           {"GUID":"01.0A5","Name":null,"Categories":null}]}"#,
+                           {"GUID":"01.0A5","Name":null,"Categories":null}],
+                "AdditionalUnlocks":[{"Level":11,"Unlocks":[{"GUID":"05.0A5"}]}]}"#,
         )
         .unwrap();
 
         let catalog = ItemDb::load(data.path()).unwrap();
         let ids: Vec<_> = catalog.unlocks.keys().map(|id| id ^ UNLOCK_BASE).collect();
-        assert_eq!(ids, [0xf0, 2, 3, 4, 1]);
+        assert_eq!(ids, [0xf0, 2, 3, 4, 1, 5]);
+        assert_eq!(catalog.get(UNLOCK_BASE | 5).unwrap().level, Some(11));
+        assert_eq!(catalog.get(UNLOCK_BASE | 1).unwrap().level, None);
         assert_eq!(catalog.hero_by_name("  SPARROW "), Some(HERO_BASE | 0xf0));
         assert_eq!(catalog.hero_classes[&(HERO_BASE | 0x10)], None);
         let home = catalog.get(UNLOCK_BASE | 0xf0).unwrap();
@@ -509,54 +413,12 @@ mod tests {
         }
     }
 
-    fn price(text: &str) -> Value {
-        Value::Struct(Fields::from([
-            (0x00, Value::Unsigned(11_990_000)),
-            (0x08, Value::Unsigned(11_990_000)),
-            (0x10, Value::Unsigned(RUB_CURRENCY)),
-            (0x18, Value::String(text.into())),
-            (0x40, Value::String(text.into())),
-        ]))
-    }
-
     #[test]
-    fn rewrites_nested_store_currency_prices_and_country_without_mutating_capture() {
-        let amount = price("1199,00 RUB");
-        let store = Fields::from([
-            (0x78, Value::Unsigned(RUB_CURRENCY)),
-            (0x80, Value::Array(vec![amount.clone()])),
-            (0xf8, Value::String(RUB_COUNTRY.into())),
-        ]);
-        for (code, units, shown, country, currency) in [
-            ("US", 199_900, "$19.99", "USA", 840),
-            ("EU", 199_900, "19,99 \u{20ac}", "DEU", 978),
-            ("GB", 179_900, "\u{a3}17.99", "GBR", 826),
-        ] {
-            let result = localize_fields(&store, code);
-            assert_eq!(result[&0x78], Value::Unsigned(currency));
-            assert_eq!(result[&0xf8], Value::String(country.into()));
-            let Value::Array(items) = &result[&0x80] else {
-                panic!("missing store list")
-            };
-            let Value::Struct(price) = &items[0] else {
-                panic!("missing price")
-            };
-            assert_eq!(price[&0x10], Value::Unsigned(currency));
-            assert_eq!(price[&0x00], Value::Unsigned(units));
-            assert_eq!(price[&0x08], Value::Unsigned(units));
-            assert_eq!(price[&0x18], Value::String(shown.into()));
-            assert_eq!(price[&0x40], Value::String(shown.into()));
-        }
-        assert_eq!(store[&0x80], Value::Array(vec![amount]));
-        assert_eq!(localize_fields(&store, "RU"), store);
-        assert_eq!(
-            localize_fields(&store, "nope"),
-            localize_fields(&store, "US")
-        );
+    fn regions_and_game_regions_fall_back_to_the_first() {
+        assert_eq!(region_of("GB").currency, 826);
+        assert_eq!(region_of("nope"), &REGIONS[0]);
         assert_eq!(game_region_number("asia"), 3);
         assert_eq!(game_region_number("elsewhere"), 1);
-        let unknown = price("7,00 RUB");
-        assert_eq!(localize(&unknown, "US"), unknown);
     }
 
     #[test]

@@ -31,10 +31,9 @@ use lucy_lobby::{
     clock::Clock,
     collection::Collection,
     economy::Economy,
-    menu::extra_preload_themes,
     presence::{PRO_ACCOUNT_BITS, Presence},
     ranked::Ranked,
-    templates::RetailTemplates,
+    templates::InstallContent,
     xp_table::XpTable,
 };
 use lucy_sim::scene_assets::SceneAssets;
@@ -135,6 +134,8 @@ impl ServerConfig {
 pub struct Server {
     lobby_addr: SocketAddrV4,
     game_addr: Option<SocketAddr>,
+    /// The lobby's message layouts and protocol groups.
+    schema_counts: (usize, usize),
     stop_lobby: mpsc::Sender<()>,
     lobby: Option<JoinHandle<io::Result<()>>>,
     /// The lobby's connections that have a thread.
@@ -186,26 +187,25 @@ impl Server {
             ));
         }
         let data = config.runtime.join("data");
-        let signing_key = *lucy_fixed::LOBBY_STATE_BLOB_KEY;
-        let schemas = Schemas::lobby();
-        let game_schemas = Arc::new(Schemas::game());
-        let templates = RetailTemplates::captured();
+        let signing_key = game_data::lobby_state_blob_key(&config.runtime)?;
+        let schemas = Schemas::lobby(&config.runtime).map_err(io::Error::other)?;
+        let schema_counts = schemas.counts();
+        let game_schemas = Arc::new(Schemas::game(&config.runtime).map_err(io::Error::other)?);
+        let install_content = InstallContent::load(&data)?;
         let items = Arc::new(ItemDb::load(&data)?);
-        let collection = Collection::new(&templates, Arc::clone(&items))?;
-        let presence = Presence::new(&templates)?;
-        let ranked = Ranked::new(&templates)?;
-        let arcade = Arcade::load(data.join("arcade_cards_174.json"), &templates)?;
         let economy = Arc::new(Economy::load(&data)?);
+        let collection = Collection::new(Arc::clone(&items), economy.item_prices().clone());
+        let presence = Presence;
+        let ranked = Ranked::load(&data)?;
+        let arcade = Arcade::load(data.join("arcade_cards_174.json"))?;
         let xp = XpTable::load(&data)?;
-        let celebrations = Celebrations::load(&data, &templates, Arc::clone(&economy))?;
+        let celebrations = Celebrations::load(&data, Arc::clone(&economy))?;
         let mut assets = SceneAssets::load(&config.runtime)?;
         if let Some(install) = &config.install {
             assets = assets.with_collision_build(collision_build(install.clone()));
         }
-        // Skin themes newer than the capture, and the gun models.
-        let extra_preload = extra_preload_themes(&items)
-            .chain(assets.graphs().weapon_cosmetics())
-            .collect();
+        // The gun models, beside the install's preload.
+        let extra_preload = assets.graphs().weapon_cosmetics().into_iter().collect();
         let mut matchmaker =
             Matchmaker::new(&data, &config.data, config.test_players, config.test_ai)?;
         if let Some(dir) = &config.workshop_codes {
@@ -227,7 +227,7 @@ impl Server {
         } else {
             None
         };
-        let protocol = Arc::new(Protocol::client());
+        let protocol = Arc::new(Protocol::client(&config.runtime)?);
         let template = config
             .template
             .clone()
@@ -288,7 +288,7 @@ impl Server {
         let shared = Arc::new(Lobby {
             signing_key,
             schemas,
-            templates,
+            install_content,
             collection: Arc::new(collection),
             presence,
             ranked,
@@ -341,6 +341,7 @@ impl Server {
         Ok(Self {
             lobby_addr,
             game_addr,
+            schema_counts,
             stop_lobby,
             lobby: Some(lobby),
             #[cfg(test)]
@@ -359,6 +360,11 @@ impl Server {
 
     pub fn lobby_addr(&self) -> SocketAddrV4 {
         self.lobby_addr
+    }
+
+    /// The number of lobby message layouts and protocol groups it speaks.
+    pub fn schema_counts(&self) -> (usize, usize) {
+        self.schema_counts
     }
     /// The game server's address, when it runs.
     pub fn game_addr(&self) -> Option<SocketAddr> {
@@ -627,13 +633,9 @@ mod tests {
         }
         rust.save().unwrap();
         fs::write(state.path().join("default_account.txt"), "RUST\n").unwrap();
-        let schemas = Schemas::lobby();
-        let game_schemas = Schemas::game();
-        let collection = Collection::new(
-            &RetailTemplates::captured(),
-            Arc::new(ItemDb::load(&runtime.join("data")).unwrap()),
-        )
-        .unwrap();
+        let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
+        let game_schemas = Schemas::game(&lucy_testkit::runtime_dir()).unwrap();
+        let collection = Collection::load(&runtime.join("data")).unwrap();
         let original_skin = collection.equipped_skin(&rust.profile(), SOLDIER).unwrap();
         let skin = collection
             .owned_for_hero(&rust.profile(), SOLDIER)
@@ -879,11 +881,7 @@ mod tests {
         accounts.get("rust").unwrap();
         let other = accounts.get("other").unwrap();
         fs::write(state.path().join("default_account.txt"), "rust\n").unwrap();
-        let collection = Collection::new(
-            &RetailTemplates::captured(),
-            Arc::new(ItemDb::load(&runtime.join("data")).unwrap()),
-        )
-        .unwrap();
+        let collection = Collection::load(&runtime.join("data")).unwrap();
         let shop = Shop::new(&collection);
         let product = collection
             .store()
@@ -919,7 +917,7 @@ mod tests {
             LEADERBOARD_OUT,
             player::PERMISSIONS,
         ];
-        let schemas = Schemas::lobby();
+        let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
         let mut client = Client::connect(&schemas, SocketAddr::from(server.lobby_addr()), &groups);
         let id16 = |lo: u64| {
             Value::Struct(Fields::from([

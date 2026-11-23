@@ -61,7 +61,7 @@ fn dpk_archive_c32s2_hosted_match_shows_a_hud_text_on_the_mode_entity() {
         script.bodies.clone(),
     );
 
-    let schemas = Arc::new(Schemas::game());
+    let schemas = Arc::new(Schemas::game(&lucy_testkit::runtime_dir()).unwrap());
     let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     let prepare = {
         let (assets, map) = (Arc::clone(&assets), map.clone());
@@ -315,7 +315,7 @@ fn a_workshop_match_keeps_each_team_in_its_own_spawn_room() {
             .unwrap()
             .with_collision_build(collision_build(lucy_testkit::game_dir())),
     );
-    let schemas = Arc::new(Schemas::game());
+    let schemas = Arc::new(Schemas::game(&lucy_testkit::runtime_dir()).unwrap());
     let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     let prepare = {
         let (assets, map) = (Arc::clone(&assets), map.clone());
@@ -785,7 +785,7 @@ fn a_workshop_rule_runs_on_each_player_event() {
         .with_collision_build(collision_build(lucy_testkit::game_dir()));
     assets.set_player_unknowns(lucy_script::vm::Unknowns::Tolerate);
     let assets = Arc::new(assets);
-    let schemas = Arc::new(Schemas::game());
+    let schemas = Arc::new(Schemas::game(&lucy_testkit::runtime_dir()).unwrap());
     let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     let prepare = {
         let (assets, map) = (Arc::clone(&assets), map.clone());
@@ -1015,7 +1015,7 @@ fn a_workshop_dummy_bot_joins_and_leaves() {
         .with_collision_build(collision_build(lucy_testkit::game_dir()));
     assets.set_player_unknowns(lucy_script::vm::Unknowns::Tolerate);
     let assets = Arc::new(assets);
-    let schemas = Arc::new(Schemas::game());
+    let schemas = Arc::new(Schemas::game(&lucy_testkit::runtime_dir()).unwrap());
     let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     let prepare = {
         let (assets, map) = (Arc::clone(&assets), map.clone());
@@ -1161,7 +1161,7 @@ fn survey_script(path: &std::path::Path) -> Result<String, String> {
         game.values.clone(),
         script.bodies.clone(),
     );
-    let schemas = Arc::new(Schemas::game());
+    let schemas = Arc::new(Schemas::game(&lucy_testkit::runtime_dir()).unwrap());
     let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     let prepare = {
         let (assets, map) = (Arc::clone(&assets), map.clone());

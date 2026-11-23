@@ -192,7 +192,6 @@ fn push_state(peer: &mut Peer<'_, '_>, granted: &[u64]) -> io::Result<()> {
     };
     let party = social::party_messages(lobby, &login.account)?;
     let mut messages = login.live_messages(
-        &lobby.templates,
         &lobby.collection,
         &lobby.ranked,
         LoginContent {
@@ -334,19 +333,11 @@ mod tests {
 
     use super::*;
     use lucy_content::catalog::ItemDb;
-    use lucy_lobby::templates::RetailTemplates;
+    use lucy_lobby::economy::ItemPrices;
 
     fn services() -> Services {
-        let templates = RetailTemplates::from_reader(
-            br#"{"format":1,"server":[
-                ["70E5A247",24900,{"+0x80":[],"+0x98":[]}],
-                ["779A8581",24300,{"+0x78":{"+0x30":[]},"+0xF8":{"+0x0":[]}}]
-            ]}"#
-            .as_slice(),
-        )
-        .unwrap();
         Services::new(
-            &Collection::new(&templates, Arc::new(ItemDb::default())).unwrap(),
+            &Collection::new(Arc::new(ItemDb::default()), ItemPrices::default()),
             Arc::default(),
         )
     }

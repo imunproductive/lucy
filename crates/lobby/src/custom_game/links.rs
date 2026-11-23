@@ -304,10 +304,10 @@ struct Presets {
 
 /// The server's settings codes and every account's presets, kept in the
 /// state folder (`custom_games/`): a code's settings as the client shared
-/// them, by the code as [`normalise`] writes it.
+/// them, by the code as [`normalise`] writes it; their messages encoded
+/// with the lobby schemas the caller gives.
 pub struct LinkStore {
     dir: PathBuf,
-    schemas: Schemas,
 }
 
 /// The letters of a new code: no `I`, `L` or `O`, which the client reads
@@ -319,7 +319,6 @@ impl LinkStore {
     pub fn new(state: &Path) -> Self {
         Self {
             dir: state.join("custom_games"),
-            schemas: Schemas::lobby(),
         }
     }
 
@@ -330,12 +329,12 @@ impl LinkStore {
     }
 
     /// The settings under `code`, if the server has them.
-    pub fn code(&self, code: &str) -> io::Result<Option<CustomSettings>> {
+    pub fn code(&self, schemas: &Schemas, code: &str) -> io::Result<Option<CustomSettings>> {
         let Some(path) = self.code_path(code) else {
             return Ok(None);
         };
         match read_json::<StoredSettings>(&path)? {
-            Some(stored) => decode(&self.schemas, &stored.messages).map(Some),
+            Some(stored) => decode(schemas, &stored.messages).map(Some),
             None => Ok(None),
         }
     }
@@ -344,6 +343,7 @@ impl LinkStore {
     /// `again` when he owns it.
     pub fn share(
         &self,
+        schemas: &Schemas,
         owner: u32,
         again: Option<&str>,
         settings: &CustomSettings,
@@ -366,7 +366,7 @@ impl LinkStore {
         let stored = StoredSettings {
             owner: Some(owner),
             time: 0,
-            messages: encode(&self.schemas, settings)?,
+            messages: encode(schemas, settings)?,
         };
         let path = self.code_path(&code).expect("a valid code");
         write_json(&path, &stored)?;
@@ -407,14 +407,20 @@ impl LinkStore {
         Ok(self.presets(account)?.names)
     }
 
-    pub fn save(&self, account: u32, saved: &Saved, settings: &CustomSettings) -> io::Result<()> {
+    pub fn save(
+        &self,
+        schemas: &Schemas,
+        account: u32,
+        saved: &Saved,
+        settings: &CustomSettings,
+    ) -> io::Result<()> {
         let stored = StoredSettings {
             owner: None,
             time: match saved {
                 Saved::LastUsed(time) => *time,
                 _ => 0,
             },
-            messages: encode(&self.schemas, settings)?,
+            messages: encode(schemas, settings)?,
         };
         self.change(account, |presets| match saved {
             Saved::Preset(slot) => {
@@ -439,7 +445,12 @@ impl LinkStore {
     }
 
     /// 40901 for the saved settings asked for, if the account has them.
-    pub fn saved(&self, account: u32, request: SavedRequest) -> io::Result<Vec<LobbyMessage>> {
+    pub fn saved(
+        &self,
+        schemas: &Schemas,
+        account: u32,
+        request: SavedRequest,
+    ) -> io::Result<Vec<LobbyMessage>> {
         let presets = self.presets(account)?;
         let stored = match request {
             SavedRequest::Preset(slot) => presets.slots.get(&slot),
@@ -448,7 +459,7 @@ impl LinkStore {
         let Some(stored) = stored else {
             return Ok(Vec::new());
         };
-        let settings = decode(&self.schemas, &stored.messages)?;
+        let settings = decode(schemas, &stored.messages)?;
         Ok(match request {
             SavedRequest::Preset(slot) => preset(slot, &settings),
             SavedRequest::LastUsed => last_used(stored.time, &settings),
@@ -505,64 +516,84 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn a_shared_code_loads_back_and_only_its_owner_shares_it_again() {
         let state = tempfile::tempdir().unwrap();
         let store = LinkStore::new(state.path());
-        let code = store.share(7, None, &settings(1)).unwrap().unwrap();
+        let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
+        let code = store
+            .share(&schemas, 7, None, &settings(1))
+            .unwrap()
+            .unwrap();
         assert_eq!(code.len(), CODE_LENGTH);
         assert_eq!(normalise(&code), code);
-        let loaded = store.code(&code.to_lowercase()).unwrap().unwrap();
+        let loaded = store.code(&schemas, &code.to_lowercase()).unwrap().unwrap();
         assert_eq!(loaded.maps(), Vec::<u64>::new(), "no mode: no game");
         assert_eq!(loaded.settings[&0x218], Value::String("Parkour".into()));
         assert_eq!(loaded.chunks.len(), 1);
         assert_eq!(
-            store.share(8, Some(&code), &settings(2)).unwrap(),
+            store.share(&schemas, 8, Some(&code), &settings(2)).unwrap(),
             Err(ShareStatus::NotOwner)
         );
         assert_eq!(
-            store.share(7, Some("ZZZZZ"), &settings(2)).unwrap(),
+            store
+                .share(&schemas, 7, Some("ZZZZZ"), &settings(2))
+                .unwrap(),
             Err(ShareStatus::NoSuchCode)
         );
         assert_eq!(
-            store.share(7, Some(&code), &settings(2)).unwrap(),
+            store.share(&schemas, 7, Some(&code), &settings(2)).unwrap(),
             Ok(code.clone())
         );
-        let Value::Struct(entry) = &store.code(&code).unwrap().unwrap().chunks[0].fields[&0x78]
+        let Value::Struct(entry) =
+            &store.code(&schemas, &code).unwrap().unwrap().chunks[0].fields[&0x78]
         else {
             panic!()
         };
         assert_eq!(entry[&0x138], Unsigned(2));
-        assert!(store.code("NOPE1").unwrap().is_none());
-        assert!(store.code("../x").unwrap().is_none());
+        assert!(store.code(&schemas, "NOPE1").unwrap().is_none());
+        assert!(store.code(&schemas, "../x").unwrap().is_none());
     }
 
     #[test]
+    #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn presets_keep_their_names_and_settings_per_account() {
         let state = tempfile::tempdir().unwrap();
         let store = LinkStore::new(state.path());
-        store.save(7, &Saved::Preset(2), &settings(1)).unwrap();
+        let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
+        store
+            .save(&schemas, 7, &Saved::Preset(2), &settings(1))
+            .unwrap();
         store.name(7, 2, "Parkour".into()).unwrap();
-        store.save(7, &Saved::LastUsed(99), &settings(3)).unwrap();
+        store
+            .save(&schemas, 7, &Saved::LastUsed(99), &settings(3))
+            .unwrap();
         assert_eq!(
             store.preset_names(7).unwrap(),
             BTreeMap::from([(2, "Parkour".to_owned())])
         );
         assert!(store.preset_names(8).unwrap().is_empty());
-        let slot = store.saved(7, SavedRequest::Preset(2)).unwrap();
+        let slot = store.saved(&schemas, 7, SavedRequest::Preset(2)).unwrap();
         assert_eq!(slot[0].1, 40901);
         assert_eq!(slot[0].2[&0x78], Signed(0));
         assert_eq!(slot[0].2[&0xa8], Unsigned(2));
-        let last = store.saved(7, SavedRequest::LastUsed).unwrap();
+        let last = store.saved(&schemas, 7, SavedRequest::LastUsed).unwrap();
         assert_eq!(last[0].2[&0x78], Signed(1));
         assert_eq!(last[0].2[&0xb0], Unsigned(99));
         store.delete(7, 2).unwrap();
-        assert!(store.saved(7, SavedRequest::Preset(2)).unwrap().is_empty());
+        assert!(
+            store
+                .saved(&schemas, 7, SavedRequest::Preset(2))
+                .unwrap()
+                .is_empty()
+        );
         assert!(store.preset_names(7).unwrap().is_empty());
     }
 
     #[test]
+    #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn an_import_answer_names_the_code_the_client_waits_for() {
-        let schemas = Schemas::lobby();
+        let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
         let messages = link("c32s2", &settings(1));
         let ids: Vec<u32> = messages.iter().map(|(_, id, _)| *id).collect();
         assert_eq!(ids, [40901, 40902]);

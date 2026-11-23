@@ -31,6 +31,16 @@ pub struct EventBox {
     pub box_type: i32,
 }
 
+/// What the shop charges, by currency and rarity (`item_prices`): the base
+/// box's credit prices, the golden weapons' price in competitive points and
+/// the Overwatch League items' price in league tokens.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+pub struct ItemPrices {
+    pub credits: HashMap<String, i64>,
+    pub competitive_points: i64,
+    pub league_tokens: HashMap<String, i64>,
+}
+
 #[derive(Debug, Default)]
 pub struct Economy {
     /// Rarity -> the credits a duplicate gives.
@@ -39,6 +49,7 @@ pub struct Economy {
     credit_drops: HashMap<String, CreditDrop>,
     /// Celebration type (`01C` GUID) -> its box.
     event_boxes: HashMap<u64, EventBox>,
+    item_prices: ItemPrices,
 }
 
 #[derive(Deserialize)]
@@ -46,6 +57,7 @@ struct Raw {
     duplicate_credits: HashMap<String, i64>,
     credit_drops: HashMap<String, RawDrop>,
     celebration_boxes: HashMap<String, RawBox>,
+    item_prices: ItemPrices,
 }
 
 #[derive(Deserialize)]
@@ -103,7 +115,12 @@ impl Economy {
             duplicate_credits: raw.duplicate_credits,
             credit_drops,
             event_boxes,
+            item_prices: raw.item_prices,
         })
+    }
+
+    pub fn item_prices(&self) -> &ItemPrices {
+        &self.item_prices
     }
 
     /// The credits a duplicate item of `rarity` gives.

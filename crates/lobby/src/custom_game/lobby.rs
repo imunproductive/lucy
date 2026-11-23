@@ -973,8 +973,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn its_messages_encode_and_show_each_place() {
-        let schemas = Schemas::lobby();
+        let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
         let mut lobby = Lobby::new([5, 6], "Lobby".into(), player(1), settings([1, 1]));
         lobby.join(
             player(2),

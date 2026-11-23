@@ -208,7 +208,7 @@ fn places(roster: &Fields) -> Vec<(u64, u64, i64, u64)> {
 fn two_players_create_join_start_and_return_to_the_lobby() {
     let state = tempfile::tempdir().unwrap();
     let (mut server, time) = server(&state);
-    let schemas = Schemas::lobby();
+    let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
     let lobby = SocketAddr::from(server.lobby_addr());
     let mut host = Client::login(&schemas, lobby, &GROUPS, "Host");
     let mut guest = Client::login(&schemas, lobby, &GROUPS, "Guest");
@@ -419,7 +419,7 @@ fn a_shared_code_imports_in_another_game() {
     )
     .unwrap();
     let (mut server, _time) = server(&state);
-    let schemas = Schemas::lobby();
+    let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
     let lobby = SocketAddr::from(server.lobby_addr());
     let mut host = Client::login(&schemas, lobby, &GROUPS, "Host");
     let mut guest = Client::login(&schemas, lobby, &GROUPS, "Guest");
@@ -563,7 +563,7 @@ fn dpk_archive_c32s2_runs_through_a_custom_game_lobby() {
             "{team:?}: {list:?}"
         );
     }
-    let schemas = Schemas::lobby();
+    let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
     let state = tempfile::tempdir().unwrap();
     let (mut server, _time) = server(&state);
     let mut host = Client::login(

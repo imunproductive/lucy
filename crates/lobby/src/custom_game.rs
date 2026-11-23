@@ -917,7 +917,7 @@ mod tests {
     fn upload(text: &str) -> Vec<(u32, Fields)> {
         use base64::Engine as _;
 
-        let schemas = Schemas::lobby();
+        let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
         let workshop = Fields::from([(
             0,
             Array(vec![Struct(Fields::from([(
@@ -1033,6 +1033,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn an_upload_completes_with_its_last_chunk_and_reads_back() {
         const TEXT: &str = "settings\n{\n\tmain\n\t{\n\t\tDescription: \"Parkour\"\n\t}\n}\n";
         let settings = uploaded(TEXT);
@@ -1051,6 +1052,7 @@ mod tests {
     /// map entry's teams; Team 1's Doomfist list and his own value, Team
     /// 2's values, every team's list.
     #[test]
+    #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn a_game_plays_its_blocks_values_teams_and_heroes() {
         let settings = uploaded("");
         let rules = settings.rules(HANAMURA, ASSAULT);
@@ -1089,9 +1091,10 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn the_answers_replay_the_upload_in_the_server_groups() {
         let settings = uploaded("x");
-        let schemas = Schemas::lobby();
+        let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
         let updated = settings.update();
         let ids: Vec<_> = updated.iter().map(|(_, id, _)| *id).collect();
         assert_eq!(ids, [23312, 23313, 23315, 23314, 23316, 23317, 23317]);

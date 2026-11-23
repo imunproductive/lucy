@@ -1,9 +1,10 @@
 //! Battle.net RPC framing for a WebSocket binary message.
 //!
 //! Each frame has a big-endian u16 header length, a protobuf Header, and
-//! the protobuf body. The descriptor set is the client's, embedded by `lucy-fixed`.
+//! the protobuf body. The descriptor set is the client's (`lucy_assets`
+//! reads it from the client program).
 
-use std::{error::Error, fmt};
+use std::{error::Error, fmt, io, path::Path};
 
 use prost::Message;
 use prost_reflect::{
@@ -66,10 +67,21 @@ pub struct Protocol {
     size_field: FieldDescriptor,
 }
 
+/// Where the game data folder holds the client's descriptor set.
+pub const DESCRIPTORS: &str = "data/bnet_descriptors.pb";
+
 impl Protocol {
-    /// The client's Battle.net services.
-    pub fn client() -> Self {
-        Self::from_bytes(lucy_fixed::BNET_DESCRIPTORS).expect("the embedded descriptors load")
+    /// The client's Battle.net services, from the descriptor set
+    /// `lucy_assets` derives from the client program into the game data
+    /// folder `runtime`.
+    pub fn client(runtime: &Path) -> io::Result<Self> {
+        let path = runtime.join(DESCRIPTORS);
+        Self::from_bytes(&std::fs::read(&path)?).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{}: {error}", path.display()),
+            )
+        })
     }
 
     pub fn from_bytes(data: &[u8]) -> Result<Self, ProtocolError> {
@@ -337,8 +349,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn loads_the_client_descriptors() {
-        let protocol = Protocol::client();
+        let protocol = Protocol::client(&lucy_testkit::runtime_dir()).unwrap();
         for name in [
             CONNECT_REQUEST,
             CONNECT_RESPONSE,

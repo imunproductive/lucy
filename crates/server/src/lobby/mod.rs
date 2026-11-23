@@ -44,7 +44,7 @@ use lucy_lobby::{
     ranked::Ranked,
     session::{HANDSHAKE_TIMEOUT, LobbySession, LoginContent, LoginRequest},
     social::Social,
-    templates::RetailTemplates,
+    templates::InstallContent,
     xp_table::XpTable,
 };
 use lucy_sim::scene_assets::{PreparedScene, SceneAssets};
@@ -77,7 +77,8 @@ const LOG_VALUE_LIMIT: usize = 200;
 pub(crate) struct Lobby {
     pub signing_key: [u8; 64],
     pub schemas: Schemas,
-    pub templates: RetailTemplates,
+    /// The login's content from the install (preload, custom game maps).
+    pub install_content: InstallContent,
     pub collection: Arc<Collection>,
     pub presence: Presence,
     pub ranked: Ranked,
@@ -231,7 +232,7 @@ impl Lobby {
         let party = social::session_started(self, &login.account)?;
         let messages = login.available_messages(
             &self.schemas,
-            &self.templates,
+            &self.install_content,
             &self.collection,
             &self.presence,
             &self.ranked,

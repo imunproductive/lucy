@@ -48,8 +48,9 @@ fn round_trip(schemas: &Schemas, group: u32, id: u32, fields: &Fields) -> Fields
 
 /// `tests/test_queue.py::QueueTests::test_the_entry_carries_the_request_key`
 #[test]
+#[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn the_entry_carries_the_request_key() {
-    let schemas = Schemas::lobby();
+    let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
     let open_queue = request(0x1b4);
     let decoded = round_trip(&schemas, MATCHMAKE, ENTER_QUEUE, &open_queue);
     let Struct(key) = &decoded[&0x78] else {

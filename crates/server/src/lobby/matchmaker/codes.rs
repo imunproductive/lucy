@@ -26,7 +26,7 @@ use lucy_lobby::{
 };
 use lucy_script::graph::ModeValue;
 use lucy_wire::jam::codec::{
-    Fields,
+    Fields, Schemas,
     Value::{Array, Bool, Struct, Unsigned},
 };
 
@@ -248,6 +248,7 @@ impl Matchmaker {
     /// shared code (40913), or a saved preset or last used settings.
     pub(crate) fn link_upload(
         &self,
+        schemas: &Schemas,
         account: &Arc<Account>,
         id: u32,
         fields: Fields,
@@ -266,7 +267,10 @@ impl Matchmaker {
         match saved {
             Saved::Share(again) => {
                 let (code, status) =
-                    match self.links.share(me, again.as_deref(), &uploaded.settings)? {
+                    match self
+                        .links
+                        .share(schemas, me, again.as_deref(), &uploaded.settings)?
+                    {
                         Ok(code) => (code, ShareStatus::Done),
                         Err(status) => (again.clone().unwrap_or_default(), status),
                     };
@@ -278,15 +282,15 @@ impl Matchmaker {
             }
             saved => {
                 tracing::info!("[CG] {} saves settings: {saved:?}", account.name);
-                self.links.save(me, &saved, &uploaded.settings)?;
+                self.links.save(schemas, me, &saved, &uploaded.settings)?;
                 Ok(Vec::new())
             }
         }
     }
 
     /// 40809: a code's settings (40901 kind 2), or 40912.
-    pub(crate) fn load_link(&self, code: &str) -> io::Result<Vec<LobbyMessage>> {
-        if let Some(settings) = self.links.code(code)? {
+    pub(crate) fn load_link(&self, schemas: &Schemas, code: &str) -> io::Result<Vec<LobbyMessage>> {
+        if let Some(settings) = self.links.code(schemas, code)? {
             tracing::info!("[CG] Code {code}: shared settings");
             return Ok(link(code, &settings));
         }
@@ -342,10 +346,11 @@ impl Matchmaker {
     /// 40800: the saved settings asked for.
     pub(crate) fn saved_settings(
         &self,
+        schemas: &Schemas,
         account: &Arc<Account>,
         request: SavedRequest,
     ) -> io::Result<Vec<LobbyMessage>> {
-        self.links.saved(account.account_lo, request)
+        self.links.saved(schemas, account.account_lo, request)
     }
 
     /// 40801: a preset goes.

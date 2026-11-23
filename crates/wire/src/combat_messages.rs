@@ -261,10 +261,11 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn combat_notice_messages_match_python() {
         const KILLER: u32 = 0xa000_0101;
         const TARGET: u32 = 0xa004_0010;
-        let schemas = Schemas::game();
+        let schemas = Schemas::game(&lucy_testkit::runtime_dir()).unwrap();
         let cases: [(CombatNotice, Option<u32>, &[u8]); 5] = [
             (
                 CombatNotice::Hit {
@@ -324,10 +325,11 @@ mod tests {
     /// body, no observer override, the stimulus and the line key; the
     /// client must know the speaker first.
     #[test]
+    #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn a_voice_notice_names_the_speaker_stimulus_and_line() {
         const BOT: u32 = 0xc000_1000;
         const BODY: u32 = 0xa000_0101;
-        let schemas = Schemas::game();
+        let schemas = Schemas::game(&lucy_testkit::runtime_dir()).unwrap();
         let notice = CombatNotice::Voice {
             speaker: BOT,
             listener: BODY,
@@ -359,8 +361,9 @@ mod tests {
     /// f32 at +0x78: a quarter turn is the quaternion GameChecks sent
     /// (yaw +90°), half a turn faces -Z.
     #[test]
+    #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn a_view_notice_is_the_rotation_about_y() {
-        let schemas = Schemas::game();
+        let schemas = Schemas::game(&lucy_testkit::runtime_dir()).unwrap();
         let (_, crc, _) = messages::locate(VIEW).unwrap();
         let rotation = |yaw| {
             let notice = CombatNotice::View { yaw };
@@ -392,6 +395,7 @@ mod tests {
     /// u32 and two f32 (1.0, 1.0) the builder reads whatever the counts,
     /// the amount, no tags and not predicted.
     #[test]
+    #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn a_hurt_notice_is_the_clients_damage_taken_event() {
         let notice = CombatNotice::Hurt {
             victim: 0xa000_0101,
@@ -423,6 +427,11 @@ mod tests {
             &[0],          // +0x108 predicted
         ]
         .concat();
-        assert_eq!(notice.encode(&Schemas::game()).unwrap(), expected);
+        assert_eq!(
+            notice
+                .encode(&Schemas::game(&lucy_testkit::runtime_dir()).unwrap())
+                .unwrap(),
+            expected
+        );
     }
 }

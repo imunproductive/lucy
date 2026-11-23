@@ -8,7 +8,6 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
-lucy-fixed.workspace = true
 lucy-assets.workspace = true
 flate2.workspace = true
 getrandom.workspace = true

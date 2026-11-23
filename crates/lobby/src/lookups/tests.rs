@@ -7,6 +7,7 @@ fn id(lo: u64) -> Value {
 }
 
 #[test]
+#[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn names_come_from_saved_accounts_or_the_id() {
     let state = tempfile::tempdir().unwrap();
     let accounts =
@@ -33,22 +34,36 @@ fn names_come_from_saved_accounts_or_the_id() {
             (id(0x1234_5678), Value::String("Player22136".into())),
         ]
     );
-    Schemas::lobby().encode(reply.0, reply.1, &reply.2).unwrap();
+    Schemas::lobby(&lucy_testkit::runtime_dir())
+        .unwrap()
+        .encode(reply.0, reply.1, &reply.2)
+        .unwrap();
 }
 
 #[test]
-fn the_owl_poll_and_the_store_page_replay_retail() {
-    let schemas = Schemas::lobby();
+#[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
+fn the_owl_poll_has_no_match_and_the_store_no_products() {
+    let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
     let (crc, id, fields) = no_owl_match();
     assert_eq!(schemas.encode(crc, id, &fields).unwrap(), [1, 0, 0, 0, 0]);
-    let templates = RetailTemplates::captured();
-    let recorded = templates.all(STORE, None);
-    assert!(!recorded.is_empty());
-    let us = store(&templates, "US");
-    let ru = store(&templates, "RU");
-    assert_eq!(us.len(), recorded.len());
-    assert_ne!(us, ru, "prices follow the region");
-    for (crc, id, fields) in us {
-        schemas.encode(crc, id, &fields).unwrap();
+    // The store's currency follows the region (ISO 4217: 840 USD, 978 EUR,
+    // 826 GBP, 643 RUB); an unknown region is the US.
+    for (region, currency) in [
+        ("US", 840),
+        ("EU", 978),
+        ("GB", 826),
+        ("RU", 643),
+        ("?", 840),
+    ] {
+        let messages = store(region);
+        let ids: Vec<_> = messages.iter().map(|&(crc, id, _)| (crc, id)).collect();
+        assert_eq!(ids, [(STORE, STORE_STATE), (STORE, STORE_PRODUCTS)]);
+        let products = &messages[1].2;
+        assert_eq!(products[&0x78], Unsigned(currency), "{region}");
+        assert_eq!(products[&0x80], Array(Vec::new()));
+        assert_eq!(products[&0x9c], Unsigned(0));
+        for (crc, id, fields) in &messages {
+            schemas.encode(*crc, *id, fields).unwrap();
+        }
     }
 }

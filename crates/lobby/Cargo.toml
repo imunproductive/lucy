@@ -9,7 +9,6 @@ license.workspace = true
 
 [dependencies]
 base64.workspace = true
-lucy-fixed.workspace = true
 crc32fast.workspace = true
 getrandom.workspace = true
 indexmap.workspace = true

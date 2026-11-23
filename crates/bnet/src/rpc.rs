@@ -343,8 +343,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn connect_logon_and_referral_match_the_python_rpc_frames() {
-        let protocol = Protocol::client();
+        let protocol = Protocol::client(&lucy_testkit::runtime_dir()).unwrap();
         let clock = Clock {
             server_epoch: 42,
             wall_millis: 1_700_000_000_123,

@@ -73,7 +73,7 @@ fn every_lobby_connection_thread_ends_with_its_connection() {
     let state = tempfile::tempdir().unwrap();
     let (server, _time) = start(&state);
     let lobby = SocketAddr::from(server.lobby_addr());
-    let schemas = Schemas::lobby();
+    let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
     for _ in 0..5 {
         // Bare connections and logged-in games, up to the most from one
         // address.
@@ -103,7 +103,7 @@ fn quiet_links_close_at_their_deadlines_unless_the_game_holds_a_seat() {
     let (server, time) = start(&state);
     let clock = &time.lobby;
     let lobby = SocketAddr::from(server.lobby_addr());
-    let schemas = Schemas::lobby();
+    let schemas = Schemas::lobby(&lucy_testkit::runtime_dir()).unwrap();
 
     // A connection that never starts the handshake, and a game that never
     // logs in; the ping shows its session waits for the login.

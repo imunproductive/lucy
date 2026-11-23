@@ -206,7 +206,11 @@ fn search(peer: &mut Peer<'_, '_>, fields: Fields) -> io::Result<()> {
 
 fn link_upload(peer: &mut Peer<'_, '_>, id: u32, fields: Fields) -> io::Result<()> {
     let account = &peer.login.account;
-    match peer.lobby.matchmaker.link_upload(account, id, fields) {
+    match peer
+        .lobby
+        .matchmaker
+        .link_upload(&peer.lobby.schemas, account, id, fields)
+    {
         Ok(messages) => peer.send_all(&messages),
         Err(error) => {
             tracing::warn!("[CG] Settings upload {id} from {}: {error}", account.name);
@@ -218,7 +222,10 @@ fn link_upload(peer: &mut Peer<'_, '_>, id: u32, fields: Fields) -> io::Result<(
 /// 40809 `{+0x78 code, +0xA0 bool}`: Import Code.
 fn load_link(peer: &mut Peer<'_, '_>, fields: Fields) -> io::Result<()> {
     let code = links::text(&fields, 0x78);
-    let messages = peer.lobby.matchmaker.load_link(&code)?;
+    let messages = peer
+        .lobby
+        .matchmaker
+        .load_link(&peer.lobby.schemas, &code)?;
     peer.send_all(&messages)
 }
 
@@ -227,10 +234,10 @@ fn get_saved(peer: &mut Peer<'_, '_>, fields: Fields) -> io::Result<()> {
     let Some(request) = links::saved_request(&fields) else {
         return Ok(());
     };
-    let messages = peer
-        .lobby
-        .matchmaker
-        .saved_settings(&peer.login.account, request)?;
+    let messages =
+        peer.lobby
+            .matchmaker
+            .saved_settings(&peer.lobby.schemas, &peer.login.account, request)?;
     peer.send_all(&messages)
 }
 

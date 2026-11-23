@@ -261,7 +261,6 @@ mod tests {
 
     use crate::{
         ranked::{rating_of, tier_of},
-        templates::{LOBBY, RetailTemplates},
         test_catalog::xp_table,
     };
 
@@ -439,13 +438,20 @@ mod tests {
         assert_eq!(player.leave_mask.count_ones(), 4);
     }
 
-    /// 20813 is retail's captured leave policy with the profile's mask.
+    /// 20813: the window of 20 matches and the two thresholds retail sent
+    /// (`{0, 20, 0.3, 0.2}` with no leaves), with the profile's mask cut to
+    /// the window.
     #[test]
-    fn the_leave_policy_is_the_captured_one_with_the_mask() {
+    fn the_leave_policy_is_retails_with_the_mask() {
         let mut player = profile();
         assert_eq!(
             leave_policy(&player),
-            RetailTemplates::captured().first(LOBBY, 20813).unwrap()
+            Fields::from([
+                (0x78, Unsigned(0)),
+                (0x80, Unsigned(20)),
+                (0x88, Float64(0.3)),
+                (0x90, Float64(0.2)),
+            ])
         );
         player.leave_mask = 0b101 | (1 << 25);
         assert_eq!(leave_policy(&player)[&0x78], Unsigned(0b101));

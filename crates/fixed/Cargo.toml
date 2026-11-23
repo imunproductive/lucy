@@ -1,6 +1,6 @@
 [package]
 name = "lucy-fixed"
-description = "Fixed build 104319 data the game install does not contain: message schemas, statescript codecs, Battle.net descriptors, the lobby signing input and captured server templates"
+description = "Fixed build 104319 data the server can't read from the install at run time: the statescript codecs and research names"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
