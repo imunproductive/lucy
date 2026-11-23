@@ -76,31 +76,20 @@ impl Machine {
     /// its revision ([`Snapshot::revision`]).
     pub(super) fn capture_outputs(&mut self) {
         self.snapshot.set_now_ms(self.now_ms);
-        let mut pending_timers = IndexMap::new();
+        // Each map is compared entry by entry as it is worked out and made
+        // anew only from its first difference: most runs change none.
+        let mut pending_timers = Rebuild::new(&self.snapshot.pending_timers);
         for &id in self.snapshot.instances.keys() {
-            let timers: Vec<_> = self
-                .queues
-                .iter(id)
-                .filter_map(|(due_ms, event)| {
-                    let (raw_state, finish, parameter) = match event {
-                        Event::Timer(raw, param) => (*raw, false, *param),
-                        Event::Finish(raw) => (*raw, true, 0),
-                        _ => return None,
-                    };
-                    Some(PendingTimer {
-                        due_ms,
-                        raw_state,
-                        finish,
-                        parameter,
-                    })
-                })
-                .collect();
-            if !timers.is_empty() {
-                pending_timers.insert(id, timers);
+            let timers = || pending_timers_of(&self.queues, id);
+            if timers().next().is_none() {
+                continue;
+            }
+            if !pending_timers.keeps(&id, |was| was.iter().copied().eq(timers())) {
+                pending_timers.insert(id, timers().collect());
             }
         }
-        let mut bindings = IndexMap::new();
-        let mut resolved_bindings = IndexMap::new();
+        let mut bindings = Rebuild::new(&self.snapshot.bindings);
+        let mut resolved_bindings = Rebuild::new(&self.snapshot.resolved_bindings);
         for (&variable, entries) in &self.links {
             let key = match variable {
                 VarKey::Entity(id) => (0, id),
@@ -115,39 +104,46 @@ impl Machine {
             // state's timing block); a frame that lists the variable
             // without it unbinds the state there (`0x7FF78AAB78A0` →
             // `0x7FF78AAB7420` takes the frame's list).
-            let stacked: Vec<_> = entries
-                .iter()
-                .filter(|entry| {
-                    entry.stack
-                        || matches!(
-                            entry.output,
-                            LinkValue::Chase | LinkValue::Cooldown | LinkValue::Output { .. }
-                        )
-                })
-                .map(|entry| StackBinding {
-                    instance: entry.state.instance,
-                    raw_state: entry.state.raw,
-                    priority: entry.priority,
-                    slot: match entry.output {
-                        LinkValue::AbilityStack => 1,
-                        LinkValue::Output { slot, .. } => slot,
-                        _ => 0,
-                    },
-                })
-                .collect();
-            if !stacked.is_empty() {
-                bindings.insert(key, stacked);
+            let stacked = || {
+                entries
+                    .iter()
+                    .filter(|entry| {
+                        entry.stack
+                            || matches!(
+                                entry.output,
+                                LinkValue::Chase | LinkValue::Cooldown | LinkValue::Output { .. }
+                            )
+                    })
+                    .map(|entry| StackBinding {
+                        instance: entry.state.instance,
+                        raw_state: entry.state.raw,
+                        priority: entry.priority,
+                        slot: match entry.output {
+                            LinkValue::AbilityStack => 1,
+                            LinkValue::Output { slot, .. } => slot,
+                            _ => 0,
+                        },
+                    })
+            };
+            if stacked().next().is_some()
+                && !bindings.keeps(&key, |was| was.iter().copied().eq(stacked()))
+            {
+                bindings.insert(key, stacked().collect());
             }
-            resolved_bindings.insert(key, self.link_value(top));
+            let value = self.link_value(top);
+            if !resolved_bindings.keeps(&key, |was| was.identical(&value)) {
+                resolved_bindings.insert(key, value);
+            }
         }
+        let (pending_timers, bindings, resolved_bindings) = (
+            pending_timers.finish(),
+            bindings.finish(),
+            resolved_bindings.finish(),
+        );
         // A changed output moves its instance's revision on too (owner 0,
         // the entity, has none).
         let mut changed = Vec::new();
-        if !same_entries(
-            &self.snapshot.pending_timers,
-            &pending_timers,
-            PartialEq::eq,
-        ) {
+        if let Some(pending_timers) = pending_timers {
             changed_owners(
                 &self.snapshot.pending_timers,
                 &pending_timers,
@@ -157,7 +153,7 @@ impl Machine {
             );
             self.snapshot.pending_timers = pending_timers;
         }
-        if !same_entries(&self.snapshot.bindings, &bindings, PartialEq::eq) {
+        if let Some(bindings) = bindings {
             changed_owners(
                 &self.snapshot.bindings,
                 &bindings,
@@ -167,11 +163,7 @@ impl Machine {
             );
             self.snapshot.bindings = bindings;
         }
-        if !same_entries(
-            &self.snapshot.resolved_bindings,
-            &resolved_bindings,
-            Value::identical,
-        ) {
+        if let Some(resolved_bindings) = resolved_bindings {
             changed_owners(
                 &self.snapshot.resolved_bindings,
                 &resolved_bindings,
@@ -294,16 +286,84 @@ impl Machine {
     }
 }
 
-/// The same keys with the same values, in the same order.
-fn same_entries<K: PartialEq, V>(
-    a: &IndexMap<K, V>,
-    b: &IndexMap<K, V>,
-    same: impl Fn(&V, &V) -> bool,
-) -> bool {
-    a.len() == b.len()
-        && a.iter()
-            .zip(b)
-            .all(|((ak, av), (bk, bv))| ak == bk && same(av, bv))
+/// The pending timers of instance `id`, in due order.
+fn pending_timers_of(queues: &Timeline<Event>, id: u16) -> impl Iterator<Item = PendingTimer> {
+    queues.iter(id).filter_map(|(due_ms, event)| {
+        let (raw_state, finish, parameter) = match event {
+            Event::Timer(raw, param) => (*raw, false, *param),
+            Event::Finish(raw) => (*raw, true, 0),
+            _ => return None,
+        };
+        Some(PendingTimer {
+            due_ms,
+            raw_state,
+            finish,
+            parameter,
+        })
+    })
+}
+
+/// A map worked out anew in key order, compared with the one it may
+/// replace as it goes: nothing is allocated while each entry matches the
+/// old map's next one; from the first difference the new map is made.
+struct Rebuild<'a, K, V> {
+    old: &'a IndexMap<K, V>,
+    /// How many of the old map's entries matched so far.
+    kept: usize,
+    new: Option<IndexMap<K, V>>,
+}
+
+impl<'a, K: Clone + Eq + std::hash::Hash, V: Clone> Rebuild<'a, K, V> {
+    fn new(old: &'a IndexMap<K, V>) -> Self {
+        Self {
+            old,
+            kept: 0,
+            new: None,
+        }
+    }
+
+    /// Whether entry `key` is the old map's next with a value `same`
+    /// accepts; if not, the caller [`Self::insert`]s it.
+    fn keeps(&mut self, key: &K, same: impl FnOnce(&V) -> bool) -> bool {
+        if self.new.is_none() {
+            if let Some((was, value)) = self.old.get_index(self.kept)
+                && was == key
+                && same(value)
+            {
+                self.kept += 1;
+                return true;
+            }
+            self.new = Some(self.kept_entries());
+        }
+        false
+    }
+
+    fn insert(&mut self, key: K, value: V) {
+        self.new
+            .as_mut()
+            .expect("insert follows a refused keep")
+            .insert(key, value);
+    }
+
+    /// The new map, or `None` when it equals the old one.
+    fn finish(self) -> Option<IndexMap<K, V>> {
+        match self.new {
+            Some(new) => Some(new),
+            None if self.kept == self.old.len() => None,
+            None => Some(self.kept_entries()),
+        }
+    }
+
+    fn kept_entries(&self) -> IndexMap<K, V> {
+        let mut kept = IndexMap::with_capacity(self.old.len());
+        kept.extend(
+            self.old
+                .iter()
+                .take(self.kept)
+                .map(|(key, value)| (key.clone(), value.clone())),
+        );
+        kept
+    }
 }
 
 /// The owners of the entries that differ between `a` and `b` (either
