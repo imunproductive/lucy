@@ -4,7 +4,7 @@
 
 > *Unofficial fan project, not affiliated with or endorsed by Blizzard Entertainment. You need your own copy of the game.*
 
-Lucy is a fork of [ORPHEUS](https://github.com/leafall903/ORPHEUS) by leafall903 and contributors. Everything it builds on is credited in [CREDITS.md](CREDITS.md).
+Lucy was originally forked from [ORPHEUS](https://github.com/leafall903/ORPHEUS) by leafall903 and contributors, and has since been largely rewritten. Everything it builds on is credited in [CREDITS.md](CREDITS.md).
 
 ## What works
 
