@@ -1,6 +1,7 @@
 //! The rule engine against a fake match: when rules run, how long waits
 //! last in ticks, subroutines, loops, wait behaviours, player events and
-//! graph actions, with rules written as Workshop text.
+//! graph actions, with rules written as Workshop text in the install's
+//! catalog (derived from the install, so these tests need it).
 
 mod common;
 
@@ -164,6 +165,7 @@ rule("CP Fail sub (test)")
 "#;
 
 #[test]
+#[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn checkpoint_clears_when_the_player_lands_inside_the_next_one() {
     let mut engine = engine(CHECKPOINT);
     let mut game = Match::new(catalog());
@@ -208,6 +210,7 @@ fn checkpoint_clears_when_the_player_lands_inside_the_next_one() {
 }
 
 #[test]
+#[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn a_wait_lasts_its_time_in_whole_ticks() {
     let mut engine = engine(
         r#"
@@ -242,6 +245,7 @@ rule("Wait")
 }
 
 #[test]
+#[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn subroutines_share_the_context_and_start_rule_runs_beside() {
     let mut engine = engine(
         r#"
@@ -312,6 +316,7 @@ rule("Beside")
 /// GenerateMap goes on), and Abort If does the same; in the rule itself it
 /// ends the rule.
 #[test]
+#[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn abort_in_a_called_subroutine_returns_to_its_caller() {
     let mut engine = engine(
         r#"
@@ -369,6 +374,7 @@ rule("Text")
 }
 
 #[test]
+#[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn for_while_break_and_continue() {
     let mut engine = engine(
         r#"
@@ -412,6 +418,7 @@ rule("Loops")
 /// is spent: the rule doesn't start again when that run ends (C32S2's
 /// "Spectate" waits for its chord pressed again and must end there).
 #[test]
+#[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn ongoing_rules_run_on_each_rising_edge_of_their_conditions() {
     let mut engine = engine(
         r#"
@@ -463,6 +470,7 @@ rule("Ability 2")
 }
 
 #[test]
+#[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn wait_behaviours_abort_and_restart_with_the_conditions() {
     let mut engine = engine(
         r#"
@@ -519,6 +527,7 @@ rule("Restart When True")
 }
 
 #[test]
+#[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn player_events_run_for_their_player_and_filters() {
     let mut engine = engine(
         r#"
@@ -559,6 +568,7 @@ rule("Team 2 died")
 }
 
 #[test]
+#[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn a_rule_waits_for_its_action_graph_to_finish() {
     let mut engine = engine(
         r#"
@@ -591,6 +601,7 @@ rule("Message")
 }
 
 #[test]
+#[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn operators_follow_the_writers_precedence() {
     let mut engine = engine(
         r#"

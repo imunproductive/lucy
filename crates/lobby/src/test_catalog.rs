@@ -151,6 +151,8 @@ pub fn economy() -> Arc<Economy> {
             "credits": {"Common": 25, "Rare": 75, "Epic": 250, "Legendary": 1000},
             "competitive_points": 3000,
             "league_tokens": {"Common": 10, "Rare": 25, "Epic": 100, "Legendary": 200},
+            "event_credits": {},
+            "event_priced": [],
         },
     });
     Arc::new(Economy::from_reader(economy.to_string().as_bytes()).unwrap())

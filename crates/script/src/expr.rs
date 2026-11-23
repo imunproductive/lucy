@@ -412,6 +412,13 @@ pub trait Context {
         None
     }
 
+    /// The communication wheel's callout texture of an action
+    /// ([`GraphStore::callout_texture`](crate::graph::GraphStore::callout_texture));
+    /// zero for none.
+    fn callout_texture(&mut self, _action: u64) -> u64 {
+        0
+    }
+
     /// The id of the instance whose config is evaluated; None: not an
     /// instance's.
     fn instance_id(&mut self) -> Option<u16> {
@@ -2061,7 +2068,7 @@ impl Evaluator<'_> {
             }
             "STU_1ECB66A0" if native_fields(config, &["m_548E5344", "m_resourceKey"]) => {
                 match self.config(child(config, "m_548E5344"), context, nested)? {
-                    Value::Asset(action) => Value::Asset(wheel::callout_texture(action)),
+                    Value::Asset(action) => Value::Asset(context.callout_texture(action)),
                     _ => Value::Asset(0),
                 }
             }

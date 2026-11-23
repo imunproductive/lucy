@@ -19,18 +19,26 @@
 //! - `item_prices`: what the shop charges for an item, by currency and
 //!   rarity: `credits` from the base box's credit table, `competitive_points`
 //!   (the golden weapons' one price) and `league_tokens` (the Overwatch
-//!   League items). The settings also price each event box's pool, three
-//!   times the base price; retail charged that only for an event's newest
-//!   items, which the install doesn't mark, so the lobby sells every item at
-//!   the base price (`lucy_lobby::collection`).
+//!   League items). `event_credits`: each event box type's own credit
+//!   table (three times the base prices), which retail charged for the
+//!   items of `event_priced`: the event box items (`data/extracted_items.json`,
+//!   `data/extracted_general_unlocks.json` `LootBoxesUnlocks`) whose unlock
+//!   leaves `m_1A546C64` (`STUUnlock`) unset. In the 1.68 retail capture
+//!   exactly the Summer Games, Halloween, Winter and Lunar New Year items it
+//!   sold at the event price have it unset; the Archives and Anniversary
+//!   items it sold so are set in 1.74, whose unset ones are Anniversary
+//!   2022's skins (`D:/Work/Coding/refs/reports/RetailTemplates.md`, "Event
+//!   prices"). [INFERENCE] the flag marks an item retail sells at the base
+//!   price.
 
-use std::path::Path;
+use std::{collections::BTreeSet, path::Path};
 
 use serde_json::{Map, Value as Json, json};
 
 use crate::{
     Install, Output, Result, asset_error,
     game_queues::{Node, key, typed},
+    heroes::read_json,
 };
 
 pub(crate) const PATH: &str = "data/economy_174.json";
@@ -51,16 +59,109 @@ const LEAGUE_TOKENS: i64 = 2;
 /// `STUUnlockRarity`, the rarities a box holds.
 const RARITIES: [(i64, &str); 4] = [(0, "Common"), (1, "Rare"), (2, "Epic"), (3, "Legendary")];
 
-pub(crate) fn derive(install: &Install, _out: &Path) -> Result<Vec<Output>> {
+pub(crate) fn derive(install: &Install, out: &Path) -> Result<Vec<Output>> {
     let asset = install.stu(typed(PROGRESSION, GENERIC_SETTINGS))?;
     let progression = Node::root(&asset)?;
+    let mut prices = item_prices(progression)?;
+    prices["event_credits"] = event_credits(progression)?;
+    let event_boxes: BTreeSet<String> = LOOT_BOX_NAMES
+        .iter()
+        .filter(|(box_type, _)| prices["event_credits"].get(box_type.to_string()).is_some())
+        .map(|(_, name)| (*name).to_owned())
+        .collect();
+    prices["event_priced"] = event_priced(install, out, &event_boxes)?;
     let table = json!({
         "duplicate_credits": duplicate_credits(progression)?,
         "credit_drops": credit_drops(install, progression)?,
         "celebration_boxes": celebration_boxes(install, progression)?,
-        "item_prices": item_prices(progression)?,
+        "item_prices": prices,
     });
     Ok(vec![Output::json(PATH, &table)])
+}
+
+/// `Enum_BABC4175`'s box types as the item catalog names them
+/// (`lists::unlocks` `LOOT_BOXES`).
+const LOOT_BOX_NAMES: [(i64, &str); 8] = [
+    (0, "Base"),
+    (1, "SummerGames"),
+    (2, "Halloween"),
+    (3, "Winter"),
+    (4, "LunarNewYear"),
+    (5, "Archives"),
+    (6, "Anniversary"),
+    (8, "Internal"),
+];
+
+/// Each event box type's credit prices by rarity, keyed by the box type.
+fn event_credits(progression: Node) -> Result<Json> {
+    let mut tables = Map::new();
+    for table in progression.nodes("m_0C6A363E") {
+        let box_type = table.int("m_A9D270A9");
+        if box_type == BASE_BOX || table.int("m_227307C8") != CREDITS {
+            continue;
+        }
+        tables.insert(box_type.to_string(), by_rarity(table)?);
+    }
+    Ok(Json::Object(tables))
+}
+
+/// The items of the event boxes (`boxes`, by name) whose unlock leaves
+/// `m_1A546C64` unset, in GUID order.
+fn event_priced(install: &Install, out: &Path, boxes: &BTreeSet<String>) -> Result<Json> {
+    let mut indexes = BTreeSet::new();
+    for path in [
+        "data/extracted_items.json",
+        "data/extracted_general_unlocks.json",
+    ] {
+        box_items(&read_json(out, path)?, boxes, &mut indexes);
+    }
+    let guids: Vec<u64> = install
+        .guids(UNLOCK)
+        .into_iter()
+        .filter(|guid| indexes.contains(&(guid & INDEX)))
+        .collect();
+    let mut priced = Vec::new();
+    for (guid, asset) in install.stu_all(&guids) {
+        if Node::root(&asset?)?.int("m_1A546C64") == 0 {
+            priced.push(key(guid));
+        }
+    }
+    Ok(priced.into())
+}
+
+const UNLOCK: u16 = 0x0A5;
+const INDEX: u64 = 0xFFFF_FFFF_FFFF;
+
+/// The indexes of the unlocks the `LootBoxesUnlocks` groups of `boxes` hold
+/// anywhere in a catalog file.
+fn box_items(value: &Json, boxes: &BTreeSet<String>, indexes: &mut BTreeSet<u64>) {
+    match value {
+        Json::Object(map) => {
+            for (name, value) in map {
+                if name == "LootBoxesUnlocks" {
+                    for group in value.as_array().into_iter().flatten() {
+                        let listed = group["LootBoxType"]
+                            .as_str()
+                            .is_some_and(|name| boxes.contains(name));
+                        let unlocks = group["Unlocks"].as_array().into_iter().flatten();
+                        for unlock in unlocks.filter(|_| listed) {
+                            let index = unlock["GUID"]
+                                .as_str()
+                                .and_then(|guid| guid.split('.').next())
+                                .and_then(|index| u64::from_str_radix(index, 16).ok());
+                            indexes.extend(index);
+                        }
+                    }
+                } else {
+                    box_items(value, boxes, indexes);
+                }
+            }
+        }
+        Json::Array(items) => items
+            .iter()
+            .for_each(|item| box_items(item, boxes, indexes)),
+        _ => {}
+    }
 }
 
 fn rarity_name(rarity: i64) -> Result<&'static str> {
@@ -133,17 +234,6 @@ fn item_prices(progression: Node) -> Result<Json> {
                 ))
             })
     };
-    let by_rarity = |table: Node| -> Result<Json> {
-        let mut prices = Map::new();
-        for &(rarity, name) in &RARITIES {
-            let price = table
-                .nodes("m_4C6FDF24")
-                .find(|price| price.int("m_rarity") == rarity)
-                .ok_or_else(|| asset_error(format!("054/0018 has no {name} price")))?;
-            prices.insert(name.into(), price.int("m_CE91A110").into());
-        }
-        Ok(Json::Object(prices))
-    };
     let points = table(COMPETITIVE_POINTS, false)?
         .nodes("m_4C6FDF24")
         .next()
@@ -154,4 +244,17 @@ fn item_prices(progression: Node) -> Result<Json> {
         "competitive_points": points,
         "league_tokens": by_rarity(table(LEAGUE_TOKENS, false)?)?,
     }))
+}
+
+/// A price table's prices by rarity name.
+fn by_rarity(table: Node) -> Result<Json> {
+    let mut prices = Map::new();
+    for &(rarity, name) in &RARITIES {
+        let price = table
+            .nodes("m_4C6FDF24")
+            .find(|price| price.int("m_rarity") == rarity)
+            .ok_or_else(|| asset_error(format!("054/0018 has no {name} price")))?;
+        prices.insert(name.into(), price.int("m_CE91A110").into());
+    }
+    Ok(Json::Object(prices))
 }

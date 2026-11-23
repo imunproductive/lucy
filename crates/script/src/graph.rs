@@ -539,6 +539,8 @@ struct Bundle<'a> {
     missing: Vec<u32>,
     #[serde(default)]
     auras: BTreeMap<String, Value>,
+    #[serde(default)]
+    callout_textures: BTreeMap<String, String>,
 }
 
 impl<'a> Bundle<'a> {
@@ -685,6 +687,9 @@ pub struct GraphStore {
     /// `1B4A`'s state `STU_25CBEFB0`, `m_108E51DD`, each value's `01C`
     /// identifier with its config ([`GraphStore::workshop_value`]).
     workshop_values: BTreeMap<u64, Value>,
+    /// The communication wheel's callout texture of each action (`054/01A5`,
+    /// [`GraphStore::callout_texture`]).
+    callout_textures: BTreeMap<u64, u64>,
 }
 
 impl GraphStore {
@@ -754,6 +759,16 @@ impl GraphStore {
             .iter()
             .filter_map(|(&index, graph)| Some((index, ability_button(graph)?)))
             .collect();
+        let callout_textures = keyed_by_guid(bundle.callout_textures)?
+            .into_iter()
+            .map(|(action, texture)| {
+                Ok((
+                    action,
+                    parse_guid(&texture)
+                        .ok_or_else(|| invalid("a callout texture must be a GUID"))?,
+                ))
+            })
+            .collect::<io::Result<_>>()?;
         Ok(Self {
             graphs,
             bodies: keyed_by_guid(bundle.bodies)?,
@@ -771,6 +786,7 @@ impl GraphStore {
             workshop_actions,
             ability_buttons,
             workshop_values,
+            callout_textures,
         })
     }
 
@@ -800,6 +816,12 @@ impl GraphStore {
     /// `STU_F619A2A1`… (`1B4A`).
     pub fn workshop_value(&self, value: u64) -> Option<&Value> {
         self.workshop_values.get(&value)
+    }
+
+    /// `STU_1ECB66A0`: the communication wheel's callout texture of an
+    /// action (`0A9`), zero for none.
+    pub fn callout_texture(&self, action: u64) -> u64 {
+        self.callout_textures.get(&action).copied().unwrap_or(0)
     }
 
     /// A bundle of the runtime `data` folder with the folder's ruleset

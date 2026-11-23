@@ -257,6 +257,7 @@ fn bundle(install: &Install, out: &Path, bots: bool) -> Result<Bundle> {
     data.insert("bodies".into(), Json::Object(bodies.clone()));
     data.insert("missing".into(), json!(missing));
     data.insert("auras".into(), Json::Object(auras));
+    data.insert("callout_textures".into(), callout_textures(install)?);
     data.insert("graphs".into(), Json::Array(graphs.into_values().collect()));
     if !entities.is_empty() {
         data.insert("entities".into(), Json::Object(entities));
@@ -330,6 +331,29 @@ fn workshop_graphs(install: &Install) -> Result<BTreeSet<u64>> {
         }
     }
     Ok(graphs)
+}
+
+/// `054/01A5`, the communication wheel's callout textures.
+const CALLOUT_TEXTURES: u64 = 0x1A5;
+
+/// The communication wheel's callout textures: `054/01A5`'s rows
+/// (`m_35CA5DCD`, `STU_EF8769DE`), each action (`m_1D286093`, `0A9`) and
+/// its texture (`m_40E0AC9D`), as `"0x…"` keys. The native `STU_1ECB66A0`
+/// answers an action's texture from them.
+fn callout_textures(install: &Install) -> Result<Json> {
+    use crate::game_queues::{Node, key, typed};
+    let asset = install.stu(typed(CALLOUT_TEXTURES, GENERIC_SETTINGS))?;
+    let mut textures = Map::new();
+    for row in Node::root(&asset)?.nodes("m_35CA5DCD") {
+        let (action, texture) = (row.guid("m_1D286093"), row.guid("m_40E0AC9D"));
+        if action != 0 && texture != 0 {
+            textures.insert(key(action), key(texture).into());
+        }
+    }
+    if textures.is_empty() {
+        return Err(asset_error("054/01A5 has no callout textures"));
+    }
+    Ok(Json::Object(textures))
 }
 
 fn read_json(path: &Path) -> Result<Json> {

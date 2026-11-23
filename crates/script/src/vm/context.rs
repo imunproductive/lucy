@@ -191,6 +191,10 @@ impl<W: World + ?Sized> Context for InstanceContext<'_, W> {
         self.graphs.workshop_value(value).cloned()
     }
 
+    fn callout_texture(&mut self, action: u64) -> u64 {
+        self.graphs.callout_texture(action)
+    }
+
     fn equipped_cosmetic(
         &mut self,
         entity: u32,

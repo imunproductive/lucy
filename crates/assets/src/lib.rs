@@ -18,6 +18,7 @@ mod blend_trees;
 mod body_data;
 mod bot_animation;
 pub mod cache;
+mod career_stats;
 pub mod client;
 mod collision;
 mod economy;
@@ -159,6 +160,10 @@ pub const DERIVATIONS: &[Derivation] = &[
     Derivation {
         name: "game_stat_rules",
         derive: heroes::stats::derive_rules,
+    },
+    Derivation {
+        name: "career_stats",
+        derive: career_stats::derive,
     },
     Derivation {
         name: "game_map_areas",

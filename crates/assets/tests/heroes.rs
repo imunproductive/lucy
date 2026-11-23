@@ -61,3 +61,48 @@ fn the_stat_rules_come_from_the_stats_own_fields() {
     );
     assert!(table["derived"].get(stat(0x25)).is_none());
 }
+
+/// The career stat catalogs are the lists retail sent in 2022 (1.68, the
+/// lobby's 27202 `+0x90`/`+0xC0`): every hero's, "all heroes", the roles',
+/// and every map's but the three maps added after 1.68. The digests are of
+/// retail's lists written as `key:stat,stat,…` lines.
+#[test]
+#[ignore = "requires an Overwatch 1.74 install"]
+fn the_career_stat_catalogs_are_retails() {
+    use sha2::{Digest, Sha256};
+    let table = lucy_testkit::runtime_json("data/career_stats_174.json");
+    let digest = |list: &str, leave_out: &[&str]| {
+        let mut lines = String::new();
+        for entry in table[list].as_array().unwrap() {
+            let key = entry["key"].as_str().unwrap();
+            if leave_out.contains(&key) {
+                continue;
+            }
+            let stats: Vec<&str> = entry["stats"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|stat| stat.as_str().unwrap())
+                .collect();
+            lines += &format!("{key}:{}\n", stats.join(","));
+        }
+        Sha256::digest(lines)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    assert_eq!(
+        digest("heroes", &[]),
+        "d8810c95aacf9620aa690f48e865f311ea72039e3ef5f85f34845b383013c3d4"
+    );
+    let after_1_68 = [
+        "0x0800000000000E83",
+        "0x0800000000000EEE",
+        "0x0800000000000F14",
+    ];
+    assert_eq!(
+        digest("maps", &after_1_68),
+        "48130d31330ee3850feb920a6845bb212c4223a321e6488fd920923db7437cfb"
+    );
+    assert_eq!(table["maps"].as_array().unwrap().len(), 133);
+}

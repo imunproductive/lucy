@@ -1,6 +1,6 @@
 # Credits
 
-This repository is a fork of [ORPHEUS](https://github.com/leafall903/ORPHEUS) and is being rewritten. Code from these projects is still in it. Their MIT notice is kept in [LICENSE](LICENSE).
+This repository is a fork of [ORPHEUS](https://github.com/leafall903/ORPHEUS) and is being rewritten. Code from these projects is still in it. Their MIT copyright and permission notices are in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 
 - **[ORPHEUS](https://github.com/leafall903/ORPHEUS)** (leafall903 and contributors): the Rust port, the dashboard and the server integration this fork starts from.
 - **[Boi-027, Overwatch 1.74 Lobby Research](https://github.com/Boi-027/Overwatch-1-v1.74-Lobby-Research)** (copyright Arlecchino): the lobby protocol, handshake, JAM cipher and framing, and the lobby services.

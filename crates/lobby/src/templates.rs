@@ -21,8 +21,8 @@ use serde::Deserialize;
 use serde_json::{Map, Value as Json};
 
 use crate::{
-    arcade::ARCADE, lookups, lookups::OWL_LIVE, passes::PASSES, ranked::CARD_BASE,
-    transport::LobbyMessage,
+    arcade::ARCADE, lookups, lookups::OWL_LIVE, mode_rules::StatCatalogs, passes::PASSES,
+    ranked::CARD_BASE, transport::LobbyMessage,
 };
 use lucy_content::catalog::UNLOCK_BASE;
 use lucy_core::guid::parse_guid;
@@ -218,12 +218,13 @@ fn ids(crc: u32, id: u32) -> Vec<u32> {
     }
 }
 
-/// The login's content from the install: the preload lists (20505) and the
-/// custom game maps (23301).
+/// The login's content from the install: the preload lists (20505), the
+/// custom game maps (23301) and the career stat catalogs (27202).
 #[derive(Debug)]
 pub struct InstallContent {
     preload: Fields,
     custom_game_maps: Fields,
+    stat_catalogs: StatCatalogs,
 }
 
 #[derive(Deserialize)]
@@ -250,7 +251,8 @@ pub const PRELOAD_FILE: &str = "lobby_preload_174.json";
 const MAPS_FILE: &str = "extracted_maps.json";
 
 impl InstallContent {
-    /// Read the derived preload lists and map headers from a data folder.
+    /// Read the derived preload lists, map headers and stat catalogs from a
+    /// data folder.
     pub fn load(data_dir: &Path) -> io::Result<Self> {
         let preload: PreloadFile = read_json(&data_dir.join(PRELOAD_FILE))?;
         let headers: Map<String, Json> = read_json(&data_dir.join(MAPS_FILE))?;
@@ -264,7 +266,13 @@ impl InstallContent {
         Ok(Self {
             preload: preload_fields(&preload)?,
             custom_game_maps: custom_game_maps(headers)?,
+            stat_catalogs: StatCatalogs::load(data_dir)?,
         })
+    }
+
+    /// 27202's stat catalogs.
+    pub fn stat_catalogs(&self) -> &StatCatalogs {
+        &self.stat_catalogs
     }
 
     /// 20505: the hero records (`+0x78`), skin themes (`+0x90`), map

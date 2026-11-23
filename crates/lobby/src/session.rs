@@ -327,7 +327,13 @@ impl PreparedLogin {
         messages.push((
             MODE_RULES,
             RULES,
-            mode_rules::mode_rules(&profile, collection.heroes(), collection.items(), season)?,
+            mode_rules::mode_rules(
+                &profile,
+                collection.heroes(),
+                collection.items(),
+                season,
+                install.stat_catalogs(),
+            )?,
         ));
         let arcade = content.arcade.state(&profile, season, now)?;
         let mut built = BTreeMap::from([

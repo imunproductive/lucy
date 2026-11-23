@@ -12,7 +12,7 @@ Lucy is a server for the Overwatch client of build **1.74.0.0.104319**. It runs 
 | `START_SERVER_LOCAL.cmd` | Runs `lucy.exe serve`: the services only; you start the game yourself |
 | `lucy_relay.py` | The relay without the DLL, for Python 3.8 or newer (64-bit). The top of the file tells how to use it. |
 | `docs\` | The user guide. Start with `docs\README.md`. |
-| `LICENSE`, `CREDITS.md` | The license and the credits |
+| `LICENSE`, `CREDITS.md`, `THIRD-PARTY-NOTICES.md` | The license, the credits and the notices of the projects Lucy contains code from |
 | `SHA256SUMS.txt` | The SHA-256 of every file here |
 
 ## First start

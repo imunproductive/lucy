@@ -5,7 +5,7 @@
 //! data instead.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::File,
     io::{self, BufReader, Read},
     path::Path,
@@ -32,13 +32,27 @@ pub struct EventBox {
 }
 
 /// What the shop charges, by currency and rarity (`item_prices`): the base
-/// box's credit prices, the golden weapons' price in competitive points and
-/// the Overwatch League items' price in league tokens.
+/// box's credit prices, the golden weapons' price in competitive points,
+/// the Overwatch League items' price in league tokens, and each event box
+/// type's credit prices, which the items of `event_priced` cost
+/// (`lucy_assets` `economy.rs`).
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
 pub struct ItemPrices {
     pub credits: HashMap<String, i64>,
     pub competitive_points: i64,
     pub league_tokens: HashMap<String, i64>,
+    /// Box type (`Enum_BABC4175`) -> rarity -> credits.
+    pub event_credits: HashMap<i64, HashMap<String, i64>>,
+    /// The event box items sold at their box type's price.
+    #[serde(deserialize_with = "guid_set")]
+    pub event_priced: HashSet<u64>,
+}
+
+fn guid_set<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<HashSet<u64>, D::Error> {
+    Vec::<String>::deserialize(deserializer)?
+        .iter()
+        .map(|text| guid(text).map_err(serde::de::Error::custom))
+        .collect()
 }
 
 #[derive(Debug, Default)]
