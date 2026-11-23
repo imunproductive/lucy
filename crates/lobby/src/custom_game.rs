@@ -209,6 +209,63 @@ pub struct CustomSettings {
 }
 
 impl CustomSettings {
+    /// The settings a new lobby starts with: Hybrid on King's Row with its
+    /// preset (`0FD:2C`), teams of 6, 2 spectators (upstream's live-tested
+    /// default room, `refs/tmp_upinv/custom_games.py` `RoomRules`). The
+    /// client keeps its own defaults and uploads them only when they
+    /// differ from these.
+    pub fn default_game() -> Self {
+        const KINGS_ROW: u64 = 0x0800_0000_0000_00d4;
+        const HYBRID: u64 = 0x0230_0000_0000_0016;
+        const HYBRID_PRESET: u64 = 0x0fd0_0000_0000_002c;
+        let teams = Array(
+            (0..2)
+                .map(|team| {
+                    Struct(Fields::from([
+                        (TEAM_NUMBER, Unsigned(team)),
+                        (TEAM_SIZE, Unsigned(6)),
+                    ]))
+                })
+                .collect(),
+        );
+        let block = Fields::from([
+            (0xa8, Unsigned(HYBRID_PRESET)),
+            (BLOCK_MODE, Unsigned(HYBRID)),
+            (BLOCK_TEAMS, teams),
+            (BLOCK_ENABLED, Bool(true)),
+        ]);
+        let numbers = |numbers: [u64; 3]| {
+            Struct(Fields::from([
+                (0x0, Unsigned(numbers[0])),
+                (0x4, Unsigned(numbers[1])),
+                (0x8, Unsigned(numbers[2])),
+            ]))
+        };
+        Self {
+            settings: Fields::from([
+                (LOBBY_OPTIONS, numbers([3, 1, 2])),
+                (0x1e0, numbers([2, 2, 3])),
+            ]),
+            extra: Fields::new(),
+            chunks: vec![
+                Chunk {
+                    kind: ChunkKind::Map,
+                    fields: Fields::from([(
+                        0x78,
+                        Struct(Fields::from([
+                            (BLOCK, Struct(block.clone())),
+                            (ENTRY_MAP, Unsigned(KINGS_ROW)),
+                        ])),
+                    )]),
+                },
+                Chunk {
+                    kind: ChunkKind::Mode,
+                    fields: Fields::from([(0x78, Struct(block))]),
+                },
+            ],
+        }
+    }
+
     /// The maps of the games the settings play ([`CustomSettings::games`]).
     pub fn maps(&self) -> Vec<u64> {
         self.games().into_iter().map(|(map, _)| map).collect()

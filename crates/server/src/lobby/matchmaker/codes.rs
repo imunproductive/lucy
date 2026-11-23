@@ -24,7 +24,7 @@ use lucy_lobby::{
     },
     transport::LobbyMessage,
 };
-use lucy_script::graph::{BodyValues, ModeValue};
+use lucy_script::graph::ModeValue;
 use lucy_wire::jam::codec::{
     Fields,
     Value::{Array, Bool, Struct, Unsigned},
