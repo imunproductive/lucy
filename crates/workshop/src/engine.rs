@@ -468,8 +468,6 @@ impl Engine {
 
     /// An action's parameters in `context`, as [`ActionCall::params`]
     /// gives them: a parameter that names Local Player once per player.
-    /// The server evaluates a running action's reevaluated parameters
-    /// again with it.
     pub fn evaluate_params<H: Host + ?Sized>(
         &mut self,
         host: &H,
@@ -479,25 +477,61 @@ impl Engine {
         action
             .args
             .iter()
-            .map(|arg| {
-                let value = self.evaluate(context, host, arg);
-                if !names(arg, eval::ids::LOCAL_PLAYER) {
-                    return Param::Value(value);
+            .map(|arg| self.evaluate_param(host, arg, context))
+            .collect()
+    }
+
+    /// The parameters of a running action that `wanted` names (its
+    /// reevaluated ones), as [`Self::evaluate_params`] gives them; none
+    /// for the others. A parameter that draws a random number is
+    /// evaluated all the same, so the engine's random sequence goes on as
+    /// if every parameter was. The rest were evaluated each tick only to
+    /// be dropped: a 12-player C32S2 match's HUD texts, each parameter
+    /// that names Local Player once per player.
+    pub fn reevaluate_params<H: Host + ?Sized>(
+        &mut self,
+        host: &H,
+        action: &Action,
+        context: &Context,
+        wanted: &[bool],
+    ) -> Vec<Option<Param>> {
+        action
+            .args
+            .iter()
+            .enumerate()
+            .map(|(index, arg)| {
+                let due = wanted.get(index).copied().unwrap_or(false);
+                if !due && !draws_random(arg) {
+                    return None;
                 }
-                let viewers = host
-                    .players()
-                    .into_iter()
-                    .map(|player| {
-                        let context = Context {
-                            local_player: Some(player),
-                            ..context.clone()
-                        };
-                        (player, self.evaluate(&context, host, arg))
-                    })
-                    .collect();
-                Param::PerViewer { value, viewers }
+                let param = self.evaluate_param(host, arg, context);
+                due.then_some(param)
             })
             .collect()
+    }
+
+    fn evaluate_param<H: Host + ?Sized>(
+        &mut self,
+        host: &H,
+        arg: &Arg,
+        context: &Context,
+    ) -> Param {
+        let value = self.evaluate(context, host, arg);
+        if !names(arg, eval::ids::LOCAL_PLAYER) {
+            return Param::Value(value);
+        }
+        let viewers = host
+            .players()
+            .into_iter()
+            .map(|player| {
+                let context = Context {
+                    local_player: Some(player),
+                    ..context.clone()
+                };
+                (player, self.evaluate(&context, host, arg))
+            })
+            .collect();
+        Param::PerViewer { value, viewers }
     }
 
     /// Advance every execution of `rule` (its own, and those Start Rule
@@ -1109,6 +1143,19 @@ fn names(arg: &Arg, id: Id) -> bool {
         Arg::Array(values) => values.iter().any(value_names),
         _ => false,
     }
+}
+
+/// Whether evaluating `arg` may draw from the engine's random source.
+fn draws_random(arg: &Arg) -> bool {
+    use eval::ids::{RANDOM_INTEGER, RANDOM_REAL, RANDOM_VALUE_IN_ARRAY, RANDOMIZED_ARRAY};
+    [
+        RANDOM_INTEGER,
+        RANDOM_REAL,
+        RANDOM_VALUE_IN_ARRAY,
+        RANDOMIZED_ARRAY,
+    ]
+    .into_iter()
+    .any(|id| names(arg, id))
 }
 
 #[derive(Clone, Copy)]

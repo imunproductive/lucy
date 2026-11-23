@@ -195,6 +195,17 @@ impl RoomLoop {
         };
         let mut input_ready = self.state.advance_input(now);
         if let Some((missed, late)) = due {
+            // A tick that skipped frames runs after every command it
+            // released: the frames it stands for. A room that falls behind
+            // releases the frames it skipped at once, and when its passes
+            // ran a tick each, their input budget fell short of what came
+            // in, the queues filled and every game was sent home; now each
+            // such tick takes longer and the clock skips frames (`timing.rs`
+            // warns of it). A tick on time leaves what the budget left for
+            // the passes after it, as before.
+            if missed > 0 {
+                self.state.advance_released_input(now, input_ready);
+            }
             self.state.tick(socket, now, missed, clock);
             // Each tick's frame and its start against its time on the grid:
             // the wake-up and the datagrams taken first (`timer.rs`).
@@ -211,11 +222,17 @@ impl RoomLoop {
             input_ready = self.state.input_waits();
             self.state.timing.add(&phase::take());
             if let Some(window) = self.state.timing.tick(now, late, missed) {
-                tracing::info!(
-                    target: "lucy::timing",
-                    "[game] match {:04X}: {window}",
-                    self.state.id[0] & 0xFFFF
-                );
+                let id = self.state.id[0] & 0xFFFF;
+                tracing::info!(target: "lucy::timing", "[game] match {id:04X}: {window}");
+                if window.behind() {
+                    tracing::warn!(
+                        "[game] match {id:04X} falls behind: {} of {} frames skipped in {:.0} s, a tick's work {:.1} ms on average; its players see the world stutter",
+                        window.skipped,
+                        window.ticks() + window.skipped,
+                        window.span.as_secs_f64(),
+                        window.work.mean().as_secs_f64() * 1000.0
+                    );
+                }
             }
         }
         Ok(Pass {

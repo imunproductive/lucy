@@ -28,10 +28,18 @@ use tracing::error;
 use serve::Hosting;
 use settings::{Mode, ModeArgs, ServerArgs, Settings, default_state_dir};
 
+/// What `lucy --version` prints: the release's version, which `tools/dist/dist.py` passes in
+/// `LUCY_VERSION` when it builds a release (docs/dev/releasing.md); a build from source without it
+/// says `0.0.0-dev` (the workspace's Cargo version, which stays 0.0.0).
+const VERSION: &str = match option_env!("LUCY_VERSION") {
+    Some(version) => version,
+    None => concat!(env!("CARGO_PKG_VERSION"), "-dev"),
+};
+
 /// Without a command, `lucy` asks which mode to start (Enter is retail);
 /// with no console to answer, it starts retail.
 #[derive(Parser)]
-#[command(version, about = "The Lucy server for Overwatch 1.74.0.0.104319")]
+#[command(version = VERSION, about = "The Lucy server for Overwatch 1.74.0.0.104319")]
 struct Cli {
     /// Folder for profiles, logs, config.toml and remembered answers [default: %APPDATA%\lucy].
     #[arg(long, global = true, env = "LUCY_STATE_DIR", value_name = "DIR")]

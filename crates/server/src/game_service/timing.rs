@@ -17,6 +17,10 @@ use lucy_core::phase::{PHASES, Phase, PhaseTimes};
 
 /// A room logs its timing and starts a new window this often (its clock).
 pub const WINDOW: Duration = Duration::from_secs(10);
+/// A window whose clock skipped more than one frame in this many is
+/// behind ([`TickStats::behind`]): the room warns. With the 1 ms timer a
+/// room that keeps up skips none.
+const BEHIND: u64 = 20;
 
 /// The width of a histogram bucket.
 const BUCKET_NS: u64 = 50_000;
@@ -176,6 +180,12 @@ impl TickStats {
             return 0.0;
         }
         self.ticks() as f64 / self.span.as_secs_f64()
+    }
+
+    /// The clock skipped more than one frame in [`BEHIND`]: the match
+    /// can't keep its ticks, and its players see the world stutter.
+    pub fn behind(&self) -> bool {
+        self.skipped * BEHIND > self.ticks() + self.skipped
     }
 
     fn record(&mut self, phases: &PhaseTimes, late: Duration, skipped: u64) {
@@ -361,5 +371,16 @@ mod tests {
         let later = total.since(&early.unwrap());
         assert_eq!(later.ticks(), 1000 - 99);
         assert_eq!(later.work.max(), Duration::from_micros(1250));
+        // Behind once more than one frame in 20 of the 901 ticks and the
+        // skipped frames was skipped.
+        assert!(!later.behind());
+        let behind = |skipped| {
+            TickStats {
+                skipped,
+                ..later.clone()
+            }
+            .behind()
+        };
+        assert!(!behind(47) && behind(48));
     }
 }

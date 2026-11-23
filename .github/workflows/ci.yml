@@ -1,0 +1,70 @@
+# The checks that need no game install (docs/dev/releasing.md "CI"): format, clippy, the tests
+# (`just test`) and the dashboard's tests. The game-install tests (`just test-game`, `test-slow`,
+# `test-affected`, `test-dpk`) read an Overwatch 1.74 install, which a GitHub runner doesn't have:
+# they run on a developer's PC.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    runs-on: windows-2025
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: '0'
+      # The justfile builds and tests with a quarter of the CPU threads unless these are set;
+      # the runner is not shared.
+      CARGO_BUILD_JOBS: '4'
+      RUST_TEST_THREADS: '4'
+    steps:
+      - uses: actions/checkout@v5
+
+      # The nightly that rust-toolchain.toml pins, with rustfmt, clippy and Cranelift.
+      - name: Install the Rust toolchain
+        run: |
+          rustup toolchain install
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          rustc --version
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just,cargo-nextest
+
+      - run: just fmt-check
+      - run: just lint
+      - run: just test
+      # Loads the relay and probe DLLs into a stand-in process: no game needed.
+      - run: just test-windows
+
+  dashboard:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/dashboard/package-lock.json
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      # The API client's tests, the type check, and that the committed dist/ is a fresh build.
+      - run: just dashboard-test

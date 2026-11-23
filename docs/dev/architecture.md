@@ -11,7 +11,8 @@ Lucy/
 ├─ apps/lucy/       the lucy program: command line, doctor, modes
 ├─ web/dashboard/      the dashboard (Vite, Svelte, TypeScript): src/, and its build in dist/, which is committed and embedded into the binary
 ├─ research/ida/       the IDA script that extracted the statescript codecs
-├─ tools/              the client tools (Python): index, game database, debugger (docs/dev/client-tools.md)
+├─ tools/              the client tools (Python): index, game database, debugger (docs/dev/client-tools.md); tools/dist/ packages a release (docs/dev/releasing.md)
+├─ .github/workflows/  CI (format, clippy, tests, dashboard) and the release for a v* tag (docs/dev/releasing.md)
 ├─ docs/user/          for players and hosts
 ├─ docs/dev/           for developers
 ├─ docs/notes/         research notes: protocol, behavior, references

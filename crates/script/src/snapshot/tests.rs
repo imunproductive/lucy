@@ -2458,3 +2458,53 @@ fn a_kept_projection_shares_the_instances_that_did_not_change() {
     assert!(!Arc::ptr_eq(&next.instances[&1], &first.instances[&1]));
     assert!(Arc::ptr_eq(&next.instances[&2], &first.instances[&2]));
 }
+
+/// Streams that hold the same snapshots share the observer delta made for
+/// the first of them ([`SharedDeltas`]), and each gets what its stream
+/// alone would.
+#[test]
+fn streams_with_the_same_snapshots_share_an_observer_delta() {
+    let (graphs, snapshot) = fixture();
+    let codecs = CodecTable::from_json(CODECS).unwrap();
+    let encoder = SnapshotEncoder::new(&graphs, &codecs);
+    let kind = DeltaKind::Observer { resend: false };
+    let first = encoder.project(&snapshot, View::Observer).unwrap();
+    let mut second = first.clone();
+    second.set_entity_variable(55, Some(Value::Integer(3)));
+    let current = after_body_change(first.clone());
+    // Three clients have `first`; the third has a delta to `second` on its
+    // way.
+    let streams = || {
+        let mut streams: Vec<_> = (0..3)
+            .map(|_| {
+                let mut stream = BodyStream::new(ENTITY);
+                let full = encoder.queue_full(&mut stream, &first).unwrap();
+                stream.create_arrived();
+                stream.arrived(full.last);
+                stream
+            })
+            .collect();
+        encoder
+            .queue_delta(&mut streams[2], &second.clone(), kind, 16)
+            .unwrap()
+            .unwrap();
+        streams
+    };
+    let mut shared = streams();
+    let deltas: Vec<_> = shared
+        .iter_mut()
+        .map(|stream| encoder.queue_delta(stream, &current, kind, 16).unwrap())
+        .collect();
+    // Made for the first stream and the third: the second's is the first's.
+    assert_eq!(current.shared.0.lock().unwrap().len(), 2);
+    assert!(deltas[0].is_some());
+    assert_eq!(deltas[0], deltas[1]);
+    for ((mut alone, delta), shared) in streams().into_iter().zip(&deltas).zip(&shared) {
+        let fresh = current.clone();
+        assert_eq!(
+            &encoder.queue_delta(&mut alone, &fresh, kind, 16).unwrap(),
+            delta
+        );
+        assert_eq!(alone.latest_snapshot(), shared.latest_snapshot());
+    }
+}
