@@ -2022,8 +2022,8 @@ pub struct Snapshot {
     pub diagnostics: Vec<Diagnostic>,
     /// Unverified answers given so far, each site and class once.
     pub assumptions: Vec<Assumption>,
-    /// The communication wheel's networked actions that ran, oldest first,
-    /// the last [`MAX_FRAME_ACTIONS`].
+    /// The networked actions with a remote index that ran, oldest first,
+    /// the last [`MAX_FRAME_ACTIONS`] (`vm/play.rs` `record_frame_action`).
     pub frame_actions: Vec<FrameAction>,
     /// The component's clock when this snapshot was taken.
     pub now_ms: u64,
@@ -2090,16 +2090,16 @@ impl std::ops::DerefMut for TrackedSnapshot {
     }
 }
 
-/// How many recent wheel actions a body keeps (upstream
+/// How many recent networked actions an entity keeps (upstream
 /// `MAX_WHEEL_CALLOUTS`, server delivery policy).
 pub const MAX_FRAME_ACTIONS: usize = 32;
 
 /// A networked action that ran on the server and goes to the clients in
-/// the remote message list of the body's frames (104319 A0CCA0; upstream
-/// `WheelCallout`): a callout (`STU_7106C356`) or an effect.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// the remote message list of the entity's frames (104319 A0CCA0;
+/// upstream `WheelCallout`, `FrameAction`).
+#[derive(Clone, Debug, PartialEq)]
 pub struct FrameAction {
-    /// Counts up from 1 on this body.
+    /// Counts up from 1 on this entity.
     pub serial: u32,
     pub instance: u16,
     /// The instance's creation time, so a reused id doesn't match.
@@ -2107,6 +2107,10 @@ pub struct FrameAction {
     /// The node's position in its graph.
     pub node: u16,
     pub time_ms: u64,
+    /// The values of the variables its remote sync list names as it ran:
+    /// (instance, or 0 for the entity's; variable; value). The frame
+    /// that carries it lists them so (upstream `9c5e550c`).
+    pub values: Arc<Vec<(u16, u32, Value)>>,
 }
 
 impl Snapshot {

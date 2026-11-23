@@ -1371,6 +1371,10 @@ fn resource_field(class: &str) -> Option<&'static str> {
         // `0215` rid31 to rid35 store the announcer's stimulus (`078`) in
         // #10122.
         "STUConfigVarVoiceStimulus" => Some("m_voiceStimulus"),
+        // An animation alias (`.014`); unset, the zero asset: `05AD` rid94
+        // tests the emote slot's alias (`STU_250DEABD`) against an empty
+        // one before it plays the emote.
+        "STUConfigVarAnimation" => Some("m_animation"),
         _ => None,
     }
 }

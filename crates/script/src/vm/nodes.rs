@@ -47,7 +47,14 @@ const SERVER_NO_OPS: &[&str] = &[
     // follows the empty out plug (leafall903/ORPHEUS (MIT),
     // `wheel_base_action` in nodes.py, `docs/COMMUNICATION_WHEEL.txt`).
     // 05AD node 165 and 023A/02CF/0686's server-only unlock-use reports.
+    // `STU_71FE9852` too, the wheel's terminal action after each
+    // PlayScript (05AD nodes 154 and 155, 02CF node 32: an entity
+    // `m_06B5A4F1` and an enum `m_E6525980`): no registration of its own,
+    // the base Action's run 0x7FF78AA7EBA0 and execute 0x7FF789C44A80
+    // (`python tools/stu.py STU_71FE9852`; leafall903/ORPHEUS (MIT)
+    // `f906823c`).
     "STU_631D36C3",
+    "STU_71FE9852",
     "STU_94771561",
     // Execute 0x7FF789C3B040: the statescript's frame (+1 when its enum
     // m_93CDFD2F is 1) as seconds (0x7FF789AC7100) raises a time on the
@@ -67,8 +74,8 @@ const SERVER_NO_OPS: &[&str] = &[
     // lines of that category (sound only; `069A` rid7/rid8 run it with
     // category `0005` as an emote begins and ends, `03F2` rid32 for the
     // announcer, `1BEE` rid12). All four uses are networked with a remote
-    // index; the server has no voice playing, and its frames don't pulse
-    // remote actions outside the wheel's graphs yet.
+    // index; the server has no voice playing, and the clients run them
+    // from the frames' remote messages (`vm/play.rs` `record_frame_action`).
     "STU_3D419B63",
     // The Workshop Inspector's server-only nodes (no client registration):
     // Enable/Disable Inspector Recording `2425`/`2426` (`STU_B80EB51C`, its
@@ -128,10 +135,6 @@ const SERVER_NO_OPS: &[&str] = &[
 /// recorded as an [`Assumption`].
 const ASSUMED_NO_OPS: &[&str] = &[
     "STU_E9694EFD", // Soldier: 76's sprint, graph 0255 node 40; hashed fields only
-    // The communication wheel's terminal action after each PlayScript
-    // (05AD nodes 154 and 155, 02CF node 32): an entity and an integer, no
-    // out link.
-    "STU_71FE9852",
     // Server-only (no registration of its own: the base action's run):
     // m_D7DDEEAD points for m_target (always the owner), m_instigator
     // optional. 23 sites: 120 or 60 on an ability's use, 40 a second
@@ -339,6 +342,7 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
         depth: usize,
     ) -> Result<bool, InitFault> {
         self.spend("node execution")?;
+        self.record_frame_action(id, node);
         match node.class.as_str() {
             _ if is_entry(node) => self.follow(id, node, "m_outPlug", None, depth),
             "STUStatescriptActionSetVar" => {
@@ -580,12 +584,6 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
                 Ok(true)
             }
             class if SERVER_NO_OPS.contains(&class) => {
-                if matches!(
-                    class,
-                    "STU_7106C356" | "STUStatescriptActionEffect" | "STU_100EF8C2"
-                ) {
-                    self.record_frame_action(id, node);
-                }
                 self.follow(id, node, "m_outPlug", None, depth)?;
                 Ok(true)
             }
@@ -1079,7 +1077,53 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
             // and act through extra slots on the entity's model (component
             // 43, 0x7FF789821920, 0x7FF78988F1C0). None ends by itself; the
             // server has no camera or HUD: plain states its frames carry.
-            "STU_D75CDECC" | "STU_96333BBE" | "STU_A103C85E" => StateKind::Plain,
+            // `STU_E8D976BE` and `STU_06AB2ECE` (the emote graph `023A`
+            // st73, the body's `004B` st23) are the same kind: their begins
+            // (0x7FF789AE03F0, 0x7FF7898E3B60, like CameraLookAt's
+            // 0x7FF789911920) return before binding or reading a field when
+            // 0x7FF789978A30 finds no auxiliary view owner, which the server
+            // never has (leafall903/ORPHEUS (MIT) `2dd82f3f`, `ebf576dc`).
+            "STU_D75CDECC" | "STU_96333BBE" | "STU_A103C85E" | "STU_E8D976BE" | "STU_06AB2ECE" => {
+                StateKind::Plain
+            }
+            // The same for `STU_D040C3EF` (`023A` st94) bound to its own
+            // entity (`m_4A5CA514` = owner()): its begin 0x7FF7899AE1F0
+            // returns without the service, and its end 0x7FF7899AB2D0 has
+            // no binding to clean up.
+            "STU_D040C3EF"
+                if expr::native_shape(field(&node.fields, "m_4A5CA514"), "STU_B5A0CAF0", None) =>
+            {
+                StateKind::Plain
+            }
+            // An emote's blend tree (`023A` st60): a registered linked state
+            // (begin/end 0x7FF789CBAD60/0x7FF789CBADC0 keep the class's
+            // ordered list, reader 0x7FF78AA81D80 the link alone, as
+            // `STU_9028E035`'s). The client takes the tree (`m_65D335ED`)
+            // and level (`m_level`) from the running chain; the server
+            // animates nothing, so it is a plain state sent without a link,
+            // as the statuses are (leafall903/ORPHEUS (MIT) `4e432ef0`).
+            "STU_A875CA49" => StateKind::Plain,
+            // The local animation mode (`023A` st95, owner-only, codec
+            // `none`): its begin and end (0x7FF78990CA80, 0x7FF78990CDE0)
+            // set and clear a mode 0-3 (`m_4DA577AC`) on the client's own
+            // model (leafall903/ORPHEUS (MIT) `e79770ba`).
+            "STU_58E77FC5"
+                if node.remote == -1
+                    && field(field(&node.fields, "m_4DA577AC"), "$").as_str()
+                        == Some("STUConfigVarInt")
+                    && field(field(&node.fields, "m_4DA577AC"), "m_value")
+                        .as_i64()
+                        .is_some_and(|mode| (0..=3).contains(&mode)) =>
+            {
+                StateKind::Plain
+            }
+            // A cosmetic resource (the emote's `1040` st0, codec `none`):
+            // its begin and update (0x7FF789D3FAB0, 0x7FF789D3FC40) load
+            // and poll the client's resource and fire the ready plug
+            // `m_3DE788AE` once it is in. With no link on that plug nothing
+            // follows from it: a plain state (leafall903/ORPHEUS (MIT)
+            // `e655aed5`). A linked ready plug is not supported.
+            "STU_ABEDF4B8" if node.links("m_3DE788AE").next().is_none() => StateKind::Plain,
             "STUStatescriptStateHealthPool" if health_pool_form(node).is_some() => {
                 StateKind::HealthPool { pool: None }
             }

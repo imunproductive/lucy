@@ -1242,11 +1242,12 @@ impl Others {
             body: body.id.entity,
             hero: body.hero.guid,
             skin: (body.skin.guid != 0).then_some(body.skin.guid),
+            wheel: other.card.wheel.get(&body.hero.guid).copied(),
         };
         output.records.push((
             EntityUpdate {
                 entity: other.entity,
-                operation: Some(Operation::Update(possession.components().into())),
+                operation: Some(Operation::Update(possession.components())),
                 ..EntityUpdate::default()
             },
             OtherDelivery::Possession {

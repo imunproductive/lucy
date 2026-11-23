@@ -31,7 +31,7 @@ use crate::wire::{
 use lucy_core::bits::{BitError, BitWriter};
 
 const OWNER_HEALTH: u32 = 253;
-/// How long a wheel action stays sendable after it ran (upstream
+/// How long a frame action stays sendable after it ran (upstream
 /// `WHEEL_CALLOUT_MS`, server delivery policy).
 pub const ACTION_LIFETIME_MS: u64 = 2000;
 /// The wheel's callout graph: its actions go out only while its root wait
@@ -53,7 +53,7 @@ pub struct ProjectedSnapshot {
     /// Each shared with the projections it didn't change in
     /// ([`SnapshotEncoder::project_cached`]).
     instances: BTreeMap<u16, Arc<ProjectedInstance>>,
-    /// The wheel actions still sendable, oldest first.
+    /// The networked actions still sendable, oldest first.
     actions: Vec<ProjectedAction>,
     /// The newest action this projection has passed: a full frame's
     /// baseline takes the newest one there is, a delta the one it carried.
@@ -65,7 +65,7 @@ pub struct ProjectedSnapshot {
 /// A projection and what it was made from
 /// ([`SnapshotEncoder::project_cached`]): the snapshot's revision and the
 /// clock readings it holds for, from the snapshot's clock then to the
-/// first time a pulse goes stale or a wheel action runs out; and the same
+/// first time a pulse goes stale or a frame action runs out; and the same
 /// for each instance.
 #[derive(Debug)]
 pub struct ProjectionCache {
@@ -825,7 +825,7 @@ struct InstanceDifferences {
 
 /// The observer deltas made to a projection, each with what it was made
 /// from: the encoder's setup, the stream's base and its queued chunks'
-/// snapshots. An observer delta with no wheel action in it depends on
+/// snapshots. An observer delta with no frame action in it depends on
 /// nothing else (not on the chunks' numbers or keys), so every client
 /// whose stream holds the same snapshots gets the same bytes, made once:
 /// the mode entity's frame goes to every client of a match each tick,
@@ -980,15 +980,17 @@ impl ProjectedVariables {
     }
 }
 
-/// A wheel action in the remote message list of a frame (104319 A0CCA0):
-/// its instance and node, raw for the owner, remote for an observer.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// A networked action in the remote message list of a frame (104319
+/// A0CCA0): its instance and node, raw for the owner, remote for an
+/// observer, and the values of its remote sync list as it ran.
+#[derive(Clone, Debug, PartialEq)]
 struct ProjectedAction {
     serial: u32,
     instance: u16,
     graph: u32,
     raw: u16,
     remote: u16,
+    values: Arc<Vec<(u16, u32, Value)>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1266,7 +1268,7 @@ impl<'a> SnapshotEncoder<'a> {
 
     /// `fresh_until_ms` comes down to the last clock reading (from
     /// `snapshot.now_ms` on) the projection holds for: the projection
-    /// reads the clock only for a pulse's freshness and a wheel action's
+    /// reads the clock only for a pulse's freshness and a frame action's
     /// lifetime, each of which runs out once. With `stamps`, an instance of
     /// the kept projection that still holds is shared, not made again, and
     /// each instance's stamp is recorded.
@@ -1451,7 +1453,7 @@ impl<'a> SnapshotEncoder<'a> {
         })
     }
 
-    /// The wheel actions the frames may still carry: of a live instance
+    /// The networked actions the frames may still carry: of a live instance
     /// (the same one, not a reused id), at most [`ACTION_LIFETIME_MS`] old;
     /// `0686`'s only while its root wait runs (upstream `callout_snapshot`).
     fn project_actions(
@@ -1493,6 +1495,7 @@ impl<'a> SnapshotEncoder<'a> {
                 graph: instance.graph,
                 raw: node.rid,
                 remote,
+                values: Arc::clone(&action.values),
             });
         }
         Ok(actions)
@@ -1886,7 +1889,7 @@ impl<'a> SnapshotEncoder<'a> {
         {
             return Ok(None);
         }
-        // An observer delta that carries no wheel action is the same for
+        // An observer delta that carries no frame action is the same for
         // every stream with the same snapshots ([`SharedDeltas`]). Action
         // keys sort last.
         let mut shared = view == View::Observer
@@ -1932,30 +1935,18 @@ impl<'a> SnapshotEncoder<'a> {
         // An idle volley's ammunition goes in every owner chunk, but makes
         // none go by itself.
         touched.extend(self.idle_volley_ammo(snapshot)?);
-        let mut delta = self.differences(base, snapshot, &touched, &known)?;
-        // The oldest action the client hasn't acknowledged, under the stamp
-        // of the chunk that first carried it (upstream `frame_callout`).
-        let action = snapshot
-            .actions
-            .iter()
-            .find(|action| action.serial > base.action_serial)
-            .map(|action| {
-                let stamp = touched
-                    .iter()
-                    .filter_map(|key| match *key {
-                        ChangeKey::Action { serial, stamp } if serial == action.serial => {
-                            Some(stamp)
-                        }
-                        _ => None,
-                    })
-                    .min()
-                    .unwrap_or(stream.last().wrapping_add(1));
-                (stamp, *action)
-            });
-        if let Some((stamp, action)) = action {
+        let actions = unacknowledged_actions(snapshot, base, &touched, stream.last());
+        // The frame lists the values the actions' remote sync lists had as
+        // they ran (upstream `seed_callout`), and the delivered projection
+        // holds them, so that the next delta lists the current ones again.
+        let (seeded, seeded_keys) = seed_action_values(snapshot, &actions);
+        let current = seeded.as_ref().unwrap_or(snapshot);
+        touched.extend(seeded_keys);
+        let mut delta = self.differences(base, current, &touched, &known)?;
+        for (stamp, action) in &actions {
             delta.keys.insert(ChangeKey::Action {
                 serial: action.serial,
-                stamp,
+                stamp: *stamp,
             });
         }
         if view == View::Observer && delta.keys.is_empty() {
@@ -1966,9 +1957,11 @@ impl<'a> SnapshotEncoder<'a> {
             }
             return Ok(None);
         }
-        let mut delivered = snapshot.clone();
-        delivered.action_serial = action.map_or(base.action_serial, |(_, action)| action.serial);
-        let frame = self.delta_frame(snapshot, &delta, kind, frame_ms, action)?;
+        let mut delivered = current.clone();
+        delivered.action_serial = actions
+            .last()
+            .map_or(base.action_serial, |(_, action)| action.serial);
+        let frame = self.delta_frame(current, &delta, kind, frame_ms, &actions)?;
         if shared {
             snapshot.shared.insert(
                 self,
@@ -2309,7 +2302,7 @@ impl<'a> SnapshotEncoder<'a> {
         delta: &SnapshotDelta<'_>,
         kind: DeltaKind,
         frame_ms: u32,
-        action: Option<(u32, ProjectedAction)>,
+        actions: &[(u32, &ProjectedAction)],
     ) -> Result<BitWriter, SnapshotError> {
         let (cmfd, correction, mode) = match kind {
             DeltaKind::Observer { .. } => (None, false, PayloadMode::Remote { full: false }),
@@ -2378,46 +2371,52 @@ impl<'a> SnapshotEncoder<'a> {
         if cmfd.is_some() {
             frame.bit(false);
         }
-        self.frame_action(&mut frame, action, cmfd.is_some())?;
+        self.frame_action(&mut frame, actions, cmfd.is_some())?;
         Ok(frame)
     }
 
     /// The frame's remote messages (104319 A0CCA0; upstream
-    /// `_write_frame_action`): a group present bit, then for the action its
-    /// stamp (RMFr), the group size (RMSz, without the group's terminator)
-    /// and one short entry: target present, the instance (TrID) and the node,
-    /// raw for the owner (H = 1), its remote index for an observer; then no
-    /// more entries, no more groups and no ungrouped entries.
+    /// `_write_frame_action`): the groups, each after a present bit: its
+    /// stamp (RMFr), its size (RMSz, without the group's terminator) and
+    /// its entries, each after a present bit, short (an 8-bit length, no
+    /// node payload): target present, the instance (TrID) and the node,
+    /// raw for the owner (H = 1), its remote index for an observer. Then no
+    /// more groups and no ungrouped entries. The actions of one stamp go
+    /// in one group: the client skips a group whose stamp it ran.
     fn frame_action(
         &self,
         frame: &mut BitWriter,
-        action: Option<(u32, ProjectedAction)>,
+        actions: &[(u32, &ProjectedAction)],
         owner: bool,
     ) -> Result<(), SnapshotError> {
-        frame.bit(action.is_some());
-        if let Some((stamp, action)) = action {
-            let graph = self.graph(action.instance, action.graph)?;
-            let mut entry = BitWriter::new();
-            entry.bit(true);
-            entry.w_u16(action.instance);
-            if owner {
-                entry.bits(u64::from(action.raw), usize::from(graph.header.nodes_bits))?;
-            } else {
-                entry.bits(
-                    u64::from(action.remote),
-                    usize::from(graph.header.remote_bits),
-                )?;
+        for group in actions.chunk_by(|(a, _), (b, _)| a == b) {
+            let mut entries = BitWriter::new();
+            for (_, action) in group {
+                let graph = self.graph(action.instance, action.graph)?;
+                let mut entry = BitWriter::new();
+                entry.bit(true);
+                entry.w_u16(action.instance);
+                if owner {
+                    entry.bits(u64::from(action.raw), usize::from(graph.header.nodes_bits))?;
+                } else {
+                    entry.bits(
+                        u64::from(action.remote),
+                        usize::from(graph.header.remote_bits),
+                    )?;
+                }
+                let length = 8 + entry.bit_len();
+                entries.bit(true); // an entry
+                entries.bit(false); // short: an 8-bit length, no node payload
+                entries.bits(u64::try_from(length).map_err(|_| WireError::ChunkRange)?, 8)?;
+                entries.append(&entry);
             }
-            let length = 8 + entry.bit_len();
-            frame.w_u32(stamp);
-            frame.w_var(u32::try_from(2 + length).map_err(|_| WireError::ChunkRange)?);
-            frame.bit(true); // an entry
-            frame.bit(false); // short: an 8-bit length, no node payload
-            frame.bits(length as u64, 8)?;
-            frame.append(&entry);
+            frame.bit(true); // a group
+            frame.w_u32(group[0].0);
+            frame.w_var(u32::try_from(entries.bit_len()).map_err(|_| WireError::ChunkRange)?);
+            frame.append(&entries);
             frame.bit(false); // no more entries
-            frame.bit(false); // no more groups
         }
+        frame.bit(false); // no more groups
         frame.bit(false); // no ungrouped entries
         Ok(())
     }
@@ -2733,6 +2732,81 @@ fn new_variables<'a>(
         .chain(touched_variables(instance, touched))
         .collect();
     listed_variables(instance, listed, current, changes, values)
+}
+
+/// The actions the client hasn't acknowledged, oldest first, each under
+/// the stamp of the chunk that first carried it (upstream
+/// `frame_callout`), a new one under the next chunk's. The client runs a
+/// stamp's actions once: it skips a group whose stamp is at most the last
+/// it ran (104319 A0CCA0, `+2312`). They stop before an action whose sync
+/// values differ from an earlier one's for the same variable, which one
+/// frame can't list both of; it goes in a later frame.
+fn unacknowledged_actions<'s>(
+    current: &'s ProjectedSnapshot,
+    base: &ProjectedSnapshot,
+    touched: &BTreeSet<ChangeKey>,
+    last_chunk: u32,
+) -> Vec<(u32, &'s ProjectedAction)> {
+    let mut actions = Vec::new();
+    let mut values: BTreeMap<(u16, u32), &Value> = BTreeMap::new();
+    for action in current
+        .actions
+        .iter()
+        .filter(|action| action.serial > base.action_serial)
+    {
+        if action.values.iter().any(|(owner, variable, value)| {
+            values
+                .get(&(*owner, *variable))
+                .is_some_and(|was| !was.identical(value))
+        }) {
+            break;
+        }
+        values.extend(
+            action
+                .values
+                .iter()
+                .map(|(owner, variable, value)| ((*owner, *variable), value)),
+        );
+        let stamp = touched
+            .iter()
+            .filter_map(|key| match *key {
+                ChangeKey::Action { serial, stamp } if serial == action.serial => Some(stamp),
+                _ => None,
+            })
+            .min()
+            .unwrap_or(last_chunk.wrapping_add(1));
+        actions.push((stamp, action));
+    }
+    actions
+}
+
+/// `current` with the values the actions' remote sync lists had as they
+/// ran, where it projects the variable with another value now (none: no
+/// such value), and their keys.
+fn seed_action_values(
+    current: &ProjectedSnapshot,
+    actions: &[(u32, &ProjectedAction)],
+) -> (Option<ProjectedSnapshot>, Vec<ChangeKey>) {
+    let mut seeded: Option<ProjectedSnapshot> = None;
+    let mut keys = Vec::new();
+    for (owner, variable, value) in actions.iter().flat_map(|(_, action)| action.values.iter()) {
+        let now = if *owner == 0 {
+            current.entity_variable(*variable)
+        } else {
+            current.instance_variable(*owner, *variable)
+        };
+        if now.is_none_or(|now| now.identical(value)) {
+            continue;
+        }
+        let seeded = seeded.get_or_insert_with(|| current.clone());
+        if *owner == 0 {
+            seeded.set_entity_variable(*variable, Some(value.clone()));
+        } else {
+            seeded.set_instance_variable(*owner, *variable, Some(value.clone()));
+        }
+        keys.push(ChangeKey::Variable(*owner, *variable));
+    }
+    (seeded, keys)
 }
 
 /// The ids of `instance`'s variables in `touched`.

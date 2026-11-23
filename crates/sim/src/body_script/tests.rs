@@ -1529,6 +1529,113 @@ fn wheel_choices_run_the_callout_graph() {
     }
 }
 
+/// An emote from the wheel on Soldier: 76's own graphs: the choice (slot
+/// 1, action `01A1`; slot 0's `0172` is a main-wheel action too) reaches
+/// `05AD`, which plays `069A` with the equipped
+/// graph `023A` as its SubScript. With the player's equipped emote
+/// ([`GraphStore::wheel_cosmetics`], from the install's unlock), every
+/// state of the path runs (`STU_ABEDF4B8`, `STU_A875CA49`,
+/// `STU_58E77FC5`, `STU_D040C3EF`, `STU_06AB2ECE`): nothing is unsupported.
+#[test]
+#[ignore = "requires the derived 104319 statescript catalog"]
+fn an_emote_choice_runs_the_emote_graphs() {
+    use lucy_content::{catalog::ItemDb, maps::GameMap};
+    use lucy_core::tick::FIRST_TICK;
+    use lucy_wire::{
+        entity::WheelLoadout,
+        jam::codec::{Fields, Value as Field},
+        messages::Message,
+    };
+
+    let root = lucy_testkit::runtime_dir();
+    let graphs =
+        Arc::new(GraphStore::load_runtime(root.join("data"), "game_graphs_174.json.gz").unwrap());
+    let items = ItemDb::load(&root.join("data")).unwrap();
+    let emote = items
+        .unlocks
+        .values()
+        .find(|unlock| {
+            unlock.item_type == "Emote"
+                && unlock.hero.as_deref() == Some("Soldier: 76")
+                && unlock.level == Some(0)
+        })
+        .expect("Soldier: 76's default emote")
+        .guid;
+    let equipped = WheelLoadout {
+        emotes: [emote; 4],
+        ..WheelLoadout::default()
+    };
+    let cosmetics = graphs.wheel_cosmetics(&equipped);
+    assert_ne!(cosmetics.emote_aliases[0], 0, "the emote's animation alias");
+    assert_ne!(cosmetics.emote_blend_trees[0], 0, "the emote's blend trees");
+    let pools = crate::pools::PoolCatalog::from_graphs(&graphs)
+        .unwrap()
+        .hero_pools(SOLDIER)
+        .unwrap();
+    let body = &graphs.bodies()[&0x0400_0000_0000_03cf];
+    let roots = lucy_script::vm::player_roots(body, &graphs).unwrap();
+    let health = pools.total();
+    let variables = lucy_script::vm::player_entity_variables(body, health, health);
+    let mut world = PlayerWorld::new(
+        Arc::clone(&graphs),
+        0xa000_0100,
+        0xa000_0101,
+        crate::scene::team_bit(0).unwrap(),
+        PRACTICE_RANGE_MODE,
+        SOLDIER,
+    );
+    world.position = GameMap::practice_range().spawn_point(0, 0).unwrap().0;
+    world.vitals = Vitals::empty();
+    world.pool_types_known = true;
+    world.target_tags = body.target_tags.clone();
+    world.cosmetics = cosmetics;
+    let mut component = Component::start(
+        Arc::clone(&graphs),
+        world.entity,
+        variables,
+        roots,
+        FIRST_TICK,
+        &mut world,
+        MAX_INIT_WORK,
+    )
+    .unwrap();
+    component.advance_frame(FIRST_TICK, &mut world).unwrap();
+    let mut choice = Fields::new();
+    choice.insert(0x78, Field::Unsigned(0x0a90_0000_0000_01a1));
+    choice.insert(0x80, Field::Bool(false));
+    let (message, parameters) = crate::wheel::selection(&Message {
+        id: crate::wheel::COMMUNICATION_ACTION,
+        fields: choice,
+    })
+    .unwrap();
+    assert_ne!(
+        component
+            .receive_message(0, message, parameters, &mut world)
+            .unwrap(),
+        0
+    );
+    for frame in 1..10 {
+        component
+            .advance_frame(FIRST_TICK + frame, &mut world)
+            .unwrap();
+    }
+    let snapshot = component.snapshot().unwrap();
+    assert!(
+        snapshot.diagnostics.is_empty(),
+        "{:?}",
+        snapshot.diagnostics
+    );
+    for graph in [0x069a, 0x1040, 0x023a] {
+        assert!(
+            snapshot
+                .instances
+                .values()
+                .any(|instance| instance.graph == graph),
+            "{graph:04X} runs"
+        );
+    }
+}
+
 /// The wheel's spam limit runs on the server as `05AD` has it: each Hello
 /// counts (`#4052e`), at three `#7416` holds and a fourth choice only shows
 /// the refusal; one count goes every 4 s, after which a choice speaks
@@ -1987,7 +2094,10 @@ fn run_frames(runtime: &mut PlayerBodyRuntime, spawn: OwnerBodySpawn, frames: u3
 #[test]
 #[ignore = "requires the derived 104319 statescript catalog"]
 fn the_charge_graph_charges_soldier_s_ultimate() {
-    use lucy_script::{ultimate::dealt_message, weapons::DamageTags};
+    use lucy_script::{
+        ultimate::{Dealt, dealt_message},
+        weapons::DamageTags,
+    };
 
     const ENEMY: u32 = 0xa000_0301;
     const ALLY: u32 = 0xa000_0401;
@@ -2023,7 +2133,12 @@ fn the_charge_graph_charges_soldier_s_ultimate() {
     runtime.set_target_candidates(&[body(ENEMY, 1), body(ALLY, 0)]);
     let deal = |runtime: &mut PlayerBodyRuntime, target, amount, heal| {
         runtime.set_victim_tags(target, BTreeSet::from([TRAINING_BOT_TAG]));
-        let (message, parameters) = dealt_message(target, amount, &DamageTags::NONE, heal);
+        let dealt = if heal {
+            Dealt::Healing
+        } else {
+            Dealt::Damage { critical: false }
+        };
+        let (message, parameters) = dealt_message(target, amount, &DamageTags::NONE, dealt);
         runtime
             .receive_message(spawn.entity, message, parameters)
             .unwrap();
@@ -2061,7 +2176,7 @@ fn the_charge_graph_charges_soldier_s_ultimate() {
 #[ignore = "requires the derived 104319 statescript catalog"]
 fn doomfists_passive_grants_temporary_shields_that_drain() {
     use lucy_script::{
-        ultimate::dealt_message,
+        ultimate::{Dealt, dealt_message},
         vitals::{Death, PoolKind},
         weapons::DamageTags,
     };
@@ -2116,7 +2231,8 @@ fn doomfists_passive_grants_temporary_shields_that_drain() {
     };
     let deal = |runtime: &mut PlayerBodyRuntime| {
         let tags: DamageTags = [SLAM].into_iter().collect();
-        let (message, parameters) = dealt_message(ENEMY, 50.0, &tags, false);
+        let (message, parameters) =
+            dealt_message(ENEMY, 50.0, &tags, Dealt::Damage { critical: false });
         runtime
             .receive_message(spawn.entity, message, parameters)
             .unwrap();
