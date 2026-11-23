@@ -2444,3 +2444,70 @@ fn doomfists_meteor_strike_flies_over_the_range_and_lands_where_his_client_did()
         assert_eq!(up, 5.0);
     }
 }
+
+/// Doomfist rides a Practice Range platform (`800000C2`, path follower
+/// `0516`) as his client did (game session `D:/Temp/mm/r2`, 2026-11-23;
+/// the client's mover samples in `fixtures/range_platform_ride.txt`:
+/// frame, position, velocity, in the platform's frame while he rides it).
+/// A scratch server put him 1 m above the platform's origin at frame 4445;
+/// he lands on it at 4463, stands while it carries him along its loop at
+/// 4 m/s, walks off its edge at 4749-4786 and falls. The replay of his
+/// commands (yaw -31010, `extra` 51, the walk) gives his client's feet in
+/// the platform's frame (node 1) on every frame from the landing to the
+/// step off its edge, and the platform as his parent.
+///
+/// Not equal yet (refs `MapEntities.md` "MovingMaps"): the velocity
+/// relative to the platform, by a few 1/1024 m/s while he stands (the
+/// platform velocity's precision), and the step off the edge, where his
+/// client keeps the platform two frames longer (4761, 4762).
+#[test]
+#[ignore = "requires the derived 104319 data and the install"]
+fn doomfist_rides_a_range_platform_in_its_frame_as_his_client_did() {
+    const PLATFORM: u32 = 0x8000_00C2;
+    let client: Vec<(u32, [f64; 3])> = include_str!("../../../fixtures/range_platform_ride.txt")
+        .lines()
+        .map(|line| {
+            let v: Vec<f64> = line
+                .split_whitespace()
+                .map(|x| x.parse().unwrap())
+                .collect();
+            (v[0] as u32, [v[1], v[2], v[3]])
+        })
+        .collect();
+    let mut player = Player::spawn(DOOMFIST);
+    let command = |forward| Command {
+        yaw: -31010,
+        forward,
+        extra: 51,
+        ..Command::default()
+    };
+    while player.frame < 4444 {
+        player.step(command(0));
+    }
+    // The scratch server's teleport: 1 m above the platform's origin as
+    // it stood for command 4445.
+    player
+        .world
+        .mover
+        .as_mut()
+        .unwrap()
+        .teleport([42.673_008, 7.431_227, -15.695_88], None);
+    while player.frame < 4760 {
+        let frame = player.frame + 1;
+        player.step(command(if (4749..=4786).contains(&frame) {
+            127
+        } else {
+            0
+        }));
+        let record = player.world.mover.as_ref().unwrap().record();
+        let feet = client.iter().find(|(f, _)| *f == frame).unwrap().1;
+        if frame < 4463 {
+            // The fall after the teleport: his client took the teleported
+            // state a frame late, so its fall runs one frame behind.
+            continue;
+        }
+        assert_eq!(record.position, feet, "frame {frame}");
+        let riding = record.parent.map(|parent| (parent.entity, parent.node));
+        assert_eq!(riding, Some((PLATFORM, 1)), "frame {frame}");
+    }
+}

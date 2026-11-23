@@ -105,6 +105,7 @@ pub fn remote_movement(pose: Movement, tick: u32, gravity: f64) -> Movement {
         spring_speed: pose.spring_speed,
         move_to: pose.move_to,
         turn_rate: pose.turn_rate,
+        parent: pose.parent,
         ..Movement::default()
     }
 }
@@ -248,6 +249,7 @@ mod tests {
             move_to: None,
             turn_rate: None,
             nav_path: None,
+            parent: None,
         };
         let pose = owner_pose(source);
         assert_eq!(

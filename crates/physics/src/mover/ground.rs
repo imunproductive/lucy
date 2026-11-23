@@ -71,6 +71,9 @@ pub struct ProbePose {
 pub struct ProbeResult {
     pub ground: Option<GroundHit>,
     pub non_ground_under: bool,
+    /// The contact world's shape the ground is on, when it is one of the
+    /// shapes the triangle index lacks (a server placeable's model).
+    pub shape: Option<u32>,
 }
 
 impl GroundProbe {
@@ -132,16 +135,18 @@ impl GroundProbe {
                 .min(top_speed(settings, pose.crouched));
             reach = settings.step_down.max(self.slope_tan * dt * speed * 1.1);
         }
-        let hit = ground_ray(rays, world, x, z, top, y - reach, category);
+        let (hit, shape) = ground_ray(rays, world, x, z, top, y - reach, category);
         let mut result = ProbeResult {
             ground: None,
             non_ground_under: hit.is_some_and(|hit| hit.surface & NOT_GROUND != 0),
+            shape: None,
         };
         if settings.gravity_scale <= 0.0 {
             return Ok(result);
         }
         if hit.is_some_and(|hit| self.walkable(hit)) {
             result.ground = hit;
+            result.shape = shape;
             return Ok(result);
         }
         if self.disc.is_empty() {
@@ -201,6 +206,7 @@ impl GroundProbe {
                 mask: MOVER,
                 surface,
             });
+            result.shape = Some(cast.shape);
         }
         Ok(result)
     }
@@ -272,7 +278,7 @@ impl GroundProbe {
         for _ in 0..5 {
             let x = hx + (dx * RAY_SPREAD + nx);
             let z = hz + (dz * RAY_SPREAD + nz);
-            if let Some(hit) = ground_ray(
+            if let (Some(hit), _) = ground_ray(
                 rays,
                 world,
                 f64::from(x),
@@ -311,7 +317,8 @@ pub fn pogo(settings: &MoverSettings, crouched: bool) -> f64 {
 /// Practice Range's Training Partner console the centre ray met nothing
 /// within reach, so the disc's sweep caught the console's upper block,
 /// half a metre above the face the client's ray stood him on (refs
-/// `MapEntities.md` "RangeConsole").
+/// `MapEntities.md` "RangeConsole"). With the placeable's shape, when the
+/// ground is one (a platform the mover rides, `mover::platform`).
 fn ground_ray(
     rays: &TriangleIndex,
     world: &ContactWorld,
@@ -320,11 +327,13 @@ fn ground_ray(
     top: f64,
     bottom: f64,
     category: u16,
-) -> Option<GroundHit> {
+) -> (Option<GroundHit>, Option<u32>) {
     let map = rays.ground(x, z, top, bottom, category);
     match world.ground(x, z, top, bottom, category) {
-        Some((placed, _)) if map.is_none_or(|map| placed.y > map.y) => Some(placed),
-        _ => map,
+        Some((placed, shape)) if map.is_none_or(|map| placed.y > map.y) => {
+            (Some(placed), Some(shape))
+        }
+        _ => (map, None),
     }
 }
 

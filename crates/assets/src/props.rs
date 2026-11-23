@@ -285,10 +285,12 @@ fn root_model(install: &Install, definition: u64) -> Option<u64> {
 
 /// One static physics shape of a server placeable's model: the category
 /// the client files it under ([`Structured::static_category`]), the model
-/// node it hangs on, and the shape in model space.
+/// node it hangs on and that node's place in the model (translation,
+/// rotation x y z w), and the shape in model space.
 pub(crate) struct ModelPart {
     pub category: u16,
     pub node: Option<u32>,
+    pub node_place: Option<([f32; 3], [f32; 4])>,
     pub shape: Shape,
 }
 
@@ -309,10 +311,12 @@ pub(crate) fn definition_shapes(
         .categories
         .into_iter()
         .zip(read.nodes)
+        .zip(read.places)
         .zip(read.shapes)
-        .map(|((category, node), shape)| ModelPart {
+        .map(|(((category, node), node_place), shape)| ModelPart {
             category,
             node,
+            node_place,
             shape,
         })
         .collect();
@@ -759,6 +763,8 @@ struct Model {
     categories: Vec<u16>,
     /// The model node each shape hangs on (`m_30F925F4`), when it names one.
     nodes: Vec<Option<u32>>,
+    /// That node's place in the model, when the model's node table has it.
+    places: Vec<Option<([f32; 3], [f32; 4])>>,
     /// Whether the model is a prop's (see [`root_model`]): it has a static
     /// shape that stops the mover, or, the prop catalogue's older test, a
     /// list entry whose motion type isn't 2 has a polytope, capsule or
@@ -772,6 +778,7 @@ fn read_model(data: &[u8], category: u16) -> Result<Model, String> {
         shapes: Vec::new(),
         categories: Vec::new(),
         nodes: Vec::new(),
+        places: Vec::new(),
         catalogued: false,
     };
     let Some(payload) = chunk(data, b"MSTU")? else {
@@ -884,6 +891,7 @@ fn read_model(data: &[u8], category: u16) -> Result<Model, String> {
             };
             model.categories.push(shape_category);
             model.nodes.push(node);
+            model.places.push(frame);
             model.shapes.push(match frame {
                 Some(frame) => at_node(made, frame),
                 None => made,

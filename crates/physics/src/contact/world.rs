@@ -125,9 +125,30 @@ pub struct StaticShape {
     moving: Option<RwLock<Placed>>,
     /// The group that switches it ([`ContactWorld::with_switched`]).
     switch: Option<usize>,
+    /// The platform a mover standing on it rides ([`Platform`]).
+    platform: Option<Platform>,
     /// Its triangles where the mover's ground rays meet them
     /// ([`ContactWorld::ground`]).
     ground: Option<Ground>,
+}
+
+/// The entity and node of a server placeable's model that a mover
+/// standing on one of its shapes rides (`crate::mover::platform`): the
+/// client gives the ground shape's owner as the mover's parent when it has
+/// component 77 and any of components 28, 39, 27 or 98, with the shape's
+/// node (`0x7FF789B4A250`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Platform {
+    pub entity: u32,
+    /// The skeleton node's id, 0 for the entity's own frame.
+    pub node: u32,
+    /// The node's frame in the shape's: its rest place in the model (the
+    /// shape's frame moves it with its bone), the translation times the
+    /// placeable's scale; the identity for node 0.
+    pub node_place: ContactFrame,
+    /// The share of the platform's velocity the mover takes (component 77
+    /// `m_2F528438`).
+    pub factor: f32,
 }
 
 /// A shape's triangles in its own frame (`collision::scene::probe_triangles`)
@@ -197,6 +218,7 @@ impl StaticShape {
             placed,
             moving: None,
             switch: None,
+            platform: None,
             ground: None,
         })
     }
@@ -223,6 +245,18 @@ impl StaticShape {
             moving: Some(RwLock::new(self.placed)),
             ..self
         }
+    }
+
+    /// This shape, part of a platform a mover rides ([`Platform`]).
+    pub fn on_platform(self, platform: Platform) -> Self {
+        Self {
+            platform: Some(platform),
+            ..self
+        }
+    }
+
+    pub fn platform(&self) -> Option<Platform> {
+        self.platform
     }
 
     pub fn is_moving(&self) -> bool {
@@ -698,6 +732,40 @@ impl ContactWorld {
             }
         }
         Ok(nearest)
+    }
+
+    /// The frame of the platform a shape belongs to as it stands now: the
+    /// shape's frame after its node's place ([`Platform::node_place`]).
+    pub fn platform_frame(&self, shape: u32) -> Option<ContactFrame> {
+        let shape = self.shapes.get(shape as usize)?;
+        let platform = shape.platform?;
+        let frame = shape.frame().unwrap_or(ContactFrame::IDENTITY);
+        Some(compose(frame, platform.node_place))
+    }
+
+    /// The standing shape of a platform (`entity`, `node`), if any.
+    pub fn platform_shape(&self, entity: u32, node: u32) -> Option<u32> {
+        (0..self.shapes.len() as u32).find(|&id| {
+            self.shape_on(id)
+                && self.shapes[id as usize]
+                    .platform
+                    .is_some_and(|platform| platform.entity == entity && platform.node == node)
+        })
+    }
+}
+
+/// `outer` after `inner`: `inner`'s place carried by `outer`.
+pub fn compose(outer: ContactFrame, inner: ContactFrame) -> ContactFrame {
+    let [ax, ay, az, aw] = outer.rotation;
+    let [bx, by, bz, bw] = inner.rotation;
+    ContactFrame {
+        translation: outer.place(inner.translation),
+        rotation: [
+            aw * bx + ax * bw + ay * bz - az * by,
+            aw * by - ax * bz + ay * bw + az * bx,
+            aw * bz + ax * by - ay * bx + az * bw,
+            aw * bw - ax * bx - ay * by - az * bz,
+        ],
     }
 }
 

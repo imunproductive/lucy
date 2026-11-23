@@ -184,8 +184,8 @@ fn the_area_file_reads_rooms_damage_areas_placeables_kill_volumes_and_failures()
     // s · 30 · 2 = 37.5 frames, 7.5 into its 30-frame loop, a quarter of
     // the 1 s clip, whose delta lifts bone 1 by a quarter of 3 m: the
     // sphere rises 0.75 m, 1.5 m at the placeable's scale 2.
-    let idle = listed_bodies[0].idle().unwrap();
-    let [(1, frame)] = idle.frames(0.125)[..] else {
+    let idle = listed_bodies[0].moving().unwrap();
+    let [(1, frame)] = idle.frames(0.125, 0.125)[..] else {
         panic!("one part, the sphere");
     };
     let expected = [1.5, 3.5, -3.0];
@@ -194,7 +194,7 @@ fn the_area_file_reads_rooms_damage_areas_placeables_kill_volumes_and_failures()
     }
     assert_eq!(frame.rotation, [0.0, 0.0, 0.0, 1.0]);
     // A whole loop later (0.5 s at twice the rate) it is there again.
-    let [(1, again)] = idle.frames(0.625)[..] else {
+    let [(1, again)] = idle.frames(0.625, 0.625)[..] else {
         panic!("one part, the sphere");
     };
     for (axis, value) in again.translation.iter().enumerate() {
@@ -202,7 +202,7 @@ fn the_area_file_reads_rooms_damage_areas_placeables_kill_volumes_and_failures()
     }
     // The door posed by its animation component keeps both shapes at the
     // world origin, unscaled, its sphere too (no idle animation).
-    assert!(listed_bodies[1].idle().is_none());
+    assert!(listed_bodies[1].moving().is_none());
     let shapes = listed_bodies[1].shapes().unwrap();
     assert_eq!(shapes.len(), 2);
     let bounds = shapes[0].fat_bounds().unwrap();
@@ -278,4 +278,38 @@ fn the_tag_queries_find_the_maps_tagged_entities_of_the_mode() {
             .with_tag(0x0D60_0000_0000_0310),
         Some(Vec::new())
     );
+}
+
+/// The Practice Range's four platforms (`0516`, component 98) walk their
+/// path where the client walks them: in the client's physics world
+/// (session `D:/Temp/mm/p1`, dump 0, 2026-11-23) all four polytopes stood,
+/// to 0.2 mm across the floor, where the path puts each at one time of
+/// the path clock, 82.759 s (each 1/4 lap apart: offsets 0.75, 0.99, 0.25,
+/// 0.5 of a 143 m loop at 4 m/s). The height and turn differ by
+/// millimetres: they bob on the idle clock, which the dump didn't time.
+#[test]
+#[ignore = "requires the derived 104319 data"]
+fn the_range_platforms_walk_their_path_where_the_clients_physics_world_had_them() {
+    let data = MapAreaData::load(&lucy_testkit::runtime_dir().join("data")).unwrap();
+    let bodies = data.placeable_bodies(&GameMap::practice_range(), &BTreeSet::new());
+    let client = [
+        (0x81, [50.657_726, -7.009_680_3]),
+        (0xC2, [79.549_58, 9.312_379]),
+        (0x10F, [86.566_52, -20.054_947]),
+        (0x193, [55.161_19, -34.559_75]),
+    ];
+    for (placeable, [x, z]) in client {
+        let body = bodies
+            .iter()
+            .find(|body| body.placeable.placeable == placeable)
+            .unwrap();
+        let [(_, frame)] = body.moving().unwrap().frames(82.759, 82.759)[..] else {
+            panic!("one polytope");
+        };
+        let [px, _, pz] = frame.translation;
+        assert!(
+            (px - x).abs() < 3e-4 && (pz - z).abs() < 3e-4,
+            "{placeable:X}: {frame:?}"
+        );
+    }
 }

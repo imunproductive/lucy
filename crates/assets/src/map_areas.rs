@@ -112,7 +112,7 @@ use crate::{
     },
     guid_hex,
     hitboxes::Skeleton,
-    map_chunk::{COLLISION, areas, chunk_kind, guid_of, name_index, short},
+    map_chunk::{COLLISION, StuV1, areas, chunk_kind, guid_of, name_index, short},
     props::{self, Shape},
 };
 
@@ -147,8 +147,47 @@ const IDLE_START: usize = 12;
 const ANIMATED: u16 = 0x1000;
 /// `STU_66A032BC` (client component 98): the client walks the model along
 /// a path of waypoint entities (the Practice Range's platforms `0516`,
-/// refs `Payloads.md` "ModeGraph4 client pass" §1).
+/// Rialto's boats; refs `MapEntities.md` "MovingMaps"), its path in the
+/// placeable's instance data [`FOLLOWER_DATA`].
 const PATH_FOLLOWER: u32 = 0x66A0_32BC;
+/// `STU_0993C1FE`: a path follower's instance data, its path the embedded
+/// `STU_C12A012E` at +8: the first waypoint's UUID (+0x08), the speed in
+/// m/s (+0x18), the mode (+0x1C), the start as a share of the path's
+/// length (+0x20), the pause at the end (+0x24, s) and whether the model
+/// turns along the path (u8 +0x28).
+const FOLLOWER_DATA: u32 = 0x0993_C1FE;
+const FOLLOWER_PATH: usize = 8;
+const PATH_START: usize = 0x08;
+const PATH_SPEED: usize = 0x18;
+const PATH_MODE: usize = 0x1C;
+const PATH_OFFSET: usize = 0x20;
+const PATH_PAUSE: usize = 0x24;
+const PATH_ORIENT: usize = 0x28;
+/// `STUWaypointInstanceData` (`STU_B1B9C667`, client component 38): the
+/// cubic from this waypoint to the next as polynomial coefficients
+/// `a u³ + b u² + c u + d` (four `teVec3A` from +0x10) and the next
+/// waypoint's UUID (+0x80).
+const WAYPOINT_DATA: u32 = 0xB1B9_C667;
+const WAYPOINT_CUBIC: usize = 0x10;
+const WAYPOINT_NEXT: usize = 0x80;
+/// `STU_FBBC6291` (client component 77) and its `m_2F528438`: a mover
+/// standing on a shape of an entity with component 77 and any of
+/// components 28, 39, 27 or 98 keeps its position in that entity's frame
+/// (`0x7FF789B4A250`), and takes this factor of its velocity
+/// (`0x7FF789B6E4E0`; `lucy_physics`' mover notes).
+const PLATFORM: u32 = 0xFBBC_6291;
+const PLATFORM_FACTOR: u32 = 0x2F52_8438;
+/// The definition component classes that give the entity component 28,
+/// 39, 27 or 98: `STU_E272A026` (28), `STU_6235CCE1` (34, which brings
+/// 28; refs `Payloads.md` "ModeGraph5"), [`POSED`] (39),
+/// [`MIRRORED_IDLE_ANIM`] (27) and [`PATH_FOLLOWER`] (98).
+const CARRIED_BY: [u32; 5] = [
+    0xE272_A026,
+    0x6235_CCE1,
+    POSED,
+    MIRRORED_IDLE_ANIM,
+    PATH_FOLLOWER,
+];
 /// `STU_496257B5` (client component 39, mirror `STU_56B22CE6`): the
 /// definition's model is posed by an animation state the server mirrors
 /// (the spawn doors `0D32`); until it comes, the client keeps the model,
@@ -175,12 +214,19 @@ list), with its definition, its first identifier and its second identifier (body
 definition's model has static physics shapes that stop the team proxies 0x18 (STUModel m_CB4D298D) \
 its rotation x y z w and scale; when its definition has STU_496257B5, posed: true; when its \
 definition has STUMirroredIdleAnimComponent, moving: true, \
-and its STU_5AD3B86B instance data's idle start (s32 +12, 30 fps frames) and rate (f32 +8); its \
+and its STU_5AD3B86B instance data's idle start (s32 +12, 30 fps frames) and rate (f32 +8); when its \
+definition has STU_66A032BC and its instance data STU_0993C1FE names a path (embedded STU_C12A012E), \
+path: speed (+0x18), mode (+0x1C), offset (+0x20), pause (+0x24), orient (u8 +0x28), segments (from \
+the first waypoint m_6545E9B3, each STUWaypointInstanceData's cubic coefficients a, b, c, d from +0x10 \
+while its next waypoint, m_2D9F5A0A at +0x80, has a next) and rotations (each waypoint's, the last's \
+too); when its definition has STU_FBBC6291 and any of STU_E272A026, STU_6235CCE1, STU_496257B5, \
+STUMirroredIdleAnimComponent or STU_66A032BC, platform: STU_FBBC6291 m_2F528438 (1 without it); its \
 models: each such definition's shapes in model space with the \
 category the client files each under (meshes: holder mask, vertices, triangles as corners, wings, \
 mask, surface; polytopes: mask, centroid, vertices, planes, faces, half edges as twin, origin, face, \
-next; capsules and spheres: mask and geometry), an animated shape (category 0x1000) of a moving \
-definition with the index of the skeleton bone it hangs on (its node, m_30F925F4); its idle \
+next; capsules and spheres: mask and geometry), the model node it hangs on (m_30F925F4) and that \
+node's place in the model (translation, rotation x y z w), and for a moving definition with \
+animated shapes the index of that node's bone in the skeleton; its idle \
 animations: each moving definition's with animated shapes: its model's skeleton (mskl: id, parent, \
 rotation, scale, translation relative to the parent), its idle clip's keys on those bones (006 \
 m_idleAnimation) and the loop's length in 30 fps frames (embedded STUAnimGameData_Animation \
@@ -473,6 +519,11 @@ fn server_placeables(
         install,
         entities.iter().map(|placed| placed.entity.definition),
     );
+    let by_uuid: HashMap<[u8; 16], usize> = entities
+        .iter()
+        .enumerate()
+        .map(|(number, placed)| (placed.entity.uuid(), number))
+        .collect();
     let mut out = Vec::new();
     for (number, placed) in entities.iter().enumerate() {
         let entity = &placed.entity;
@@ -495,13 +546,16 @@ fn server_placeables(
         let found = components.of(entity.definition);
         let moving = found.is_some_and(|found| found.contains(&MIRRORED_IDLE_ANIM));
         let posed = found.is_some_and(|found| found.contains(&POSED));
-        // A model that also follows a path (component 98) is where the
-        // path puts it, which the server doesn't play: its idle animation
-        // alone doesn't place its animated parts.
-        let idle = moving && !found.is_some_and(|found| found.contains(&PATH_FOLLOWER));
-        if placeable_shapes(install, models, entity.definition, idle)? {
+        // The idle animation poses the animated parts on their bones,
+        // where the path (component 98) puts the model when it has one.
+        if placeable_shapes(install, models, entity.definition, moving)? {
             entry.insert("rotation".into(), json!(entity.rotation.map(short)));
             entry.insert("scale".into(), json!(entity.scale.map(short)));
+        }
+        if found.is_some_and(|found| found.contains(&PATH_FOLLOWER))
+            && let Some(path) = follower_path(placed, entities, &by_uuid)
+        {
+            entry.insert("path".into(), path);
         }
         if let Some(script) = placed_script(&placed.instances) {
             entry.insert("script".into(), script);
@@ -521,9 +575,97 @@ fn server_placeables(
         if posed {
             entry.insert("posed".into(), json!(true));
         }
+        let carries = found.is_some_and(|found| {
+            found.contains(&PLATFORM) && CARRIED_BY.iter().any(|class| found.contains(class))
+        });
+        if carries {
+            entry.insert(
+                "platform".into(),
+                json!(short(platform_factor(install, entity.definition)?)),
+            );
+        }
         out.push(Json::Object(entry));
     }
     Ok(out)
+}
+
+/// The factor of a platform's velocity that the mover standing on it takes
+/// (component 77 `STU_FBBC6291` `m_2F528438`; 1 when the definition's
+/// component lacks it, as the client takes it, `0x7FF789B6E4E0`).
+fn platform_factor(install: &Install, definition: u64) -> Result<f32> {
+    let asset = install.stu(definition)?;
+    let Some(Stu::Map(entries)) = asset.root().and_then(|root| root.get("m_componentMap")) else {
+        return Ok(1.0);
+    };
+    let factor = entries
+        .iter()
+        .filter_map(|(_, index)| asset.instances.get((*index)?)?.as_ref())
+        .find(|object| object.class == PLATFORM)
+        .and_then(|component| match component.stored(PLATFORM_FACTOR) {
+            Some(Stu::Float(factor)) => Some(*factor as f32),
+            _ => None,
+        });
+    Ok(factor.unwrap_or(1.0))
+}
+
+/// A path follower's path (`0x7FF789AF3BC0`, `0x7FF789AF4210`; see the
+/// module notes of `lucy_sim`'s `path_follower`): its instance data's
+/// speed, mode, start, pause and turn flag, and its waypoints from the
+/// first: each one's cubic to the next (`a`, `b`, `c`, `d`) while it has a
+/// next waypoint whose own next exists, and every waypoint's rotation,
+/// the last's (the one with no next, or the first one met again) too.
+/// None without the instance data or its first waypoint.
+fn follower_path(
+    placed: &Placed<'_>,
+    entities: &[Placed<'_>],
+    by_uuid: &HashMap<[u8; 16], usize>,
+) -> Option<Json> {
+    let (stu, root) = instance(placed, FOLLOWER_DATA)?;
+    let path = stu.embedded(root + FOLLOWER_PATH)?;
+    let waypoint = |uuid: [u8; 16]| {
+        let number = *by_uuid.get(&uuid)?;
+        let placed = &entities[number];
+        instance(placed, WAYPOINT_DATA).map(|data| (number, placed, data))
+    };
+    let next = |(stu, root): (StuV1<'_>, usize)| stu.uuid(root + WAYPOINT_NEXT).and_then(waypoint);
+    let mut current = waypoint(stu.uuid(path + PATH_START)?)?;
+    let mut visited = Vec::new();
+    let mut segments = Vec::new();
+    let mut rotations = Vec::new();
+    if next(current.2).is_some() {
+        loop {
+            if visited.contains(&current.0) {
+                break;
+            }
+            visited.push(current.0);
+            rotations.push(current.1.entity.rotation.map(short));
+            let (data, at) = current.2;
+            let vector = |k: usize| {
+                let at = at + WAYPOINT_CUBIC + 16 * k;
+                std::array::from_fn::<f64, 3, _>(|axis| {
+                    data.f32(at + 4 * axis).map_or(f64::NAN, short)
+                })
+            };
+            segments.push(json!([vector(0), vector(1), vector(2), vector(3)]));
+            let Some(following) = next(current.2) else {
+                break;
+            };
+            current = following;
+            if next(current.2).is_none() {
+                break;
+            }
+        }
+    }
+    rotations.push(current.1.entity.rotation.map(short));
+    Some(json!({
+        "speed": stu.f32(path + PATH_SPEED).map(short),
+        "mode": stu.u32(path + PATH_MODE),
+        "offset": stu.f32(path + PATH_OFFSET).map(short),
+        "pause": stu.f32(path + PATH_PAUSE).map(short),
+        "orient": stu.u8(path + PATH_ORIENT).is_some_and(|flag| flag != 0),
+        "segments": segments,
+        "rotations": rotations,
+    }))
 }
 
 /// The server placeable definitions' models (see the module notes), by
@@ -565,9 +707,17 @@ fn placeable_shapes(
         .map(|part| {
             let mut json = shape_json(&part.shape);
             json["category"] = json!(part.category);
+            if let Some(node) = part.node {
+                json["node"] = json!(node);
+            }
+            if let Some((translation, rotation)) = part.node_place {
+                json["node_place"] = json!({
+                    "translation": translation.map(short),
+                    "rotation": rotation.map(short),
+                });
+            }
             let bone = idle
                 .as_ref()
-                .filter(|_| part.category == ANIMATED)
                 .zip(part.node)
                 .and_then(|((skeleton, _), node)| skeleton.bone(node));
             if let Some(bone) = bone {

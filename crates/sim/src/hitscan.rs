@@ -148,15 +148,22 @@ impl RayProfiles {
 /// placeables stand or go), unless the ray is its own entity's. The
 /// shots' rays meet a model's category 1 and 0x80 shapes (body mask &
 /// 0x81); a script's ray (the statescript line of sight `0x7FF789BB3570`
-/// asks for 0x1081) also meets its animated parts (category 0x1000), which
-/// are moving shapes of the movers' world (`moving`: each part's group,
-/// entity, shape and its geometry in the shape's own frame).
+/// asks for 0x1081) also meets its animated parts (category 0x1000). The
+/// shapes that move (on a path, or on an idle animation's bones) are
+/// moving shapes of the movers' world (`moving`: each one's group, entity,
+/// shape, category and its geometry in the shape's own frame).
 #[derive(Default)]
 pub struct PlaceableRays {
     contacts: Option<Arc<ContactWorld>>,
     scenes: Vec<(usize, u32, CollisionScene)>,
-    moving: Vec<(usize, u32, u32, CollisionScene)>,
+    moving: Vec<(usize, u32, u32, u16, CollisionScene)>,
 }
+
+/// The categories the client's world ray meets for a shot (body mask &
+/// 0x81, refs `WeaponRays.md`) and the animated parts' a script's ray
+/// meets too.
+const SHOT_CATEGORIES: u16 = 0x81;
+const ANIMATED_CATEGORY: u16 = 0x1000;
 
 impl std::fmt::Debug for PlaceableRays {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -167,13 +174,13 @@ impl std::fmt::Debug for PlaceableRays {
 }
 
 impl PlaceableRays {
-    /// `scenes`: each model's switched group, entity and shapes; `moving`:
-    /// each animated part's group, entity, shape in the movers' world and
-    /// geometry in that shape's frame.
+    /// `scenes`: each model's switched group, entity and fixed shapes;
+    /// `moving`: each moving shape's group, entity, shape in the movers'
+    /// world, category and geometry in that shape's frame.
     pub fn new(
         contacts: Arc<ContactWorld>,
         scenes: Vec<(usize, u32, CollisionScene)>,
-        moving: Vec<(usize, u32, u32, CollisionScene)>,
+        moving: Vec<(usize, u32, u32, u16, CollisionScene)>,
     ) -> Self {
         Self {
             contacts: Some(contacts),
@@ -184,8 +191,8 @@ impl PlaceableRays {
 
     /// The map's first hit along a unit direction (`scene`), or a standing
     /// placeable model's nearer one, but not `caster`'s own model; with
-    /// `animated` (a script's ray) its animated parts where they stand now
-    /// too.
+    /// `animated` (a script's ray) its animated parts too. Moving shapes
+    /// meet it where they stand now.
     #[allow(clippy::too_many_arguments)]
     pub fn cast_ray(
         &self,
@@ -212,8 +219,16 @@ impl PlaceableRays {
                 }
             }
         }
-        let moving = self.moving.iter().filter(|_| animated);
-        for (group, entity, shape, part) in moving {
+        let categories = if animated {
+            SHOT_CATEGORIES | ANIMATED_CATEGORY
+        } else {
+            SHOT_CATEGORIES
+        };
+        let moving = self
+            .moving
+            .iter()
+            .filter(|(.., category, _)| category & categories != 0);
+        for (group, entity, shape, _, part) in moving {
             if !contacts.is_on(*group) || caster == Some(*entity) {
                 continue;
             }
@@ -1164,7 +1179,7 @@ mod tests {
         let rays = PlaceableRays::new(
             Arc::clone(&contacts),
             vec![(0, 0x8000_0001, wall(5.0)), (1, 0x8000_0002, wall(15.0))],
-            vec![(2, 0x8000_0003, 0, wall(0.0))],
+            vec![(2, 0x8000_0003, 0, 0x1000, wall(0.0))],
         );
         let cast = |caster: Option<u32>, mask, animated| {
             rays.cast_ray(
