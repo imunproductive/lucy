@@ -3686,27 +3686,29 @@ fn a_clients_hero_settings_list_reaches_his_body() {
     server.stop().unwrap();
 }
 
-/// Whether a body script frame ends with a remote message group of one short
-/// entry for `node` (`bits` wide) of any instance, then no more entries,
-/// groups or ungrouped entries (104319 A0CCA0; `SnapshotEncoder` frame
-/// actions).
-fn ends_with_frame_action(chunk: &ReceivedChunk, node: u16, bits: u8) -> bool {
+/// Whether a body script frame carries a short remote message entry for
+/// `node` (`bits` wide) of any instance (104319 A0CCA0; `SnapshotEncoder`
+/// frame actions): its present bit, the short form, the 8-bit length, the
+/// target bit, the instance and the node. Since every networked action
+/// goes in the frames, a group holds the other actions that ran with it
+/// too, so the entry need not be the frame's last.
+fn carries_frame_action(chunk: &ReceivedChunk, node: u16, bits: u8) -> bool {
     let bit = |data: &[u8], index: usize| data[index / 8] >> (index % 8) & 1;
     (1..=512).any(|instance| {
         let mut entry = BitWriter::new();
         entry.bit(true);
         entry.w_u16(instance);
         entry.bits(u64::from(node), usize::from(bits)).unwrap();
-        let mut tail = BitWriter::new();
-        tail.bit(true);
-        tail.bit(false);
-        tail.bits(8 + entry.bit_len() as u64, 8).unwrap();
-        tail.append(&entry);
-        tail.bits(0, 3).unwrap();
-        let length = tail.bit_len();
-        chunk.width >= length
-            && (0..length).all(|index| {
-                bit(&chunk.data, chunk.width - length + index) == bit(tail.as_bytes(), index)
+        let mut pattern = BitWriter::new();
+        pattern.bit(true);
+        pattern.bit(false);
+        pattern.bits(8 + entry.bit_len() as u64, 8).unwrap();
+        pattern.append(&entry);
+        let length = pattern.bit_len();
+        chunk.width > length
+            && (0..chunk.width - length).any(|start| {
+                (0..length)
+                    .all(|index| bit(&chunk.data, start + index) == bit(pattern.as_bytes(), index))
             })
     })
 }
@@ -3751,7 +3753,7 @@ fn a_need_healing_callout_reaches_a_teammate() {
                     && record
                         .script
                         .as_ref()
-                        .is_some_and(|chunk| ends_with_frame_action(chunk, node, bits))
+                        .is_some_and(|chunk| carries_frame_action(chunk, node, bits))
             })
             .is_some()
     };
