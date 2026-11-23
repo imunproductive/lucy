@@ -50,9 +50,9 @@ const ROLE_QUEUES: [Queue; 3] = [Queue::Tank, Queue::Damage, Queue::Support];
 
 /// 27202: the career stats and two empty stat catalogs. Retail listed each
 /// hero's and each map's tracked stats (`062`); the install has no list of
-/// them (the `062` assets name their heroes for only some stats), and the
-/// client shows the career profile from the stat lists without them
-/// (checked in the game, `D:/Work/Coding/refs/reports/RetailTemplates.md`).
+/// them found yet (the `062` assets name their heroes for only some stats).
+/// Without them the career profile's statistics show 0 (seen in the game;
+/// `docs/dev/loose-ends.md`, `D:/Work/Coding/refs/reports/RetailTemplates.md`).
 pub fn mode_rules(
     profile: &Profile,
     heroes: &[u64],
