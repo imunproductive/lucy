@@ -71,6 +71,9 @@ pub struct ProbePose {
 pub struct ProbeResult {
     pub ground: Option<GroundHit>,
     pub non_ground_under: bool,
+    /// The contact world's shape the ground is on, when it is one of the
+    /// shapes the triangle index lacks (a server placeable's model).
+    pub shape: Option<u32>,
 }
 
 impl GroundProbe {
@@ -132,16 +135,21 @@ impl GroundProbe {
                 .min(top_speed(settings, pose.crouched));
             reach = settings.step_down.max(self.slope_tan * dt * speed * 1.1);
         }
-        let hit = rays.ground(x, z, top, y - reach, category);
+        let (hit, shape) = highest(
+            rays.ground(x, z, top, y - reach, category),
+            world.ground(x, z, top, y - reach, category),
+        );
         let mut result = ProbeResult {
             ground: None,
             non_ground_under: hit.is_some_and(|hit| hit.surface & NOT_GROUND != 0),
+            shape: None,
         };
         if settings.gravity_scale <= 0.0 {
             return Ok(result);
         }
         if hit.is_some_and(|hit| self.walkable(hit)) {
             result.ground = hit;
+            result.shape = shape;
             return Ok(result);
         }
         if self.disc.is_empty() {
@@ -175,7 +183,7 @@ impl GroundProbe {
             }
             StaticGeometry::Hull(_) => {
                 let Some((ray_point, ray_normal, ray_surface)) =
-                    self.rays(rays, start, point, cast.hit.normal, category)
+                    self.rays(rays, world, start, point, cast.hit.normal, category)
                 else {
                     return Ok(result);
                 };
@@ -201,6 +209,7 @@ impl GroundProbe {
                 mask: MOVER,
                 surface,
             });
+            result.shape = Some(cast.shape);
         }
         Ok(result)
     }
@@ -255,6 +264,7 @@ impl GroundProbe {
     fn rays(
         &self,
         rays: &TriangleIndex,
+        world: &ContactWorld,
         start: Vec3,
         point: Vec3,
         normal: Vec3,
@@ -271,12 +281,11 @@ impl GroundProbe {
         for _ in 0..5 {
             let x = hx + (dx * RAY_SPREAD + nx);
             let z = hz + (dz * RAY_SPREAD + nz);
-            if let Some(hit) = rays.ground(
-                f64::from(x),
-                f64::from(z),
-                f64::from(start[1]),
-                bottom,
-                category,
+            let (x64, z64) = (f64::from(x), f64::from(z));
+            let top = f64::from(start[1]);
+            if let (Some(hit), _) = highest(
+                rays.ground(x64, z64, top, bottom, category),
+                world.ground(x64, z64, top, bottom, category),
             ) {
                 let ground =
                     hit.surface & NOT_GROUND == 0 && hit.normal[1] > f64::from(self.slope_cos32);
@@ -290,6 +299,18 @@ impl GroundProbe {
             (dx, dz) = (dz * sine + dx * cosine, dz * cosine - dx * sine);
         }
         found
+    }
+}
+
+/// The higher of the map's ground and a placeable's (with its shape).
+fn highest(
+    map: Option<GroundHit>,
+    placed: Option<(GroundHit, u32)>,
+) -> (Option<GroundHit>, Option<u32>) {
+    match (map, placed) {
+        (Some(map), Some((hit, _))) if map.y >= hit.y => (Some(map), None),
+        (_, Some((hit, shape))) => (Some(hit), Some(shape)),
+        (map, None) => (map, None),
     }
 }
 

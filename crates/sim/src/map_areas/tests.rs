@@ -184,8 +184,8 @@ fn the_area_file_reads_rooms_damage_areas_placeables_kill_volumes_and_failures()
     // s · 30 · 2 = 37.5 frames, 7.5 into its 30-frame loop, a quarter of
     // the 1 s clip, whose delta lifts bone 1 by a quarter of 3 m: the
     // sphere rises 0.75 m, 1.5 m at the placeable's scale 2.
-    let idle = listed_bodies[0].idle().unwrap();
-    let [(1, frame)] = idle.frames(0.125)[..] else {
+    let idle = listed_bodies[0].moving().unwrap();
+    let [(1, frame)] = idle.frames(0.125, 0.125)[..] else {
         panic!("one part, the sphere");
     };
     let expected = [1.5, 3.5, -3.0];
@@ -194,7 +194,7 @@ fn the_area_file_reads_rooms_damage_areas_placeables_kill_volumes_and_failures()
     }
     assert_eq!(frame.rotation, [0.0, 0.0, 0.0, 1.0]);
     // A whole loop later (0.5 s at twice the rate) it is there again.
-    let [(1, again)] = idle.frames(0.625)[..] else {
+    let [(1, again)] = idle.frames(0.625, 0.625)[..] else {
         panic!("one part, the sphere");
     };
     for (axis, value) in again.translation.iter().enumerate() {
@@ -202,7 +202,7 @@ fn the_area_file_reads_rooms_damage_areas_placeables_kill_volumes_and_failures()
     }
     // The door posed by its animation component keeps both shapes at the
     // world origin, unscaled, its sphere too (no idle animation).
-    assert!(listed_bodies[1].idle().is_none());
+    assert!(listed_bodies[1].moving().is_none());
     let shapes = listed_bodies[1].shapes().unwrap();
     assert_eq!(shapes.len(), 2);
     let bounds = shapes[0].fat_bounds().unwrap();
@@ -278,4 +278,27 @@ fn the_tag_queries_find_the_maps_tagged_entities_of_the_mode() {
             .with_tag(0x0D60_0000_0000_0310),
         Some(Vec::new())
     );
+}
+
+#[test]
+#[ignore = "scratch"]
+fn scratch_platform_frames() {
+    let data = MapAreaData::load(&lucy_testkit::runtime_dir().join("data")).unwrap();
+    let map = GameMap::practice_range();
+    let bodies = data.placeable_bodies(&map, &BTreeSet::new());
+    let times: Vec<f64> = std::fs::read_to_string("D:/Temp/mm/times.txt")
+        .unwrap()
+        .split_whitespace()
+        .map(|t| t.parse().unwrap())
+        .collect();
+    let mut out = String::new();
+    for body in bodies.iter().filter(|body| [0x81, 0xC2, 0x10F, 0x193].contains(&body.placeable.placeable)) {
+        let moving = body.moving().unwrap();
+        for &t in &times {
+            for (index, frame) in moving.frames(t as f32, t) {
+                out += &format!("{:08X} {t} {index} {:?} {:?}\n", body.entity(), frame.translation, frame.rotation);
+            }
+        }
+    }
+    std::fs::write("D:/Temp/mm/frames.txt", out).unwrap();
 }

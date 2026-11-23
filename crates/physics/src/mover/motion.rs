@@ -124,6 +124,7 @@ impl Mover {
         let feet = position.map(snap);
         let lift = f64::from(self.lift());
         self.motion = None;
+        self.riding = None;
         self.pose.position = feet;
         self.body
             .teleport([feet[0] as f32, (feet[1] + lift) as f32, feet[2] as f32]);
@@ -174,6 +175,7 @@ impl Mover {
                     normal,
                     grounded,
                     dt,
+                    [0.0; 3],
                 )?;
                 let moved =
                     (self.pose.position[0] - start[0]).hypot(self.pose.position[2] - start[2]);

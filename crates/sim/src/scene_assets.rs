@@ -58,6 +58,7 @@ use lucy_physics::{
     collision::scene::CollisionScene,
     contact::cache::CapsulePose,
     contact::world::ContactWorld,
+    mover::platform::PlatformClock,
     mover::Mover,
     mover::ground::{NOT_GROUND, pogo, standing_body},
     mover::settings::{MoverCatalog, MoverSettings},
@@ -309,9 +310,9 @@ pub struct PreparedScene {
     /// and whether it is a team wall, by its switched group in the contact
     /// world ([`Self::switch_placeable_bodies`]).
     placeable_bodies: Vec<(u32, bool)>,
-    /// The animated parts of the idle-animated ones, by switched group
-    /// ([`Self::pose_idle_bodies`]).
-    idle_bodies: Vec<(usize, map_areas::IdleBody)>,
+    /// The moving shapes of the ones that follow a path or play an idle
+    /// animation, by switched group ([`Self::pose_moving_bodies`]).
+    moving_bodies: Arc<map_areas::MovingBodies>,
     /// Their scripts (`placed_script`).
     placed_scripts: PlacedScripts,
     /// Where a falling body dies on a map with neither damage areas nor
@@ -522,10 +523,10 @@ impl SceneAssets {
             .iter()
             .map(|body| (body.entity(), body.team_wall))
             .collect();
-        let idle_bodies: Vec<(usize, map_areas::IdleBody)> = bodies
+        let moving_bodies: Vec<(usize, map_areas::MovingBody)> = bodies
             .iter()
             .enumerate()
-            .filter_map(|(group, body)| Some((group, body.idle()?)))
+            .filter_map(|(group, body)| Some((group, body.moving()?)))
             .collect();
         let body_shapes = bodies
             .iter()
@@ -538,8 +539,8 @@ impl SceneAssets {
             if let Some(scene) = body.ray_scene().map_err(invalid)? {
                 ray_scenes.push((group, body.entity(), scene));
             }
-            for (index, part) in body.moving_ray_parts().map_err(invalid)? {
-                ray_parts.push((group, body.entity(), index, part));
+            for (index, category, part) in body.moving_ray_parts().map_err(invalid)? {
+                ray_parts.push((group, body.entity(), index, category, part));
             }
         }
         let (ground, contacts, navigation, rays) = std::thread::scope(|scope| {
@@ -563,11 +564,12 @@ impl SceneAssets {
         let contacts = contacts?;
         let ray_parts = ray_parts
             .into_iter()
-            .map(|(group, entity, index, part)| {
+            .map(|(group, entity, index, category, part)| {
                 (
                     group,
                     entity,
                     contacts.group_shapes(group).start + index,
+                    category,
                     part,
                 )
             })
@@ -735,10 +737,10 @@ impl SceneAssets {
             map_tags,
             body_tags: Arc::clone(&scripts.body_tags),
             placeable_bodies,
-            idle_bodies,
+            moving_bodies: Arc::new(map_areas::MovingBodies::new(moving_bodies)),
         };
         scene.switch_placeable_bodies();
-        scene.pose_idle_bodies(0);
+        scene.pose_moving_bodies(0);
         let mut factories = self
             .owner_bodies
             .lock()
@@ -966,6 +968,9 @@ impl PreparedScene {
                     kill_height: self.kill_height,
                     areas: Arc::clone(&self.lethal_areas),
                 })))
+                .with_platform_clock(Some(
+                    Arc::clone(&self.moving_bodies) as Arc<dyn PlatformClock>
+                ))
         })
         .map_err(invalid)
     }
@@ -1170,7 +1175,7 @@ impl PreparedScene {
             self.removed_placeables.extend(removed);
         }
         self.switch_placeable_bodies();
-        self.pose_idle_bodies(tick);
+        self.pose_moving_bodies(tick);
     }
 
     /// Turn each server placeable's model on in the movers' world while
@@ -1191,43 +1196,55 @@ impl PreparedScene {
         }
     }
 
-    /// Put the idle-animated placeables' animated parts where a client
-    /// without view delay has them at `tick` (the AI and the bots move
-    /// then; [`idle_clock`]).
-    fn pose_idle_bodies(&self, tick: u32) {
-        self.pose_idle_at(idle_clock(tick));
+    /// Put the placeables' moving shapes where a client without view delay
+    /// has them at `tick` (the AI and the bots move then; [`idle_clock`]).
+    fn pose_moving_bodies(&self, tick: u32) {
+        let time = idle_clock(tick);
+        self.pose_moving_at(time, f64::from(time));
     }
 
-    /// Put the idle-animated placeables' animated parts where a player's
-    /// client had them as it predicted `command`: at the command's view
-    /// time, its frame less its view delay (`Command::view_delay`, the
-    /// time of the client's interpolation clock `0x7FF789D287F0`, which
-    /// also times the idle animations; refs `MapEntities.md` "MapAnim").
-    pub fn pose_idle_for(&self, command: &Command, quanta: u32) {
-        if self.idle_bodies.is_empty() {
+    /// Put the placeables' moving shapes where a player's client had them
+    /// as it predicted `command`: the idle animations at the command's
+    /// view time, its frame less its view delay (`Command::view_delay`,
+    /// the time of the client's interpolation clock `0x7FF789D287F0`,
+    /// which times the idle animations; refs `MapEntities.md` "MapAnim"),
+    /// the paths at [`path_clock`].
+    pub fn pose_moving_for(&self, command: &Command, quanta: u32) {
+        if self.moving_bodies.is_empty() {
             return;
         }
         let frame = f64::from(command.frame) * TICK_PERIOD.as_secs_f64();
-        self.pose_idle_at((frame - command.view_delay(quanta)) as f32);
+        let idle = (frame - command.view_delay(quanta)) as f32;
+        self.pose_moving_at(idle, path_clock(command, quanta));
     }
 
-    /// Put the idle-animated placeables' animated parts where their
-    /// animation has them at the clock's time `time`
-    /// ([`map_areas::IdleBody`]).
-    fn pose_idle_at(&self, time: f32) {
+    /// Put the placeables' moving shapes where their idle animations have
+    /// them at the idle clock's `idle` and their paths at the path clock's
+    /// `path` ([`map_areas::MovingBody`]).
+    fn pose_moving_at(&self, idle: f32, path: f64) {
         let Some(contacts) = &self.contacts else {
             return;
         };
-        for (group, body) in &self.idle_bodies {
-            let first = contacts.group_shapes(*group).start;
-            let moves = body
-                .frames(time)
+        for (group, frames) in self.moving_bodies.pose(idle, path) {
+            let first = contacts.group_shapes(group).start;
+            let moves = frames
                 .into_iter()
                 .map(|(index, frame)| (first + index, frame));
             contacts
                 .place(moves)
-                .expect("an idle body's parts are moving shapes at finite frames");
+                .expect("a moving body's shapes are moving shapes at finite frames");
         }
+    }
+
+    /// The movers' world.
+    #[cfg(test)]
+    pub(crate) fn contacts(&self) -> Option<&Arc<ContactWorld>> {
+        self.contacts.as_ref()
+    }
+
+    /// SCRATCH (MovingMaps, not for commit).
+    pub fn scratch_contacts(&self) -> Option<&Arc<ContactWorld>> {
+        self.contacts.as_ref()
     }
 
     /// The server placeables whose models stop the mover: each one's
@@ -1805,6 +1822,12 @@ fn cache_version(path: &Path) -> Option<u32> {
     let mut head = [0; 12];
     File::open(path).ok()?.read_exact(&mut head).ok()?;
     (&head[..8] == MAGIC).then(|| u32::from_le_bytes([head[8], head[9], head[10], head[11]]))
+}
+
+/// The time the client's path followers had as it predicted `command`
+/// ([`crate::path_follower`]): the command's view time.
+fn path_clock(command: &Command, quanta: u32) -> f64 {
+    f64::from(command.frame) * TICK_PERIOD.as_secs_f64() - command.view_delay(quanta)
 }
 
 /// The clients' idle animation clock at `tick`, in seconds

@@ -497,6 +497,20 @@ pub struct Movement {
     /// The path walk's record, present exactly while `flags` has
     /// [`NAV_PATH`].
     pub nav_path: Option<NavPathRecord>,
+    /// The platform the body stands on (`+0x360` entity, `+0x364` node),
+    /// when it rides one: then `position` and `velocity` are in its frame
+    /// (`lucy_physics` mover platform notes). The owner's client compares
+    /// both exactly.
+    pub parent: Option<MovementParent>,
+}
+
+/// The parent block of a movement state: the entity a body rides and the
+/// skeleton node of it whose frame its position is in (0 for the
+/// entity's own).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MovementParent {
+    pub entity: u32,
+    pub node: u32,
 }
 
 /// What a running `MoveTo` move (mover behaviour of kind 1) keeps in the
@@ -801,10 +815,13 @@ pub fn write_movement(
         None => out.bit(false),
     }
     out.bits(0, 3)?; // Flags 0x40000, 0x100, 0x200.
+    let parent = state
+        .parent
+        .or(parent.map(|entity| MovementParent { entity, node: 0 }));
     out.bit(parent.is_some());
     if let Some(parent) = parent {
-        out.bits(u64::from(parent), 32)?;
-        out.bits(0, 32)?; // Scene-node matrix index.
+        out.bits(u64::from(parent.entity), 32)?;
+        out.bits(u64::from(parent.node), 32)?;
     }
     delta(out, i64::from(state.spring[0]), &[8, 12, 17])?;
     delta(out, speed, &[8, 10, 24])?;

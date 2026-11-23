@@ -761,6 +761,7 @@ impl BodyScript {
                     .filter_map(|id| Some(format!("#{id}={:?}", instance.variables.get(&id)?)))
             })
             .collect();
+        let record = mover.record();
         tracing::debug!(
             target: "lucy::pose",
             body = format_args!("{:08X}", self.id.entity),
@@ -768,6 +769,9 @@ impl BodyScript {
             position = ?pose.position,
             velocity = ?pose.velocity,
             flags = format_args!("{:#x}", pose.flags),
+            parent = ?record.parent.map(|parent| (parent.entity, parent.node)),
+            local = ?record.parent.map(|_| record.position),
+            local_velocity = ?record.parent.map(|_| record.velocity),
             began = ?began,
             ended = ?ended,
             hook = ?hook,
@@ -837,7 +841,7 @@ impl BodyScript {
                 let tail = RECORD_TAIL_MS.div_ceil(self.runtime.frame_ms());
                 history.open(command.frame, command.frame.saturating_add(tail));
             }
-            history.record(mover.pose());
+            history.record(mover.record());
         }
         let mut hits = Vec::new();
         let shots = self
@@ -2416,10 +2420,12 @@ impl WorldDelivery {
                         killer: death.killer,
                     });
                 let mut pose = mover.pose();
+                let mut record = mover.record();
                 // match.py `Player.movement`: a dead body's records carry
                 // combat.py `DEAD`, the 3P animation's dead pose.
                 if death.is_some() {
                     pose.flags |= DEAD;
+                    record.flags |= DEAD;
                 }
                 let hero = scene.heroes().get(body.hero)?;
                 Some(RemoteBody {
@@ -2428,6 +2434,7 @@ impl WorldDelivery {
                     gravity: scene.mover(hero.body).gravity_scale,
                     skin: body.skin,
                     pose,
+                    record,
                     vitals: runtime
                         .and_then(|runtime| runtime.vitals())
                         .or(self.plain_vitals.as_ref()),
@@ -6390,7 +6397,20 @@ impl WorldDelivery {
             mover.step_pending_with(&mut pending.poses, budget - used, |mover, command| {
                 // The idle-animated placeables' parts where this client had
                 // them as it predicted the command.
-                scene.pose_idle_for(&command, quanta);
+                scene.pose_moving_for(&command, quanta);
+                // SCRATCH (MovingMaps, not for commit): LUCY_SCRATCH_RIDE=entity_hex; teleport
+                // above that platform once each time D:/Temp/mm/ride.go appears.
+                if let Ok(text) = std::env::var("LUCY_SCRATCH_RIDE")
+                    && let Ok(entity) = u32::from_str_radix(&text, 16)
+                    && std::fs::remove_file("D:/Temp/mm/ride.go").is_ok()
+                    && let Some(contacts) = scene.scratch_contacts()
+                    && let Some(shape) = contacts.platform_shape(entity, 1)
+                    && let Some(at) = contacts.platform_frame(shape)
+                {
+                    let [x, y, z] = at.translation.map(f64::from);
+                    tracing::info!(target: "lucy::pose", entity, frame = command.frame, ?at, "scratch ride teleport");
+                    mover.teleport([x, y + 1.0, z], None);
+                }
                 tracing::debug!(
                     target: "lucy::pose",
                     frame = command.frame,

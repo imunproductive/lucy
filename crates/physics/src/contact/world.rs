@@ -39,6 +39,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, PoisonError, RwLock};
 
 use crate::collision::cache::{CacheError, CollisionCache, Hull, Mesh, Placement, Shape};
+use crate::collision::index::GroundHit;
 use crate::collision::grid::{ColumnGrid, ColumnRange, GridBuilder};
 use crate::contact::gjk::PointSetSize;
 use crate::contact::gjk::sweep::{
@@ -123,6 +124,27 @@ pub struct StaticShape {
     moving: Option<RwLock<Placed>>,
     /// The group that switches it ([`ContactWorld::with_switched`]).
     switch: Option<usize>,
+    /// The platform a mover standing on it rides ([`Platform`]).
+    platform: Option<Platform>,
+}
+
+/// The entity and node of a server placeable's model that a mover
+/// standing on one of its shapes rides (`crate::mover::platform`): the
+/// client gives the ground shape's owner as the mover's parent when it has
+/// component 77 and any of components 28, 39, 27 or 98, with the shape's
+/// node (`0x7FF789B4A250`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Platform {
+    pub entity: u32,
+    /// The skeleton node's id, 0 for the entity's own frame.
+    pub node: u32,
+    /// The node's frame in the shape's: its rest place in the model (the
+    /// shape's frame moves it with its bone), the translation times the
+    /// placeable's scale; the identity for node 0.
+    pub node_place: ContactFrame,
+    /// The share of the platform's velocity the mover takes (component 77
+    /// `m_2F528438`).
+    pub factor: f32,
 }
 
 /// Where a shape stands: its frame, the matrix the casts take, its fat
@@ -173,6 +195,7 @@ impl StaticShape {
             placed,
             moving: None,
             switch: None,
+            platform: None,
         })
     }
 
@@ -183,6 +206,18 @@ impl StaticShape {
             moving: Some(RwLock::new(self.placed)),
             ..self
         }
+    }
+
+    /// This shape, part of a platform a mover rides ([`Platform`]).
+    pub fn on_platform(self, platform: Platform) -> Self {
+        Self {
+            platform: Some(platform),
+            ..self
+        }
+    }
+
+    pub fn platform(&self) -> Option<Platform> {
+        self.platform
     }
 
     pub fn is_moving(&self) -> bool {
@@ -614,6 +649,227 @@ impl ContactWorld {
         }
         Ok(nearest)
     }
+
+    /// The highest ground under `(x, z)` between `top` and `bottom` that a
+    /// vertical ray meets among the switched shapes standing now (the
+    /// server placeables' models, which the triangle index of the map
+    /// lacks), with the shape; meshes and polytopes (the client's probe
+    /// rays meet every shape of its physics world).
+    pub fn ground(
+        &self,
+        x: f64,
+        z: f64,
+        top: f64,
+        bottom: f64,
+        category: u16,
+    ) -> Option<(GroundHit, u32)> {
+        if !(bottom <= top) {
+            return None;
+        }
+        let mut best: Option<(GroundHit, u32)> = None;
+        for id in self.query_precise([x, bottom, z], [x, top, z]) {
+            let shape = &self.shapes[id as usize];
+            if shape.switch.is_none() || shape.geometry.mask() & category == 0 {
+                continue;
+            }
+            let frame = shape.frame().unwrap_or(ContactFrame::IDENTITY);
+            let length = top - bottom;
+            let found = match &shape.geometry {
+                StaticGeometry::Mesh(mesh) => mesh_ground(mesh, frame, [x, top, z], length, category),
+                StaticGeometry::Hull(hull) => hull_ground(hull, frame, [x, top, z], length),
+                StaticGeometry::Round { .. } => None,
+            };
+            let Some((height, normal, surface, mask)) = found else {
+                continue;
+            };
+            if best.is_some_and(|(hit, _)| hit.y >= height) {
+                continue;
+            }
+            let [nx, ny, nz] = normal;
+            best = Some((
+                GroundHit {
+                    y: height,
+                    normal,
+                    plane_offset: (nx * x + ny * height) + nz * z,
+                    mask,
+                    surface,
+                },
+                id,
+            ));
+        }
+        best
+    }
+
+    /// The frame of the platform a shape belongs to as it stands now: the
+    /// shape's frame after its node's place ([`Platform::node_place`]).
+    pub fn platform_frame(&self, shape: u32) -> Option<ContactFrame> {
+        let shape = self.shapes.get(shape as usize)?;
+        let platform = shape.platform?;
+        let frame = shape.frame().unwrap_or(ContactFrame::IDENTITY);
+        Some(compose(frame, platform.node_place))
+    }
+
+    /// The standing shape of a platform (`entity`, `node`), if any.
+    pub fn platform_shape(&self, entity: u32, node: u32) -> Option<u32> {
+        (0..self.shapes.len() as u32).find(|&id| {
+            self.shape_on(id)
+                && self.shapes[id as usize]
+                    .platform
+                    .is_some_and(|platform| platform.entity == entity && platform.node == node)
+        })
+    }
+}
+
+/// `outer` after `inner`: `inner`'s place carried by `outer`.
+pub fn compose(outer: ContactFrame, inner: ContactFrame) -> ContactFrame {
+    let [ax, ay, az, aw] = outer.rotation;
+    let [bx, by, bz, bw] = inner.rotation;
+    ContactFrame {
+        translation: outer.place(inner.translation),
+        rotation: [
+            aw * bx + ax * bw + ay * bz - az * by,
+            aw * by - ax * bz + ay * bw + az * bx,
+            aw * bz + ax * by - ay * bx + az * bw,
+            aw * bw - ax * bx - ay * by - az * bz,
+        ],
+    }
+}
+
+/// A downward ray from `origin` over `length` against a mesh in `frame`:
+/// the highest triangle of the category it meets, as (height, world
+/// normal, surface, mask).
+fn mesh_ground(
+    mesh: &ContactMesh,
+    frame: ContactFrame,
+    origin: [f64; 3],
+    length: f64,
+    category: u16,
+) -> Option<(f64, [f64; 3], u16, u16)> {
+    let (start, direction) = local_ray(frame, origin, length);
+    let end: [f64; 3] = std::array::from_fn(|k| start[k] + direction[k]);
+    let low = std::array::from_fn(|k| start[k].min(end[k]) as f32);
+    let high = std::array::from_fn(|k| start[k].max(end[k]) as f32);
+    let mut best: Option<(f64, [f64; 3], u16, u16)> = None;
+    for number in mesh.query(low, high, category) {
+        let triangle = mesh.triangle(number)?;
+        if triangle.mask & category == 0 {
+            continue;
+        }
+        let [a, b, c] = triangle.corners().map(|corner| corner.map(f64::from));
+        let Some(fraction) = ray_triangle(start, direction, a, b, c) else {
+            continue;
+        };
+        if best.is_some_and(|(found, ..)| found <= fraction) {
+            continue;
+        }
+        let normal = rotate64(frame.rotation.map(f64::from), triangle.normal().map(f64::from));
+        best = Some((fraction, normal, triangle.surface, triangle.mask));
+    }
+    best.map(|(fraction, normal, surface, mask)| {
+        (origin[1] - fraction * length, unit64(normal), surface, mask)
+    })
+}
+
+/// A downward ray from `origin` over `length` against a polytope in
+/// `frame` (planes `n · p <= w` inside): where it enters, as (height,
+/// world normal of the face it enters, surface, mask).
+fn hull_ground(
+    hull: &Hull,
+    frame: ContactFrame,
+    origin: [f64; 3],
+    length: f64,
+) -> Option<(f64, [f64; 3], u16, u16)> {
+    let (start, direction) = local_ray(frame, origin, length);
+    let (mut enter, mut exit) = (0.0f64, 1.0f64);
+    let mut face = None;
+    for plane in &hull.planes {
+        let normal = [plane[0], plane[1], plane[2]].map(f64::from);
+        let along = dot64(normal, direction);
+        let outside = dot64(normal, start) - f64::from(plane[3]);
+        if along.abs() < 1e-12 {
+            if outside > 0.0 {
+                return None;
+            }
+            continue;
+        }
+        let fraction = -outside / along;
+        if along < 0.0 {
+            if fraction > enter {
+                enter = fraction;
+                face = Some(normal);
+            }
+        } else if fraction < exit {
+            exit = fraction;
+        }
+        if enter > exit {
+            return None;
+        }
+    }
+    let normal = face?;
+    let normal = unit64(rotate64(frame.rotation.map(f64::from), normal));
+    Some((origin[1] - enter * length, normal, 0, hull.mask))
+}
+
+/// A world ray straight down from `origin` over `length` in a frame's
+/// local space: its start and its whole travel.
+fn local_ray(frame: ContactFrame, origin: [f64; 3], length: f64) -> ([f64; 3], [f64; 3]) {
+    let [x, y, z, w] = frame.rotation.map(f64::from);
+    let back = [-x, -y, -z, w];
+    let offset = std::array::from_fn(|k| origin[k] - f64::from(frame.translation[k]));
+    (rotate64(back, offset), rotate64(back, [0.0, -length, 0.0]))
+}
+
+/// The fraction of `travel` from `start` at which it crosses a triangle,
+/// from either side.
+fn ray_triangle(
+    start: [f64; 3],
+    travel: [f64; 3],
+    a: [f64; 3],
+    b: [f64; 3],
+    c: [f64; 3],
+) -> Option<f64> {
+    let sub = |p: [f64; 3], q: [f64; 3]| -> [f64; 3] { std::array::from_fn(|k| p[k] - q[k]) };
+    let (ab, ac) = (sub(b, a), sub(c, a));
+    let p = cross64(travel, ac);
+    let det = dot64(ab, p);
+    if det.abs() < 1e-15 {
+        return None;
+    }
+    let to = sub(start, a);
+    let u = dot64(to, p) / det;
+    if !(0.0..=1.0).contains(&u) {
+        return None;
+    }
+    let q = cross64(to, ab);
+    let v = dot64(travel, q) / det;
+    if v < 0.0 || u + v > 1.0 {
+        return None;
+    }
+    let fraction = dot64(ac, q) / det;
+    (0.0..=1.0).contains(&fraction).then_some(fraction)
+}
+
+fn dot64(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn cross64(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+fn unit64(v: [f64; 3]) -> [f64; 3] {
+    let length = dot64(v, v).sqrt();
+    v.map(|value| value / length)
+}
+
+fn rotate64([x, y, z, w]: [f64; 4], v: [f64; 3]) -> [f64; 3] {
+    let t = cross64([x, y, z], v).map(|value| value * 2.0);
+    let u = cross64([x, y, z], t);
+    std::array::from_fn(|k| v[k] + w * t[k] + u[k])
 }
 
 fn placed_geometry(

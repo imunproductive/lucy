@@ -2334,3 +2334,27 @@ fn doomfists_meteor_strike_flies_over_the_range_and_lands_where_his_client_did()
         assert_eq!(up, 5.0);
     }
 }
+
+#[test]
+#[ignore = "scratch"]
+fn scratch_ride_range_platform() {
+    let mut player = Player::spawn(DOOMFIST);
+    let contacts = std::sync::Arc::clone(player.scene.contacts().unwrap());
+    let platform = 0x8000_00C2;
+    let shape = contacts.platform_shape(platform, 1).expect("platform shape");
+    let frame = contacts.platform_frame(shape).unwrap();
+    eprintln!("platform frame at {}: {:?}", player.frame, frame);
+    // Put him 1 m above the platform's origin a few frames ahead.
+    player.idle(1, 0);
+    let frame = contacts.platform_frame(shape).unwrap();
+    let feet = [f64::from(frame.translation[0]), f64::from(frame.translation[1]) + 1.0, f64::from(frame.translation[2])];
+    let body = player.scene.heroes().get(DOOMFIST).unwrap().body;
+    player.world.mover = Some(player.scene.player_mover_at(body, 0, feet, 0).unwrap());
+    for _ in 0..240 {
+        player.step(Command::default());
+        let mover = player.world.mover.as_ref().unwrap();
+        let record = mover.record();
+        let f = contacts.platform_frame(shape).unwrap();
+        eprintln!("{} world {:?} parent {:?} local {:?} vel {:?} plat {:?} flags {:#x}", player.frame, mover.pose().position, record.parent, record.position, record.velocity, f.translation, record.flags);
+    }
+}

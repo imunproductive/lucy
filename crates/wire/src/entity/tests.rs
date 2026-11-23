@@ -45,6 +45,7 @@ fn moving() -> Movement {
         move_to: None,
         turn_rate: None,
         nav_path: None,
+        parent: None,
     }
 }
 

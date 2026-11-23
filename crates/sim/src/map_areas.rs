@@ -126,12 +126,23 @@
 //!   and bob by centimetres, its truck `03B4` holds another pose. The
 //!   server poses them as the client does each tick
 //!   ([`crate::idle_animation`]; moving shapes, `lucy_physics`
-//!   `ContactWorld::place`). The Range's platforms `0516` circle at y 6.5
-//!   along their path (component 98, `STU_66A032BC`), which the server
-//!   doesn't play, so their animated parts stay out (loose end).
+//!   `ContactWorld::place`);
+//! - a path (component 98, `STU_66A032BC`: the Range's platforms `0516`,
+//!   Volskaya's and Route 66's flying platforms, Rialto's boats): the whole
+//!   model, every shape, where the path puts the placeable at the path
+//!   clock ([`crate::path_follower`]), its animated parts then on their
+//!   bones as above.
+//!
+//! The movers' world poses the moving shapes at each command's view time
+//! (`PreparedScene::pose_moving_for`; [`MovingBodies`]). A placeable whose
+//! definition has component 77 and any of components 28, 39, 27 or 98 is a
+//! platform: a mover standing on one of its shapes rides it, in the frame
+//! of the shape's node (`lucy_physics` `Platform`, mover `platform`);
+//! [`MovingBodies`] gives the movers the platform's frame a tick earlier
+//! for its velocity.
 //!
 //! The shots meet a standing body's shapes of category 1 or 0x80, the
-//! categories the client's world ray asks for
+//! categories the client's world ray asks for, where they stand now
 //! (`crate::hitscan::PlaceableRays`); a team wall's, which the client takes
 //! for one team's viewers only, they don't.
 //!
@@ -180,8 +191,11 @@ use lucy_physics::{
     contact::{
         math::ContactFrame,
         mesh::ContactMesh,
-        world::{ContactWorldError, StaticGeometry, StaticShape, scaled_solid},
+        world::{
+            ContactWorldError, Platform, StaticGeometry, StaticShape, compose, scaled_solid,
+        },
     },
+    mover::platform::PlatformClock,
 };
 use lucy_script::{
     graph::{GraphBinding, GraphStore},
@@ -194,6 +208,7 @@ use serde::Deserialize;
 use crate::{
     bot_animation::{multiply, rotate},
     idle_animation::{IdleMotion, RawIdleRig},
+    path_follower::{PathFollower, RawPath},
     objective_data::MapObjectives,
     objectives::{Area, CaptureBox},
 };
@@ -431,6 +446,14 @@ pub struct PlaceableBody {
     pub team_wall: bool,
     /// What poses its model on the clients.
     pose: ModelPose,
+    /// The path it follows (component 98, [`PathFollower`]): the whole
+    /// model goes where the path puts it, its animated parts then on their
+    /// bones.
+    path: Option<Arc<PathFollower>>,
+    /// The share of its velocity a mover standing on it takes, when it is
+    /// a platform the mover rides (component 77 and any of components 28,
+    /// 39, 27 or 98; `lucy_physics` `Platform`).
+    platform: Option<f32>,
 }
 
 /// What poses a placeable's model on the clients, and so its physics
@@ -445,18 +468,21 @@ enum ModelPose {
     Origin,
     /// Its idle animation (`STUMirroredIdleAnimComponent`,
     /// [`PlacedScript::moving`]): its animated parts follow the animation
-    /// ([`IdleBody`]; none without the definition's idle animation), the
+    /// ([`MovingBody`]; none without the definition's idle animation), the
     /// rest stands where the map puts it.
     Idle(Option<IdleMotion>),
 }
 
 /// One physics shape of a placeable's model, in model space, with the
-/// category the client files it under and, for an animated part of an
-/// idle-animated model, the bone of the idle rig it hangs on.
+/// category the client files it under, the bone of the idle rig it hangs
+/// on (when the model has one), and its model node with that node's place
+/// in the model (0 and the identity without one).
 #[derive(Debug)]
 struct ModelShape {
     category: u16,
     bone: Option<usize>,
+    node: u32,
+    node_place: ContactFrame,
     geometry: ModelGeometry,
 }
 
@@ -478,55 +504,75 @@ const RAY_CATEGORIES: u16 = 0x81;
 enum ShapePlace {
     /// At this frame times this scale.
     Fixed(ContactFrame, [f32; 3]),
-    /// On a bone of the idle rig, at the placeable's frame times its scale
-    /// moved by the bone's move ([`IdleBody`]).
-    Bone(usize),
+    /// Where the placeable stands now (the map's place, or its path's)
+    /// times its scale, moved by its bone's move when it hangs on a bone of
+    /// the idle rig ([`MovingBody`]).
+    Moving(Option<usize>),
 }
 
 impl ModelPose {
     /// Where the client puts `shape` of a model that the map puts at
-    /// `frame` times `scale`; `None` for an animated part of an idle
-    /// animation the server can't play.
+    /// `frame` times `scale`, on a path or not; `None` for an animated
+    /// part of an idle animation the server can't play.
     fn place(
         &self,
         shape: &ModelShape,
         frame: ContactFrame,
         scale: [f32; 3],
+        path: bool,
     ) -> Option<ShapePlace> {
         match self {
             Self::Origin => Some(ShapePlace::Fixed(ContactFrame::IDENTITY, [1.0; 3])),
-            Self::Idle(motion) if shape.category == ANIMATED => {
-                motion.as_ref().and(shape.bone).map(ShapePlace::Bone)
-            }
+            Self::Idle(motion) if shape.category == ANIMATED => motion
+                .as_ref()
+                .and(shape.bone)
+                .map(|bone| ShapePlace::Moving(Some(bone))),
+            _ if path => Some(ShapePlace::Moving(None)),
             Self::Placed | Self::Idle(_) => Some(ShapePlace::Fixed(frame, scale)),
         }
     }
 }
 
-/// The animated parts of an idle-animated placeable: where the map puts
-/// it, its animation and each part's index among its shapes
-/// ([`PlaceableBody::shapes`]) with its bone.
+/// The moving shapes of a placeable that follows a path or plays an idle
+/// animation: its entity, where the map puts it, its path and animation,
+/// and each moving shape's index among its shapes
+/// ([`PlaceableBody::shapes`]) with its bone, if any, and its model node.
 #[derive(Clone, Debug)]
-pub struct IdleBody {
+pub struct MovingBody {
+    entity: u32,
     frame: ContactFrame,
     scale: [f32; 3],
-    motion: IdleMotion,
-    parts: Vec<(u32, usize)>,
+    motion: Option<IdleMotion>,
+    path: Option<Arc<PathFollower>>,
+    parts: Vec<(u32, Option<usize>, u32)>,
 }
 
-impl IdleBody {
-    /// Each part's index and frame at the clock's time `time`: the
-    /// placeable's frame after its bone's move, the move's translation
-    /// scaled by the placeable's scale (see the module notes of
-    /// [`crate::idle_animation`]).
-    pub fn frames(&self, time: f32) -> Vec<(u32, ContactFrame)> {
-        let moves = self.motion.moves(time);
-        let rotation = self.frame.rotation.map(f64::from);
-        let translation = self.frame.translation.map(f64::from);
+impl MovingBody {
+    /// Each moving shape's index and frame: the placeable's frame (where
+    /// its path puts it at the path clock's `path_time`, or where the map
+    /// does), after its bone's move at the idle clock's `idle_time`, the
+    /// move's translation scaled by the placeable's scale (see the module
+    /// notes of [`crate::idle_animation`] and [`crate::path_follower`]).
+    pub fn frames(&self, idle_time: f32, path_time: f64) -> Vec<(u32, ContactFrame)> {
+        let moves = self.motion.as_ref().map(|motion| motion.moves(idle_time));
+        let (translation, rotation) = self
+            .path
+            .as_ref()
+            .and_then(|path| path.place(path_time, self.frame.rotation))
+            .unwrap_or((self.frame.translation, self.frame.rotation));
+        let base = ContactFrame {
+            translation,
+            rotation,
+        };
+        let rotation = rotation.map(f64::from);
+        let translation = translation.map(f64::from);
         self.parts
             .iter()
-            .map(|&(index, bone)| {
-                let moved = &moves[bone];
+            .map(|&(index, bone, _)| {
+                let Some(moved) = bone.zip(moves.as_ref()).map(|(bone, moves)| &moves[bone])
+                else {
+                    return (index, base);
+                };
                 let scaled =
                     std::array::from_fn(|k| moved.translation[k] * f64::from(self.scale[k]));
                 let turned = rotate(rotation, scaled);
@@ -540,25 +586,97 @@ impl IdleBody {
     }
 }
 
+/// The placeables' moving shapes and the clocks the match last posed them
+/// at, which the movers ask for their platforms' frames a tick before
+/// (`lucy_physics` `PlatformClock`).
+#[derive(Debug, Default)]
+pub struct MovingBodies {
+    bodies: Vec<(usize, MovingBody)>,
+    /// The idle and the path clock of the last pose.
+    times: std::sync::Mutex<(f32, f64)>,
+}
+
+impl MovingBodies {
+    /// `bodies`: each moving body by its switched group.
+    pub fn new(bodies: Vec<(usize, MovingBody)>) -> Self {
+        Self {
+            bodies,
+            times: std::sync::Mutex::default(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.bodies.is_empty()
+    }
+
+    /// Each body's group and its moving shapes' indexes and frames at the
+    /// idle clock's `idle` and the path clock's `path`, which become the
+    /// clocks of the poses now.
+    pub fn pose(&self, idle: f32, path: f64) -> Vec<(usize, Vec<(u32, ContactFrame)>)> {
+        *self
+            .times
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = (idle, path);
+        self.bodies
+            .iter()
+            .map(|(group, body)| (*group, body.frames(idle, path)))
+            .collect()
+    }
+}
+
+impl PlatformClock for MovingBodies {
+    fn frame_before(&self, platform: &Platform, back: f32) -> Option<ContactFrame> {
+        let (idle, path) = *self
+            .times
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let body = self
+            .bodies
+            .iter()
+            .map(|(_, body)| body)
+            .find(|body| body.entity == platform.entity)?;
+        let index = body
+            .parts
+            .iter()
+            .find(|&&(_, _, node)| node == platform.node)?
+            .0;
+        let (_, frame) = body
+            .frames(idle - back, path - f64::from(back))
+            .into_iter()
+            .find(|&(part, _)| part == index)?;
+        Some(compose(frame, platform.node_place))
+    }
+}
+
 impl PlaceableBody {
     /// The entity the client makes of it ([`PlacedScript::entity`]).
     pub fn entity(&self) -> u32 {
         0x8000_0000 | self.placeable.placeable
     }
 
+    /// Each of its shapes the client places, with where.
+    fn placed(&self) -> impl Iterator<Item = (&ModelShape, ShapePlace)> + '_ {
+        self.model.iter().filter_map(|shape| {
+            let place = self
+                .pose
+                .place(shape, self.frame, self.scale, self.path.is_some())?;
+            Some((shape, place))
+        })
+    }
+
     /// Its shapes in the world as the client places them
     /// ([`ModelPose::place`]), each in its frame times its scale as the
     /// movement cache places a prop's (`ContactWorld::from_movement_cache`).
-    /// An animated part of an idle animation is a moving shape, at the
-    /// placeable's frame until the match poses it ([`Self::idle`]).
+    /// A shape on a path or an animated part of an idle animation is a
+    /// moving shape, at the placeable's frame until the match poses it
+    /// ([`Self::moving`]). A platform's shapes name it ([`Platform`]: the
+    /// entity, the shape's node, that node's place scaled as the shape).
     pub fn shapes(&self) -> Result<Vec<StaticShape>, ContactWorldError> {
-        self.model
-            .iter()
-            .filter_map(|shape| Some((shape, self.pose.place(shape, self.frame, self.scale)?)))
+        self.placed()
             .map(|(shape, place)| {
                 let (frame, scale) = match place {
                     ShapePlace::Fixed(frame, scale) => (frame, scale),
-                    ShapePlace::Bone(_) => (self.frame, self.scale),
+                    ShapePlace::Moving(_) => (self.frame, self.scale),
                 };
                 let geometry = match &shape.geometry {
                     ModelGeometry::Mesh(mask, mesh) => StaticGeometry::Mesh(Arc::new(
@@ -569,59 +687,76 @@ impl PlaceableBody {
                     }
                 };
                 let placed = StaticShape::new(geometry, Some(frame))?;
+                let placed = match self.platform {
+                    Some(factor) => placed.on_platform(Platform {
+                        entity: self.entity(),
+                        node: shape.node,
+                        node_place: ContactFrame {
+                            translation: std::array::from_fn(|k| {
+                                shape.node_place.translation[k] * scale[k]
+                            }),
+                            rotation: shape.node_place.rotation,
+                        },
+                        factor,
+                    }),
+                    None => placed,
+                };
                 Ok(match place {
                     ShapePlace::Fixed(..) => placed,
-                    ShapePlace::Bone(_) => placed.moving(),
+                    ShapePlace::Moving(_) => placed.moving(),
                 })
             })
             .collect()
     }
 
-    /// Its animated parts, when its idle animation poses any.
-    pub fn idle(&self) -> Option<IdleBody> {
-        let ModelPose::Idle(Some(motion)) = &self.pose else {
-            return None;
-        };
-        let parts: Vec<(u32, usize)> = self
-            .model
-            .iter()
-            .filter_map(|shape| self.pose.place(shape, self.frame, self.scale))
+    /// Its moving shapes, when it has any.
+    pub fn moving(&self) -> Option<MovingBody> {
+        let parts: Vec<(u32, Option<usize>, u32)> = self
+            .placed()
             .zip(0..)
-            .filter_map(|(place, index)| match place {
-                ShapePlace::Bone(bone) => Some((index, bone)),
+            .filter_map(|((shape, place), index)| match place {
+                ShapePlace::Moving(bone) => Some((index, bone, shape.node)),
                 ShapePlace::Fixed(..) => None,
             })
             .collect();
-        (!parts.is_empty()).then(|| IdleBody {
+        let motion = match &self.pose {
+            ModelPose::Idle(motion) => motion.clone(),
+            ModelPose::Placed | ModelPose::Origin => None,
+        };
+        (!parts.is_empty()).then(|| MovingBody {
+            entity: self.entity(),
             frame: self.frame,
             scale: self.scale,
-            motion: motion.clone(),
+            motion,
+            path: self.path.clone(),
             parts,
         })
     }
 
-    /// Its shapes that the client's shots meet (categories 1 and 0x80,
-    /// [`RAY_CATEGORIES`]; none of them animated), placed as
-    /// [`Self::shapes`] and as the ray cache places a prop's; `None` when it
-    /// has none, and for a team wall, which the client takes for one team's
-    /// viewers only (see the module notes).
+    /// Its fixed shapes that the client's shots meet (categories 1 and
+    /// 0x80, [`RAY_CATEGORIES`]), placed as [`Self::shapes`] and as the ray
+    /// cache places a prop's; `None` when it has none, and for a team wall,
+    /// which the client takes for one team's viewers only (see the module
+    /// notes).
     pub fn ray_scene(&self) -> Result<Option<CollisionScene>, SceneError> {
         if self.team_wall {
             return Ok(None);
         }
+        let mut place = None;
         let model: Vec<Shape> = self
-            .model
-            .iter()
-            .filter(|shape| shape.category & RAY_CATEGORIES != 0)
-            .map(ModelShape::cache_shape)
+            .placed()
+            .filter(|(shape, _)| shape.category & RAY_CATEGORIES != 0)
+            .filter_map(|(shape, at)| match at {
+                ShapePlace::Fixed(frame, scale) => {
+                    place = Some((frame, scale));
+                    Some(shape.cache_shape())
+                }
+                ShapePlace::Moving(_) => None,
+            })
             .collect();
-        let (frame, scale) = match self.pose {
-            ModelPose::Origin => (ContactFrame::IDENTITY, [1.0; 3]),
-            ModelPose::Placed | ModelPose::Idle(_) => (self.frame, self.scale),
-        };
-        if model.is_empty() {
+        let Some((frame, scale)) = place else {
             return Ok(None);
-        }
+        };
         let placement = CachePlacement {
             model: 0,
             group: 0,
@@ -632,12 +767,15 @@ impl PlaceableBody {
         CollisionScene::placed_model(&model, placement).map(Some)
     }
 
-    /// Its animated parts as a script's ray meets them
+    /// Its moving shapes as the rays meet them
     /// (`crate::hitscan::PlaceableRays`): each one's index among its shapes
-    /// ([`Self::shapes`]) and its geometry in that moving shape's frame
-    /// (scaled by the placeable's scale; the movers' world gives the
-    /// frame).
-    pub fn moving_ray_parts(&self) -> Result<Vec<(u32, CollisionScene)>, SceneError> {
+    /// ([`Self::shapes`]), category and geometry in that moving shape's
+    /// frame (scaled by the placeable's scale; the movers' world gives the
+    /// frame). None for a team wall.
+    pub fn moving_ray_parts(&self) -> Result<Vec<(u32, u16, CollisionScene)>, SceneError> {
+        if self.team_wall {
+            return Ok(Vec::new());
+        }
         let placement = CachePlacement {
             model: 0,
             group: 0,
@@ -645,14 +783,12 @@ impl PlaceableBody {
             scale: self.scale,
             rotation: ContactFrame::IDENTITY.rotation,
         };
-        self.model
-            .iter()
-            .filter_map(|shape| Some((shape, self.pose.place(shape, self.frame, self.scale)?)))
+        self.placed()
             .zip(0..)
-            .filter(|((_, place), _)| matches!(place, ShapePlace::Bone(_)))
+            .filter(|((_, place), _)| matches!(place, ShapePlace::Moving(_)))
             .map(|((shape, _), index)| {
                 let scene = CollisionScene::placed_model(&[shape.cache_shape()], placement)?;
-                Ok((index, scene))
+                Ok((index, shape.category, scene))
             })
             .collect()
     }
@@ -789,6 +925,14 @@ struct RawServerPlaceable {
     /// instance data says (`STU_5AD3B86B`).
     #[serde(default)]
     idle: Option<RawIdleStart>,
+    /// The path it follows (component 98), when its instance data names
+    /// one ([`PathFollower`]).
+    #[serde(default)]
+    path: Option<RawPath>,
+    /// The share of its velocity a mover standing on it takes, when it is
+    /// a platform ([`PlaceableBody`]).
+    #[serde(default)]
+    platform: Option<f32>,
 }
 
 /// A placeable's idle animation start, in 30 fps frames, and rate.
@@ -805,8 +949,19 @@ struct RawModelShape {
     category: u16,
     #[serde(default)]
     bone: Option<usize>,
+    /// The model node it hangs on, and that node's place in the model.
+    #[serde(default)]
+    node: Option<u32>,
+    #[serde(default)]
+    node_place: Option<RawNodePlace>,
     #[serde(flatten)]
     shape: RawShape,
+}
+
+#[derive(Deserialize)]
+struct RawNodePlace {
+    translation: [f32; 3],
+    rotation: [f32; 4],
 }
 
 /// A model's physics shape: a mesh's holder mask, vertices and triangles
@@ -1023,6 +1178,13 @@ impl MapAreaData {
                     Ok(ModelShape {
                         category: raw.category,
                         bone: raw.bone,
+                        node: raw.node.unwrap_or(0),
+                        node_place: raw.node_place.map_or(ContactFrame::IDENTITY, |place| {
+                            ContactFrame {
+                                translation: place.translation,
+                                rotation: place.rotation,
+                            }
+                        }),
                         geometry: raw.shape.read()?,
                     })
                 })
@@ -1066,7 +1228,7 @@ impl MapAreaData {
             let mut server_placeables = Vec::new();
             let mut scripts = Vec::new();
             let mut bodies = Vec::new();
-            for raw in raw.server_placeables {
+            for mut raw in raw.server_placeables {
                 let placeable = raw.placeable.read(&key)?;
                 let guid = |what: &str, text: Option<String>| {
                     text.map(|text| {
@@ -1094,6 +1256,17 @@ impl MapAreaData {
                         .iter()
                         .chain(&raw.script.extra)
                         .any(|binding| binding.graph == Some(TEAM_WALL_GRAPH));
+                    let path = raw
+                        .path
+                        .take()
+                        .map(|path| path.path().map(Arc::new))
+                        .transpose()
+                        .map_err(|error| {
+                            invalid(format!(
+                                "{FILE}: map {key}: placeable {}: {error}",
+                                placeable.placeable
+                            ))
+                        })?;
                     bodies.push(PlaceableBody {
                         placeable,
                         frame: ContactFrame {
@@ -1116,6 +1289,8 @@ impl MapAreaData {
                             None if raw.moving => ModelPose::Idle(None),
                             None => ModelPose::Placed,
                         },
+                        path,
+                        platform: raw.platform,
                     });
                 }
                 scripts.push(Arc::new(PlacedScript {

@@ -67,6 +67,7 @@ pub mod modifiers;
 mod motion;
 pub mod move_to;
 pub mod path_walk;
+pub mod platform;
 #[cfg(test)]
 mod ported_tests;
 pub(crate) mod posture;
@@ -99,7 +100,7 @@ use crate::{
 };
 use lucy_wire::{
     commands::Command,
-    entity::{Movement, NO_INPUT, POSITION_UNITS, TURNING},
+    entity::{Movement, MovementParent, NO_INPUT, POSITION_UNITS, TURNING},
 };
 pub use move_to::{MoveEnd, MoveKey, MoveTo, Speed};
 pub use path_walk::PathWalk;
@@ -213,6 +214,11 @@ pub struct Mover {
     speed_scale: f64,
     /// The knockback scale of the last move (mod 26, mover `+0x4DC`).
     knockback_scale: f64,
+    /// The platform it stands on, with its pose in the platform's frame
+    /// ([`platform`]).
+    riding: Option<platform::Riding>,
+    /// The platforms' frames the tick before, for their velocity.
+    platforms: Option<Arc<dyn platform::PlatformClock>>,
 }
 
 impl Mover {
@@ -255,6 +261,8 @@ impl Mover {
             velocity_changes: Vec::new(),
             speed_scale: 1.0,
             knockback_scale: 1.0,
+            riding: None,
+            platforms: None,
         })
     }
 
@@ -272,8 +280,39 @@ impl Mover {
         self
     }
 
+    /// The clock of the platforms it may ride, for their velocity
+    /// ([`platform::PlatformClock`]); without it they carry it with no
+    /// velocity of their own.
+    pub fn with_platform_clock(
+        mut self,
+        clock: Option<Arc<dyn platform::PlatformClock>>,
+    ) -> Self {
+        self.platforms = clock;
+        self
+    }
+
+    /// Its pose in the world (feet and velocity in world terms, on a
+    /// platform too).
     pub fn pose(&self) -> Movement {
         self.pose
+    }
+
+    /// Its movement state as the records carry it: on a platform, the
+    /// platform as its parent and the feet and velocity in its frame
+    /// ([`platform`]).
+    pub fn record(&self) -> Movement {
+        let Some(riding) = self.riding else {
+            return self.pose;
+        };
+        Movement {
+            position: riding.local.map(f64::from),
+            velocity: riding.velocity.map(f64::from),
+            parent: Some(MovementParent {
+                entity: riding.platform.entity,
+                node: riding.platform.node,
+            }),
+            ..self.pose
+        }
     }
 
     /// The move-speed scale (mod 0) its last move used, as the client's
@@ -484,6 +523,13 @@ impl Mover {
             input.pitch = self.pose.pitch as i16;
             input.aim_held = false;
         }
+        if driven || rising.is_some() || self.motion.is_some() {
+            // Assumption: a behaviour that takes over the move, or an
+            // authored motion, leaves the platform (the client's behaviour
+            // kinds keep their own probe; not read).
+            self.riding = None;
+        }
+        let mut carry = [0.0f32; 3];
         let normal = if driven {
             // Kind 1's slot 8: no ground probe and no transitions, the up
             // as the ground's normal; slot 10: no spring.
@@ -497,12 +543,15 @@ impl Mover {
             self.posture.rise_hold();
             [0.0, 1.0, 0.0]
         } else {
+            let start = self.ride_in_world(dt as f32);
+            let [sx, sy, sz] = start.shift.map(f64::from);
+            let [x, y, z] = self.pose.position;
             let probe = self.probe.probe(
                 rays,
                 self.body.world(),
                 &settings,
                 ProbePose {
-                    feet: self.pose.position,
+                    feet: [x + sx, y + sy, z + sz],
                     velocity: self.pose.velocity,
                     spring: self.posture.spring_offset(),
                     crouched: self.posture.crouched(),
@@ -511,6 +560,7 @@ impl Mover {
                 dt,
                 self.category,
             )?;
+            carry = self.reparent(probe.ground.and(probe.shape), start, dt as f32);
             self.posture.advance(
                 PostureStep {
                     command: &command,
@@ -567,7 +617,7 @@ impl Mover {
             let grounded = self.posture.ground() == Ground::Standing;
             let vertical = match rising {
                 Some(rise) => self.rise_to(rise, velocity, command.frame, dt)?,
-                None => self.move_body(rays, velocity, normal, grounded, dt)?,
+                None => self.move_body(rays, velocity, normal, grounded, dt, carry)?,
             };
             self.posture.finish_fall(settings.gravity_scale, vertical);
             match self.walk.as_mut() {
@@ -750,6 +800,9 @@ impl Mover {
         pogo(&self.base, self.posture.crouched()) as f32 + self.posture.spring_offset()
     }
 
+    /// Move the capsule by the velocity (along the ground when grounded)
+    /// and the spring for `dt`, plus `carry` (the platform's carry,
+    /// [`platform`]; the client's sweep displacement `ctx+112`).
     fn move_body(
         &mut self,
         rays: &TriangleIndex,
@@ -757,6 +810,7 @@ impl Mover {
         normal: [f64; 3],
         grounded: bool,
         dt: f64,
+        carry: [f32; 3],
     ) -> Result<f64, HullContactError> {
         let [x, y, z] = velocity;
         let velocity = if grounded && (x * x + y * y) + z * z >= EPSILON {
@@ -768,9 +822,9 @@ impl Mover {
         let dt = dt as f32;
         let rise = self.posture.spring_speed();
         let displacement = [
-            ((0.0 * rise + x) * dt) + 0.0,
-            ((rise + y) * dt) + 0.0,
-            ((0.0 * rise + z) * dt) + 0.0,
+            ((0.0 * rise + x) * dt) + carry[0],
+            ((rise + y) * dt) + carry[1],
+            ((0.0 * rise + z) * dt) + carry[2],
         ];
         let movement = self.body.move_capsule(displacement, dt)?;
         let [mut x, mut y, mut z] = clip_velocity([x, y, z], movement.planes).map(f64::from);
@@ -786,17 +840,24 @@ impl Mover {
         if self.place(rays, position, touching) {
             y = 0.0;
         }
-        self.pose.velocity = [x, y, z].map(snap);
+        self.settle_velocity([x, y, z]);
         Ok(y)
     }
 
     /// Put the feet under the moved capsule, on the position grid and no lower
     /// than the abyss floor, and the capsule back over them; true when the
     /// feet were past that floor (`Mover._place` in `ow174/game/mover.py`).
+    /// On a platform the grid is the platform's frame's ([`platform`]).
     fn place(&mut self, rays: &TriangleIndex, position: [f32; 3], touching: bool) -> bool {
         self.posture.flags = (self.posture.flags & !TOUCHING) | (u32::from(touching) * TOUCHING);
         let lift = self.lift();
         let [px, py, pz] = position;
+        if let Some(feet) = self.place_on_platform([px, py - lift, pz]) {
+            let [x, y, z] = feet;
+            self.pose.position = feet.map(f64::from);
+            self.body.teleport([x, y + lift, z]);
+            return false;
+        }
         let feet = f64::from(py - lift);
         let floor = rays.lowest() - ABYSS;
         self.pose.position = [f64::from(px), feet.max(floor), f64::from(pz)].map(snap);
