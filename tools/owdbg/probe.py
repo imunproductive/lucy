@@ -2,12 +2,11 @@
 
 usage: python -m tools.owdbg.probe [site options] --at SITE [site options] [--at SITE ...]
            [--duration 30] [--out FILE.jsonl] [--arm-delay S] [session options]
-       python -m tools.owdbg.probe --msg ID [--send JSON [--send-every S]] [options]
 site options: [--read '[rcx+0x18]:8' ...] [--ret-read '[rax]:8' ...] [--no-ret] [--stack N]
            [--stack-args N] [--caller-in SITE ...] [--max-hits 2000] [--max-events N]
 
 Site options given after an --at belong to that site only; given before the first --at they
-apply to every site (and to the --msg site): --read/--ret-read add to the global ones, the
+apply to every site: --read/--ret-read add to the global ones, the
 others replace them. E.g. `--at A --read "[rdx]:16" --at B --no-ret` reads [rdx] at A only and
 keeps B's return breakpoint off.
 
@@ -23,21 +22,14 @@ summary per site (hits, callers, return values, threads) printed and written as 
 A site hit more than --max-hits times is disarmed (each hit is a debug event: hot functions slow
 the game down). Calls owdbg itself makes in the game (--actions' set-view) are not recorded
 (counted as "injected" in the summary).
---msg ID adds the message's client handler (tools.owindex) as site "msg ID": each hit records
-"message": {reg, object, fields (decoded from the index layout), markers}; the message object is
-the argument register whose [reg] is the message class vtable (r8 for every dispatcher so far),
-hits of other ids sharing the handler are skipped. --send makes Lucy send the message with
-marker values (see tools/owdbg/msg.py) and logs the handler hits that carry them.
 """
 import argparse
 import json
-import os
 import time
 from collections import Counter, defaultdict
 
 from . import actions
 from .game import Session, add_session_args, out_path
-from .msg import Message, Sender, add_msg_args, decode, message_reg
 from .names import Expr, hx
 
 ARG_REGS = ("rcx", "rdx", "r8", "r9")
@@ -112,14 +104,6 @@ class Probe:
             for spec in site.caller_specs:
                 self.names.parse(spec)  # unknown names fail here, not at arm time
             self.sites.append(site)
-        self.msg = self.msg_label = self.sender = None
-        self.marker_hits = []  # (t, {path: matched})
-        if args.msg is not None:
-            self.msg = Message(self.names.idx, args.msg, args.msg_link)
-            self.msg_label = f"msg {args.msg}"
-            self.sites.append(Site(self.msg_label, ("rva", self.msg.handler_rva), args))
-            if args.send:
-                self.sender = Sender(s, args, self.msg)
         self.out = open(args.out, "w", encoding="utf-8")
         self.counts = Counter()
         self.callers = defaultdict(Counter)
@@ -156,26 +140,6 @@ class Probe:
             opts = site.options()
             self.s.log(f"[probe] armed {site.label} at 0x{va:X} ({self.names.text(va)})"
                        + (f" {opts}" if opts else ""))
-        if self.sender is not None:
-            self.sender.start()
-
-    def on_message(self, hit):
-        """Message object, decoded fields and marker matches at a --msg handler hit; None when no
-        argument register holds an object of the message's class (a handler shared with other ids)."""
-        reg = message_reg(self.dbg, hit, self.dbg.main.base, self.msg)
-        if reg is None:
-            return None
-        obj = hit.reg(reg)
-        mrec = {"reg": reg, "object": hx(obj), "fields": decode(self.dbg, obj, self.msg.fields)}
-        if self.sender is not None and self.sender.markers:
-            match = {p: self.dbg.try_read(obj + m["off"], m["size"]) == m["bytes"]
-                     for p, m in self.sender.markers.items()}
-            mrec["markers"] = match
-            if any(match.values()):
-                self.marker_hits.append((round(hit.time, 1), reg, match))
-                self.s.log(f"[probe] t={hit.time:.1f}s message {self.msg.id} with the marker: {reg}=0x{obj:X} "
-                           f"{match} fields {json.dumps(mrec['fields'])[:300]}")
-        return mrec
 
     def on_call(self, hit, site):
         dbg = self.dbg
@@ -192,12 +156,6 @@ class Probe:
                 self.s.log(f"[probe] {label}: {self.filtered[label]} calls from other callers, "
                            "breakpoint removed (--max-events)")
             return
-        mrec = None
-        if label == self.msg_label:
-            mrec = self.on_message(hit)
-            if mrec is None:
-                self.filtered[label] += 1
-                return
         n = self.counts[label] = self.counts[label] + 1
         if n >= site.max_hits and site in self.tokens:
             dbg.remove_bp(self.tokens.pop(site))
@@ -221,8 +179,6 @@ class Probe:
             rec["reads"] = {e.text: e.value(hit) for e in site.reads}
         if site.stack:
             rec["stack"] = [self.names.text(f[0]) for f in dbg.stack(hit.ctx, site.stack)[1:]]
-        if mrec is not None:
-            rec["message"] = mrec
         self.callers[label][caller["text"]] += 1
         self.threads[label][hit.thread.name or hit.tid] += 1
         if site.no_ret:
@@ -275,16 +231,9 @@ class Probe:
                 "callers": self.callers[spec].most_common(10), "returns": self.rets[spec].most_common(10),
                 "threads": [[str(k), v] for k, v in self.threads[spec].most_common(10)],
             }
-        extra = {}
-        if self.msg is not None:
-            extra["message"] = {"id": self.msg.id, "link": self.msg.endpoint_link,
-                                "handler_rva": hx(self.msg.handler_rva), "marker_hits": self.marker_hits}
-        if self.sender is not None:
-            extra["sends"] = self.sender.history
-            extra["send_errors"] = self.sender.errors
         self.out.write(json.dumps({"summary": summary, "alive": self.dbg.alive,
                                    "duration": round(self.dbg.elapsed, 1),
-                                   "exceptions_passed": self.dbg.summary(), **extra}) + "\n")
+                                   "exceptions_passed": self.dbg.summary()}) + "\n")
         self.out.close()
         return summary
 
@@ -311,16 +260,11 @@ def main(argv=None):
                       help="with --caller-in: remove the site's breakpoint after N skipped calls")
     p.add_argument("--arm-delay", type=float, default=0, help="arm N seconds after start instead of at once")
     p.add_argument("--out", help="JSONL output (default research/out/owdbg/probe-<time>.jsonl)")
-    add_msg_args(p)
     actions.add_action_args(p)
     add_session_args(p, duration=30)
     args = p.parse_args(argv)
-    if not args.at and args.msg is None:
-        p.error("give --at and/or --msg")
-    if args.send and args.msg is None:
-        p.error("--send needs --msg")
-    if args.send:
-        args.server_env = dict(os.environ, LUCY_DEBUG_SEND="1")
+    if not args.at:
+        p.error("give --at")
     for text in args.read + args.ret_read + [t for own in args.at for t in own.get("read", []) + own.get("ret_read", [])]:
         try:
             Expr(text)
@@ -352,9 +296,6 @@ def main(argv=None):
                 s.log(f"      thread {th}: {n}")
         if act is not None:
             s.log(f"[actions] {act.summary()}")
-        if probe.msg is not None:
-            s.log(f"[probe] {probe.msg.describe()}; hits with the marker: {len(probe.marker_hits)}"
-                  + (f", sends {probe.sender.sent} (errors {probe.sender.errors})" if probe.sender else ""))
 
 
 if __name__ == "__main__":

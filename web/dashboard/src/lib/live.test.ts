@@ -22,15 +22,15 @@ function serve(answer: (url: string, init?: RequestInit) => Reply): {url: string
 
 const snapshot: LiveSnapshot = {rev: 3, lobby: {online: []}, matches: []};
 
-test('the stage 3 routes and their bodies follow the proposed API', async () => {
+test('the stage 3 routes and their bodies follow the API', async () => {
   const calls = serve(() => ({status: 200, body: {status: 'ok', lines: [], next: 0, rev: 1}}));
   await live.getLive();
   await live.getLive(7);
   await live.getMatchChat('ab12', 5);
   await live.getLobbyChat();
   await live.sendMatchChat('ab12', 'hello', 'team1');
-  await live.broadcast({text: 'Restart in 5 min', scope: 'all', hud: 'big'});
-  await live.kick('ab12', 'Beta', 'AFK');
+  await live.broadcast({text: 'Restart in 5 min', scope: 'all'});
+  await live.kick('ab12', '1234', 'AFK');
   await live.matchFlow('ab12', {action: 'set_time', seconds: 60});
   await live.stopMatch('ab12', {result: 'winner', team: 1});
   assert.deepEqual(
@@ -41,21 +41,12 @@ test('the stage 3 routes and their bodies follow the proposed API', async () => 
       ['/api/matches/ab12/chat?after=5', null],
       ['/api/lobby/chat', null],
       ['/api/matches/ab12/chat', {text: 'hello', channel: 'team1'}],
-      ['/api/broadcast', {text: 'Restart in 5 min', scope: 'all', hud: 'big'}],
-      ['/api/matches/ab12/kick', {account: 'Beta', reason: 'AFK'}],
+      ['/api/broadcast', {text: 'Restart in 5 min', scope: 'all'}],
+      ['/api/matches/ab12/kick', {account: '1234', reason: 'AFK'}],
       ['/api/matches/ab12/flow', {action: 'set_time', seconds: 60}],
       ['/api/matches/ab12/stop', {result: 'winner', team: 1}],
     ],
   );
-});
-
-test('a server without the route reads as not available; other errors stay errors', async () => {
-  serve(() => ({status: 404, body: {error: 'Address not found'}}));
-  assert.deepEqual(await live.ifAvailable(live.getLive()), {available: false});
-  serve(() => ({status: 200, body: snapshot}));
-  assert.deepEqual(await live.ifAvailable(live.getLive()), {available: true, value: snapshot});
-  serve(() => ({status: 409, body: {error: 'The match cannot pause'}}));
-  await assert.rejects(live.ifAvailable(live.matchFlow('ab', {action: 'pause'})), /cannot pause/);
 });
 
 test('an unchanged reply keeps the snapshot', () => {
@@ -78,24 +69,25 @@ function settle(): Promise<void> {
   return promise;
 }
 
-test('polling sends the last rev and stops once the route is missing', async t => {
+test('polling sends the last rev and goes on after a failed poll', async t => {
   t.mock.timers.enable({apis: ['setTimeout']});
   let polls = 0;
   const calls = serve(() => {
     polls += 1;
     if (polls === 1) return {status: 200, body: snapshot};
-    if (polls === 2) return {status: 200, body: {rev: 3}};
-    return {status: 404, body: {error: 'Address not found'}};
+    if (polls === 2) return {status: 503, body: {error: 'The lobby is not running.'}};
+    return {status: 200, body: {rev: 3}};
   });
   const updates: LiveSnapshot[] = [];
-  let unavailable = false;
-  live.pollLive({update: value => updates.push(value), unavailable: () => (unavailable = true), interval: 1000});
-  for (let poll = 0; poll < 3; poll++) {
+  const failures: unknown[] = [];
+  const poll = live.pollLive({update: value => updates.push(value), failed: error => failures.push(error), interval: 1000});
+  for (let step = 0; step < 3; step++) {
     await settle();
     t.mock.timers.tick(1000);
   }
   await settle();
-  assert.ok(unavailable);
-  assert.deepEqual(calls.map(call => call.url), ['/api/live', '/api/live?rev=3', '/api/live?rev=3']);
+  poll.stop();
+  assert.equal(failures.length, 1);
+  assert.deepEqual(calls.map(call => call.url), ['/api/live', '/api/live?rev=3', '/api/live?rev=3', '/api/live?rev=3']);
   assert.deepEqual(updates, [snapshot]);
 });

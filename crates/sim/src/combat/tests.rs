@@ -321,8 +321,7 @@ fn the_damage_message_carries_the_tags_the_attacker_and_the_way() {
 /// damage message; a killing hit, its damage message with the kill's
 /// fields (`1544` rid54 reads the credited body, crit, loadout and assists
 /// from `0011.025`), then the death message, which alone carries the death
-/// layer's camera fields. The `.hurt off` switch holds back the damage
-/// message only.
+/// layer's camera fields.
 #[test]
 fn a_killing_hit_sends_its_damage_message_before_the_death_message() {
     let splash: DamageTags = [0x0d80_0000_0000_078d].into_iter().collect();
@@ -347,14 +346,13 @@ fn a_killing_hit_sends_its_damage_message_before_the_death_message() {
         killer_controller: 0xa000_0100,
         position: [0.0; 3],
     });
-    let on = HurtFeedback::default();
     let damage = damage_message(SHOOTER.source, 75.0, splash, hit.direction);
     assert_eq!(
-        hit_messages(&hit, hit.tags, 75.0, None, camera, on),
+        hit_messages(&hit, hit.tags, 75.0, None, camera),
         std::slice::from_ref(&damage)
     );
 
-    let [(first, killing), died] = hit_messages(&hit, hit.tags, 75.0, Some(&[]), camera, on)
+    let [(first, killing), died] = hit_messages(&hit, hit.tags, 75.0, Some(&[]), camera)
         .try_into()
         .unwrap();
     assert_eq!(first, DAMAGED);
@@ -369,16 +367,6 @@ fn a_killing_hit_sends_its_damage_message_before_the_death_message() {
     assert_eq!(
         died,
         death_message(SHOOTER.source, true, loadout, splash, &[], camera)
-    );
-
-    let off = HurtFeedback {
-        message: false,
-        ..on
-    };
-    assert!(hit_messages(&hit, hit.tags, 75.0, None, camera, off).is_empty());
-    assert_eq!(
-        hit_messages(&hit, hit.tags, 75.0, Some(&[]), camera, off),
-        [died]
     );
 }
 

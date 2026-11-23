@@ -7,7 +7,9 @@ use lucy_content::maps::GameMap;
 use lucy_lobby::{
     accounts::battle_tag,
     collection::Collection,
-    handoff::{Handoff, LobbySeat, enter_game, general_channel, is_request, match_channel},
+    handoff::{
+        Handoff, LobbySeat, enter_game, general_channel, is_request, match_channel, team_channel,
+    },
     player_messages,
     session::PreparedLogin,
     transport::LobbyMessage,
@@ -26,6 +28,8 @@ pub struct SoloPracticeHandoff<'a> {
     pub host: &'a str,
     pub general: Fields,
     pub match_channel: Fields,
+    /// The player's team chat (team [`PLAYER_TEAM`]).
+    pub team_channel: Fields,
     pub map: GameMap,
 }
 
@@ -37,9 +41,13 @@ impl<'a> SoloPracticeHandoff<'a> {
             map,
             general: general_channel(),
             match_channel: match_channel(match_id),
+            team_channel: team_channel(match_id, PLAYER_TEAM),
         }
     }
 }
+
+/// The player is team 0; the training bots are team 1.
+const PLAYER_TEAM: u8 = 0;
 
 /// Reserve a seat for a decoded post-login request and send its transfer in
 /// order. The listener supplies the live login and an opener for this worker,
@@ -60,8 +68,6 @@ pub fn dispatch(
     if !is_request(request) {
         return Ok(None);
     }
-    // The player is team 0; the training bots are team 1.
-    const PLAYER_TEAM: u8 = 0;
     let players = vec![MatchPlayer {
         name: login.account.name.clone(),
         team: PLAYER_TEAM,
@@ -89,14 +95,16 @@ pub fn dispatch(
                 "the reserved UDP seat is for another match",
             ));
         }
-        let [leave, join, ticket] = enter_game(
+        let [leave, join, team, ticket] = enter_game(
             input.general,
             input.match_channel,
+            input.team_channel,
             &handoff,
             (input.host, game.local_addr().port()),
         )?;
         send(&leave)?;
         send(&join)?;
+        send(&team)?;
         if !send(&ticket)? {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -112,6 +120,7 @@ pub fn dispatch(
         account_lo: login.account.account_lo,
         lobby_session: login.identity.session[0],
         handoff,
+        team: PLAYER_TEAM,
     }))
 }
 
@@ -310,9 +319,14 @@ mod tests {
                 .iter()
                 .map(|&(crc, id, _)| (crc, id))
                 .collect::<Vec<_>>(),
-            [(chat, 20404), (chat, 20402), (HANDOFF, HANDOFF_MESSAGE)],
+            [
+                (chat, 20404),
+                (chat, 20402),
+                (chat, 20402),
+                (HANDOFF, HANDOFF_MESSAGE)
+            ],
         );
-        let Value::Struct(ticket) = &messages[2].2[&0x80] else {
+        let Value::Struct(ticket) = &messages[3].2[&0x80] else {
             panic!("handoff ticket missing");
         };
         let connection = u32::try_from(require_unsigned(ticket, 0x28)).unwrap();

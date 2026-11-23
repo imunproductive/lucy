@@ -8,9 +8,8 @@ CLIs (run from the repo root):
     python -m tools.owdbg.cover    one-shot breakpoints on function starts, per-phase coverage, diffs
 
 Library: core.Debugger (process, events, breakpoints, debug registers, memory, stack walk),
-game.Session (server + game + relay, cleanup), names.Names (index/docs names, address specs),
-msg (message handlers/layouts from the index, Lucy marker sends, Practice Range entry for
-`watch --msg` / `probe --msg`).
+game.Session (server + game + relay, cleanup; game.RangeEntry: Practice Range entry),
+names.Names (index/docs names, address specs).
 """
 from .core import Debugger, DebugError, Hit
 from .game import Session, add_session_args

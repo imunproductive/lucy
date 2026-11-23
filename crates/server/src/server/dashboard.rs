@@ -9,11 +9,9 @@
 
 mod api;
 mod bot_group;
-mod debug;
 mod events;
 mod http;
-
-pub(super) use debug::enabled as debug_send_enabled;
+mod live;
 
 use std::{
     borrow::Cow,
@@ -70,8 +68,6 @@ pub struct DashboardParts {
     pub(crate) lobby: Option<Arc<crate::lobby::Lobby>>,
     /// The lobby's clock: the uptime is its time.
     pub clock: Clock,
-    /// The marker message routes (`LUCY_DEBUG_SEND=1`, `debug.rs`).
-    pub debug_send: bool,
 }
 
 impl Dashboard {
@@ -81,6 +77,7 @@ impl Dashboard {
         let clock = parts.clock.source();
         // One request at a time, as the API was written for.
         let serial = Mutex::new(());
+        let revisions = live::Revisions::default();
         let http = HttpServer::start(listener, clock, move |request| {
             let _one_at_a_time = serial.lock().unwrap_or_else(PoisonError::into_inner);
             let api = Api {
@@ -96,13 +93,7 @@ impl Dashboard {
                 lobby: parts.lobby.as_deref(),
                 uptime: parts.clock.now(),
             };
-            handle(
-                &api,
-                parts.lobby.as_deref(),
-                port,
-                parts.debug_send,
-                request,
-            )
+            handle(&api, parts.lobby.as_deref(), &revisions, port, request)
         })?;
         Ok(Self { http })
     }
@@ -120,8 +111,8 @@ impl Dashboard {
 fn handle(
     api: &Api,
     lobby: Option<&crate::lobby::Lobby>,
+    revisions: &live::Revisions,
     port: u16,
-    debug_send: bool,
     request: Request,
 ) -> Response {
     // A page on another site can reach this loopback server: through DNS
@@ -143,23 +134,18 @@ fn handle(
         Method::Get => {
             let query = parse_query(query);
             let account = query.get("account").map(String::as_str);
-            json_reply(match path {
-                "/api/state" => api.state(account),
-                "/api/status" => api.state(account).map(|state| state["profile"].clone()),
-                "/api/collection" => api.collection(&query),
-                "/api/bot_plate" => api.bot_plate(None),
-                debug::MESSAGES if debug_send => {
-                    debug::messages(lobby.map(|lobby| &lobby.schemas), &query)
-                }
+            json_reply(match (path, live::match_route(path)) {
+                ("/api/state", _) => api.state(account),
+                ("/api/status", _) => api.state(account).map(|state| state["profile"].clone()),
+                ("/api/collection", _) => api.collection(&query),
+                ("/api/live", _) => live::live(lobby, revisions, &query),
+                ("/api/lobby/chat", _) => live::lobby_chat(lobby, &query),
+                (_, Some((id, "chat"))) => live::match_chat(lobby, id, &query),
                 _ => Err(not_found()),
             })
         }
         Method::Post => {
-            let result = read_body(&request.body).and_then(|data| match path {
-                debug::SEND if debug_send => debug::send(api, lobby, &data),
-                debug::KILL if debug_send => debug::kill(api, lobby, &data),
-                _ => post(api, lobby, path, &data),
-            });
+            let result = read_body(&request.body).and_then(|data| post(api, lobby, path, &data));
             json_reply(result)
         }
         Method::Other => json_reply(Err(ApiError::new(405, "Method not allowed"))),
@@ -189,25 +175,29 @@ fn post(
     path: &str,
     data: &Map<String, Json>,
 ) -> ApiResult {
-    match path {
-        "/api/bot_group" => bot_group::bot_group(api, lobby, data),
-        "/api/update_profile" => api.update_profile(data),
-        "/api/apply_to_all" => api.apply_to_all(data),
-        "/api/add_boxes" => api.add_boxes(data),
-        "/api/set_frame" => api.set_frame(data),
-        "/api/grant_skin" => api.grant_skin(data),
-        "/api/select_account" => api.select_account(data),
-        "/api/default_account" => api.default_account(data),
-        "/api/start_game" => api.start_game(data),
-        "/api/reconnect" => Ok(api.reconnect()),
-        "/api/purchase" => api.purchase(data),
-        "/api/open_all_boxes" => api.open_all_boxes(data),
-        "/api/matchmaking" => api.matchmaking(data),
-        "/api/mode_settings" => api.mode_settings(data),
-        "/api/set_map" => api.set_map(data),
-        "/api/set_workshop" => api.set_workshop(data),
-        "/api/end_matches" => api.end_matches(),
-        "/api/bot_plate" => api.bot_plate(Some(data)),
+    match (path, live::match_route(path)) {
+        ("/api/bot_group", _) => bot_group::bot_group(api, lobby, data),
+        ("/api/update_profile", _) => api.update_profile(data),
+        ("/api/apply_to_all", _) => api.apply_to_all(data),
+        ("/api/add_boxes", _) => api.add_boxes(data),
+        ("/api/set_frame", _) => api.set_frame(data),
+        ("/api/grant_skin", _) => api.grant_skin(data),
+        ("/api/select_account", _) => api.select_account(data),
+        ("/api/default_account", _) => api.default_account(data),
+        ("/api/start_game", _) => api.start_game(data),
+        ("/api/reconnect", _) => Ok(api.reconnect()),
+        ("/api/purchase", _) => api.purchase(data),
+        ("/api/open_all_boxes", _) => api.open_all_boxes(data),
+        ("/api/matchmaking", _) => api.matchmaking(data),
+        ("/api/mode_settings", _) => api.mode_settings(data),
+        ("/api/set_map", _) => api.set_map(data),
+        ("/api/set_workshop", _) => api.set_workshop(data),
+        ("/api/end_matches", _) => api.end_matches(),
+        ("/api/broadcast", _) => live::broadcast(lobby, data),
+        (_, Some((id, "chat"))) => live::say(lobby, id, data),
+        (_, Some((id, "kick"))) => live::kick(lobby, id, data),
+        (_, Some((id, "flow"))) => live::flow(lobby, id, data),
+        (_, Some((id, "stop"))) => live::stop(lobby, id, data),
         _ => Err(ApiError::new(404, "Action not found")),
     }
 }
@@ -421,7 +411,7 @@ mod tests {
         (status, head.to_owned(), body.to_owned())
     }
 
-    fn parts(state: &Path, debug_send: bool) -> DashboardParts {
+    fn parts(state: &Path) -> DashboardParts {
         let accounts =
             Arc::new(Accounts::new(state.join("profiles"), state.join("profile.json")).unwrap());
         let templates = RetailTemplates::from_reader(
@@ -449,45 +439,44 @@ mod tests {
             )),
             lobby: None,
             clock: Clock::wall(),
-            debug_send,
         }
     }
 
+    /// The live routes answer 503 without a lobby; the debug routes are
+    /// gone.
     #[test]
-    fn the_marker_message_routes_exist_only_with_the_switch() {
+    fn the_live_routes_need_the_lobby_and_the_debug_routes_are_gone() {
         let state = tempfile::tempdir().unwrap();
-        let send = r##"{"id":25000,"fields":{"#0":1}}"##;
-        let mut off = Dashboard::start(0, parts(state.path(), false)).unwrap();
-        let addr = off.addr();
-        assert_eq!(
-            request(addr, "GET", "/api/debug/messages?id=25000", "").0,
-            404
-        );
-        assert_eq!(request(addr, "POST", "/api/debug/send", send).0, 404);
-        assert_eq!(request(addr, "POST", "/api/debug/kill", "{}").0, 404);
-        off.stop();
-
-        let mut on = Dashboard::start(0, parts(state.path(), true)).unwrap();
-        let addr = on.addr();
-        let (status, layout) = request(addr, "GET", "/api/debug/messages?id=25000", "");
-        assert_eq!(status, 200);
-        let layout: Json = serde_json::from_str(&layout).unwrap();
-        assert_eq!(layout["link"], "game");
-        assert_eq!(
-            request(addr, "POST", "/api/debug/send", send),
-            (503, r#"{"error":"The lobby is not running."}"#.into())
-        );
-        assert_eq!(
-            request(addr, "POST", "/api/debug/kill", "{}"),
-            (503, r#"{"error":"The lobby is not running."}"#.into())
-        );
-        on.stop();
+        let mut dashboard = Dashboard::start(0, parts(state.path())).unwrap();
+        let addr = dashboard.addr();
+        let id = "0123456789abcdef0123456789abcdef";
+        for (method, path) in [
+            ("GET", "/api/live"),
+            ("GET", "/api/lobby/chat"),
+            ("GET", &*format!("/api/matches/{id}/chat")),
+            ("POST", "/api/broadcast"),
+            ("POST", &*format!("/api/matches/{id}/kick")),
+            ("POST", &*format!("/api/matches/{id}/stop")),
+        ] {
+            assert_eq!(request(addr, method, path, "{}").0, 503, "{path}");
+        }
+        for (method, path) in [
+            ("GET", "/api/debug/messages?id=25000"),
+            ("POST", "/api/debug/send"),
+            ("POST", "/api/debug/kill"),
+            ("GET", "/api/bot_plate"),
+            ("POST", "/api/bot_plate"),
+            ("POST", "/api/matches/0123/kick"),
+        ] {
+            assert_eq!(request(addr, method, path, "{}").0, 404, "{path}");
+        }
+        dashboard.stop();
     }
 
     #[test]
     fn serves_the_built_page_its_files_and_its_routes() {
         let state = tempfile::tempdir().unwrap();
-        let mut dashboard = Dashboard::start(0, parts(state.path(), false)).unwrap();
+        let mut dashboard = Dashboard::start(0, parts(state.path())).unwrap();
         let addr = dashboard.addr();
 
         let (status, head, index) = get(addr, "/");
@@ -536,7 +525,7 @@ mod tests {
         for missing in [
             "/assets/index-missing.js",
             "/robots.txt",
-            "/api/live",
+            "/api/missing",
             "/assets/boxes/golden.png",
         ] {
             let (status, head, _) = get(addr, missing);
@@ -549,7 +538,7 @@ mod tests {
     #[test]
     fn serves_the_api_and_refuses_unported_actions() {
         let state = tempfile::tempdir().unwrap();
-        let mut dashboard = Dashboard::start(0, parts(state.path(), false)).unwrap();
+        let mut dashboard = Dashboard::start(0, parts(state.path())).unwrap();
         let addr = dashboard.addr();
 
         let (status, state) = request(addr, "GET", "/api/state?account=alpha", "");

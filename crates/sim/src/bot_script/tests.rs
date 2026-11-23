@@ -2,7 +2,6 @@ use std::{borrow::Borrow, time::Duration};
 
 use super::*;
 use crate::{
-    bot_plate::{BotPlate, PlateChange},
     bots::BOT_ENTITY,
     combat::BotReplacement,
     egress::{DeliveryReport, PacketDelivery, RecordSource},
@@ -12,6 +11,7 @@ use crate::{
 };
 use lucy_core::tick::FIRST_TICK;
 use lucy_script::bot::{DEAD_FLAG, NAMEPLATE_TEXT};
+use lucy_script::wire::Value;
 use lucy_wire::entity::{ComponentValue, EntityUpdate, Operation};
 
 const OWNER: u32 = 0xa000_0100;
@@ -413,7 +413,7 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
     // The respawn: a new script under the new entity, in its create's
     // datagram (after the old bot's destroy and the create).
     let fresh = scene.bots()[slot].respawned(BOT_ENTITY + 15, tick + 8);
-    let created = bot_create(&fresh, scene.bot_plate()).unwrap();
+    let created = bot_create(&fresh).unwrap();
     scene.bots_mut()[slot] = fresh;
     scene.prepare_respawned_bots(tick);
     assert!(scene.bot_scripts().latest(BOT_ENTITY + 15).is_some());
@@ -437,149 +437,6 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
             .entity_variable(DEAD_FLAG),
         None
     );
-
-    // The live nameplate tool: a change reaches every live bot at once,
-    // the pools as one component 51 update each, the variables in one live
-    // frame each; nothing respawns.
-    let live: BTreeSet<u32> = scene
-        .bots()
-        .iter()
-        .filter(|bot| !bot.dead)
-        .map(|bot| bot.entity)
-        .collect();
-    assert_eq!(live.len(), entities.len() - 1);
-    let tail = |update: &EntityUpdate| match &update.operation {
-        Some(Operation::Update(components)) => match components.as_slice() {
-            [pools] if pools.index == 51 => match &pools.fields[0] {
-                Some(ComponentValue::Blob20(part)) => {
-                    Some(<[u8; 4]>::try_from(&part[16..]).unwrap())
-                }
-                _ => None,
-            },
-            _ => None,
-        },
-        Some(Operation::Create(create)) => match &create.components[0].fields[0] {
-            Some(ComponentValue::Blob20(part)) => Some(<[u8; 4]>::try_from(&part[16..]).unwrap()),
-            _ => None,
-        },
-        _ => None,
-    };
-    let plated = |scene: &mut PreparedScene, command: &str| {
-        let mut plate = BotPlate::clone(scene.bot_plate());
-        plate.change(PlateChange::parse(command).unwrap()).unwrap();
-        scene.set_bot_plate(std::sync::Arc::new(plate), |_| None)
-    };
-    let variable = |world: &WorldDelivery, entity: u32, id: u32| {
-        world
-            .bot_stream(entity)
-            .and_then(|stream| stream.base())
-            .unwrap()
-            .1
-            .entity_variable(id)
-            .cloned()
-    };
-    let text = |scene: &PreparedScene, world: &WorldDelivery, entity: u32| {
-        let child = scene
-            .bot_scripts()
-            .latest(entity)
-            .and_then(|latest| latest.plain.as_ref())
-            .unwrap()
-            .child;
-        world
-            .bot_stream(entity)
-            .and_then(|stream| stream.base())
-            .unwrap()
-            .1
-            .instance_variable(child, NAMEPLATE_TEXT)
-            .cloned()
-    };
-    tick += 1;
-    let pools = plated(&mut scene, "meter 1; name null; health.b19 0");
-    assert_eq!(
-        pools
-            .iter()
-            .map(|update| update.entity)
-            .collect::<BTreeSet<_>>(),
-        live
-    );
-    assert_eq!(pools.len(), live.len());
-    assert!(
-        pools
-            .iter()
-            .all(|update| tail(update) == Some([0, 1, 0, 0]))
-    );
-    let events = scene.take_bot_events();
-    assert_eq!(events.len(), live.len());
-    assert!(
-        events
-            .iter()
-            .all(|event| matches!(event, BotEvent::Live { entity, .. } if live.contains(entity)))
-    );
-    world.update_bots(&scene, &events, tick);
-    let changed = script_chunks(&deliver(&mut world));
-    assert_eq!(changed.iter().copied().collect::<BTreeSet<_>>(), live);
-    for &entity in &live {
-        assert_eq!(
-            variable(&world, entity, 6036),
-            Some(Value::Integer(1)),
-            "{entity:08X}"
-        );
-        // A projection leaves a null out; the frame's delta sent it as one,
-        // since the text was there before.
-        assert_eq!(text(&scene, &world, entity), None, "{entity:08X}");
-    }
-    // What the tool shows: the first live bot as it sends it now.
-    let sample = scene.bot_plate_sample(|_| None).unwrap();
-    assert!(live.contains(&sample.entity));
-    assert_eq!(sample.parts[0].bytes, [0, 1, 0, 0]);
-    assert!(sample.parts[0].tuned);
-    assert!(sample.variables.contains(&(
-        crate::bot_plate::PlateVariable::Nameplate(NAMEPLATE_TEXT),
-        Some(Value::Null),
-        true
-    )));
-    assert!(sample.variables.contains(&(
-        crate::bot_plate::PlateVariable::Entity(6036),
-        Some(Value::Integer(1)),
-        true
-    )));
-
-    // A bot that respawns gets the changes from its create on.
-    let fresh = scene.bots()[shooter].respawned(BOT_ENTITY + 16, tick + 8);
-    let created = bot_create(&fresh, scene.bot_plate()).unwrap();
-    assert_eq!(tail(&created), Some([0, 1, 0, 0]));
-    scene.bots_mut()[shooter] = fresh;
-    scene.prepare_respawned_bots(tick);
-    world.replace_bot(BotReplacement {
-        retired: source,
-        created,
-        link: None,
-    });
-    world.update_bots(&scene, &[], tick);
-    assert_eq!(script_chunks(&deliver(&mut world)), [BOT_ENTITY + 16]);
-    assert_eq!(
-        variable(&world, BOT_ENTITY + 16, 6036),
-        Some(Value::Integer(1))
-    );
-    assert_eq!(text(&scene, &world, BOT_ENTITY + 16), None);
-
-    // `reset`: the bots' own pools, meter and name again.
-    tick += 1;
-    let pools = plated(&mut scene, "reset");
-    assert_eq!(pools.len(), live.len() + 1);
-    assert!(
-        pools
-            .iter()
-            .all(|update| tail(update) == Some([0, 1, 0, 1]))
-    );
-    let events = scene.take_bot_events();
-    assert_eq!(events.len(), live.len() + 1);
-    world.update_bots(&scene, &events, tick);
-    deliver(&mut world);
-    for entity in live.iter().copied().chain([BOT_ENTITY + 16]) {
-        assert_eq!(variable(&world, entity, 6036), None, "{entity:08X}");
-        assert!(nameplate(&scene, &world, entity).is_some());
-    }
 }
 
 /// A bot's killing hit reaches its script as a player's does

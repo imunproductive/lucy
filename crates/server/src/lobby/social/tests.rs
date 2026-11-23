@@ -17,7 +17,7 @@ use lucy_lobby::{
     social::{
         array,
         messages::{CHAT_IN, CHAT_OUT, FRIENDS_OUT, GROUP_FINDER, GROUPS, PARTY_OUT, SENT_TEXT},
-        structure,
+        structure, unsigned,
     },
     templates::{IN_CONNECT, LOBBY},
 };
@@ -255,15 +255,62 @@ fn say(client: &mut Client<'_>, channel: &Fields, text: &str) {
     client.expect(CHAT_IN, 20400);
 }
 
+/// A dashboard GET, and its JSON body.
+fn get(dashboard: SocketAddr, path: &str) -> serde_json::Value {
+    let mut stream = TcpStream::connect(dashboard).unwrap();
+    write!(stream, "GET {path} HTTP/1.0\r\nHost: {dashboard}\r\n\r\n").unwrap();
+    let mut reply = String::new();
+    stream.read_to_string(&mut reply).unwrap();
+    let (head, body) = reply.split_once("\r\n\r\n").unwrap();
+    assert!(head.starts_with("HTTP/1.1 200"), "{reply}");
+    serde_json::from_str(body).unwrap()
+}
+
+/// Every value of a decoded struct is its default: an empty card.
+fn blank(value: &Value) -> bool {
+    match value {
+        Value::Unsigned(0) | Value::Signed(0) | Value::Bool(false) => true,
+        Value::Float32(value) => *value == 0.0,
+        Value::Float64(value) => *value == 0.0,
+        Value::String(text) => text.is_empty(),
+        Value::Struct(fields) => fields.values().all(blank),
+        Value::Array(items) => items.iter().all(blank),
+        Value::Blob(bytes) => bytes.iter().all(|&byte| byte == 0),
+        _ => false,
+    }
+}
+
+/// A system line: a 20400 on `channel` with `text`, from an empty card
+/// (the client draws it alone, in the channel's colour).
+fn assert_system_line(said: &Fields, channel: &Value, text: &str) {
+    assert_eq!(&said[&0x78], channel);
+    assert_eq!(said[&0x100], Value::String(text.into()));
+    let member = structure(said.get(&0x90)).unwrap();
+    assert!(blank(&member[&0]), "{member:?}");
+}
+
+/// Alpha plays the Practice Range; Beta stays in the menu. The handoff
+/// joins Alpha's team channel (type 5) after the match's: his team line
+/// reaches his team (himself) and not Beta. The dashboard's system line to
+/// the match and its global message come as authorless 20400s, Alpha's on
+/// the match channel and Beta's on General, and the match's chat log has
+/// the team line and both system lines. The host's kick sends Alpha's game
+/// home: once the leave grace (`LEAVE_GRACE`) drops it, the lobby's next
+/// sweep takes him out of the team and match channels, back into General,
+/// and gives him the host's reason there.
 #[test]
 #[ignore = "requires an authorized 104319 runtime in LUCY_RUNTIME_DIR"]
-fn match_commands_and_general_again_after_the_match() {
+fn team_chat_system_lines_and_a_kick_from_the_dashboard() {
     let state = tempfile::tempdir().unwrap();
     let (mut server, time) = start(&state);
     let lobby = SocketAddr::from(server.lobby_addr());
+    let dashboard = server.dashboard_addr().unwrap();
     let schemas = Schemas::lobby();
     let mut alpha = login(&schemas, lobby, "Alpha");
     let joined_general = alpha.expect(CHAT_IN, 20402)[&0x78].clone();
+    let mut beta = login(&schemas, lobby, "Beta");
+    assert_eq!(beta.expect(CHAT_IN, 20402)[&0x78], joined_general);
+    alpha.settle();
     alpha.send(
         GAME_REQUEST,
         CREATE_GAME,
@@ -275,23 +322,22 @@ fn match_commands_and_general_again_after_the_match() {
     );
     let left = alpha.expect(CHAT_IN, 20404);
     assert_eq!(left[&0x78], joined_general);
-    let Value::Struct(matched) = alpha.expect(CHAT_IN, 20402)[&0x78].clone() else {
-        panic!("no match channel");
-    };
+    let matched = alpha.expect(CHAT_IN, 20402)[&0x78].clone();
+    let team = alpha.expect(CHAT_IN, 20402)[&0x78].clone();
+    let kind = |channel: &Value| unsigned(structure(Some(channel)).unwrap().get(&0x10));
+    assert_eq!((kind(&matched), kind(&team)), (6, 5));
     let handoff = alpha.expect(HANDOFF, HANDOFF_MESSAGE);
-    // The match chat has the player.
-    alpha.send(
-        CHAT_OUT,
-        21701,
-        Fields::from([(0x78, Value::Struct(matched.clone()))]),
-    );
-    assert_eq!(array(alpha.expect(CHAT_IN, 20401).get(&0x90)).len(), 1);
 
     // The game connects, and the lobby's next sweep sees it in the match.
     let ticket = structure(handoff.get(&0x80)).unwrap();
     let Value::Unsigned(connection) = ticket[&0x28] else {
         panic!("no UDP connection");
     };
+    let match_id = structure(ticket.get(&0)).unwrap();
+    let (Value::Unsigned(low), Value::Unsigned(high)) = (&match_id[&0], &match_id[&8]) else {
+        panic!("no match id");
+    };
+    let id = format!("{low:016x}{high:016x}");
     let key = |offset| -> [u8; 32] {
         std::array::from_fn(|index| match &array(ticket.get(&offset))[index] {
             Value::Unsigned(byte) => u8::try_from(*byte).unwrap(),
@@ -311,19 +357,114 @@ fn match_commands_and_general_again_after_the_match() {
     );
     game.handshake();
     game.receive();
-    run(&time.lobby, &mut [&mut alpha], TICK);
-    // .leave sends it home; it stays, so the leave grace (`LEAVE_GRACE`)
-    // drops it, and the lobby's next sweep takes the player out of the
-    // match chat and back to General.
-    say(&mut alpha, &matched, ".leave");
+    run(&time.lobby, &mut [&mut alpha, &mut beta], TICK);
+
+    // Team chat reaches the team only, not everyone online.
+    let Value::Struct(team_fields) = &team else {
+        unreachable!()
+    };
+    say(&mut alpha, team_fields, "hi team");
+    let unexpected = beta.settle();
+    assert!(unexpected.is_empty(), "{unexpected:?}");
+
+    // The live view has the match, with Alpha in it.
+    let alpha_lo = account_id_for("Alpha");
+    let live = get(dashboard, "/api/live");
+    let found = &live["matches"][0];
+    assert_eq!(found["id"], id.as_str());
+    assert_eq!(found["players"][0]["account"], alpha_lo.to_string());
+    assert_eq!(found["chat_seq"], 1);
+    let rev = live["rev"].as_u64().unwrap();
+    assert_eq!(
+        get(dashboard, &format!("/api/live?rev={rev}")),
+        serde_json::json!({"rev": rev})
+    );
+
+    // A system line to the match, then a message to everyone.
+    let reply = post(
+        dashboard,
+        &format!("/api/matches/{id}/chat"),
+        r#"{"text":"Welcome to the Range"}"#,
+    );
+    assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+    assert_system_line(
+        &alpha.expect(CHAT_IN, 20400),
+        &matched,
+        "Welcome to the Range",
+    );
+    let reply = post(
+        dashboard,
+        "/api/broadcast",
+        r#"{"text":"Restart in 5 minutes","scope":"all"}"#,
+    );
+    assert!(reply.contains(r#""told":2"#), "{reply}");
+    assert_system_line(
+        &alpha.expect(CHAT_IN, 20400),
+        &matched,
+        "Restart in 5 minutes",
+    );
+    assert_system_line(
+        &beta.expect(CHAT_IN, 20400),
+        &joined_general,
+        "Restart in 5 minutes",
+    );
+    let chat = get(dashboard, &format!("/api/matches/{id}/chat"));
+    let lines: Vec<_> = chat["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|line| {
+            (
+                line["kind"].as_str().unwrap().to_owned(),
+                line["channel"].as_str().unwrap().to_owned(),
+                line["from"]["name"].as_str().map(str::to_owned),
+                line["text"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    let line = |kind: &str, channel: &str, from: Option<&str>, text: &str| {
+        (
+            kind.to_owned(),
+            channel.to_owned(),
+            from.map(str::to_owned),
+            text.to_owned(),
+        )
+    };
+    assert_eq!(
+        lines,
+        [
+            line("chat", "team1", Some("Alpha"), "hi team"),
+            line("system", "match", None, "Welcome to the Range"),
+            line("system", "match", None, "Restart in 5 minutes"),
+        ]
+    );
+    assert_eq!(chat["next"], 3);
+
+    // The kick: his game goes home; once the leave grace drops it, he is
+    // back in General with the host's reason.
+    let reply = post(
+        dashboard,
+        &format!("/api/matches/{id}/kick"),
+        &format!(r#"{{"account":"{alpha_lo}","reason":"AFK"}}"#),
+    );
+    assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
     time.game.run(LEAVE_GRACE);
     run(&time.lobby, &mut [&mut alpha], TICK);
-    let left = alpha.expect(CHAT_IN, 20404);
-    assert_eq!(left[&0x78], Value::Struct(matched));
-    let joined = alpha.expect(CHAT_IN, 20402);
-    assert_eq!(joined[&0x78], joined_general);
+    assert_eq!(alpha.expect(CHAT_IN, 20404)[&0x78], team);
+    assert_eq!(alpha.expect(CHAT_IN, 20404)[&0x78], matched);
+    assert_eq!(alpha.expect(CHAT_IN, 20402)[&0x78], joined_general);
+    assert_system_line(
+        &alpha.expect(CHAT_IN, 20400),
+        &joined_general,
+        "The host removed you from the match: AFK",
+    );
     alpha.expect(PARTY, 20700);
+    assert_eq!(
+        get(dashboard, "/api/live")["matches"],
+        serde_json::json!([])
+    );
 
     alpha.close();
+    beta.close();
     server.stop().unwrap();
 }

@@ -1055,8 +1055,6 @@ fn busy_peers_resume_in_round_robin_order_after_the_global_input_budget() {
     let settings = RoomSettings {
         schemas: Arc::new(fixture()),
         timers: Timers::default(),
-        bot_plate: Arc::default(),
-        hurt: HurtFeedback::default(),
         ai_seed: None,
         events: router::Events::nowhere(MATCH),
     };
@@ -1184,6 +1182,7 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
             host: "127.0.0.1",
             general: channel([7, 8], 7),
             match_channel: channel(MATCH, 6),
+            team_channel: channel(MATCH, 5),
             map: GameMap::practice_range(),
         },
         (&assets, &collection),
@@ -1222,10 +1221,10 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
     let ticket = result.unwrap().unwrap().handoff;
     assert_eq!(
         outgoing.iter().map(|(_, id, _)| *id).collect::<Vec<_>>(),
-        [20404, 20402, HANDOFF_MESSAGE]
+        [20404, 20402, 20402, HANDOFF_MESSAGE]
     );
-    assert_eq!(outgoing[2].0, HANDOFF);
-    let Value::Struct(wire) = &outgoing[2].2[&0x80] else {
+    assert_eq!(outgoing[3].0, HANDOFF);
+    let Value::Struct(wire) = &outgoing[3].2[&0x80] else {
         panic!("the decoded handoff has no seat body");
     };
     let key = |offset| {
@@ -7168,6 +7167,7 @@ fn a_firing_practice_bot_shoots_the_player() {
 
 mod assault;
 mod collision_ready;
+mod host;
 mod load;
 mod rooms;
 mod victims;

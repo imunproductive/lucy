@@ -1,10 +1,8 @@
 //! A player's hurt feedback over several hits (`WorldDelivery::damage_body`,
-//! `take_voice_lines`) and the live switch that turns it off
-//! (`crate::hurt_feedback`).
+//! `take_voice_lines`).
 
 use super::*;
 use crate::combat::Shooter;
-use crate::hurt_feedback::HurtFeedback;
 use lucy_wire::{combat_messages::CombatNotice, commands::Command};
 
 const OWNER: u32 = 0xa000_0100;
@@ -159,16 +157,13 @@ fn rockets(scene: &PreparedScene, hits: &[u32], ticks: u32) -> Reactions {
 /// line, the third as the first. `02C5` starts the knockback anim (st7)
 /// with the hit; its subgraph waits 0.25 s (16 ticks of 16 ms) and ends it
 /// once he stands on the ground (#545), so it runs 16 ticks. `01CA` raises
-/// the pain criteria 0.15 s after the hit, in the 10th frame. The live
-/// switch takes them away: off, the body gets no damage message at all;
-/// with the flinch off, the message has no tags, so no knockback but the
-/// line; with the pain off, the knockback but no line.
+/// the pain criteria 0.15 s after the hit, in the 10th frame.
 #[test]
 #[ignore = "requires a derived 104319 Practice Range pack"]
-fn every_rocket_knocks_the_player_back_and_hurts_unless_switched_off() {
+fn every_rocket_knocks_the_player_back_and_hurts() {
     let mut assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
     assets.set_player_unknowns(lucy_script::vm::Unknowns::Tolerate);
-    let mut scene = assets.prepare(GameMap::practice_range()).unwrap();
+    let scene = assets.prepare(GameMap::practice_range()).unwrap();
     let hits = [10, 70, 130];
     let knocked: Vec<_> = hits
         .iter()
@@ -182,18 +177,4 @@ fn every_rocket_knocks_the_player_back_and_hurts_unless_switched_off() {
     let (knockback, voices) = rockets(&scene, &hits, 160);
     assert_eq!(knockback, knocked);
     assert!(pained(&voices), "{voices:?}");
-
-    let mut switch = |change: &str| {
-        let mut hurt = HurtFeedback::default();
-        hurt.change(change).unwrap();
-        scene.set_hurt_feedback(hurt);
-        rockets(&scene, &hits, 160)
-    };
-    assert_eq!(switch("off"), (Vec::new(), Vec::new()));
-    let (knockback, voices) = switch("flinch off");
-    assert!(knockback.is_empty(), "{knockback:?}");
-    assert!(pained(&voices), "{voices:?}");
-    let (knockback, voices) = switch("pain off");
-    assert_eq!(knockback, knocked);
-    assert!(voices.is_empty(), "{voices:?}");
 }

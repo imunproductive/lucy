@@ -28,9 +28,9 @@ pub(crate) trait Parties {
     /// Take the account out of its party, as 22107 does; false for a party of
     /// one (`handlers/leaving.py` `leave_party`).
     fn leave_party(&self, account: &Arc<Account>) -> io::Result<bool>;
-    /// The players of a match share its chat channel (Python
-    /// `social.open_match_chat`).
-    fn open_match_chat(&self, match_id: [u64; 2], accounts: &[u32]);
+    /// The players of a match share its chat channel, and those of a team
+    /// their team's (Python `social.open_match_chat`).
+    fn open_match_chat(&self, match_id: [u64; 2], team: u8, accounts: &[u32]);
     /// The account's game left its match: out of the match chat, back into
     /// General, and the party state again (the social half of Python
     /// `LobbyServer.game_left`).
@@ -55,11 +55,12 @@ impl Parties for Lobby {
         social::leave_party(self, account)
     }
 
-    fn open_match_chat(&self, match_id: [u64; 2], accounts: &[u32]) {
+    fn open_match_chat(&self, match_id: [u64; 2], team: u8, accounts: &[u32]) {
         let mut state = self.social.lock();
         for &account_lo in accounts {
-            state.open_match_chat(match_id, account_lo);
+            state.open_match_chat(match_id, account_lo, team);
         }
+        self.chat_log.prune(&state, self.clock.now());
     }
 
     fn game_left(&self, account_lo: u32, match_id: [u64; 2]) -> io::Result<()> {

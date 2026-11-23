@@ -2,28 +2,45 @@
   import {app} from '../lib/app.svelte.ts';
   import {duration, number} from '../lib/format.ts';
   import * as live from '../lib/live.ts';
-  import type {Broadcast, LiveSnapshot} from '../lib/live.ts';
-  import {matchPath, paths} from '../lib/routes.ts';
+  import type {Broadcast, ChatLine, LiveSnapshot} from '../lib/live.ts';
+  import {matchPath} from '../lib/routes.ts';
   import EmptyState from '../components/EmptyState.svelte';
   import Icon from '../components/Icon.svelte';
 
-  // Every running match, polled from /api/live (stage 3). Until the server
-  // has the route, the page says so.
+  // Every running match and the lobby's chat, polled from /api/live and
+  // /api/lobby/chat (stage 3).
   let snapshot = $state<LiveSnapshot | null>(null);
-  let available = $state<boolean | null>(null);
   let error = $state('');
+  let general = $state<ChatLine[]>([]);
 
   $effect(() => {
     const poll = live.pollLive({
       update: next => {
         snapshot = next;
-        available = true;
         error = '';
       },
-      unavailable: () => (available = false),
       failed: failure => (error = failure instanceof Error ? failure.message : String(failure)),
     });
-    return () => poll.stop();
+    let after: number | undefined;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const readChat = async () => {
+      try {
+        const page = await live.getLobbyChat(after);
+        if (stopped) return;
+        general = live.appendChat(general, page).slice(-100);
+        after = page.next;
+      } catch {
+        // The live poll reports the server's errors.
+      }
+      if (!stopped) timer = setTimeout(readChat, 2000);
+    };
+    void readChat();
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+      poll.stop();
+    };
   });
 
   let message = $state('');
@@ -55,17 +72,7 @@
     {#if snapshot}<span class="badge success"><span class="dot on"></span>Live</span>{/if}
   </header>
 
-  {#if available === false}
-    <div class="card">
-      <EmptyState
-        icon="live"
-        title="Not available yet"
-        text="This server does not report live matches yet. Until it does, the Server page lists the running game sessions and can end them."
-      >
-        <a class="btn" href={paths.server}>Open Server <Icon name="arrow" size={16} /></a>
-      </EmptyState>
-    </div>
-  {:else if !snapshot}
+  {#if !snapshot}
     {#if error}
       <div class="notice error" role="alert"><Icon name="alert" /> {error}</div>
     {:else}
@@ -128,12 +135,46 @@
         <button class="btn primary" type="submit" disabled={sending || !message.trim()}><Icon name="send" size={16} /> Send</button>
       </div>
     </form>
+
+    <section class="card">
+      <div class="card-header">
+        <div>
+          <h2>Lobby chat</h2>
+          <p>General, as the players in the menu see it.</p>
+        </div>
+      </div>
+      <ol class="lines" aria-live="polite">
+        {#each general as line (line.seq)}
+          <li class="line {line.kind}"><span class="who">{line.from?.name ?? 'System'}</span> <span>{line.text}</span></li>
+        {:else}
+          <li class="muted">Nothing said yet.</li>
+        {/each}
+      </ol>
+    </section>
   {/if}
 </div>
 
 <style>
   .end {
     text-align: right;
+  }
+
+  .lines {
+    display: grid;
+    gap: var(--space-2);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    max-height: 40vh;
+    overflow-y: auto;
+  }
+
+  .who {
+    font-weight: 600;
+  }
+
+  .line.system .who {
+    color: var(--accent);
   }
 
   .broadcast {
