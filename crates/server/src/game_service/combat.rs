@@ -282,8 +282,16 @@ impl RoomState {
                     } = *notice
                     {
                         let kind = Dealt::Damage { critical };
-                        peer.world
-                            .dealt(&graphs, hit.bot, body, dealt, &hit.tags, kind);
+                        peer.world.dealt(
+                            &graphs,
+                            hit.dealer,
+                            hit.bot,
+                            body,
+                            dealt,
+                            &hit.tags,
+                            kind,
+                            &[],
+                        );
                         if let Some(source) = hit.source {
                             peer.world
                                 .source_dealt(source, hit.bot, dealt, &hit.tags, kind);
@@ -292,11 +300,13 @@ impl RoomState {
                 }
                 peer.world.dealt(
                     &graphs,
+                    hit.dealer,
                     hit.bot,
                     body,
                     hit.healed,
                     &hit.tags,
                     Dealt::Healing,
+                    &[],
                 );
                 if let Some(source) = hit.source {
                     peer.world

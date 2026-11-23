@@ -44,7 +44,9 @@ use lucy_script::{
         AiMoveRequest, AuraChange, BodyEffects, GameMessage, HealthChange, Knockback, MapRays,
         MessageEnd, Motion, PlayRequest, Scaled, ShotEvent, Snapshot, TargetCandidate, Unknowns,
     },
-    weapons::{DamageTags, HitDefinition, ProjectileBallistics, authored_number, ray_profile},
+    weapons::{
+        DamageTags, HitDefinition, ProjectileBallistics, authored_number, launch_lift, ray_profile,
+    },
 };
 use lucy_wire::entity::{Component, EntityUpdate};
 
@@ -1070,6 +1072,8 @@ fn shot_kind(body: &mut BotBody, shot: &ShotEvent, bot: &Bot) -> Option<(BotShot
                     // the count, and leases none.
                     projectiles: projectiles_per_shot(node, &mut evaluate).unwrap_or(1),
                     pellets: vec![direction],
+                    // None for the Training Bots' rockets (`0BA3`).
+                    lift: launch_lift(node, &mut evaluate).unwrap_or(0.0),
                 }),
                 observed,
             ));
@@ -1790,6 +1794,7 @@ impl BotViews {
             rocket.volleys,
             rocket.origin.map(|value| value as f32),
             rocket.direction,
+            tick,
             deadline,
         ) else {
             return Vec::new();

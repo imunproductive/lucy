@@ -938,7 +938,7 @@ impl BodyScript {
                     ProjectileFlight::new(
                         projectile.ballistics.clone(),
                         projectile.origin,
-                        pellet,
+                        crate::weapon_spread::lifted(pellet, projectile.lift),
                         None,
                     )
                 })
@@ -955,9 +955,12 @@ impl BodyScript {
         } else {
             projectile.ballistics
         };
-        let Some(flight) =
-            ProjectileFlight::new(tracked, projectile.origin, projectile.direction, None)
-        else {
+        let Some(flight) = ProjectileFlight::new(
+            tracked,
+            projectile.origin,
+            crate::weapon_spread::lifted(projectile.direction, projectile.lift),
+            None,
+        ) else {
             return;
         };
         let token = match (&mut self.projectiles, definition) {
@@ -2187,11 +2190,14 @@ struct BodyDeath {
 /// dealt, whether it killed the body, and the hit's tags as the body's
 /// damage modifiers left them, for its messages
 /// ([`WorldDelivery::send_hit_messages`]).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct BodyDamage {
     pub dealt: f64,
     pub killed: bool,
     pub tags: DamageTags,
+    /// What it took from the body's named pools
+    /// (`lucy_script::vitals::Damage::drained`).
+    pub drained: Vec<(u64, f64)>,
 }
 
 /// A hit that hurt one of the player's bodies ([`WorldDelivery::attackers`]).
@@ -4833,6 +4839,7 @@ impl WorldDelivery {
             dealt: result.dealt,
             killed: result.killed,
             tags,
+            drained: result.drained,
         })
     }
 
@@ -5427,26 +5434,33 @@ impl WorldDelivery {
             .map_or_else(Vec::new, |script| script.runtime.take_aura_changes())
     }
 
-    /// The player's living body dealt `amount` of damage or healing
-    /// (`dealt`) to `target`, a body of definition `target_body`, in a health
-    /// change tagged `tags`: its body takes `0012.025` (or `0044.025`), as
-    /// from the retail server, and its graph `0B8B` charges the ultimate
-    /// for it (`lucy_script::ultimate`). The body learns the target's
-    /// authored target tags first (`0B8B` rid45 tests `02ED`, rid50 `03C3`,
-    /// rid85 `011E`).
+    /// The player's body `dealer` dealt `amount` of damage or healing
+    /// (`dealt`) to `target`, a body of definition `target_body`, in a
+    /// health change tagged `tags`, taking `drained` from the target's
+    /// named pools: when `dealer` is his living body still, it takes
+    /// `0012.025` (or `0044.025`), as from the retail server, and its graph
+    /// `0B8B` charges the ultimate for it (`lucy_script::ultimate`). A hit
+    /// of a body he no longer has (a projectile that lands after his hero
+    /// change; upstream `fa6b15e8`, `f0da195e`) charges nothing: the body
+    /// that fired it is gone, and its new one didn't deal it. The body
+    /// learns the target's authored target tags first (`0B8B` rid45 tests
+    /// `02ED`, rid50 `03C3`, rid85 `011E`).
+    #[allow(clippy::too_many_arguments)]
     pub fn dealt(
         &mut self,
         graphs: &GraphStore,
+        dealer: u32,
         target: u32,
         target_body: Option<u64>,
         amount: f64,
         tags: &DamageTags,
         dealt: lucy_script::ultimate::Dealt,
+        drained: &[(u64, f64)],
     ) {
         if self.death.is_some() || amount <= 0.0 {
             return;
         }
-        let Some(body) = self.body else {
+        let Some(body) = self.body.filter(|body| body.id.entity == dealer) else {
             return;
         };
         let failure = self
@@ -5460,7 +5474,7 @@ impl WorldDelivery {
                     .unwrap_or_default();
                 script.runtime.set_victim_tags(target, target_tags);
                 let (message, parameters) =
-                    lucy_script::ultimate::dealt_message(target, amount, tags, dealt);
+                    lucy_script::ultimate::dealt_message(target, amount, tags, dealt, drained);
                 script
                     .runtime
                     .receive_message(body.id.entity, message, parameters)
@@ -5492,7 +5506,7 @@ impl WorldDelivery {
             return;
         }
         let (message, parameters) =
-            lucy_script::ultimate::dealt_message(target, amount, tags, dealt);
+            lucy_script::ultimate::dealt_message(target, amount, tags, dealt, &[]);
         self.modified.push(GameMessage {
             sender: source,
             target: source,

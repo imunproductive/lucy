@@ -17,8 +17,11 @@
 //! as a sphere of its volley's radius ([`ProjectileBallistics::radius`],
 //! 0.2 m for Helix Rockets) and surfaces as a point; the reference swept
 //! points. An explosion also hurts and pushes its own shooter
-//! ([`ProjectileFlight::own_blast`]). A projectile with a bounce block
-//! (`lucy_script::weapons::Bounce`: Moira's Biotic Orbs, Junkrat's
+//! ([`ProjectileFlight::own_blast`]), and reaches no body it can't see
+//! past the map (the client's sight test of its own push; the reference's
+//! splash went through walls). A flight ends at its volley's lifetime or
+//! its range along its path, whichever comes first. A projectile with a
+//! bounce block (`lucy_script::weapons::Bounce`: Moira's Biotic Orbs, Junkrat's
 //! grenades) bounces off the map's surfaces as the client's does: its
 //! velocity's part into the surface turns back, scaled by the
 //! restitution, and it flies the rest of the tick from 1 mm off the
@@ -42,6 +45,22 @@ pub struct WallHit {
     pub normal: Vec3,
 }
 
+/// A ray against the map's collision: from an origin along a unit
+/// direction for a reach, with a ray profile whose map mask it meets the
+/// map with (the volley's for the flight, the explosion's for its sight
+/// test); where it first meets the map.
+pub trait MapRay:
+    FnMut(Vec3, Vec3, f64, Option<u64>) -> Result<Option<WallHit>, IndexError>
+{
+}
+
+impl<T: FnMut(Vec3, Vec3, f64, Option<u64>) -> Result<Option<WallHit>, IndexError>> MapRay for T {}
+
+/// How far back along its flight an explosion's sight rays start: 0.2 m
+/// (`0x7FF789A433F0`: the projectile's position less 0.2 × its direction,
+/// `0x7FF78B565B80`), so they leave a surface it met from the side it came.
+const SIGHT_BACK: f64 = 0.2;
+
 /// How far a bounce puts the projectile off the surface (the client's
 /// least push, 0.001 m).
 const BOUNCE_PUSH: f64 = 0.001;
@@ -61,7 +80,10 @@ pub struct ProjectileFlight {
     /// The downward speed gravity added so far, m/s.
     fall: f64,
     remaining: f64,
+    /// Seconds flown so far (its fuse included once it stuck).
     travelled: f64,
+    /// Metres flown so far, along its path ([`ProjectileBallistics::range`]).
+    flown: f64,
     last_tick: Option<u32>,
     stuck: Option<Stuck>,
     ended: bool,
@@ -158,6 +180,7 @@ impl ProjectileFlight {
             direction,
             fall: 0.0,
             travelled: 0.0,
+            flown: 0.0,
             last_tick: fired_at,
             stuck: None,
             ended: false,
@@ -248,7 +271,7 @@ impl ProjectileFlight {
         &mut self,
         tick: u32,
         targets: &[(u32, TargetPose)],
-        mut wall: impl FnMut(Vec3, Vec3, f64) -> Result<Option<WallHit>, IndexError>,
+        mut wall: impl MapRay,
     ) -> Result<FlightStep, IndexError> {
         let mut step = FlightStep::default();
         if self.ended {
@@ -264,21 +287,25 @@ impl ProjectileFlight {
             time = self.fly(time, targets, &mut wall, &mut step)?;
         }
         if self.stuck.is_some() && step.end.is_none() {
-            self.hold(time, targets, &mut step);
+            self.hold(time, targets, &mut wall, &mut step)?;
         }
         Ok(step)
     }
 
-    /// Fly up to `time` seconds; what is left of them once it stuck.
+    /// Fly up to `time` seconds; what is left of them once it stuck. It
+    /// ends where its lifetime or its range along its path runs out, a
+    /// sweep cut there in proportion, as the client cuts its step
+    /// (`0x7FF789C82C80`).
     fn fly(
         &mut self,
         time: f64,
         targets: &[(u32, TargetPose)],
-        wall: &mut impl FnMut(Vec3, Vec3, f64) -> Result<Option<WallHit>, IndexError>,
+        wall: &mut impl MapRay,
         step: &mut FlightStep,
     ) -> Result<f64, IndexError> {
         let duration = time.min(self.remaining);
         let gravity = self.ballistics.gravity;
+        let profile = self.ballistics.ray_profile;
         // A straight flight sweeps the whole duration at once (combat.py
         // `_fly`); an arc a chord of at most one tick at a time.
         let pieces = if gravity == 0.0 {
@@ -287,12 +314,26 @@ impl ProjectileFlight {
             (duration / TICK_PERIOD.as_secs_f64()).ceil().max(1.0) as u32
         };
         let piece = duration / f64::from(pieces);
-        let mut flown = 0.0;
+        let mut spent = 0.0;
         for _ in 0..pieces {
             // A bounce flies the rest of the piece from where it bounced.
             let mut left = piece;
             for _ in 0..=MAX_BOUNCES_A_PIECE {
-                let (direction, reach) = self.chord(left);
+                let (direction, mut reach) = self.chord(left);
+                let mut span = left;
+                let rest = self
+                    .ballistics
+                    .range
+                    .map_or(f64::INFINITY, |range| (range - self.flown).max(0.0));
+                let out_of_range = reach >= rest;
+                if out_of_range {
+                    span = if reach > 0.0 {
+                        left * rest / reach
+                    } else {
+                        0.0
+                    };
+                    reach = rest;
+                }
                 let hit = if reach > 0.0 {
                     closest(
                         self.position,
@@ -300,7 +341,7 @@ impl ProjectileFlight {
                         reach,
                         self.ballistics.radius,
                         if self.passes_bodies { &[] } else { targets },
-                        wall,
+                        |origin, direction, reach| wall(origin, direction, reach, profile),
                     )?
                 } else {
                     None
@@ -309,18 +350,23 @@ impl ProjectileFlight {
                     Some((distance, _)) if gravity == 0.0 => {
                         (distance, distance / (self.speed * self.speed_scale))
                     }
-                    Some((distance, _)) => (distance, left * distance / reach),
-                    None => (reach, left),
+                    Some((distance, _)) => (distance, span * distance / reach),
+                    None => (reach, span),
                 };
                 for (position, direction) in self.position.iter_mut().zip(direction) {
                     *position += direction * distance;
                 }
                 self.fall += gravity * seconds;
                 self.travelled += seconds;
+                self.flown += distance;
                 self.remaining -= seconds;
-                flown += seconds;
+                spent += seconds;
                 left -= seconds;
                 match hit {
+                    None if out_of_range => {
+                        step.end = Some(self.finish());
+                        return Ok(0.0);
+                    }
                     None => break,
                     Some((_, Met::Surface(normal))) if self.bounce(normal, direction) => {}
                     Some((distance, met)) => {
@@ -328,8 +374,8 @@ impl ProjectileFlight {
                             Met::Body(entity, entered) => Some((entity, entered)),
                             Met::Surface(_) => None,
                         };
-                        self.hit(distance, struck, targets, step);
-                        return Ok((time - flown).max(0.0));
+                        self.hit(distance, struck, targets, wall, step)?;
+                        return Ok((time - spent).max(0.0));
                     }
                 }
                 if left <= 0.0 {
@@ -404,18 +450,19 @@ impl ProjectileFlight {
     /// What it hit `distance` into this sweep (the body and how it entered
     /// it, [`TargetPose::entry`]), now at its position: the direct hit's
     /// damage to a struck body, then it sticks, or it ends with its
-    /// explosion. The direct hit falls off with the distance flown, its
-    /// seconds in flight times its speed (leafall903/ORPHEUS (MIT)
-    /// `combat.py` `_fly`, commit b3c5138: Doomfist's 6 damage is 3.9 at
-    /// 23 m and 1.8 at 35 m), and scores its critical multiplier on the
-    /// head.
+    /// explosion. The direct hit falls off with the distance flown along
+    /// its path (leafall903/ORPHEUS (MIT) `combat.py` `_fly`, commit
+    /// b3c5138: Doomfist's 6 damage is 3.9 at 23 m and 1.8 at 35 m; there
+    /// the seconds flown times the speed, which an arc or a slowed flight
+    /// overstates), and scores its critical multiplier on the head.
     fn hit(
         &mut self,
         distance: f64,
         target: Option<Struck>,
         targets: &[(u32, TargetPose)],
+        wall: &mut impl MapRay,
         step: &mut FlightStep,
-    ) {
+    ) -> Result<(), IndexError> {
         let entity = target.map(|(entity, _)| entity);
         if let (Some((entity, entered)), Some(direct)) = (
             target,
@@ -426,7 +473,7 @@ impl ProjectileFlight {
             step.impacts.push(Impact {
                 entity,
                 distance,
-                damage: direct.damage_at(self.travelled * self.ballistics.speed, head),
+                damage: direct.damage_at(self.flown, head),
                 critical: head && direct.critical > 1.0,
                 loadout: direct.loadout,
                 tags: direct.tags,
@@ -434,8 +481,7 @@ impl ProjectileFlight {
             });
         }
         let Some(fuse) = self.ballistics.fuse else {
-            self.explode(targets, step);
-            return;
+            return self.explode(targets, wall, step);
         };
         let offset = entity
             .and_then(|entity| pose_of(targets, entity))
@@ -447,13 +493,20 @@ impl ProjectileFlight {
             offset,
             fuse,
         });
+        Ok(())
     }
 
     /// `time` seconds stuck: on the body where it still is a target, until
     /// the fuse ends.
-    fn hold(&mut self, time: f64, targets: &[(u32, TargetPose)], step: &mut FlightStep) {
+    fn hold(
+        &mut self,
+        time: f64,
+        targets: &[(u32, TargetPose)],
+        wall: &mut impl MapRay,
+        step: &mut FlightStep,
+    ) -> Result<(), IndexError> {
         let Some(stuck) = &mut self.stuck else {
-            return;
+            return Ok(());
         };
         if let Some(pose) = stuck.entity.and_then(|entity| pose_of(targets, entity)) {
             self.position = std::array::from_fn(|axis| pose.feet[axis] + stuck.offset[axis]);
@@ -461,17 +514,24 @@ impl ProjectileFlight {
         if time < stuck.fuse {
             stuck.fuse -= time;
             self.travelled += time;
-            return;
+            return Ok(());
         }
         self.travelled += stuck.fuse;
         stuck.fuse = 0.0;
-        self.explode(targets, step);
+        self.explode(targets, wall, step)
     }
 
     /// The explosion at its position (combat.py `_fly`: every target's
     /// distance to the capsule, here to its shapes when it has them, scales
-    /// the damage), and the end.
-    fn explode(&mut self, targets: &[(u32, TargetPose)], step: &mut FlightStep) {
+    /// the damage), and the end. A body the explosion can't see takes
+    /// nothing ([`Self::in_sight`]; beyond combat.py, which hurt bodies
+    /// behind walls).
+    fn explode(
+        &mut self,
+        targets: &[(u32, TargetPose)],
+        wall: &mut impl MapRay,
+        step: &mut FlightStep,
+    ) -> Result<(), IndexError> {
         self.exploded = true;
         if let Some(blast) = self
             .ballistics
@@ -483,7 +543,7 @@ impl ProjectileFlight {
                 let entity = *entity;
                 let distance = pose.surface_distance(self.position);
                 let damage = blast.hit.amount * blast.multiplier(distance);
-                if damage > 0.0 {
+                if damage > 0.0 && self.in_sight(pose, wall)? {
                     step.impacts.push(Impact {
                         entity,
                         distance,
@@ -497,6 +557,7 @@ impl ProjectileFlight {
             }
         }
         step.end = Some(self.finish());
+        Ok(())
     }
 
     fn finish(&mut self) -> FlightEnd {
@@ -509,22 +570,26 @@ impl ProjectileFlight {
         }
     }
 
-    /// Its explosion on its shooter's own body at `own`, once it exploded:
-    /// the blast's damage at the body's distance times the explosion's
-    /// self-damage scale, and its push: `m_E33EFEE1` along the straight line
-    /// from the explosion to the body's centre (half its height above the
-    /// feet; along the projectile's flight when they meet), plus
-    /// `m_10399AE7` upward. The line is in 3D, not in the ground plane, as
-    /// the volleys' data says: Junkrat's Concussion Mine (`096A`) pushes
-    /// 15 m/s with no upward speed at all, yet throws him up when it bursts
-    /// under him; so a Helix Rocket at his feet sends him up at 4 + 6 m/s
-    /// (assumption: which point of the body the client aims the line at
-    /// isn't known). Beyond Python, which never hurt or pushed the shooter:
-    /// every explosion reaches its shooter (assumption; which of its flags
-    /// `m_43D015B3`, `m_7F5CC8D3`, `m_B15688ED`, `m_21CEF653`, `m_EEB99E41`
-    /// would spare him isn't known, and Helix Rockets set all five).
-    pub fn own_blast(&self, own: &TargetPose) -> Option<OwnBlast> {
-        let blast = self.ballistics.blast.as_ref().filter(|_| self.exploded)?;
+    /// Its explosion on its shooter's own body at `own`, once it exploded
+    /// and when it sees him ([`Self::in_sight`]): the blast's damage at the
+    /// body's distance times the explosion's self-damage scale, and its
+    /// push ([`Self::push_at`]) times the explosion's self-push scale
+    /// ([`lucy_script::weapons::Blast::self_knockback`]; none without one),
+    /// only while the body is inside the explosion's damage rings, the
+    /// outer radius left out: the client's own push (`0x7FF789A433F0`)
+    /// gives nothing past the last ring whose radius the distance is below.
+    /// Assumption: the client measures that distance from the sight rays'
+    /// origin to the body's axis less its radius; the server measures it
+    /// as it does the damage's. Beyond Python, which never hurt or pushed
+    /// the shooter.
+    pub fn own_blast(
+        &self,
+        own: &TargetPose,
+        mut wall: impl MapRay,
+    ) -> Result<Option<OwnBlast>, IndexError> {
+        let Some(blast) = self.ballistics.blast.as_ref().filter(|_| self.exploded) else {
+            return Ok(None);
+        };
         let distance = own.surface_distance(self.position);
         let amount = if blast.aura.is_some() {
             0.0
@@ -532,36 +597,126 @@ impl ProjectileFlight {
             blast.hit.amount.max(0.0)
         };
         let damage = amount * blast.multiplier(distance) * blast.self_damage;
-        let knockback = self.blast_push(own);
-        (damage > 0.0 || knockback.is_some()).then_some(OwnBlast {
+        let inside = blast.rings.iter().any(|&(radius, _)| distance < radius);
+        let knockback = inside
+            .then(|| self.push_at(own, blast.self_knockback))
+            .flatten();
+        if !(damage > 0.0 || knockback.is_some()) || !self.in_sight(own, &mut wall)? {
+            return Ok(None);
+        }
+        Ok(Some(OwnBlast {
             distance,
             damage,
             loadout: blast.hit.loadout,
             tags: blast.hit.tags,
             direction: self.blast_line(own),
             knockback,
-        })
+        }))
     }
 
     /// The aura its explosion puts on a body at `pose` (Biotic Grenade's
     /// [`lucy_script::weapons::Blast::aura`]), once it exploded: when the
-    /// body is within its rings.
-    pub fn blast_aura(&self, pose: &TargetPose) -> Option<u64> {
-        let blast = self.ballistics.blast.as_ref().filter(|_| self.exploded)?;
-        let aura = blast.aura?;
-        (blast.multiplier(pose.surface_distance(self.position)) > 0.0).then_some(aura)
+    /// body is within its rings and in its sight ([`Self::in_sight`]).
+    pub fn blast_aura(
+        &self,
+        pose: &TargetPose,
+        mut wall: impl MapRay,
+    ) -> Result<Option<u64>, IndexError> {
+        let Some((blast, aura)) = self
+            .ballistics
+            .blast
+            .as_ref()
+            .filter(|_| self.exploded)
+            .and_then(|blast| Some((blast, blast.aura?)))
+        else {
+            return Ok(None);
+        };
+        let reached = blast.multiplier(pose.surface_distance(self.position)) > 0.0
+            && self.in_sight(pose, &mut wall)?;
+        Ok(reached.then_some(aura))
     }
 
-    /// Its explosion's push on a body at `pose`, once it exploded, as on its
-    /// shooter's ([`Self::own_blast`]): `m_E33EFEE1` along the line from the
-    /// explosion to the body's centre, plus `m_10399AE7` upward, each by
-    /// the knockback rings at the body's distance.
-    pub fn blast_push(&self, pose: &TargetPose) -> Option<Vec3> {
+    /// Its explosion's push on a body at `pose`, once it exploded and when
+    /// it sees the body ([`Self::in_sight`]): [`Self::push_at`], whole.
+    pub fn blast_push(
+        &self,
+        pose: &TargetPose,
+        mut wall: impl MapRay,
+    ) -> Result<Option<Vec3>, IndexError> {
+        let Some(push) = self.push_at(pose, 1.0) else {
+            return Ok(None);
+        };
+        Ok(self.in_sight(pose, &mut wall)?.then_some(push))
+    }
+
+    /// Its explosion's push on a body at `pose` (none before it exploded),
+    /// times `scale` (the explosion's self-push scale for its shooter, 1
+    /// for others): the client's formula ([`lucy_script::weapons::Knockback::push`],
+    /// `0x7FF789C7B3C0`) along the line from the explosion to the body's
+    /// centre (half its height above the feet; along the projectile's
+    /// flight when they meet), at the body's distance.
+    fn push_at(&self, pose: &TargetPose, scale: f64) -> Option<Vec3> {
         let blast = self.ballistics.blast.as_ref().filter(|_| self.exploded)?;
+        if scale <= 0.0 {
+            return None;
+        }
         let distance = pose.surface_distance(self.position);
-        let (away, upward) = blast.knockback.as_ref()?.at(distance)?;
-        let [x, y, z] = self.blast_line(pose);
-        Some([away * x, away * y + upward, away * z])
+        blast
+            .knockback
+            .as_ref()?
+            .push(self.blast_line(pose), distance, scale)
+    }
+
+    /// Whether its explosion sees a body at `pose`, as the client's own push
+    /// tests its shooter (`0x7FF789A433F0`): a ray of the explosion's sight
+    /// profile ([`lucy_script::weapons::Blast::sight`]) from 0.2 m back along
+    /// its flight ([`SIGHT_BACK`]) to the body's centre (half its height
+    /// above the feet) meets no map collision, or failing that one to the
+    /// point of the body's axis at the origin's height (between its feet and
+    /// its top). An explosion without the test sees every body.
+    /// Assumption: the server's damage, other bodies' pushes and auras take
+    /// the same test as that push (no client code deals them; walls stopping
+    /// explosions is the public rule).
+    fn in_sight(&self, pose: &TargetPose, wall: &mut impl MapRay) -> Result<bool, IndexError> {
+        let Some(profile) = self.ballistics.blast.as_ref().and_then(|blast| blast.sight) else {
+            return Ok(true);
+        };
+        let heading = self.heading();
+        let origin: Vec3 =
+            std::array::from_fn(|axis| self.position[axis] - SIGHT_BACK * heading[axis]);
+        let [x, y, z] = pose.feet;
+        let centre = [x, y + pose.height / 2.0, z];
+        let level = [x, origin[1].clamp(y, y + pose.height), z];
+        for point in [centre, level] {
+            let line: Vec3 = std::array::from_fn(|axis| point[axis] - origin[axis]);
+            let reach = dot(line, line).sqrt();
+            if reach < 1e-6 {
+                return Ok(true);
+            }
+            let direction = line.map(|part| part / reach);
+            if wall(origin, direction, reach, Some(profile))?
+                .is_none_or(|hit| hit.distance >= reach)
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// The unit direction it flies in now: its launch's or its last
+    /// bounce's, bent by the speed gravity added (the client's sight origin
+    /// steps back along its velocity, `0x7FF789A433F0`).
+    fn heading(&self) -> Vec3 {
+        let mut velocity = self
+            .direction
+            .map(|part| part * self.speed * self.speed_scale);
+        velocity[1] -= self.fall;
+        let length = dot(velocity, velocity).sqrt();
+        if length > 0.0 {
+            velocity.map(|part| part / length)
+        } else {
+            self.direction
+        }
     }
 
     /// The ability its explosion is (its blast's health change's loadout).
@@ -603,7 +758,7 @@ fn closest(
     reach: f64,
     size: f64,
     targets: &[(u32, TargetPose)],
-    wall: &mut impl FnMut(Vec3, Vec3, f64) -> Result<Option<WallHit>, IndexError>,
+    mut wall: impl FnMut(Vec3, Vec3, f64) -> Result<Option<WallHit>, IndexError>,
 ) -> Result<Option<(f64, Met)>, IndexError> {
     let mut closest = None;
     for (entity, target) in targets {
@@ -639,7 +794,8 @@ mod tests {
     use super::*;
     use lucy_physics::collision::index::{SceneTriangle, TriangleIndex};
     use lucy_script::weapons::{
-        AllyHits, Blast, DamageFalloff, DamageTags, HitDefinition, Knockback, STICK_FUSE,
+        AllyHits, BLAST_SIGHT_PROFILE, Blast, DamageFalloff, DamageTags, HitDefinition, Knockback,
+        STICK_FUSE,
     };
 
     const LOADOUT: u64 = 0x0b90_0000_0000_008e;
@@ -662,6 +818,7 @@ mod tests {
         ProjectileBallistics {
             speed: 50.0,
             lifetime: 2.0,
+            range: None,
             definition: Some(0x0400_0000_0000_072c),
             direct: Some(hit(40.0)),
             blast: Some(Blast {
@@ -669,6 +826,8 @@ mod tests {
                 rings: vec![(1.0, 1.0), (3.0, 0.5)],
                 self_damage: 0.5,
                 aura: None,
+                sight: Some(BLAST_SIGHT_PROFILE),
+                self_knockback: 1.0,
                 knockback: Some(Knockback {
                     away: 4.0,
                     upward: 6.0,
@@ -693,6 +852,7 @@ mod tests {
         ProjectileBallistics {
             speed: 15.0,
             lifetime: 5.0,
+            range: None,
             definition: Some(0x0400_0000_0000_0045),
             direct: Some(hit(5.0)),
             blast: Some(Blast {
@@ -700,6 +860,8 @@ mod tests {
                 rings: vec![(2.0, 1.0), (4.0, 0.2)],
                 self_damage: 0.0,
                 aura: None,
+                sight: Some(BLAST_SIGHT_PROFILE),
+                self_knockback: 1.0,
                 knockback: None,
             }),
             radius: 0.0,
@@ -722,7 +884,7 @@ mod tests {
         }
     }
 
-    fn no_wall(_: Vec3, _: Vec3, _: f64) -> Result<Option<WallHit>, IndexError> {
+    fn no_wall(_: Vec3, _: Vec3, _: f64, _: Option<u64>) -> Result<Option<WallHit>, IndexError> {
         Ok(None)
     }
 
@@ -768,10 +930,8 @@ mod tests {
         .unwrap()
     }
 
-    fn cast(
-        world: &TriangleIndex,
-    ) -> impl FnMut(Vec3, Vec3, f64) -> Result<Option<WallHit>, IndexError> + '_ {
-        |origin, direction, reach| {
+    fn cast(world: &TriangleIndex) -> impl MapRay + '_ {
+        |origin, direction, reach, _| {
             world.cast_ray(origin, direction, reach, 0x18).map(|hit| {
                 hit.map(|hit| WallHit {
                     distance: hit.distance,
@@ -796,7 +956,7 @@ mod tests {
         );
         assert_eq!(
             flight
-                .advance(1000, &targets, |_, _, _| panic!("duplicate tick"))
+                .advance(1000, &targets, |_, _, _, _| panic!("duplicate tick"))
                 .unwrap(),
             FlightStep::default()
         );
@@ -812,7 +972,7 @@ mod tests {
         );
         assert_eq!(
             flight
-                .advance(1005, &targets, |_, _, _| panic!("already ended"))
+                .advance(1005, &targets, |_, _, _, _| panic!("already ended"))
                 .unwrap(),
             FlightStep::default()
         );
@@ -857,9 +1017,9 @@ mod tests {
             .advance(1004, &[(1, target(0.0, 2.8))], cast(&world))
             .unwrap();
         // The sphere would meet the capsule at 2.1, the wall stops its
-        // centre at 2.0: only the splash reaches the body.
+        // centre at 2.0, and the wall hides the body from the explosion.
         assert_eq!(step.end.as_ref().unwrap().point, [0.0, 1.0, 2.0]);
-        assert_eq!(damage(&step), [(1, 80.0)]);
+        assert!(step.impacts.is_empty(), "{step:?}");
 
         // Through the body on its axis to the wall 1 m behind it; the
         // explosion there still reaches the body, 0.5 m from its surface.
@@ -874,17 +1034,23 @@ mod tests {
         assert_eq!(damage(&step), [(1, 80.0)]);
     }
 
+    /// The wall wins over the body behind it, and stops the explosion: the
+    /// body beyond it takes nothing (where Python's splash reached it for
+    /// 70), the one beside the burst on this side its 80.
     #[test]
     fn walls_win_closer_impact_and_last_partial_tick_is_swept() {
         let world = wall_at(1.0);
         let mut flight =
             ProjectileFlight::new(helix(), [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], Some(1000)).unwrap();
         let step = flight
-            .advance(1002, &[(1, target(0.0, 3.0))], cast(&world))
+            .advance(
+                1002,
+                &[(1, target(0.0, 3.0)), (2, target(1.2, 0.2))],
+                cast(&world),
+            )
             .unwrap();
         assert_eq!(step.end.as_ref().unwrap().point, [0.0, 1.0, 1.0]);
-        // The splash reaches the capsule beyond the wall.
-        assert_eq!(damage(&step), [(1, 70.0)]);
+        assert_eq!(damage(&step), [(2, 80.0)]);
         let short = ProjectileBallistics {
             lifetime: 0.01,
             ..helix()
@@ -919,6 +1085,7 @@ mod tests {
         let orb = |bounce| ProjectileBallistics {
             speed: 20.0,
             lifetime: 7.0,
+            range: None,
             definition: Some(0x0400_0000_0000_1e61),
             direct: None,
             blast: None,
@@ -976,48 +1143,66 @@ mod tests {
     }
 
     /// A Helix Rocket fired straight down from the eye bursts on the floor
-    /// at its shooter's feet: he takes half its 80 and goes up at 4 m/s
-    /// (along the line to his centre, straight up) plus 6 m/s. Fired level
-    /// at a wall 1 m ahead, it pushes him back from the wall and down along
-    /// the line from the burst to his centre, plus up, by the knockback
-    /// rings at his distance. A rocket that runs out of time doesn't explode
-    /// and does nothing to him.
+    /// at its shooter's feet: he takes half its 80 and goes up at the line's
+    /// vertical part × 6 m/s (the client's push, `Knockback::push`), times
+    /// the explosion's self-push scale (Pharah's 1.875; without the flag,
+    /// none, the damage all the same). Fired level at a
+    /// wall 1 m ahead, it pushes him back from the wall and down along the
+    /// line from the burst to his centre, plus up, by the knockback rings
+    /// at his distance; a body behind that wall it doesn't reach. A rocket
+    /// that runs out of time doesn't explode and does nothing to him.
     #[test]
     fn a_helix_hurts_and_pushes_its_own_shooter() {
         let own = target(0.0, 0.0);
-        let mut flight =
-            ProjectileFlight::new(helix(), [0.0, 1.55, 0.0], [0.0, -1.0, 0.0], Some(1000)).unwrap();
-        let step = flight.advance(1002, &[], cast(&floor())).unwrap();
-        assert!(step.end.unwrap().point[1].abs() < 1e-9);
-        let blast = flight.own_blast(&own).unwrap();
+        let at_feet = |self_knockback| {
+            let mut rocket = helix();
+            rocket.blast.as_mut().unwrap().self_knockback = self_knockback;
+            let mut flight =
+                ProjectileFlight::new(rocket, [0.0, 1.55, 0.0], [0.0, -1.0, 0.0], Some(1000))
+                    .unwrap();
+            let step = flight.advance(1002, &[], cast(&floor())).unwrap();
+            assert!(step.end.unwrap().point[1].abs() < 1e-9);
+            flight.own_blast(&own, cast(&floor())).unwrap().unwrap()
+        };
+        let blast = at_feet(1.0);
         assert!(blast.distance < 1e-9);
+        // Straight up the line's vertical part × 6 (`m_10399AE7`), times the
+        // self-push scale; the push away has no ground part there.
         assert_eq!(
             (blast.damage, blast.loadout, blast.knockback),
-            (40.0, Some(LOADOUT), Some([0.0, 10.0, 0.0]))
+            (40.0, Some(LOADOUT), Some([0.0, 6.0, 0.0]))
         );
+        assert_eq!(at_feet(1.875).knockback, Some([0.0, 11.25, 0.0]));
+        let unpushed = at_feet(0.0);
+        assert_eq!((unpushed.damage, unpushed.knockback), (40.0, None));
 
+        let wall = wall_at(1.0);
         let mut flight =
             ProjectileFlight::new(helix(), [0.0, 1.55, 0.0], [0.0, 0.0, 1.0], Some(1000)).unwrap();
-        let step = flight.advance(1002, &[], cast(&wall_at(1.0))).unwrap();
+        let step = flight.advance(1002, &[], cast(&wall)).unwrap();
         assert_eq!(step.end.unwrap().point, [0.0, 1.55, 1.0]);
-        let blast = flight.own_blast(&own).unwrap();
+        let blast = flight.own_blast(&own, cast(&wall)).unwrap().unwrap();
         // From the capsule's top end, 1.5 m up, less its radius.
         assert!((blast.distance - (1.0f64.hypot(0.05) - 0.5)).abs() < 1e-12);
         assert_eq!(blast.damage, 40.0);
-        let (away, up) = helix()
+        // The line from the burst (1.55 m up, 1 m ahead) to his centre (1 m
+        // up): pushed back along the ground; its downward part is floored at
+        // `m_583C208B` (0) while the upward ring holds.
+        let length = 0.55f64.hypot(1.0);
+        let line = [0.0, -0.55 / length, -1.0 / length];
+        let expected = helix()
             .blast
             .unwrap()
             .knockback
             .unwrap()
-            .at(blast.distance)
-            .unwrap();
-        assert!(away < 4.0 && up < 6.0);
-        // The line from the burst (1.55 m up, 1 m ahead) to his centre (1 m up).
-        let length = 0.55f64.hypot(1.0);
-        let [_, y, z] = blast.knockback.unwrap();
-        assert_eq!(blast.knockback.unwrap()[0], 0.0);
-        assert!((y - (up - away * 0.55 / length)).abs() < 1e-12);
-        assert!((z + away / length).abs() < 1e-12);
+            .push(line, blast.distance, 1.0);
+        assert_eq!(blast.knockback, expected);
+        let [x, y, z] = expected.unwrap();
+        assert!(x == 0.0 && y == 0.0 && z < 0.0);
+        assert_eq!(
+            flight.own_blast(&target(0.0, 1.5), cast(&wall)).unwrap(),
+            None
+        );
 
         let short = ProjectileBallistics {
             lifetime: 0.01,
@@ -1026,7 +1211,7 @@ mod tests {
         let mut flight =
             ProjectileFlight::new(short, [0.0, 1.55, 0.0], [0.0, 0.0, 1.0], None).unwrap();
         assert!(flight.advance(1000, &[], no_wall).unwrap().end.is_some());
-        assert_eq!(flight.own_blast(&own), None);
+        assert_eq!(flight.own_blast(&own, no_wall).unwrap(), None);
     }
 
     /// Fired level from 1.5 m at 20 m/s under 9.8 m/s² (Junkrat's and
@@ -1194,7 +1379,11 @@ mod tests {
                 .advance(
                     tick,
                     &[(1, bot.clone()), (2, behind.clone()), (3, near)],
-                    |_, _, _| panic!("a stuck projectile sweeps nothing"),
+                    |_, _, _, profile| {
+                        // Only its explosion's sight rays.
+                        assert_eq!(profile, Some(BLAST_SIGHT_PROFILE));
+                        Ok(None)
+                    },
                 )
                 .unwrap();
             if step.end.is_some() {
@@ -1215,8 +1404,8 @@ mod tests {
     }
 
     /// It sticks to a surface too, damages nothing there, and its explosion
-    /// reaches a body behind the wall; a bomb that hits nothing in its
-    /// lifetime ends without one.
+    /// reaches a body on its side of the wall, not the one behind it; a
+    /// bomb that hits nothing in its lifetime ends without one.
     #[test]
     fn a_sticking_projectile_holds_on_a_surface_and_a_miss_ends_quietly() {
         let world = wall_at(1.0);
@@ -1228,15 +1417,12 @@ mod tests {
         )
         .unwrap();
         let bot = (1, target(0.0, 3.0));
-        let mut steps = (1000..1200).map(|tick| {
-            flight
-                .advance(tick, std::slice::from_ref(&bot), cast(&world))
-                .unwrap()
-        });
+        let bots = [bot.clone(), (2, target(1.5, 0.0))];
+        let mut steps = (1000..1200).map(|tick| flight.advance(tick, &bots, cast(&world)).unwrap());
         let step = steps
             .find(|step| step.end.is_some() || !step.impacts.is_empty())
             .unwrap();
-        assert_eq!(damage(&step), [(1, 350.0)]);
+        assert_eq!(damage(&step), [(2, 350.0)]);
         // It met the wall after 1/15 s, 1/15 m lower (the chord within 1 mm).
         let end = step.end.unwrap();
         let flight = 1.0 / 15.0;
@@ -1270,7 +1456,8 @@ mod tests {
     fn a_direct_hit_falls_off_with_the_distance_flown() {
         let hand_cannon = ProjectileBallistics {
             speed: 80.0,
-            lifetime: 500.0 / 80.0,
+            lifetime: 10.0,
+            range: Some(500.0),
             definition: None,
             direct: Some(HitDefinition {
                 falloff: Some(DamageFalloff {
@@ -1306,5 +1493,41 @@ mod tests {
             };
             assert!((damage - expected).abs() < 0.02, "{ahead} m: {damage}");
         }
+    }
+
+    /// A volley's range ends its flight along its path (the client's step
+    /// `0x7FF789C82C80`): 10 m at 20 m/s is half a second flying straight,
+    /// longer for a projectile its graphs slow (0.275, a Biotic Orb's) and
+    /// for an arc, whose path is longer than the line to where it ends.
+    #[test]
+    fn a_range_ends_the_flight_along_its_path() {
+        let ranged = |gravity, scale: f64, up: f64| {
+            let ballistics = ProjectileBallistics {
+                speed: 20.0,
+                lifetime: 5.0,
+                range: Some(10.0),
+                gravity,
+                ..helix()
+            };
+            let direction = [0.0, up.sin(), up.cos()];
+            let mut flight =
+                ProjectileFlight::new(ballistics, [0.0; 3], direction, Some(1000)).unwrap();
+            flight.set_speed_scale(scale);
+            let end = (1001..2000)
+                .find_map(|tick| flight.advance(tick, &[], no_wall).unwrap().end)
+                .unwrap();
+            (end, flight.flown)
+        };
+        let (straight, flown) = ranged(0.0, 1.0, 0.0);
+        assert!(!straight.exploded);
+        assert!((flown - 10.0).abs() < 1e-9 && (straight.point[2] - 10.0).abs() < 1e-9);
+        assert!((straight.travelled - 0.5).abs() < 1e-9);
+        let (slowed, _) = ranged(0.0, 0.275, 0.0);
+        assert!((slowed.point[2] - 10.0).abs() < 1e-9);
+        assert!((slowed.travelled - 0.5 / 0.275).abs() < 1e-9);
+        let (arc, flown) = ranged(9.8, 1.0, std::f64::consts::FRAC_PI_4);
+        assert!((flown - 10.0).abs() < 1e-9);
+        let line = arc.point.iter().map(|part| part * part).sum::<f64>().sqrt();
+        assert!(line < 10.0 && arc.travelled > 0.5, "{arc:?}");
     }
 }

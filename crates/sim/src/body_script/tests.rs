@@ -735,6 +735,8 @@ fn projectile_volleys_fly_leased_for_damage_alone_or_not_at_all() {
         "m_default":{"$":"STUConfigVarInt","m_value":1}});
     fields["m_55E8761C"] = json!({"$":"STU_3A858EF7",
         "m_47999E82":{"$":"STUConfigVarBool","m_value":1}});
+    fields["m_5EC1EB38"] = json!({"$":"STU_239B571E",
+        "m_22CE7F30":{"$":"STUConfigVarFloat","m_value":0.1}});
     let bomb = shoot(fields).expect("the arc flies");
     assert!(bomb.leased);
     assert_eq!(
@@ -742,6 +744,9 @@ fn projectile_volleys_fly_leased_for_damage_alone_or_not_at_all() {
         (30.0, Some(STICK_FUSE))
     );
     assert_eq!(bomb.ballistics.bound(), 2.0 + STICK_FUSE);
+    // Its launch lifts the flight, not the direction the record names.
+    assert_eq!(bomb.lift, f64::from(0.1f32));
+    assert_eq!(bomb.direction, aim_direction(&fire));
 
     let mut fields = fixture_projectile_fields(40.0);
     fields["m_projectileMotions"] = json!([{"$":"STU_7A5DFFF8"}]);
@@ -822,7 +827,9 @@ fn projectile_volleys_fly_leased_for_damage_alone_or_not_at_all() {
 /// volley whose launch spread grows (`STU_239B571E`, ramp 4, 1° to 3°)
 /// turns each hitscan shot by the client's circular spread at the shot's
 /// normalized spread (the first shot: 1/4, so 1.5°), seeded from the body,
-/// instance, state index and activation counter.
+/// instance, state index and activation counter. A volley of two pellets a
+/// shot without rings (Tracer's Pulse Pistols, `0016` rid12) fires a ray
+/// for each, pellet 1 seeded apart from pellet 0 (upstream `b26caa8b`).
 #[test]
 fn a_growing_spread_turns_each_shot_inside_its_cone() {
     use crate::weapon_spread::{direction, seed_base};
@@ -833,6 +840,7 @@ fn a_growing_spread_turns_each_shot_inside_its_cone() {
         false,
         json!({
             "m_A17BE89B":2,"m_numShotsPerSecond":9,"m_FEC435C6":180,
+            "m_numProjectilesPerShot":2,
             "m_6396149F":{"m_modifyHealth":{"m_amount":20.0}},
             "m_5EC1EB38":{"$":"STU_239B571E","m_AC20B1C1":4,"m_23C72C36":null,
                 "m_7F0FED02":1,"m_429A6C85":3}
@@ -857,20 +865,22 @@ fn a_growing_spread_turns_each_shot_inside_its_cone() {
     };
     runtime.advance(fire, &mover, BodyStep::Posed).unwrap();
     let shots = runtime.take_shots(Some(fire), &mover);
-    let [PosedShot::Hitscan(shot)] = shots.as_slice() else {
-        panic!("expected the opening shot")
+    let [PosedShot::Hitscan(first), PosedShot::Hitscan(second)] = shots.as_slice() else {
+        panic!("expected the opening shot's two pellets")
     };
     let aim = aim_direction(&fire);
     let cone = 1.5f64.to_radians() as f32;
     // The volley is node 2, state 1: the seed takes the state index
     // (upstream main `9ed63eed`).
-    assert_eq!(
-        shot.direction,
-        direction(aim, cone, seed_base(spawn.entity, 1, 1, 1), 0, 0, false)
-    );
-    assert_ne!(shot.direction, aim);
-    let dot: f64 = aim.iter().zip(shot.direction).map(|(a, b)| a * b).sum();
-    assert!(dot >= f64::from(cone).cos() - 1e-7);
+    let base = seed_base(spawn.entity, 1, 1, 1);
+    assert_eq!(first.direction, direction(aim, cone, base, 0, 0, false));
+    assert_eq!(second.direction, direction(aim, cone, base, 0, 1, false));
+    assert_ne!(first.direction, aim);
+    assert_ne!(first.direction, second.direction);
+    for shot in [first, second] {
+        let dot: f64 = aim.iter().zip(shot.direction).map(|(a, b)| a * b).sum();
+        assert!(dot >= f64::from(cone).cos() - 1e-7);
+    }
 }
 
 /// projectiles.py `fired`: a volley whose projectile leaves an entity names
@@ -2103,6 +2113,10 @@ fn the_charge_graph_charges_soldier_s_ultimate() {
     const ALLY: u32 = 0xa000_0401;
     /// Training Bot (`02ED.06C`), which `0B8B` rid45 admits.
     const TRAINING_BOT_TAG: u64 = 0x06c0_0000_0000_02ed;
+    /// Pool names: Adaptive Shield's (`1566` st6) and The Best Defense's
+    /// (`0DF3` st0, `249D`).
+    const ADAPTIVE_SHIELD: u64 = 0x0d80_0000_0000_3ebb;
+    const BEST_DEFENSE: u64 = 0x0d80_0000_0000_249d;
     let (mut runtime, spawn) = charge_body(SOLDIER, None);
     assert_eq!(
         runtime.snapshot().unwrap().variables.get(&2426),
@@ -2131,25 +2145,38 @@ fn the_charge_graph_charges_soldier_s_ultimate() {
         spawned: Vec::new(),
     };
     runtime.set_target_candidates(&[body(ENEMY, 1), body(ALLY, 0)]);
-    let deal = |runtime: &mut PlayerBodyRuntime, target, amount, heal| {
+    let deal = |runtime: &mut PlayerBodyRuntime, target, amount, heal, drained: &[(u64, f64)]| {
         runtime.set_victim_tags(target, BTreeSet::from([TRAINING_BOT_TAG]));
         let dealt = if heal {
             Dealt::Healing
         } else {
             Dealt::Damage { critical: false }
         };
-        let (message, parameters) = dealt_message(target, amount, &DamageTags::NONE, dealt);
+        let (message, parameters) =
+            dealt_message(target, amount, &DamageTags::NONE, dealt, drained);
         runtime
             .receive_message(spawn.entity, message, parameters)
             .unwrap();
     };
-    deal(&mut runtime, ENEMY, 100.0, false);
+    deal(&mut runtime, ENEMY, 100.0, false, &[]);
     assert_eq!(charge_of(&runtime), 110.0, "damage to an enemy");
-    deal(&mut runtime, ALLY, 100.0, false);
-    deal(&mut runtime, spawn.entity, 100.0, false);
-    assert_eq!(charge_of(&runtime), 110.0, "damage to an ally or himself");
-    deal(&mut runtime, ALLY, 50.0, true);
-    assert_eq!(charge_of(&runtime), 160.0, "healing done");
+    // What Wrecking Ball's Adaptive Shield (`3EBB.01C`) soaked charges
+    // nothing (rid72, rid73); another named pool's loss counts.
+    deal(
+        &mut runtime,
+        ENEMY,
+        100.0,
+        false,
+        &[(ADAPTIVE_SHIELD, 40.0)],
+    );
+    assert_eq!(charge_of(&runtime), 170.0, "damage less the shield's");
+    deal(&mut runtime, ENEMY, 100.0, false, &[(BEST_DEFENSE, 40.0)]);
+    assert_eq!(charge_of(&runtime), 270.0, "another pool's loss");
+    deal(&mut runtime, ALLY, 100.0, false, &[]);
+    deal(&mut runtime, spawn.entity, 100.0, false, &[]);
+    assert_eq!(charge_of(&runtime), 270.0, "damage to an ally or himself");
+    deal(&mut runtime, ALLY, 50.0, true, &[]);
+    assert_eq!(charge_of(&runtime), 320.0, "healing done");
     runtime
         .receive_message(
             spawn.entity,
@@ -2157,9 +2184,9 @@ fn the_charge_graph_charges_soldier_s_ultimate() {
             Variables::from([(0x2a, Value::Float(120.0))]),
         )
         .unwrap();
-    assert_eq!(charge_of(&runtime), 280.0, "a direct grant");
+    assert_eq!(charge_of(&runtime), 440.0, "a direct grant");
     // The meter stops at the cost.
-    deal(&mut runtime, ENEMY, 5000.0, false);
+    deal(&mut runtime, ENEMY, 5000.0, false, &[]);
     assert_eq!(charge_of(&runtime), 2310.0);
 }
 
@@ -2232,7 +2259,7 @@ fn doomfists_passive_grants_temporary_shields_that_drain() {
     let deal = |runtime: &mut PlayerBodyRuntime| {
         let tags: DamageTags = [SLAM].into_iter().collect();
         let (message, parameters) =
-            dealt_message(ENEMY, 50.0, &tags, Dealt::Damage { critical: false });
+            dealt_message(ENEMY, 50.0, &tags, Dealt::Damage { critical: false }, &[]);
         runtime
             .receive_message(spawn.entity, message, parameters)
             .unwrap();

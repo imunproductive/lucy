@@ -370,6 +370,12 @@ pub struct PosedProjectile {
     /// alone (combat.py `_shoot` flew one whatever the count). A bot's
     /// flies along `direction` alone (combat.py's NPC path).
     pub pellets: Vec<[f64; 3]>,
+    /// The launch's lift (`lucy_script::weapons::launch_lift`): the server's
+    /// flights leave along `direction` and `pellets` lifted by it
+    /// (`weapon_spread::lifted`); a shot record names them unlifted, as the
+    /// client lifts a record's direction itself (its remote launch
+    /// `0x7FF789A50D40` builds it with the same `0x7FF789C6EBA0`).
+    pub lift: f64,
 }
 
 #[derive(Clone, Copy)]
@@ -407,6 +413,9 @@ pub struct BotDamage {
 }
 
 pub struct BotHit {
+    /// The body that dealt it (its shooter's at the shot), whose ultimate it
+    /// charges if he still has it (`WorldDelivery::dealt`).
+    pub dealer: u32,
     pub notices: [Option<CombatNotice>; 2],
     pub health: EntityUpdate,
     pub bot: u32,
@@ -1430,10 +1439,16 @@ impl Combat {
         if !scene.ray_meets_bodies(ray_profile) {
             flight.pass_bodies();
         }
+        // The flight's sweeps meet the map by its volley's profile, its
+        // explosion's sight tests by the explosion's.
         let step = flight
-            .advance(context.tick, &candidates, |origin, direction, reach| {
-                scene.projectile_wall(origin, direction, reach, ray_profile)
-            })
+            .advance(
+                context.tick,
+                &candidates,
+                |origin, direction, reach, profile| {
+                    scene.projectile_wall(origin, direction, reach, profile)
+                },
+            )
             .map_err(io::Error::other)?;
         for impact in &step.impacts {
             if self.enemy_of(scene, shooter, impact.entity) {
@@ -1467,7 +1482,15 @@ impl Combat {
                     slot.target.body == *entity
                         && (free_for_all || slot.target.team != shooter.team)
                 });
-                if let Some(push) = flight.blast_push(pose).filter(|_| enemy) {
+                if !enemy {
+                    continue;
+                }
+                let push = flight
+                    .blast_push(pose, |origin, direction, reach, profile| {
+                        scene.projectile_wall(origin, direction, reach, profile)
+                    })
+                    .map_err(io::Error::other)?;
+                if let Some(push) = push {
                     self.player_pushes.push(PlayerPush {
                         body: *entity,
                         push,
@@ -1480,7 +1503,12 @@ impl Combat {
                 if !bot_hurtable(scene, *entity, shooter, free_for_all) {
                     continue;
                 }
-                if let Some(push) = flight.blast_push(pose) {
+                let push = flight
+                    .blast_push(pose, |origin, direction, reach, profile| {
+                        scene.projectile_wall(origin, direction, reach, profile)
+                    })
+                    .map_err(io::Error::other)?;
+                if let Some(push) = push {
                     scene.knock_bot(*entity, push, context.tick);
                 }
             }
@@ -1497,32 +1525,39 @@ impl Combat {
                 .iter()
                 .filter(|bot| !bot.dead)
                 .map(|bot| (bot.entity, scene.bot_target(bot)));
-            let reached: Vec<_> = living_players
-                .chain(living_bots)
-                .filter_map(|(body, pose)| {
-                    flight.blast_aura(&pose).map(|aura| AuraHit {
+            let mut reached = Vec::new();
+            for (body, pose) in living_players.chain(living_bots) {
+                let aura = flight
+                    .blast_aura(&pose, |origin, direction, reach, profile| {
+                        scene.projectile_wall(origin, direction, reach, profile)
+                    })
+                    .map_err(io::Error::other)?;
+                if let Some(aura) = aura {
+                    reached.push(AuraHit {
                         body,
                         aura,
                         instigator: shooter.source,
-                    })
-                })
-                .collect();
+                    });
+                }
+            }
             self.auras.extend(reached);
         }
         // A player's explosion also reaches his own body (beyond Python,
         // `ProjectileFlight::own_blast`): its damage, never a heal, comes
         // after the others' (no ultimate charge for it: `apply_player_hits`),
         // and its push goes back with the end for his mover.
-        let own = step
-            .end
-            .as_ref()
-            .filter(|_| !shooter.bot)
-            .and_then(|_| {
-                self.players
-                    .iter()
-                    .find(|slot| slot.target.body == shooter.source && !slot.target.dead)
-            })
-            .and_then(|slot| flight.own_blast(&slot.target.pose));
+        let own = match step.end.as_ref().filter(|_| !shooter.bot).and_then(|_| {
+            self.players
+                .iter()
+                .find(|slot| slot.target.body == shooter.source && !slot.target.dead)
+        }) {
+            Some(slot) => flight
+                .own_blast(&slot.target.pose, |origin, direction, reach, profile| {
+                    scene.projectile_wall(origin, direction, reach, profile)
+                })
+                .map_err(io::Error::other)?,
+            None => None,
+        };
         if let Some(own) = own.filter(|own| own.damage > 0.0) {
             let launched = flight.launch_modifiers();
             let (amount, tags) = self.dealt(
@@ -1572,7 +1607,7 @@ impl Combat {
         let flight = ProjectileFlight::new(
             projectile.ballistics,
             projectile.origin,
-            projectile.direction,
+            crate::weapon_spread::lifted(projectile.direction, projectile.lift),
             Some(tick),
         )?;
         self.next_rocket += 1;
@@ -1748,7 +1783,7 @@ impl Combat {
             .find(|(bot, _)| !bot.dead && bot.entity == impact.entity)?;
         if heal {
             let given = target.vitals.heal(amount);
-            let hit = (given > 0.0).then(|| healed_bot(bot, target, given, tags));
+            let hit = (given > 0.0).then(|| healed_bot(bot, target, given, tags, shooter.source));
             // A player healer's Healing Done counts what the pools took.
             if hit.is_some() && !shooter.bot {
                 self.count(shooter.source, vec![board.healing], given);
@@ -1804,6 +1839,7 @@ impl Combat {
             ],
             health,
             bot: bot.entity,
+            dealer: shooter.source,
             remaining: target.vitals.total(),
             healed: 0.0,
             tags,
@@ -1880,7 +1916,7 @@ impl Combat {
 
 /// A bot's heal of `given`: its new pools for every client, and no notice
 /// (combat.py `_heal` sends none).
-fn healed_bot(bot: &Bot, target: &mut Target, given: f64, tags: DamageTags) -> BotHit {
+fn healed_bot(bot: &Bot, target: &mut Target, given: f64, tags: DamageTags, dealer: u32) -> BotHit {
     let health = EntityUpdate {
         entity: bot.entity,
         operation: Some(Operation::Update(vec![target.vitals.component()])),
@@ -1891,6 +1927,7 @@ fn healed_bot(bot: &Bot, target: &mut Target, given: f64, tags: DamageTags) -> B
         notices: [None, None],
         health,
         bot: bot.entity,
+        dealer,
         remaining: target.vitals.total(),
         death: None,
         healed: given,
@@ -2266,11 +2303,13 @@ pub fn apply_player_hits(
             };
             world.dealt(
                 &scene.shared_graphs(),
+                hit.shooter.source,
                 hit.body,
                 victim_body,
                 damage.dealt,
                 &hit.tags,
                 dealt,
+                &damage.drained,
             );
             if let Some(source) = hit.source {
                 world.source_dealt(source, hit.body, damage.dealt, &hit.tags, dealt);
@@ -2445,18 +2484,18 @@ fn credit_healing(
     tags: &DamageTags,
     source: Option<u32>,
 ) {
-    if let Some(healer) = player_of(players, healer).filter(|_| healed > 0.0) {
-        players[healer]
-            .stats
-            .add(scene.board_stats().healing, healed);
-        if let Some(world) = players[healer].world.as_deref_mut() {
+    if let Some(slot) = player_of(players, healer).filter(|_| healed > 0.0) {
+        players[slot].stats.add(scene.board_stats().healing, healed);
+        if let Some(world) = players[slot].world.as_deref_mut() {
             world.dealt(
                 &scene.shared_graphs(),
+                healer,
                 target,
                 target_body,
                 healed,
                 tags,
                 Dealt::Healing,
+                &[],
             );
             if let Some(source) = source {
                 world.source_dealt(source, target, healed, tags, Dealt::Healing);

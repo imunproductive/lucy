@@ -728,6 +728,7 @@ mod tests {
                 50.0,
                 &lucy_script::weapons::DamageTags::NONE,
                 dealt,
+                &[],
             );
             spawned.receive_message(&GameMessage {
                 sender: ORB,

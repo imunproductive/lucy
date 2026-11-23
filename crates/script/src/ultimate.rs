@@ -19,10 +19,17 @@ use crate::{
 pub const ULT_CHARGE: u32 = 342;
 pub const ULT_COST: u32 = 338;
 /// `0012.025`: the body dealt damage: the amount (`0013`), the body hit
-/// (`0015`), the hit's tags (`003D`) and whether it was critical (`0095`).
-/// `0B8B` rid0 charges it; `01C7` rid1 plays the hit's sound for it (rid40
-/// on `0095`: the critical effects, rid100/rid0/rid99 the others).
+/// (`0015`), the hit's tags (`003D`), whether it was critical (`0095`) and
+/// what it took from the body's named pools (`0624`). `0B8B` rid0 charges
+/// it; rid72 folds `0624` and rid73 takes what the pool `3EBB.01C` (Wrecking
+/// Ball's Adaptive Shield, `1566` st6) lost off the amount, so damage that
+/// shield soaks charges nothing. `01C7` rid1 plays the hit's sound for it
+/// (rid40 on `0095`: the critical effects, rid100/rid0/rid99 the others).
 pub const DAMAGE_DEALT: u64 = 0x0240_0000_0000_0012;
+/// `0624`'s item keys, as `0B8B` rid72 reads them: the pool's name
+/// (`3EB8`, an identifier) and what it lost (`01F3`).
+const DRAIN_POOL: i64 = 0x3eb8;
+const DRAIN_AMOUNT: i64 = 0x01f3;
 /// `0044.025`: the body healed another: the amount (`0040`), the body
 /// healed (`003F`) and its kind (`0041`). `0B8B` rid31 charges it.
 pub const HEALING_DONE: u64 = 0x0240_0000_0000_0044;
@@ -52,28 +59,42 @@ pub enum Dealt {
 }
 
 /// The message the body takes for `amount` it dealt to `target`: damage
-/// with the hit's tags and whether it was critical, or healing whose kind
-/// is the heal's tags (assumption: `0B8B` leaves out kinds `0292` and
-/// `025A`, and `01C7` tests `04AB`, all identifiers a health change's tags
-/// hold). `01C7` also reads a `0724` with `0012.025` (#2101, which of its
-/// hit sounds plays); what retail sent in it is not known, so it isn't
-/// sent.
+/// with the hit's tags, whether it was critical and what it took from the
+/// target's named pools (`drained`, by name, in order:
+/// `crate::vitals::Damage::drained`), or healing whose kind is the heal's
+/// tags (assumption: `0B8B` leaves out kinds `0292` and `025A`, and `01C7`
+/// tests `04AB`, all identifiers a health change's tags hold). `01C7` also
+/// reads a `0724` with `0012.025` (#2101, which of its hit sounds plays);
+/// what retail sent in it is not known, so it isn't sent.
 pub fn dealt_message(
     target: u32,
     amount: f64,
     tags: &DamageTags,
     dealt: Dealt,
+    drained: &[(u64, f64)],
 ) -> (u64, Variables) {
     match dealt {
-        Dealt::Damage { critical } => (
-            DAMAGE_DEALT,
-            Variables::from([
-                (0x13, Value::Float(amount)),
-                (0x15, Value::Entity(target)),
-                (0x3d, tags.to_value()),
-                (0x95, Value::Bool(critical)),
-            ]),
-        ),
+        Dealt::Damage { critical } => {
+            let drains = drained
+                .iter()
+                .map(|&(pool, lost)| {
+                    Value::Map(vec![
+                        (Value::Integer(DRAIN_POOL), Value::Asset(pool)),
+                        (Value::Integer(DRAIN_AMOUNT), Value::Float(lost)),
+                    ])
+                })
+                .collect();
+            (
+                DAMAGE_DEALT,
+                Variables::from([
+                    (0x13, Value::Float(amount)),
+                    (0x15, Value::Entity(target)),
+                    (0x3d, tags.to_value()),
+                    (0x95, Value::Bool(critical)),
+                    (0x624, Value::Array(drains)),
+                ]),
+            )
+        }
         Dealt::Healing => (
             HEALING_DONE,
             Variables::from([

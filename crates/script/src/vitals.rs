@@ -37,10 +37,14 @@ pub struct Death {
     pub killer: u32,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Damage {
     pub dealt: f64,
     pub killed: bool,
+    /// What it took from each named pool (`m_7BE02F89`), by name, in the
+    /// order taken: what the shooter's `0012.025` names in `0624`
+    /// (`crate::ultimate::dealt_message`).
+    pub drained: Vec<(u64, f64)>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -240,6 +244,7 @@ impl Vitals {
         }
         let mut left = amount;
         let mut dealt = 0.0;
+        let mut drained = Vec::new();
         let mut reduce_armour = true;
         'damage: for temporary in [true, false] {
             for kind in DAMAGE_ORDER {
@@ -264,6 +269,9 @@ impl Vitals {
                         self.changed |= 1 << pool.field;
                         left -= taken;
                         dealt += taken;
+                        if let Some(name) = pool.name {
+                            drained.push((name, taken));
+                        }
                     }
                 }
             }
@@ -282,7 +290,11 @@ impl Vitals {
             }
             self.death = Some(source);
         }
-        Damage { dealt, killed }
+        Damage {
+            dealt,
+            killed,
+            drained,
+        }
     }
 
     pub fn heal(&mut self, amount: f64) -> f64 {
@@ -401,6 +413,7 @@ mod tests {
             Damage {
                 dealt: 10.0 - DEATH_EPSILON / 2.0,
                 killed: true,
+                drained: Vec::new(),
             }
         );
         assert_eq!(vitals.total(), 0.0);
@@ -507,5 +520,24 @@ mod tests {
         assert_eq!(vitals.heal(11.0), 11.0);
         assert_eq!(vitals.pool_current(1), Some(10.0));
         assert_eq!(vitals.pool_current(extra_armour), Some(16.0));
+    }
+
+    /// Damage takes a temporary pool first, and names what it took from a
+    /// named one (Wrecking Ball's Adaptive Shield `1566` st6, `3EBB.01C`)
+    /// for the shooter's `0624`; an unnamed pool goes unnamed.
+    #[test]
+    fn damage_names_what_it_takes_from_named_pools() {
+        const ADAPTIVE: u64 = 0x0d80_0000_0000_3ebb;
+        let mut vitals = Vitals::new(200.0, 0.0, 0.0);
+        vitals
+            .add_temporary_pool(PoolKind::Shields, 30.0, 30.0, None)
+            .unwrap();
+        vitals
+            .add_temporary_pool(PoolKind::Shields, 50.0, 50.0, Some(ADAPTIVE))
+            .unwrap();
+        let damage = vitals.damage(100.0, HIT);
+        assert_eq!(damage.dealt, 100.0);
+        assert_eq!(damage.drained, [(ADAPTIVE, 50.0)]);
+        assert_eq!(vitals.damage(10.0, HIT).drained, []);
     }
 }

@@ -716,6 +716,7 @@ impl Others {
             fired.volleys,
             fired.origin.map(|value| value as f32),
             fired.direction,
+            tick,
             deadline,
         ) else {
             return Vec::new();
