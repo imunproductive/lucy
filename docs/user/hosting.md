@@ -54,6 +54,18 @@ Without `--game-host`, the banner shows `Internet: off`.
 
 You can change each port with a flag (`--lobby-port`, `--game-port`, ...) or in `[ports]` in `config.toml`. If you change the lobby port, joining players must use the new port in `--server`.
 
+## How many players
+
+The lobby serves at most 128 players at once, and at most 16 of them from one IP address. The banner shows both:
+
+```
+ [*] Players:        at most 128, 16 from one address
+```
+
+The first limit counts everyone online, in the menus and in every match: three 12-player matches and the players waiting in the menus all count. The second limit is for players who share one public address: a household, a dormitory, or a mobile or carrier-grade NAT. Players on your LAN each have their own address. A game on this PC counts for `127.0.0.1`.
+
+Set them with `--max-players` and `--max-players-per-address`, or `max_players` and `max_players_per_address` in `config.toml` ([configuration](configuration.md#keys)). Each must be at least 1, and the second must not be above the first. A player over a limit can't connect; the server log says "The lobby serves N connections, its most" or "N lobby connections from ADDRESS, the most from one address". A player who joins with `lucy join` holds a second connection for a moment, while the launcher asks for the BattleTag.
+
 ## Join with the full menu: `lucy join`
 
 ```powershell

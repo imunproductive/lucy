@@ -41,6 +41,17 @@ use lucy_sim::scene_assets::SceneAssets;
 use lucy_wire::jam::codec::Schemas;
 #[cfg(test)]
 use lucy_wire::tcp::PeerCount;
+use lucy_wire::tcp::PeerLimits;
+
+/// The lobby connections served at once, and from one address, unless the
+/// host sets others (`--max-players`, `--max-players-per-address`). Each game
+/// holds one; a joining launcher's BattleTag query holds one briefly. From
+/// one address: a household or a carrier-grade NAT behind one public
+/// address, or the games on this PC.
+pub const LOBBY_LIMITS: PeerLimits = PeerLimits {
+    total: 128,
+    per_address: 16,
+};
 
 pub struct ServerConfig {
     pub runtime: PathBuf,
@@ -86,6 +97,9 @@ pub struct ServerConfig {
     /// A Workshop script every player goes into from the menu: the custom
     /// match its settings describe (`--workshop`).
     pub workshop: Option<PathBuf>,
+    /// The lobby connections served at once, and from one address
+    /// (`--max-players`, `--max-players-per-address`).
+    pub lobby_limits: PeerLimits,
 }
 
 impl ServerConfig {
@@ -109,6 +123,7 @@ impl ServerConfig {
             template: None,
             dev_console: false,
             workshop: None,
+            lobby_limits: LOBBY_LIMITS,
         }
     }
 }
@@ -274,6 +289,7 @@ impl Server {
             xp,
             extra_preload,
             dev_console: config.dev_console,
+            limits: config.lobby_limits,
             assets: Arc::new(assets),
             first_scene: Mutex::new(scene),
             accounts,
@@ -308,7 +324,7 @@ impl Server {
             })
             .transpose()?;
         let (stop_lobby, shutdown) = mpsc::channel();
-        let peers = crate::lobby::peer_workers(&shared.clock);
+        let peers = crate::lobby::peer_workers(&shared);
         #[cfg(test)]
         let lobby_peers = peers.count();
         let lobby = thread::Builder::new()

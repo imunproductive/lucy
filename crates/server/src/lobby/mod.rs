@@ -58,12 +58,6 @@ use hub::{Hub, MAILBOX_LIMIT, Mailbox};
 use peer::Peer;
 use router::Router;
 
-/// The connections the lobby serves at once, and from one address: a
-/// household behind one public address, or the games on this PC.
-const LIMITS: PeerLimits = PeerLimits {
-    total: 32,
-    per_address: 8,
-};
 const ACCEPT_POLL: Duration = Duration::from_millis(10);
 /// A logged-in game that has sent nothing for this long, not even the ping
 /// it sends every 5 s, is gone: its link closes, unless the account holds a
@@ -95,6 +89,9 @@ pub(crate) struct Lobby {
     /// Turn on the client's engine console in the login config
     /// (`--dev-console`).
     pub dev_console: bool,
+    /// The connections the lobby serves at once, and from one address
+    /// (`server::LOBBY_LIMITS` unless the host sets others).
+    pub limits: PeerLimits,
     /// Shared with the threads that prepare match scenes.
     pub assets: Arc<SceneAssets>,
     pub first_scene: Mutex<Option<PreparedScene>>,
@@ -360,9 +357,9 @@ fn kick(session: &mut LobbySession<'_>, reason: u64) -> io::Result<()> {
 
 /// The workers that serve the lobby's connections, within its limits; each
 /// connection must finish its handshake within [`HANDSHAKE_TIMEOUT`] on the
-/// lobby's `clock`.
-pub(crate) fn peer_workers(clock: &Clock) -> PeerWorkers {
-    PeerWorkers::new(LIMITS).with_accept_deadline(clock.source(), HANDSHAKE_TIMEOUT)
+/// lobby's clock.
+pub(crate) fn peer_workers(lobby: &Lobby) -> PeerWorkers {
+    PeerWorkers::new(lobby.limits).with_accept_deadline(lobby.clock.source(), HANDSHAKE_TIMEOUT)
 }
 
 /// Accept connections until `shutdown`, each served on a thread of `peers`;
@@ -373,6 +370,7 @@ pub(crate) fn serve(
     shutdown: mpsc::Receiver<()>,
     mut peers: PeerWorkers,
 ) -> io::Result<()> {
+    let limits = lobby.limits;
     let mut id = 0u32;
     while matches!(shutdown.try_recv(), Err(mpsc::TryRecvError::Empty)) {
         peers.reap();
@@ -391,14 +389,14 @@ pub(crate) fn serve(
                     first: true,
                 }) => tracing::warn!(
                     "[!] The lobby serves {} connections, its most; refusing more",
-                    LIMITS.total
+                    limits.total
                 ),
                 Ok(Admission::Refused {
                     limit: Limit::Address,
                     first: true,
                 }) => tracing::warn!(
                     "[!] {} lobby connections from {}, the most from one address; refusing more",
-                    LIMITS.per_address,
+                    limits.per_address,
                     address.ip()
                 ),
                 Err(error) => {
