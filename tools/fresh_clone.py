@@ -18,11 +18,13 @@ time of a release build plus a first derivation (15-20 minutes on a 16-thread PC
 """
 
 import argparse
+import io
 import os
 import shutil
 import socket
 import subprocess
 import sys
+import tarfile
 import tempfile
 import threading
 import time
@@ -59,7 +61,8 @@ def free_ports(count):
 def export(rev, tree):
     archive = subprocess.run(["git", "archive", "--format=tar", rev], cwd=ROOT, check=True, capture_output=True)
     tree.mkdir(parents=True)
-    subprocess.run(["tar", "-x", "-C", str(tree)], input=archive.stdout, check=True)
+    with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as files:
+        files.extractall(tree, filter="data")
 
 
 def check_tree(tree):
