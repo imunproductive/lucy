@@ -18,7 +18,7 @@ The fork was rebuilt from a Python server with a Rust port into one Rust workspa
 
 ## Fixed data
 
-These inputs are not game assets, so CASC cannot provide them. They are fixed for build 104319 and never change. Most likely they came from client dumps and traffic taken while the live servers were still running. The first seven and the research names are committed in `crates/fixed/data` (decision D1) and embedded in the binary; [data-sources.md](data-sources.md) records their source and SHA-256.
+These inputs are not game assets, so CASC cannot provide them. They are fixed for build 104319 and never change. Most likely they came from client dumps and traffic taken while the live servers were still running. The first six and the research names are committed in `crates/fixed/data` (decision D1) and embedded in the binary; [data-sources.md](data-sources.md) records their source and SHA-256.
 
 | Item | File | Why it can't come from CASC |
 | --- | --- | --- |
@@ -27,13 +27,12 @@ These inputs are not game assets, so CASC cannot provide them. They are fixed fo
 | Statescript payload codecs | `statescript_codecs.json` | What the client's reader code reads per state class, extracted with IDA from a client memory image |
 | Battle.net descriptors | `bnet_descriptors.pb` | Protobuf descriptors compiled into the client |
 | Lobby state-blob key | `lobby_state_blob.key` | A 64-byte constant of the build's handshake |
-| Captured server templates | `retail_templates.json` | Server-side data, decoded from 1.68 reference traffic. It was never in the client. |
 | Event resource keys | `resource_keys.json` | The server sends them to the client (`lobby_celebrations`). Treated as server-side data; whether the install also contains them is unverified (D2). |
-| Server-set queue and Arcade card fields | Parts of `game_queues_174.json` and `arcade_cards_174.json` | The `game_queues` derivation reads the captured templates. Arcade card duration and permanence are set by the server, not the card asset. |
+| Server-set Arcade card fields | Parts of `arcade_cards_174.json` | Arcade card duration and permanence are set by the server, not the card asset. |
 | Rules from client code used by derivations | Constants in the derivations, for example the placeable type flag table in `crates/assets/src/game_maps.rs` | Facts about compiled code. |
 | Research names | `statescript_names.json` | Research-only naming catalog (class aliases, the STU fields that hold a variable, logical buttons, the hero select and HUD graphs, each mode's scripts, the server's variable names), used by `lucy script query`. Upstream research (LizRollin's `statescript_names_174.json`), not read from the client. |
 
-The captured templates should become authored server content: TOML files a server owner can read and edit, generated once from `retail_templates.json`.
+The server sends no data captured from Blizzard's servers. The login messages the reference server replayed from 1.68 traffic (`retail_templates.json`, removed 2026-11-23) are built from the install (`lobby_preload_174.json`, `competitive_seasons_174.json`, the item catalog and its prices) or written as constants in `crates/lobby/src/templates.rs`; live-service data (replay hosts, the real-money store, Battle.net's profanity filter, anti-cheat payloads, hosts and keys) is not sent. What each captured message was: `D:/Work/Coding/refs/reports/RetailTemplates.md`.
 
 ## Decisions
 

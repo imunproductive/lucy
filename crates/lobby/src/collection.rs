@@ -1,4 +1,26 @@
-//! Lobby ownership, equipment and progression from the external retail catalog.
+//! Lobby ownership, equipment, progression and the shop's store entries,
+//! from the install's item catalog (`extracted_items.json`,
+//! `extracted_general_unlocks.json`) and its prices (`economy_174.json`).
+//!
+//! What the catalog gives each item (24300 `+0xF8` and 24900 `+0x98` store
+//! entries, `{unlock, 0, level, price, event, default}`):
+//!
+//! - An item of a level group (`LevelUnlocks`, `AdditionalUnlocks`) unlocks
+//!   at that level; level 0 is a default item, owned from the start (`+0x17`
+//!   set). Every other item has no level (65535).
+//! - A loot box item belongs to its box's pool: `+0x16` is the box type
+//!   (`Enum_BABC4175`, 0 the base box, 1-6 the events); any other item has
+//!   -1. It costs its rarity's base credit price, an icon nothing (icons
+//!   are not sold). Retail charged three times as much for some event items
+//!   (each event's newest), which the install doesn't mark: every item here
+//!   costs the base price.
+//! - An Overwatch League item (category `OWL`) costs league tokens by
+//!   rarity, a golden weapon the competitive point price; other items are
+//!   not sold (price 0).
+//!
+//! These rules give the 7,040 entries of the 1.68 retail capture, but for
+//! those event prices (160 items) and 64 Overwatch League skins retail did
+//! not sell.
 //!
 //! Client research (1.74):
 //!
@@ -25,6 +47,7 @@
 use std::{
     collections::{HashMap, HashSet},
     io,
+    path::Path,
     sync::Arc,
 };
 
@@ -33,10 +56,10 @@ use serde_json::{Map, Value as Json};
 
 use crate::{
     accounts::{LootBox, Profile},
-    templates::RetailTemplates,
+    economy::{Economy, ItemPrices},
     transport::LobbyMessage,
 };
-use lucy_content::catalog::ItemDb;
+use lucy_content::catalog::{ItemDb, Unlock};
 use lucy_core::guid::parse_guid;
 use lucy_wire::{
     entity::SkinTheme,
@@ -48,25 +71,95 @@ use lucy_wire::{
 
 pub const HERO_CATALOG: u32 = 0x70e5_a247;
 pub const PROGRESSION: u32 = 0x779a_8581;
-const LOADOUT_SLOTS: [u32; 7] = [0x38, 0x40, 0x48, 0x50, 0x58, 0x70, 0x88];
+const LOADOUT_SLOTS: [(u32, &str); 7] = [
+    (0x38, "Skin"),
+    (0x40, "HighlightIntro"),
+    (0x48, "VictoryPose"),
+    (0x50, "WeaponSkin"),
+    (0x58, "Spray"),
+    (0x70, "VoiceLine"),
+    (0x88, "Emote"),
+];
+/// The loadout slots that hold a list (sprays, voice lines, emotes).
+const LIST_SLOTS: [u32; 3] = [0x58, 0x70, 0x88];
 const BORDER_BASE: u64 = 0x0250_0000_0000_0918;
 const NO_UNLOCK_LEVEL: i64 = 65_535;
 const BOX_SYNC_REASON: i64 = 12;
+/// `Enum_BABC4175`, the loot box an item comes from, by the name the item
+/// catalog gives it (`lucy_assets` `lists/unlocks.rs`).
+const LOOT_BOXES: [(&str, i64); 8] = [
+    ("Base", 0),
+    ("SummerGames", 1),
+    ("Halloween", 2),
+    ("Winter", 3),
+    ("LunarNewYear", 4),
+    ("Archives", 5),
+    ("Anniversary", 6),
+    ("Internal", 8),
+];
+/// The progression message's `+0x110`: the golden weapon price in
+/// competitive points, and `+0x114`, the most competitive points a player
+/// keeps (`ranked::MAX_COMP_POINTS`) [INFERENCE: retail sent 3000 and 6000].
+const PROGRESSION_POINT_LIMIT: u32 = 0x114;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StoreEntry {
     pub unlock_level: i64,
     pub price: i64,
     pub event: i64,
+    /// A default item, owned from the start.
+    pub default: bool,
 }
 
 impl StoreEntry {
-    fn read(fields: &Fields) -> io::Result<Self> {
-        Ok(Self {
-            unlock_level: integer(fields, 0x10)?,
-            price: integer(fields, 0x14)?,
-            event: integer(fields, 0x16)?,
-        })
+    /// The entry the catalog's rules give an item (module documentation).
+    fn of(unlock: &Unlock, prices: &ItemPrices) -> Self {
+        let entry = |unlock_level, price, event| Self {
+            unlock_level,
+            price,
+            event,
+            default: false,
+        };
+        let rarity = |table: &HashMap<String, i64>| table.get(&unlock.rarity).copied().unwrap_or(0);
+        match unlock.level {
+            Some(0) => Self {
+                default: true,
+                ..entry(0, 0, -1)
+            },
+            Some(level) => entry(level, 0, -1),
+            None => match unlock.box_type.as_deref() {
+                Some(name) => {
+                    let event = LOOT_BOXES
+                        .iter()
+                        .find(|(box_name, _)| *box_name == name)
+                        .map_or(-1, |&(_, event)| event);
+                    let price = if unlock.item_type == "Icon" {
+                        0
+                    } else {
+                        rarity(&prices.credits)
+                    };
+                    entry(NO_UNLOCK_LEVEL, price, event)
+                }
+                None if unlock.categories.iter().any(|category| category == "OWL") => {
+                    entry(NO_UNLOCK_LEVEL, rarity(&prices.league_tokens), -1)
+                }
+                None if unlock.item_type == "WeaponSkin" => {
+                    entry(NO_UNLOCK_LEVEL, prices.competitive_points, -1)
+                }
+                None => entry(NO_UNLOCK_LEVEL, 0, -1),
+            },
+        }
+    }
+
+    fn wire(self, guid: u64) -> Value {
+        Struct(Fields::from([
+            (0x00, Unsigned(guid)),
+            (0x08, Unsigned(0)),
+            (0x10, Signed(self.unlock_level)),
+            (0x14, Signed(self.price)),
+            (0x16, Signed(self.event)),
+            (0x17, Bool(self.default)),
+        ]))
     }
 }
 
@@ -77,8 +170,7 @@ struct HeroCollection {
 
 pub struct Collection {
     items: Arc<ItemDb>,
-    hero_template: Fields,
-    progression_template: Fields,
+    prices: ItemPrices,
     hero_order: Vec<u64>,
     heroes: HashMap<u64, HeroCollection>,
     hero_of: IndexMap<u64, u64>,
@@ -90,70 +182,117 @@ pub struct Collection {
 }
 
 impl Collection {
-    pub fn new(templates: &RetailTemplates, items: Arc<ItemDb>) -> io::Result<Self> {
-        let mut hero_template = templates
-            .first(HERO_CATALOG, 24900)
-            .ok_or_else(|| invalid("missing hero catalog template"))?;
-        let progression_template = templates
-            .first(PROGRESSION, 24300)
-            .ok_or_else(|| invalid("missing progression template"))?;
+    /// The catalog and prices of a derived data folder.
+    pub fn load(data_dir: &Path) -> io::Result<Self> {
+        let economy = Economy::load(data_dir)?;
+        Ok(Self::new(
+            Arc::new(ItemDb::load(data_dir)?),
+            economy.item_prices().clone(),
+        ))
+    }
+
+    /// The heroes are those of the catalog with default items (the playable
+    /// ones), in its order; every item of a hero, and every account item
+    /// (no hero), has a store entry.
+    pub fn new(items: Arc<ItemDb>, prices: ItemPrices) -> Self {
+        let mut hero_of = IndexMap::new();
+        let mut store = IndexMap::new();
+        let mut default_account = Vec::new();
+        let mut all_account = Vec::new();
+        let mut borders = Vec::new();
+        let mut hero_items = HashMap::<u64, Vec<u64>>::new();
+        let mut defaults = HashMap::<u64, Vec<u64>>::new();
+        for unlock in items.unlocks.values() {
+            let entry = StoreEntry::of(unlock, &prices);
+            match unlock.hero.as_deref() {
+                Some(name) => {
+                    let Some(hero) = items.hero_by_name(name) else {
+                        continue;
+                    };
+                    hero_of.insert(unlock.guid, hero);
+                    hero_items.entry(hero).or_default().push(unlock.guid);
+                    if entry.default {
+                        defaults.entry(hero).or_default().push(unlock.guid);
+                    }
+                }
+                None => {
+                    all_account.push(unlock.guid);
+                    if entry.default {
+                        default_account.push(unlock.guid);
+                    }
+                    if (0..NO_UNLOCK_LEVEL).contains(&entry.unlock_level)
+                        && unlock.item_type == "PortraitFrame"
+                    {
+                        borders.push((entry.unlock_level, unlock.guid));
+                    }
+                }
+            }
+            store.insert(unlock.guid, entry);
+        }
+        borders.sort_unstable();
+        let default_spray = default_account
+            .iter()
+            .find(|&&guid| {
+                items
+                    .get(guid)
+                    .is_some_and(|item| item.item_type == "Spray")
+            })
+            .copied();
         let mut hero_order = Vec::new();
         let mut heroes = HashMap::new();
-        for record in array(&hero_template, 0x80)? {
-            let record = structure(record)?;
-            let hero = guid(record, 0x30)?;
+        for &hero in items.hero_names.keys() {
+            let Some(mut owned) = defaults.remove(&hero) else {
+                continue;
+            };
+            let first = |kind: &str| {
+                owned
+                    .iter()
+                    .copied()
+                    .find(|&guid| items.get(guid).is_some_and(|item| item.item_type == kind))
+            };
             let loadout = LOADOUT_SLOTS
-                .into_iter()
-                .map(|slot| Ok((slot, field(record, slot)?.clone())))
-                .collect::<io::Result<Fields>>()?;
+                .iter()
+                .map(|&(slot, kind)| {
+                    let item = if kind == "Spray" {
+                        default_spray
+                    } else {
+                        first(kind)
+                    };
+                    let value = if LIST_SLOTS.contains(&slot) {
+                        Array(item.into_iter().map(Unsigned).collect())
+                    } else {
+                        Unsigned(item.unwrap_or(0))
+                    };
+                    (slot, value)
+                })
+                .collect();
+            owned.sort_unstable();
             hero_order.push(hero);
             heroes.insert(
                 hero,
                 HeroCollection {
-                    defaults: owned_list(record, 0)?,
+                    defaults: owned,
                     loadout,
                 },
             );
         }
-
-        let mut hero_of = IndexMap::new();
-        let mut store = IndexMap::new();
-        read_hero_stores(&items, &mut hero_template, &mut hero_of, &mut store)?;
-        let mut hero_items = HashMap::<u64, Vec<u64>>::new();
-        for (&guid, &hero) in &hero_of {
-            hero_items.entry(hero).or_default().push(guid);
-        }
-
-        let default_account = owned_list(structure(field(&progression_template, 0x78)?)?, 0x30)?;
-        let mut account_entries = IndexMap::new();
-        for entry in array(structure(field(&progression_template, 0xf8)?)?, 0)? {
-            let entry = structure(entry)?;
-            account_entries.insert(guid(entry, 0)?, StoreEntry::read(entry)?);
-        }
-        let mut borders = Vec::new();
-        let mut all_account = Vec::new();
-        for (guid, entry) in account_entries {
-            all_account.push(guid);
-            store.entry(guid).or_insert(entry);
-            if (0..NO_UNLOCK_LEVEL).contains(&entry.unlock_level)
-                && items
-                    .get(guid)
-                    .is_some_and(|item| item.item_type == "PortraitFrame")
-            {
-                borders.push((entry.unlock_level, guid));
-            }
-        }
-        borders.sort_unstable();
-        all_account.extend(items.unlocks.values().filter_map(|item| {
-            (matches!(item.item_type.as_str(), "Icon" | "Spray" | "PortraitFrame")
-                && !hero_of.contains_key(&item.guid))
-            .then_some(item.guid)
-        }));
-
-        Ok(Self {
+        // Only the playable heroes' items are listed; another character's
+        // (a bot's, a PvE enemy's) are not sold nor owned.
+        hero_items.retain(|hero, _| heroes.contains_key(hero));
+        hero_of.retain(|_, hero| heroes.contains_key(hero));
+        store.retain(|guid, _| {
+            items
+                .get(*guid)
+                .is_some_and(|item| item.hero.is_none() || hero_of.contains_key(guid))
+        });
+        all_account.retain(|&guid| {
+            items.get(guid).is_some_and(|item| {
+                matches!(item.item_type.as_str(), "Icon" | "Spray" | "PortraitFrame")
+            })
+        });
+        Self {
             items,
-            hero_template,
-            progression_template,
+            prices,
             hero_order,
             heroes,
             hero_of,
@@ -162,7 +301,7 @@ impl Collection {
             all_account,
             store,
             borders,
-        })
+        }
     }
 
     pub fn heroes(&self) -> &[u64] {
@@ -295,17 +434,13 @@ impl Collection {
         if hero == 0 {
             return Ok(false);
         }
-        let (slot, list) = match item.item_type.as_str() {
-            "Skin" => (0x38, false),
-            "HighlightIntro" => (0x40, false),
-            "VictoryPose" => (0x48, false),
-            "WeaponSkin" => (0x50, false),
-            "Spray" => (0x58, true),
-            "VoiceLine" => (0x70, true),
-            "Emote" => (0x88, true),
-            _ => return Ok(false),
+        let Some(&(slot, _)) = LOADOUT_SLOTS
+            .iter()
+            .find(|(_, kind)| *kind == item.item_type)
+        else {
+            return Ok(false);
         };
-        let value = if list {
+        let value = if LIST_SLOTS.contains(&slot) {
             let position = position.max(0) as usize;
             if position >= MAX_ARRAY_COUNT {
                 return Ok(false);
@@ -335,10 +470,11 @@ impl Collection {
         Ok(true)
     }
 
+    /// 24300: the account record (boxes, owned account items, border, icon,
+    /// level and balances), the account items' store entries, the golden
+    /// weapon price and the competitive point limit.
     pub fn progression(&self, profile: &Profile) -> io::Result<Fields> {
-        let mut value = self.progression_template.clone();
-        let record = structure_mut(field_mut(&mut value, 0x78)?)?;
-        record.extend([
+        let record = Fields::from([
             (0x00, box_list(&profile.loot_boxes)),
             (0x18, Array(Vec::new())),
             (0x30, ownership(self.owned_account(profile))),
@@ -353,22 +489,59 @@ impl Collection {
             (0x78, Bool(true)),
             (0x79, Bool(true)),
         ]);
-        Ok(value)
+        let entries = self
+            .store
+            .iter()
+            .filter(|(guid, _)| self.hero_for(**guid).is_none())
+            .map(|(&guid, entry)| entry.wire(guid))
+            .collect();
+        Ok(Fields::from([
+            (0x78, Struct(record)),
+            (0xf8, Struct(Fields::from([(0, Array(entries))]))),
+            (0x110, Signed(self.prices.competitive_points)),
+            (
+                PROGRESSION_POINT_LIMIT,
+                Signed(crate::ranked::MAX_COMP_POINTS),
+            ),
+            (0x118, Array(Vec::new())),
+        ]))
     }
 
+    /// 24900: each hero's owned items and loadout (`+0x80`) and store
+    /// entries (`+0x98`).
     pub fn hero_catalog(&self, profile: &Profile) -> io::Result<Fields> {
-        let mut value = self.hero_template.clone();
         let unlocked = sorted_unlocks(profile);
-        for record in array_mut(&mut value, 0x80)? {
-            let record = structure_mut(record)?;
-            let hero = guid(record, 0x30)?;
-            record.insert(
-                0,
-                ownership(self.owned_hero(hero, profile.unlock_all, &unlocked)),
-            );
+        let mut records = Vec::with_capacity(self.hero_order.len());
+        let mut stores = Vec::with_capacity(self.hero_order.len());
+        for &hero in &self.hero_order {
+            let mut record = Fields::from([
+                (
+                    0,
+                    ownership(self.owned_hero(hero, profile.unlock_all, &unlocked)),
+                ),
+                (0x18, Array(Vec::new())),
+                (0x30, Unsigned(hero)),
+            ]);
             record.extend(self.loadout(profile, hero)?);
+            records.push(Struct(record));
+            let entries = self
+                .hero_items
+                .get(&hero)
+                .into_iter()
+                .flatten()
+                .map(|&guid| self.store[&guid].wire(guid))
+                .collect();
+            stores.push(Struct(Fields::from([
+                (0, Array(entries)),
+                (0x18, Unsigned(hero)),
+            ])));
         }
-        Ok(value)
+        Ok(Fields::from([
+            (0x78, Unsigned(1)),
+            (0x80, Array(records)),
+            (0x98, Array(stores)),
+            (0xb0, Array(Vec::new())),
+        ]))
     }
 
     pub fn unlock_granted(&self, guid: u64) -> LobbyMessage {
@@ -414,59 +587,6 @@ impl Collection {
     }
 }
 
-fn read_hero_stores(
-    items: &ItemDb,
-    template: &mut Fields,
-    hero_of: &mut IndexMap<u64, u64>,
-    store: &mut IndexMap<u64, StoreEntry>,
-) -> io::Result<()> {
-    let records = array_mut(template, 0x98)?;
-    let mut indexes = HashMap::new();
-    for (index, record) in records.iter().enumerate() {
-        let record = structure(record)?;
-        let hero = guid(record, 0x18)?;
-        indexes.insert(hero, index);
-        for entry in array(record, 0)? {
-            let entry = structure(entry)?;
-            let guid = guid(entry, 0)?;
-            hero_of.insert(guid, hero);
-            store.insert(guid, StoreEntry::read(entry)?);
-        }
-    }
-    for item in items.unlocks.values() {
-        if hero_of.contains_key(&item.guid) {
-            continue;
-        }
-        let Some(hero) = item
-            .hero
-            .as_deref()
-            .and_then(|name| items.hero_by_name(name))
-        else {
-            continue;
-        };
-        let Some(&index) = indexes.get(&hero) else {
-            continue;
-        };
-        // Match the retail entries for unsold skins so they count in the gallery.
-        let entry = StoreEntry {
-            unlock_level: NO_UNLOCK_LEVEL,
-            price: 0,
-            event: -1,
-        };
-        array_mut(structure_mut(&mut records[index])?, 0)?.push(Struct(Fields::from([
-            (0x00, Unsigned(item.guid)),
-            (0x08, Unsigned(0)),
-            (0x10, Signed(entry.unlock_level)),
-            (0x14, Signed(entry.price)),
-            (0x16, Signed(entry.event)),
-            (0x17, Bool(false)),
-        ])));
-        hero_of.insert(item.guid, hero);
-        store.insert(item.guid, entry);
-    }
-    Ok(())
-}
-
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
@@ -479,35 +599,8 @@ fn field(fields: &Fields, offset: u32) -> io::Result<&Value> {
     fields.get(&offset).ok_or_else(|| missing(offset))
 }
 
-fn field_mut(fields: &mut Fields, offset: u32) -> io::Result<&mut Value> {
-    fields.get_mut(&offset).ok_or_else(|| missing(offset))
-}
-
-fn structure(value: &Value) -> io::Result<&Fields> {
-    match value {
-        Struct(fields) => Ok(fields),
-        _ => Err(invalid("expected collection record")),
-    }
-}
-
-fn structure_mut(value: &mut Value) -> io::Result<&mut Fields> {
-    match value {
-        Struct(fields) => Ok(fields),
-        _ => Err(invalid("expected collection record")),
-    }
-}
-
 fn array(fields: &Fields, offset: u32) -> io::Result<&[Value]> {
     match field(fields, offset)? {
-        Array(values) => Ok(values),
-        _ => Err(invalid(format!(
-            "expected collection array at +0x{offset:X}"
-        ))),
-    }
-}
-
-fn array_mut(fields: &mut Fields, offset: u32) -> io::Result<&mut Vec<Value>> {
-    match field_mut(fields, offset)? {
         Array(values) => Ok(values),
         _ => Err(invalid(format!(
             "expected collection array at +0x{offset:X}"
@@ -520,19 +613,6 @@ fn unsigned(value: &Value) -> io::Result<u64> {
         Unsigned(value) => Ok(*value),
         Signed(value) => u64::try_from(*value).map_err(|_| invalid("negative collection GUID")),
         _ => Err(invalid("expected collection GUID")),
-    }
-}
-
-fn guid(fields: &Fields, offset: u32) -> io::Result<u64> {
-    unsigned(field(fields, offset)?)
-}
-
-fn integer(fields: &Fields, offset: u32) -> io::Result<i64> {
-    let error = || invalid(format!("expected collection integer at +0x{offset:X}"));
-    match field(fields, offset)? {
-        Signed(value) => Ok(*value),
-        Unsigned(value) => i64::try_from(*value).map_err(|_| error()),
-        _ => Err(error()),
     }
 }
 
@@ -578,13 +658,6 @@ fn append_new(defaults: &[u64], extra: impl IntoIterator<Item = u64>) -> Vec<u64
     owned
 }
 
-fn owned_list(fields: &Fields, offset: u32) -> io::Result<Vec<u64>> {
-    array(fields, offset)?
-        .iter()
-        .map(|owned| guid(structure(owned)?, 0))
-        .collect()
-}
-
 fn ownership(guids: Vec<u64>) -> Value {
     Array(
         guids
@@ -620,11 +693,12 @@ mod tests {
     use super::*;
 
     use serde_json::json;
-    use sha2::{Digest, Sha256};
 
+    use lucy_content::catalog::UNLOCK_BASE;
     use lucy_wire::jam::codec::Schemas;
 
     const HERO: u64 = 0x10;
+    const ACCOUNT_SPRAY: u64 = 0x11;
     const DEFAULT_SKIN: u64 = 0x20;
     const NEW_SKIN: u64 = 0x21;
     const HERO_SPRAY: u64 = 0x22;
@@ -632,52 +706,101 @@ mod tests {
     const LOW_BORDER: u64 = 0x31;
     const HIGH_BORDER: u64 = 0x32;
 
+    fn unlock(guid: u64, item_type: &str, hero: bool, level: Option<i64>) -> Unlock {
+        Unlock {
+            guid,
+            name: guid_text(guid),
+            item_type: item_type.into(),
+            rarity: "Common".into(),
+            hero: hero.then(|| "Local Hero".into()),
+            source: String::new(),
+            box_type: None,
+            categories: Vec::new(),
+            available_in: String::new(),
+            skin_theme: 0,
+            esports_team: String::new(),
+            level,
+        }
+    }
+
+    /// One hero with a default skin, an unsold skin and spray; account
+    /// defaults (an icon and a spray) and two borders.
     fn synthetic_collection() -> Collection {
-        let store_entry =
-            |guid: u64, level: i64| json!({"+0x0": guid, "+0x10": level, "+0x14": 0, "+0x16": -1});
-        let template = json!({
-            "format": 1,
-            "server": [
-                ["70E5A247", 24900, {
-                    "+0x80": [{"+0x0": [{"+0x0": DEFAULT_SKIN}], "+0x30": HERO,
-                        "+0x38": DEFAULT_SKIN, "+0x40": 0, "+0x48": 0, "+0x50": 0,
-                        "+0x58": [0x11, 0x12], "+0x70": [], "+0x88": []}],
-                    "+0x98": [{"+0x18": HERO, "+0x0": [store_entry(DEFAULT_SKIN, 0)]}]
-                }],
-                ["779A8581", 24300, {
-                    "+0x78": {"+0x30": [{"+0x0": ACCOUNT_ICON}]},
-                    "+0xF8": {"+0x0": [store_entry(HIGH_BORDER, 200), store_entry(LOW_BORDER, 50)]}
-                }]
-            ]
-        });
-        let templates = RetailTemplates::from_reader(template.to_string().as_bytes()).unwrap();
         let mut items = ItemDb::default();
         items.hero_names.insert(HERO, "Local Hero".into());
-        for (guid, item_type, hero) in [
-            (NEW_SKIN, "Skin", true),
-            (HERO_SPRAY, "Spray", true),
-            (ACCOUNT_ICON, "Icon", false),
-            (LOW_BORDER, "PortraitFrame", false),
-            (HIGH_BORDER, "PortraitFrame", false),
+        items.hero_names.insert(0x40, "A Bot".into());
+        for unlock in [
+            unlock(DEFAULT_SKIN, "Skin", true, Some(0)),
+            unlock(NEW_SKIN, "Skin", true, None),
+            unlock(HERO_SPRAY, "Spray", true, None),
+            unlock(ACCOUNT_ICON, "Icon", false, Some(0)),
+            unlock(ACCOUNT_SPRAY, "Spray", false, Some(0)),
+            unlock(HIGH_BORDER, "PortraitFrame", false, Some(200)),
+            unlock(LOW_BORDER, "PortraitFrame", false, Some(50)),
+            Unlock {
+                hero: Some("A Bot".into()),
+                ..unlock(0x41, "Skin", false, None)
+            },
         ] {
-            items.unlocks.insert(
-                guid,
-                lucy_content::catalog::Unlock {
-                    guid,
-                    name: guid_text(guid),
-                    item_type: item_type.into(),
-                    rarity: String::new(),
-                    hero: hero.then(|| "Local Hero".into()),
-                    source: String::new(),
-                    box_type: None,
-                    categories: Vec::new(),
-                    available_in: String::new(),
-                    skin_theme: 0,
-                    esports_team: String::new(),
-                },
-            );
+            items.unlocks.insert(unlock.guid, unlock);
         }
-        Collection::new(&templates, Arc::new(items)).unwrap()
+        Collection::new(Arc::new(items), ItemPrices::default())
+    }
+
+    #[test]
+    fn store_entries_follow_the_catalogs_rules() {
+        let prices = ItemPrices {
+            credits: [("Rare", 75), ("Legendary", 1000)]
+                .map(|(rarity, price)| (rarity.into(), price))
+                .into(),
+            competitive_points: 3000,
+            league_tokens: [("Epic".into(), 100)].into(),
+        };
+        let item = |item_type: &str, rarity: &str, box_type: Option<&str>| Unlock {
+            rarity: rarity.into(),
+            box_type: box_type.map(Into::into),
+            ..unlock(1, item_type, true, None)
+        };
+        let entry = |unlock: &Unlock| {
+            let entry = StoreEntry::of(unlock, &prices);
+            (entry.unlock_level, entry.price, entry.event, entry.default)
+        };
+        assert_eq!(entry(&unlock(1, "Skin", true, Some(0))), (0, 0, -1, true));
+        assert_eq!(
+            entry(&unlock(1, "PortraitFrame", false, Some(50))),
+            (50, 0, -1, false)
+        );
+        // Every box sells at the base credit price, an event box too; an
+        // icon is not sold.
+        assert_eq!(
+            entry(&item("Skin", "Legendary", Some("Base"))),
+            (65_535, 1000, 0, false)
+        );
+        assert_eq!(
+            entry(&item("Skin", "Legendary", Some("Halloween"))),
+            (65_535, 1000, 2, false)
+        );
+        assert_eq!(
+            entry(&item("VictoryPose", "Rare", Some("Anniversary"))),
+            (65_535, 75, 6, false)
+        );
+        assert_eq!(
+            entry(&item("Icon", "Rare", Some("Winter"))),
+            (65_535, 0, 3, false)
+        );
+        let league = Unlock {
+            categories: vec!["OWL".into()],
+            ..item("Skin", "Epic", None)
+        };
+        assert_eq!(entry(&league), (65_535, 100, -1, false));
+        assert_eq!(
+            entry(&item("WeaponSkin", "Legendary", None)),
+            (65_535, 3000, -1, false)
+        );
+        assert_eq!(
+            entry(&item("Spray", "Common", None)),
+            (65_535, 0, -1, false)
+        );
     }
 
     #[test]
@@ -724,8 +847,14 @@ mod tests {
             collection.owned_for_hero(&profile, HERO),
             [DEFAULT_SKIN, NEW_SKIN, HERO_SPRAY]
         );
-        assert_eq!(collection.owned_account(&profile), [ACCOUNT_ICON, 0x33]);
+        assert_eq!(
+            collection.owned_account(&profile),
+            [ACCOUNT_ICON, ACCOUNT_SPRAY, 0x33]
+        );
         assert_eq!(collection.store()[&NEW_SKIN].event, -1);
+        // A character that isn't playable has no collection.
+        assert!(collection.hero_for(0x41).is_none());
+        assert!(!collection.store().contains_key(&0x41));
         assert!(collection.owns(&profile, HERO_SPRAY));
         assert!(collection.owned_set(&profile).contains(&HERO_SPRAY));
 
@@ -740,7 +869,7 @@ mod tests {
         profile.unlock_all = true;
         assert_eq!(
             collection.owned_account(&profile),
-            [ACCOUNT_ICON, HIGH_BORDER, LOW_BORDER]
+            [ACCOUNT_ICON, ACCOUNT_SPRAY, HIGH_BORDER, LOW_BORDER]
         );
         assert_eq!(
             collection.owned_for_hero(&profile, HERO),
@@ -790,42 +919,76 @@ mod tests {
             collection.loadout(&profile, HERO).unwrap()[&0x38],
             Unsigned(NEW_SKIN)
         );
+        // The default spray is the account's; the gap is filled with it.
         assert_eq!(
             collection.loadout(&profile, HERO).unwrap()[&0x58],
             Array(vec![
-                Unsigned(0x11),
-                Unsigned(0x12),
-                Unsigned(0x12),
+                Unsigned(ACCOUNT_SPRAY),
+                Unsigned(ACCOUNT_SPRAY),
+                Unsigned(ACCOUNT_SPRAY),
                 Unsigned(HERO_SPRAY)
             ])
         );
         assert_eq!(
             profile.loadouts[&guid_text(HERO)]["+0x58"],
             json!([
-                guid_text(0x11),
-                guid_text(0x12),
-                guid_text(0x12),
+                guid_text(ACCOUNT_SPRAY),
+                guid_text(ACCOUNT_SPRAY),
+                guid_text(ACCOUNT_SPRAY),
                 guid_text(HERO_SPRAY)
             ])
         );
     }
 
+    /// The install's catalog (build 104319): 32 playable heroes, 1,119
+    /// account items and 6,003 hero items, each with an entry; 300 borders
+    /// (level 0, then every 10 levels). The expected values follow from the
+    /// rules in the module documentation over `extracted_items.json`.
     #[test]
     #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
-    fn progression_and_gallery_wire_bytes_match_python_for_three_profiles() {
-        let runtime = lucy_testkit::runtime_dir().join("data");
+    fn the_installs_catalog_gives_defaults_loadouts_and_prices() {
+        let data = lucy_testkit::runtime_dir().join("data");
         let schemas = Schemas::lobby();
-        let templates = RetailTemplates::captured();
-        let items = Arc::new(ItemDb::load(&runtime).unwrap());
-        let reaper = items.hero_by_name("Reaper").unwrap();
-        let collection = Collection::new(&templates, items).unwrap();
+        let collection = Collection::load(&data).unwrap();
+        let reaper = collection.items().hero_by_name("Reaper").unwrap();
         assert_eq!(collection.heroes().len(), 32);
-        assert_eq!(collection.store().len(), 7074);
+        assert_eq!(collection.store().len(), 7122);
         assert_eq!(collection.border_levels().len(), 300);
+        assert_eq!(collection.border_levels()[0], (0, BORDER_BASE));
 
-        let aurisa = 0x0250_0000_0000_1149;
-        let pachimari = 0x0250_0000_0000_08e9;
-        let luchador = 0x0250_0000_0000_4f53;
+        let unlock = |index: u64| UNLOCK_BASE | index;
+        // Reaper's level 0 items, by GUID, and the first of each kind as
+        // his loadout; the spray is the account's first default spray.
+        assert_eq!(
+            collection.owned_for_hero(&Profile::default(), reaper),
+            [0x21b, 0x22e, 0x3b4, 0x3f6, 0x884, 0x8d4, 0x901, 0x289e].map(unlock)
+        );
+        let loadout = collection.loadout(&Profile::default(), reaper).unwrap();
+        assert_eq!(
+            loadout,
+            Fields::from([
+                (0x38, Unsigned(unlock(0x3f6))),
+                (0x40, Unsigned(unlock(0x21b))),
+                (0x48, Unsigned(unlock(0x884))),
+                (0x50, Unsigned(unlock(0x3b4))),
+                (0x58, Array(vec![Unsigned(unlock(0x8d))])),
+                (0x70, Array(vec![Unsigned(unlock(0x8d4))])),
+                (0x88, Array(vec![Unsigned(unlock(0x901))])),
+            ])
+        );
+        let price = |index| {
+            let entry = collection.store()[&unlock(index)];
+            (entry.price, entry.event)
+        };
+        assert_eq!(price(0x3fb), (250, 0), "Reaper's Desert, an epic skin");
+        assert_eq!(price(0xa86), (1000, 2), "Pumpkin, a Halloween legendary");
+        assert_eq!(price(0x3c9), (3000, -1), "Reaper's golden weapon");
+        assert_eq!(price(0x13c3), (100, -1), "an Overwatch League skin");
+        assert_eq!(price(0x9d9), (0, 0), "a base box icon");
+
+        let aurisa = unlock(0x1149); // Orisa's icon
+        let pachimari = unlock(0x08e9); // an account icon
+        let luchador = unlock(0x4f53); // a Reaper skin
         let mut equipped = Profile {
             unlocked_items: [aurisa, pachimari, luchador]
                 .map(|guid| Json::String(guid_text(guid)))
@@ -840,30 +1003,20 @@ mod tests {
                 .equip(&mut equipped, reaper, luchador, 0)
                 .unwrap()
         );
-
-        // Python Collection messages for each synthetic profile, in the order below.
-        for (profile, expected_frame, expected_owned, expected_digest) in [
-            (
-                Profile::default(),
-                0x0250_0000_0000_0921,
-                (60, 8, 320),
-                "0c39de1d0f43716548d94e710f18275782a02d99d340028fa0fdb5ad5246522d",
-            ),
-            (
-                equipped,
-                0x0250_0000_0000_093b,
-                (61, 9, 323),
-                "a3ed977d2f823dcab3172de0755951b638f5829e7d7b96d2e7b5f1d861c97e04",
-            ),
+        // Owned: the 59 account defaults and each hero's (317 in all), plus
+        // what the profile unlocked; everything with unlock_all. The border
+        // is the last one earned (level 100: 0x921, 247: 0x93B).
+        for (profile, expected_frame, expected_owned) in [
+            (Profile::default(), unlock(0x921), (59, 8, 317)),
+            (equipped, unlock(0x93b), (60, 9, 320)),
             (
                 Profile {
                     unlock_all: true,
                     level: 3000, // The highest level the dashboard accepts.
                     ..Profile::default()
                 },
-                0x0250_0000_0000_0f97,
+                unlock(0xf97),
                 (1119, 196, 7122),
-                "3c5b07857cea218ef14237718e53e10022b9a93ef2ad2f37221049ad1abf6ced",
             ),
         ] {
             assert_eq!(collection.portrait_frame(&profile), expected_frame);
@@ -875,7 +1028,7 @@ mod tests {
                 ),
                 expected_owned
             );
-            let messages = [
+            for (crc, id, fields) in [
                 (
                     PROGRESSION,
                     24300,
@@ -890,17 +1043,9 @@ mod tests {
                 collection.unlock_granted(pachimari),
                 collection.unlock_bought(luchador),
                 Collection::boxes_update(&profile.loot_boxes),
-            ];
-            let mut digest = Sha256::new();
-            for (crc, id, fields) in messages {
-                let mut wire = schemas.header(crc, 1, id).unwrap();
-                wire.extend(schemas.encode(crc, id, &fields).unwrap());
-                digest.update(crc.to_le_bytes());
-                digest.update(id.to_le_bytes());
-                digest.update(u32::try_from(wire.len()).unwrap().to_le_bytes());
-                digest.update(wire);
+            ] {
+                schemas.encode(crc, id, &fields).unwrap();
             }
-            assert_eq!(format!("{:x}", digest.finalize()), expected_digest);
         }
     }
 }

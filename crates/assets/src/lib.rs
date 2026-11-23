@@ -33,9 +33,11 @@ mod map_chunk;
 mod mode_props;
 mod navigation;
 mod objectives;
+mod preload;
 mod progression;
 mod props;
 mod ray_profiles;
+mod seasons;
 mod tunables;
 mod voice_sets;
 mod workshop;
@@ -174,6 +176,10 @@ pub const DERIVATIONS: &[Derivation] = &[
         derive: arcade_cards::derive,
     },
     Derivation {
+        name: "competitive_seasons",
+        derive: seasons::derive,
+    },
+    Derivation {
         name: "game_modes",
         derive: game_modes::derive,
     },
@@ -220,6 +226,10 @@ pub const DERIVATIONS: &[Derivation] = &[
     Derivation {
         name: "workshop_catalog",
         derive: workshop::derive,
+    },
+    Derivation {
+        name: "lobby_preload",
+        derive: preload::derive,
     },
 ];
 

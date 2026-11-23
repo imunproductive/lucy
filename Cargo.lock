@@ -613,7 +613,6 @@ version = "0.0.0"
 dependencies = [
  "flate2",
  "lucy-casc",
- "lucy-fixed",
  "lucy-physics",
  "lucy-stu",
  "lucy-testkit",

@@ -5,10 +5,17 @@
 //! it before encoding, so each Rust message is first written as the same
 //! canonical JSON (`canonical` and `digest` there).
 //!
+//! The Python server built some messages from the captured retail traffic;
+//! ours builds them from the install or its own constants (`templates.rs`),
+//! and their own tests check them: for those ([`REBUILT`]) the snapshot
+//! checks only that they go out where Python sent them. The captured
+//! messages the server no longer sends ([`DROPPED`]) are taken out of the
+//! snapshot, and those it sends fewer copies of ([`COPIES`]) cut.
+//!
 //! It sits under `menu` so the random menu hero can roll the first catalog
 //! hero, as the Python test's patched `random.choice` does.
 
-use std::{fmt::Write as _, sync::Arc};
+use std::fmt::Write as _;
 
 use serde_json::{Map, Value as Json, json};
 use sha2::{Digest, Sha256};
@@ -27,7 +34,7 @@ use crate::{
     presence::Presence,
     ranked::{LeaderboardPlaces, Ranked},
     session::{LoginContent, PreparedLogin},
-    templates::{LOBBY, RetailTemplates},
+    templates::{InstallContent, LOBBY},
     transport::LobbyMessage,
 };
 use lucy_wire::jam::codec::{Fields, Schemas, Value};
@@ -43,6 +50,39 @@ const IDENTITY: Identity = Identity {
 };
 /// Parts of the snapshot that belonged to Python code removed as dead.
 const REMOVED_PARTS: [&str; 2] = ["name_reply", "notifications"];
+/// Parts built from the install's catalog, which the Python snapshot took
+/// from the capture: the owned items and the menu config.
+const REBUILT_PARTS: [&str; 3] = ["owned_account", "owned_heroes", "menu_config"];
+/// Messages built from the install or our constants instead of the
+/// capture, by group and id: the content keys (20504), preload (20505),
+/// progression and hero catalog (24300, 24900), mode rules (27202), the
+/// Arcade's state value (39800: `+0x7C`, which the client doesn't read, is
+/// 0) and busyness (39804), achievements (28001), config (36600), replay
+/// hosts (51804), store (26400), ranked state (36300), the custom game
+/// maps (23301: the capture's maps, in header order) and the career profile
+/// (20807, which holds the 24300 and 24900 records).
+const REBUILT: [(u32, u32); 14] = [
+    (0xf5ff_548a, 20504),
+    (0xf5ff_548a, 20505),
+    (0x779a_8581, 24300),
+    (0x70e5_a247, 24900),
+    (0xb9dc_a497, 27202),
+    (0x00a8_654e, 39800),
+    (0x00a8_654e, 39804),
+    (0x267f_de9e, 28001),
+    (0x1732_ebf2, 36600),
+    (0x5894_d085, 51804),
+    (0x4bad_7a7e, 26400),
+    (0x2372_a2e8, 36300),
+    (0x2128_6b49, 23301),
+    (0x1a98_79a4, 20807),
+];
+/// Captured messages the server doesn't send: anti-cheat payloads (20820)
+/// and Battle.net's profanity filter (27104).
+const DROPPED: [(u32, u32); 2] = [(0x1a98_79a4, 20820), (0xf470_e2ab, 27104)];
+/// Captured messages the capture held more copies of than the server sends:
+/// the OWL state (43200) once of each kind, the store (26400) once.
+const COPIES: [((u32, u32), usize); 2] = [((0x713d_7589, 43200), 2), ((0x4bad_7a7e, 26400), 1)];
 
 /// The Python test's profiles (`SCENARIOS`), each over the default profile.
 fn scenarios() -> Vec<(&'static str, Json)> {
@@ -255,9 +295,43 @@ fn with_leave_policy(live: Json, login: &Json) -> Json {
     Json::Array(messages)
 }
 
+/// A summarized message's group and id.
+fn key(message: &Json) -> Option<(u32, u32)> {
+    let crc = u32::from_str_radix(message[0].as_str()?, 16).ok()?;
+    Some((crc, u32::try_from(message[1].as_u64()?).ok()?))
+}
+
+/// A golden part without the captured messages the server doesn't send
+/// ([`DROPPED`]), and with as many copies of the others as it sends
+/// ([`COPIES`]).
+fn without_captured(part: &Json) -> Json {
+    let mut sent: Vec<(u32, u32)> = Vec::new();
+    let messages = part
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|message| {
+            let Some(key) = key(message) else {
+                return true;
+            };
+            if DROPPED.contains(&key) {
+                return false;
+            }
+            sent.push(key);
+            let count = sent.iter().filter(|&&seen| seen == key).count();
+            COPIES
+                .iter()
+                .find(|(copied, _)| *copied == key)
+                .is_none_or(|&(_, copies)| count <= copies)
+        })
+        .cloned()
+        .collect();
+    Json::Array(messages)
+}
+
 struct Content {
     schemas: Schemas,
-    templates: RetailTemplates,
+    install: InstallContent,
     collection: Collection,
     presence: Presence,
     ranked: Ranked,
@@ -321,7 +395,7 @@ impl Content {
         let mut login = prepared
             .available_messages(
                 &self.schemas,
-                &self.templates,
+                &self.install,
                 collection,
                 &self.presence,
                 &self.ranked,
@@ -334,7 +408,7 @@ impl Content {
             }
         }
         let live = prepared
-            .live_messages(&self.templates, collection, &self.ranked, content)
+            .live_messages(collection, &self.ranked, content)
             .unwrap();
         let now = server_time(&profile.server_date, NOW).unwrap();
         let season = self.ranked.season(profile);
@@ -375,11 +449,7 @@ impl Content {
             ("live".into(), summarize(&live)),
             (
                 "menu_config".into(),
-                single(
-                    self.templates
-                        .menu_config(profile, IDENTITY, selection.menu_guid, false)
-                        .unwrap(),
-                ),
+                single(crate::templates::menu_config(selection.menu_guid, false)),
             ),
             ("career".into(), career(own)),
             ("career_other".into(), career(other)),
@@ -420,29 +490,25 @@ impl Content {
 #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn messages_are_unchanged() {
     let data = lucy_testkit::runtime_dir().join("data");
-    let templates = RetailTemplates::captured();
-    let items = Arc::new(ItemDb::load(&data).unwrap());
-    let extra_preload = extra_preload_themes(&items).collect();
     let temporary = tempfile::tempdir().unwrap();
     let content = Content {
         schemas: Schemas::lobby(),
-        collection: Collection::new(&templates, items).unwrap(),
-        presence: Presence::new(&templates).unwrap(),
-        ranked: Ranked::new(&templates).unwrap(),
-        arcade: Arcade::load(data.join("arcade_cards_174.json"), &templates).unwrap(),
+        install: InstallContent::load(&data).unwrap(),
+        collection: Collection::load(&data).unwrap(),
+        presence: Presence,
+        ranked: Ranked::load(&data).unwrap(),
+        arcade: Arcade::load(data.join("arcade_cards_174.json")).unwrap(),
         celebrations: Celebrations::load(
             &data,
-            &templates,
             std::sync::Arc::new(crate::economy::Economy::load(&data).unwrap()),
         )
         .unwrap(),
-        extra_preload,
+        extra_preload: Vec::new(),
         accounts: Accounts::new(
             temporary.path().join("profiles"),
             temporary.path().join("seed"),
         )
         .unwrap(),
-        templates,
     };
     let golden: Map<String, Json> = serde_json::from_str(GOLDEN).unwrap();
     let scenarios = scenarios();
@@ -457,6 +523,10 @@ fn messages_are_unchanged() {
         let actual = content.build_all(&profile);
         let mut expected = golden[name].as_object().unwrap().clone();
         expected.retain(|part, _| !REMOVED_PARTS.contains(&part.as_str()));
+        for part in ["login", "live"] {
+            let sent = without_captured(&expected[part]);
+            expected.insert(part.into(), sent);
+        }
         let party = expected["party"].clone();
         let settings = expected["settings"].clone();
         let login = session_order(&expected["login"], &party, Some(&settings));
@@ -472,6 +542,9 @@ fn messages_are_unchanged() {
         expected_parts.sort_unstable();
         assert_eq!(parts, expected_parts, "{name}");
         for (part, digests) in &expected {
+            if REBUILT_PARTS.contains(&part.as_str()) {
+                continue;
+            }
             let (want, got) = (
                 digests.as_array().unwrap(),
                 actual[part].as_array().unwrap(),
@@ -484,7 +557,13 @@ fn messages_are_unchanged() {
                 ));
             }
             for (index, (want, got)) in want.iter().zip(got).enumerate() {
-                if want != got {
+                let rebuilt = key(want).is_some_and(|key| REBUILT.contains(&key));
+                let same = if rebuilt {
+                    want[0] == got[0] && want[1] == got[1]
+                } else {
+                    want == got
+                };
+                if !same {
                     changed.push(format!("{name}/{part}[{index}]: {got} instead of {want}"));
                 }
             }

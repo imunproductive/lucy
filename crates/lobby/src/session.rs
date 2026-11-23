@@ -25,7 +25,7 @@ use crate::{
     presence::Presence,
     progression,
     ranked::{LeaderboardPlaces, Ranked},
-    templates::{CONFIG, IN_CONNECT, LOBBY, RetailTemplates},
+    templates::{self, CONFIG, IN_CONNECT, InstallContent, LOBBY},
     transport::{Event, LobbyMessage, LobbyTransport},
 };
 use lucy_wire::{
@@ -286,7 +286,7 @@ impl PreparedLogin {
     pub fn available_messages(
         &self,
         schemas: &Schemas,
-        templates: &RetailTemplates,
+        install: &InstallContent,
         collection: &Collection,
         presence: &Presence,
         ranked: &Ranked,
@@ -309,7 +309,7 @@ impl PreparedLogin {
                 Fields::from([(0x78, Value::Struct(record))]),
             ),
         ];
-        let preload = (IN_CONNECT, 20505, templates.preload(content.extra_preload)?);
+        let preload = (IN_CONNECT, 20505, install.preload(content.extra_preload));
         if let Some(celebrations) = content.celebrations {
             let [keys, records, progress] =
                 celebrations.login_messages(&profile, collection.items(), now)?;
@@ -327,13 +327,7 @@ impl PreparedLogin {
         messages.push((
             MODE_RULES,
             RULES,
-            mode_rules::mode_rules(
-                templates,
-                &profile,
-                collection.heroes(),
-                collection.items(),
-                season,
-            )?,
+            mode_rules::mode_rules(&profile, collection.heroes(), collection.items(), season)?,
         ));
         let arcade = content.arcade.state(&profile, season, now)?;
         let mut built = BTreeMap::from([
@@ -347,12 +341,11 @@ impl PreparedLogin {
         {
             built.insert((crc, id), fields);
         }
-        messages.extend(templates.at_login(
-            &profile,
-            identity,
+        messages.extend(install.at_login(
             content.menu_hero,
             content.dev_console,
             now,
+            &profile.region,
             &built,
         )?);
         messages.extend(ranked.login_messages(
@@ -384,7 +377,6 @@ impl PreparedLogin {
     /// `ow174/content/__init__.py`.
     pub fn live_messages(
         &self,
-        templates: &RetailTemplates,
         collection: &Collection,
         ranked: &Ranked,
         content: LoginContent<'_>,
@@ -403,12 +395,7 @@ impl PreparedLogin {
             (
                 CONFIG,
                 36600,
-                templates.menu_config(
-                    &profile,
-                    identity,
-                    content.menu_hero,
-                    content.dev_console,
-                )?,
+                templates::menu_config(content.menu_hero, content.dev_console),
             ),
             (
                 IN_CONNECT,

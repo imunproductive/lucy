@@ -1,17 +1,24 @@
-//! A small catalog for unit tests: one hero with a skin of each rarity, a
-//! Halloween skin, an Overwatch League home and away pair, a golden weapon and
-//! a challenge reward, plus an account icon and spray.
+//! A small catalog for unit tests: one hero with a default skin, a skin of
+//! each rarity, a Halloween skin, an Overwatch League home and away pair, a
+//! golden weapon and a challenge reward, plus an account icon and spray; and
+//! a few competitive seasons.
 
 use std::{fs, sync::Arc};
 
 use serde_json::json;
 
 use crate::{
-    collection::Collection, economy::Economy, templates::RetailTemplates, xp_table::XpTable,
+    clock::{DAY, stu_datetime},
+    collection::Collection,
+    economy::Economy,
+    ranked::{CARD_BASE, Ranked},
+    xp_table::XpTable,
 };
 use lucy_content::catalog::{HERO_BASE, ItemDb, TEAM_SKIN_TEXT, UNLOCK_BASE};
 
 pub const HERO: u64 = HERO_BASE | 0x40;
+/// The hero's default skin (level 0).
+pub const DEFAULT: u64 = UNLOCK_BASE | 0x100;
 pub const COMMON: u64 = UNLOCK_BASE | 0x101;
 pub const RARE: u64 = UNLOCK_BASE | 0x102;
 pub const EPIC: u64 = UNLOCK_BASE | 0x103;
@@ -37,7 +44,7 @@ pub fn collection() -> Collection {
     let team = |guid: u64, name: &str| {
         json!({
             "GUID": format!("{:X}.0A5", guid & 0xffff), "Name": name, "Type": "Skin",
-            "Rarity": "Legendary", "Categories": ["OWL"], "AvailableIn": TEAM_SKIN_TEXT,
+            "Rarity": "Epic", "Categories": ["OWL"], "AvailableIn": TEAM_SKIN_TEXT,
             "EsportsTeam": "Shock"
         })
     };
@@ -48,53 +55,82 @@ pub fn collection() -> Collection {
     .unwrap();
     fs::write(
         data.path().join("extracted_items.json"),
-        json!({"Wrecking Ball": {"Skins": [
-            skin(COMMON, "Plain", "Common"),
-            skin(RARE, "Blue", "Rare"),
-            skin(EPIC, "Shiny", "Epic"),
-            skin(LEGENDARY, "Grand", "Legendary"),
-            skin(HALLOWEEN, "Pumpkin", "Legendary"),
-            team(HOME, "Home 2019"),
-            team(AWAY, "Away 2019"),
-            {"GUID": "108.0A5", "Name": "GOLDEN", "Type": "WeaponSkin", "Rarity": "Legendary"},
-            skin(REWARD, "Comic", "Epic"),
-        ]}})
+        json!({"Wrecking Ball": {
+            "LevelUnlocks": [{"Level": 0, "Unlocks": [skin(DEFAULT, "Classic", "Common")]}],
+            "LootBoxesUnlocks": [
+                {"LootBoxType": "Base", "Unlocks": [
+                    skin(COMMON, "Plain", "Common"),
+                    skin(RARE, "Blue", "Rare"),
+                    skin(EPIC, "Shiny", "Epic"),
+                    skin(LEGENDARY, "Grand", "Legendary"),
+                ]},
+                {"LootBoxType": "Halloween", "Unlocks": [skin(HALLOWEEN, "Pumpkin", "Legendary")]},
+            ],
+            "OtherUnlocks": [
+                team(HOME, "Home 2019"),
+                team(AWAY, "Away 2019"),
+                {"GUID": "108.0A5", "Name": "GOLDEN", "Type": "WeaponSkin", "Rarity": "Legendary"},
+                skin(REWARD, "Comic", "Epic"),
+            ],
+        }})
         .to_string(),
     )
     .unwrap();
     fs::write(
         data.path().join("extracted_general_unlocks.json"),
-        json!({"Icons": [
-            {"GUID": "201.0A5", "Name": "Ring", "Type": "Icon", "Rarity": "Common"},
-            {"GUID": "202.0A5", "Name": "Tag", "Type": "Spray", "Rarity": "Common"},
-            {"GUID": "4AEA.0A5", "Name": "Comic 1", "Type": "Spray", "Rarity": "Common"},
-            {"GUID": "4AEB.0A5", "Name": "Comic 2", "Type": "Icon", "Rarity": "Common"},
-            {"GUID": "4AEC.0A5", "Name": "Comic 3", "Type": "Spray", "Rarity": "Common"},
-            {"GUID": "4F50.0A5", "Name": "Tiger", "Type": "Icon", "Rarity": "Common"},
-        ]})
+        json!({
+            "LootBoxesUnlocks": [{"LootBoxType": "Base", "Unlocks": [
+                {"GUID": "201.0A5", "Name": "Ring", "Type": "Icon", "Rarity": "Common"},
+                {"GUID": "202.0A5", "Name": "Tag", "Type": "Spray", "Rarity": "Common"},
+            ]}],
+            "OtherUnlocks": [
+                {"GUID": "4AEA.0A5", "Name": "Comic 1", "Type": "Spray", "Rarity": "Common"},
+                {"GUID": "4AEB.0A5", "Name": "Comic 2", "Type": "Icon", "Rarity": "Common"},
+                {"GUID": "4AEC.0A5", "Name": "Comic 3", "Type": "Spray", "Rarity": "Common"},
+                {"GUID": "4F50.0A5", "Name": "Tiger", "Type": "Icon", "Rarity": "Common"},
+            ],
+        })
         .to_string(),
     )
     .unwrap();
     let items = ItemDb::load(data.path()).unwrap();
-    let entry = |guid: u64, price: i64, event: i64| json!({"+0x0": guid, "+0x10": 0, "+0x14": price, "+0x16": event});
-    let templates = json!({"format": 1, "server": [
-        ["70E5A247", 24900, {
-            "+0x80": [{"+0x0": [], "+0x30": HERO, "+0x38": 0, "+0x40": 0, "+0x48": 0,
-                "+0x50": 0, "+0x58": [], "+0x70": [], "+0x88": []}],
-            "+0x98": [{"+0x18": HERO, "+0x0": [
-                entry(COMMON, 25, 0), entry(RARE, 75, 0), entry(EPIC, 250, 0),
-                entry(LEGENDARY, 1000, 0), entry(HALLOWEEN, 3000, 2),
-                entry(HOME, 100, -1), entry(AWAY, 100, -1), entry(GOLDEN, 3000, -1),
-                entry(REWARD, 0, -1),
-            ]}]
-        }],
-        ["779A8581", 24300, {
-            "+0x78": {"+0x30": []},
-            "+0xF8": {"+0x0": [entry(ICON, 0, 0), entry(SPRAY, 25, 0)]}
-        }]
-    ]});
-    let templates = RetailTemplates::from_reader(templates.to_string().as_bytes()).unwrap();
-    Collection::new(&templates, Arc::new(items)).unwrap()
+    Collection::new(Arc::new(items), economy().item_prices().clone())
+}
+
+/// Competitive seasons for unit tests: seasons 1 (card DD), 10 (E6), 18
+/// (C2), 25 (121) and 32 (1B3, with its open queue card 1B4), the Lúcio
+/// Cup (1AD) and Competitive CTF (1C3). Each lasts 60 days from 2026-01-01.
+pub fn ranked() -> Ranked {
+    const START: u64 = 1_767_225_600;
+    let date = |seconds| stu_datetime(seconds).unwrap();
+    let dates = [START, START + DAY, START + 60 * DAY, START + 60 * DAY].map(date);
+    let card = |index: u64, parent: Option<u64>, children: &[u64]| {
+        let key = |index: u64| format!("0x{:016X}", CARD_BASE | index);
+        (
+            key(index),
+            json!({
+                "tiers": [{"lowest": 1, "highest": 5000, "unlocks": ["0x0250000000002A61"]}],
+                "dates": dates, "name": 0, "title": 0, "unlocks": [], "heroic_unlocks": [],
+                "heroes": [], "maps_featured": [], "featured": [], "texture": 0, "image": 0,
+                "maps": ["0x080000000000005B"], "parent": parent.map(key),
+                "children": children.iter().map(|&child| key(child)).collect::<Vec<_>>(),
+                "count_a": 25, "count_b": 5, "flag": true,
+            }),
+        )
+    };
+    let seasons: serde_json::Map<_, _> = [
+        card(0xdd, None, &[]),
+        card(0xe6, None, &[]),
+        card(0xc2, None, &[]),
+        card(0x121, None, &[]),
+        card(0x1b3, None, &[0x1b4]),
+        card(0x1b4, Some(0x1b3), &[]),
+        card(0x1ad, None, &[]),
+        card(0x1c3, None, &[]),
+    ]
+    .into_iter()
+    .collect();
+    Ranked::from_reader(serde_json::Value::Object(seasons).to_string().as_bytes()).unwrap()
 }
 
 /// The install's economy (`economy_174.json`) as build 104319 derives it,
@@ -110,6 +146,11 @@ pub fn economy() -> Arc<Economy> {
         "celebration_boxes": {
             "0x0D8000000000212E": {"unlock": "0x0250000000000C23", "box_type": 2},
             "0x0D8000000000237C": {"unlock": "0x0250000000000D5A", "box_type": 4},
+        },
+        "item_prices": {
+            "credits": {"Common": 25, "Rare": 75, "Epic": 250, "Legendary": 1000},
+            "competitive_points": 3000,
+            "league_tokens": {"Common": 10, "Rare": 25, "Epic": 100, "Legendary": 200},
         },
     });
     Arc::new(Economy::from_reader(economy.to_string().as_bytes()).unwrap())

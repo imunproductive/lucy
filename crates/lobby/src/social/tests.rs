@@ -16,7 +16,8 @@ use crate::{
         content::SocialContent,
         messages::{GROUPS, group_slot},
     },
-    templates::{LOBBY, RetailTemplates},
+    templates::LOBBY,
+    test_catalog,
     transport::LobbyMessage,
 };
 
@@ -39,20 +40,14 @@ impl World {
             directory.path().join("template.json"),
         )
         .unwrap();
-        let small = RetailTemplates::from_reader(
-            br#"{"format":1,"server":[
-                ["70E5A247",24900,{"+0x80":[],"+0x98":[]}],
-                ["779A8581",24300,{"+0x78":{"+0x30":[]},"+0xF8":{"+0x0":[]}}]
-            ]}"#
-            .as_slice(),
-        )
-        .unwrap();
-        let captured = RetailTemplates::captured();
         Self {
             _directory: directory,
-            collection: Collection::new(&small, Arc::new(ItemDb::default())).unwrap(),
-            ranked: Ranked::new(&captured).unwrap(),
-            presence: Presence::new(&captured).unwrap(),
+            collection: Collection::new(
+                Arc::new(ItemDb::default()),
+                crate::economy::ItemPrices::default(),
+            ),
+            ranked: test_catalog::ranked(),
+            presence: Presence,
             places: LeaderboardPlaces::new(),
             social: Social::default(),
             schemas: Schemas::lobby(),

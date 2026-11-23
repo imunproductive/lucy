@@ -31,10 +31,9 @@ use lucy_lobby::{
     clock::Clock,
     collection::Collection,
     economy::Economy,
-    menu::extra_preload_themes,
     presence::{PRO_ACCOUNT_BITS, Presence},
     ranked::Ranked,
-    templates::RetailTemplates,
+    templates::InstallContent,
     xp_table::XpTable,
 };
 use lucy_sim::scene_assets::SceneAssets;
@@ -185,23 +184,21 @@ impl Server {
         let signing_key = *lucy_fixed::LOBBY_STATE_BLOB_KEY;
         let schemas = Schemas::lobby();
         let game_schemas = Arc::new(Schemas::game());
-        let templates = RetailTemplates::captured();
+        let install_content = InstallContent::load(&data)?;
         let items = Arc::new(ItemDb::load(&data)?);
-        let collection = Collection::new(&templates, Arc::clone(&items))?;
-        let presence = Presence::new(&templates)?;
-        let ranked = Ranked::new(&templates)?;
-        let arcade = Arcade::load(data.join("arcade_cards_174.json"), &templates)?;
         let economy = Arc::new(Economy::load(&data)?);
+        let collection = Collection::new(Arc::clone(&items), economy.item_prices().clone());
+        let presence = Presence;
+        let ranked = Ranked::load(&data)?;
+        let arcade = Arcade::load(data.join("arcade_cards_174.json"))?;
         let xp = XpTable::load(&data)?;
-        let celebrations = Celebrations::load(&data, &templates, Arc::clone(&economy))?;
+        let celebrations = Celebrations::load(&data, Arc::clone(&economy))?;
         let mut assets = SceneAssets::load(&config.runtime)?;
         if let Some(install) = &config.install {
             assets = assets.with_collision_build(collision_build(install.clone()));
         }
-        // Skin themes newer than the capture, and the gun models.
-        let extra_preload = extra_preload_themes(&items)
-            .chain(assets.graphs().weapon_cosmetics())
-            .collect();
+        // The gun models, beside the install's preload.
+        let extra_preload = assets.graphs().weapon_cosmetics().into_iter().collect();
         let matchmaker = Matchmaker::new(&data, &config.data, config.test_players, config.test_ai)?;
         matchmaker.set_workshop(config.workshop.as_deref())?;
         // The Practice Range's scene is prepared up front for the first match
@@ -280,7 +277,7 @@ impl Server {
         let shared = Arc::new(Lobby {
             signing_key,
             schemas,
-            templates,
+            install_content,
             collection: Arc::new(collection),
             presence,
             ranked,
@@ -621,11 +618,7 @@ mod tests {
         fs::write(state.path().join("default_account.txt"), "RUST\n").unwrap();
         let schemas = Schemas::lobby();
         let game_schemas = Schemas::game();
-        let collection = Collection::new(
-            &RetailTemplates::captured(),
-            Arc::new(ItemDb::load(&runtime.join("data")).unwrap()),
-        )
-        .unwrap();
+        let collection = Collection::load(&runtime.join("data")).unwrap();
         let original_skin = collection.equipped_skin(&rust.profile(), SOLDIER).unwrap();
         let skin = collection
             .owned_for_hero(&rust.profile(), SOLDIER)
@@ -871,11 +864,7 @@ mod tests {
         accounts.get("rust").unwrap();
         let other = accounts.get("other").unwrap();
         fs::write(state.path().join("default_account.txt"), "rust\n").unwrap();
-        let collection = Collection::new(
-            &RetailTemplates::captured(),
-            Arc::new(ItemDb::load(&runtime.join("data")).unwrap()),
-        )
-        .unwrap();
+        let collection = Collection::load(&runtime.join("data")).unwrap();
         let shop = Shop::new(&collection);
         let product = collection
             .store()

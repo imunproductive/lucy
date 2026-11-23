@@ -6,7 +6,6 @@ use std::{
 };
 
 use serde_json::json;
-use sha2::{Digest, Sha256};
 
 use crate::{
     handoff::{GAME_REQUEST, is_request},
@@ -14,7 +13,6 @@ use crate::{
     presence::FRIENDS,
     ranked::{COMPETITIVE_CTF, Queue, RANKED},
 };
-use lucy_content::catalog::ItemDb;
 use lucy_wire::{
     jam::framing::{self, FrameReader},
     jam::handshake::client_handshake,
@@ -231,18 +229,19 @@ fn a_login_with_a_path_for_a_name_is_refused_without_a_profile() {
     assert_eq!(std::fs::read_dir(profiles).unwrap().count(), 0);
 }
 
+/// The whole login in wire order: the account's messages, then the static
+/// ones (`templates.rs`, built messages in their place), the ranked state,
+/// the ping, the party and the settings. Every message encodes.
 #[test]
 #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
-fn prepared_subset_matches_the_python_login_in_wire_order() {
+fn the_login_goes_in_wire_order() {
     let runtime = lucy_testkit::runtime_dir().join("data");
     let schemas = Schemas::lobby();
-    let templates = RetailTemplates::captured();
-    let items = Arc::new(ItemDb::load(&runtime).unwrap());
-    let reaper = items.hero_by_name("Reaper").unwrap();
-    let collection = Collection::new(&templates, items).unwrap();
-    let presence = Presence::new(&templates).unwrap();
-    let ranked = Ranked::new(&templates).unwrap();
-    let arcade = Arcade::load(runtime.join("arcade_cards_174.json"), &templates).unwrap();
+    let install = InstallContent::load(&runtime).unwrap();
+    let collection = Collection::load(&runtime).unwrap();
+    let reaper = collection.items().hero_by_name("Reaper").unwrap();
+    let ranked = Ranked::load(&runtime).unwrap();
+    let arcade = Arcade::load(runtime.join("arcade_cards_174.json")).unwrap();
     let temporary = tempfile::tempdir().unwrap();
     let accounts = Accounts::new(
         temporary.path().join("profiles"),
@@ -255,18 +254,49 @@ fn prepared_subset_matches_the_python_login_in_wire_order() {
         account,
         tournament: false,
     };
-    // Python login ordering replaces the early party from Content with the
-    // session's actual party after PING. Compare both subsets.
-    for (level, frame, date, menu_hero, event_cards, places, base, with_extras) in [
+    let arcade_group = crate::arcade::ARCADE;
+    let static_messages = [
+        (LOBBY, 20814),
+        (LOBBY, 20806),
+        (LOBBY, 20812),
+        (LOBBY, 20813),
+        (LOBBY, 20821),
+        (passes::PASSES, 58501),
+        (0xaa91_be18, 40900),
+        (0xaa91_be18, 40914),
+        (crate::lookups::OWL_LIVE, 43200),
+        (crate::lookups::OWL_LIVE, 43200),
+        (arcade_group, 39800),
+        (arcade_group, 39801),
+        (arcade_group, 39802),
+        (arcade_group, 39803),
+        (arcade_group, 39810),
+        (arcade_group, 39806),
+        (arcade_group, 39807),
+        (arcade_group, 39804),
+        (0x267f_de9e, 28001),
+        (0x0dfe_efef, 38300),
+        (CONFIG, 36600),
+        (CONFIG, 36603),
+        (CONFIG, 36602),
+        (0x5894_d085, 51804),
+        (0x5894_d085, 51807),
+        (0x5894_d085, 51810),
+        (0x5894_d085, 51817),
+        (0x5894_d085, 51812),
+        (0x34bb_385d, 43301),
+        (crate::lookups::STORE, 26404),
+        (crate::lookups::STORE, 26400),
+        (LOBBY, 20805),
+        (templates::CUSTOM_GAMES, 23301),
+    ];
+    for (level, frame, date, menu_hero, event_cards) in [
         (
             100,
             0x0250_0000_0000_0921,
             "2024-02-29",
             None,
             [].as_slice(),
-            LeaderboardPlaces::new(),
-            "c19b931eacf9c54cd61056f82694453fa93a1e716d0c7f01f1cb273480ac76ef",
-            "092d0b645d812659197dc2f3e4ab5790ae1c7264060c33f2b6d4491d1f6a170b",
         ),
         (
             3000,
@@ -274,9 +304,6 @@ fn prepared_subset_matches_the_python_login_in_wire_order() {
             "2026-09-29",
             Some(reaper),
             [COMPETITIVE_CTF].as_slice(),
-            LeaderboardPlaces::from([(Queue::Tank, 7)]),
-            "7d7660da99e8973ce1ca8c0b2d73122f0822bead8a4d2fa7785876025b0251c7",
-            "551492de79257b2112e0cdbcb3e2fc1ceffbc9493f4d55d18bce2863c558ace7",
         ),
     ] {
         let unlock_all = level == 3000;
@@ -293,18 +320,7 @@ fn prepared_subset_matches_the_python_login_in_wire_order() {
                     .insert("+0x10D".into(), json!({"+0x0": false, "+0x5": 1}));
             }
         }
-        let inputs = LoginContent {
-            menu_hero,
-            dev_console: false,
-            extra_preload: &[],
-            wall_time: 1_700_000_000,
-            arcade: &arcade,
-            celebrations: None,
-            leaderboard_places: &places,
-            party: &[],
-        };
-        // The session's party state as the social service builds it for a
-        // party of one.
+        let places = LeaderboardPlaces::from([(Queue::Tank, 7)]);
         let solo = {
             let profile = prepared.account.profile();
             let ratings = ranked.party_ratings(&profile, &places).unwrap();
@@ -325,106 +341,56 @@ fn prepared_subset_matches_the_python_login_in_wire_order() {
             )
             .unwrap()]
         };
-        let exact_inputs = LoginContent {
+        let content = LoginContent {
+            menu_hero,
+            dev_console: false,
+            extra_preload: &[],
+            wall_time: 1_700_000_000,
+            arcade: &arcade,
+            celebrations: None,
+            leaderboard_places: &places,
             party: &solo,
-            ..inputs
         };
-        for (content, count, expected) in [
-            (inputs, 46, base),
-            (exact_inputs, 50 + event_cards.len(), with_extras),
-        ] {
-            let mut messages = prepared
-                .available_messages(
-                    &schemas,
-                    &templates,
-                    &collection,
-                    &presence,
-                    &ranked,
-                    content,
-                )
-                .unwrap();
-            let arcade_and_passes = [
-                (passes::PASSES, 58501),
-                (crate::arcade::ARCADE, 39802),
-                (crate::arcade::ARCADE, 39810),
-                (crate::arcade::ARCADE, 39804),
-            ];
-            let actual: Vec<_> = messages
-                .iter()
-                .map(|&(crc, id, _)| (crc, id))
-                .filter(|key| arcade_and_passes.contains(key))
-                .collect();
-            assert_eq!(actual, arcade_and_passes);
-            let ranks = messages
-                .iter()
-                .filter(|message| message.0 == RANKED)
-                .count();
-            assert_eq!(ranks, 3 + event_cards.len());
-            assert_eq!(messages[9].0, MODE_RULES);
-            assert_eq!(messages[9].1, RULES);
-            assert_eq!(messages.len(), 54 + event_cards.len() + content.party.len());
-            // Keep the earlier reference corpus for the original subset.
-            // The new dynamic rows have their own complete wire comparison.
-            messages.retain(|&(crc, id, _)| {
-                (crc, id) != (MODE_RULES, RULES)
-                    && !arcade_and_passes.contains(&(crc, id))
-                    && (!content.party.is_empty() || crc != RANKED)
-            });
-            let keys: Vec<_> = messages.iter().map(|&(crc, id, _)| (crc, id)).collect();
-            assert_eq!(
-                keys[..9],
-                [
-                    (IN_CONNECT, 20500),
-                    (IN_CONNECT, 20502),
-                    (IN_CONNECT, 20505),
-                    (player::ENDORSEMENTS, 52002),
-                    (player::ENDORSEMENTS, 52005),
-                    (player::ENDORSEMENTS, 52006),
-                    (FRIENDS, 27113),
-                    (PROGRESSION, 24300),
-                    (HERO_CATALOG, 24900),
-                ]
-            );
-            if !content.party.is_empty() {
-                assert_eq!(
-                    keys[keys.len() - 4..],
-                    [
-                        (RANKED, 36300),
-                        (PING, 35500),
-                        (party::PARTY, 20700),
-                        (LOBBY, 20802)
-                    ]
-                );
-            } else {
-                assert_eq!(keys[keys.len() - 2..], [(PING, 35500), (LOBBY, 20802)]);
-            }
-            assert!(keys[9..].contains(&(LOBBY, 20812)));
-            let Value::Struct(card) = &messages[1].2[&0x78] else {
-                panic!("missing player card");
-            };
-            let Value::Struct(progression) = &messages[7].2[&0x78] else {
-                panic!("missing progression");
-            };
-            assert_eq!(card[&0x28], Value::Unsigned(frame));
-            assert_eq!(progression[&0x58], card[&0x28]);
-            assert_eq!(messages.len(), count);
-            let mut digest = Sha256::new();
-            for (crc, id, mut fields) in messages {
-                // 20802 as Python sent it: without the Kill Feed Display
-                // default (`player_messages::settings`), block +0x120 the
-                // schema's empty one; the rest must still match Python's.
-                if (crc, id) == (LOBBY, 20802) {
-                    let mut empty = schemas.empty(LOBBY, 20802).unwrap();
-                    fields.insert(0x120, empty.remove(&0x120).unwrap());
-                }
-                let mut wire = schemas.header(crc, 1, id).unwrap();
-                wire.extend(schemas.encode(crc, id, &fields).unwrap());
-                digest.update(crc.to_le_bytes());
-                digest.update(id.to_le_bytes());
-                digest.update(u32::try_from(wire.len()).unwrap().to_le_bytes());
-                digest.update(wire);
-            }
-            assert_eq!(format!("{:x}", digest.finalize()), expected);
+        let messages = prepared
+            .available_messages(&schemas, &install, &collection, &Presence, &ranked, content)
+            .unwrap();
+        let keys: Vec<_> = messages.iter().map(|&(crc, id, _)| (crc, id)).collect();
+        let mut expected = vec![
+            (IN_CONNECT, 20500),
+            (IN_CONNECT, 20502),
+            (IN_CONNECT, 20505),
+            (player::ENDORSEMENTS, 52002),
+            (player::ENDORSEMENTS, 52005),
+            (player::ENDORSEMENTS, 52006),
+            (FRIENDS, 27113),
+            (PROGRESSION, 24300),
+            (HERO_CATALOG, 24900),
+            (MODE_RULES, RULES),
+        ];
+        expected.extend(static_messages);
+        // A rating per card (the season's, its open queue's, the events'),
+        // then the state.
+        expected.extend(std::iter::repeat_n((RANKED, 36302), 2 + event_cards.len()));
+        expected.extend([
+            (RANKED, 36300),
+            (PING, 35500),
+            (party::PARTY, 20700),
+            (LOBBY, 20802),
+        ]);
+        assert_eq!(keys, expected);
+        let Value::Struct(card) = &messages[1].2[&0x78] else {
+            panic!("missing player card");
+        };
+        let Value::Struct(progression) = &messages[7].2[&0x78] else {
+            panic!("missing progression");
+        };
+        assert_eq!(card[&0x28], Value::Unsigned(frame));
+        assert_eq!(progression[&0x58], card[&0x28]);
+        // The config sets this build, and the menu hero when there is one.
+        let config = &messages[keys.iter().position(|&key| key == (CONFIG, 36600)).unwrap()].2;
+        assert_eq!(*config, templates::menu_config(menu_hero, false));
+        for (crc, id, fields) in &messages {
+            schemas.encode(*crc, *id, fields).unwrap();
         }
     }
 }
@@ -434,13 +400,11 @@ fn prepared_subset_matches_the_python_login_in_wire_order() {
 fn live_messages_follow_the_python_refresh_order() {
     let runtime = lucy_testkit::runtime_dir().join("data");
     let schemas = Schemas::lobby();
-    let templates = RetailTemplates::captured();
-    let items = Arc::new(ItemDb::load(&runtime).unwrap());
-    let collection = Collection::new(&templates, items).unwrap();
-    let ranked = Ranked::new(&templates).unwrap();
-    let arcade = Arcade::load(runtime.join("arcade_cards_174.json"), &templates).unwrap();
+    let collection = Collection::load(&runtime).unwrap();
+    let ranked = Ranked::load(&runtime).unwrap();
+    let arcade = Arcade::load(runtime.join("arcade_cards_174.json")).unwrap();
     let economy = Arc::new(crate::economy::Economy::load(&runtime).unwrap());
-    let celebrations = Celebrations::load(&runtime, &templates, economy).unwrap();
+    let celebrations = Celebrations::load(&runtime, economy).unwrap();
     let temporary = tempfile::tempdir().unwrap();
     let accounts = Accounts::new(
         temporary.path().join("profiles"),
@@ -475,7 +439,7 @@ fn live_messages_follow_the_python_refresh_order() {
         party: &[(party::PARTY, 20700, Fields::new())],
     };
     let messages = prepared
-        .live_messages(&templates, &collection, &ranked, content)
+        .live_messages(&collection, &ranked, content)
         .unwrap();
     let keys: Vec<_> = messages.iter().map(|&(crc, id, _)| (crc, id)).collect();
     let ratings = keys.iter().filter(|&&key| key == (RANKED, 36302)).count();

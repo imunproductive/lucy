@@ -21,10 +21,6 @@ pub const BNET_DESCRIPTORS: &[u8] = include_bytes!("../data/bnet_descriptors.pb"
 /// The client's fixed HMAC key for the lobby handshake's state blob.
 pub const LOBBY_STATE_BLOB_KEY: &[u8; 64] = include_bytes!("../data/lobby_state_blob.key");
 
-/// Server messages decoded from 1.68 reference traffic: catalogs, prices,
-/// rules and defaults the client never contained.
-pub const RETAIL_TEMPLATES: &str = include_str!("../data/retail_templates.json");
-
 /// Content keys of event resources, as the server sends them in
 /// `lobby_celebrations`.
 pub const RESOURCE_KEYS: &str = include_str!("../data/resource_keys.json");

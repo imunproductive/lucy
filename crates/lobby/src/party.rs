@@ -130,21 +130,13 @@ mod tests {
 
     use sha2::{Digest, Sha256};
 
-    use crate::templates::RetailTemplates;
+    use crate::economy::ItemPrices;
     use lucy_content::catalog::ItemDb;
     use lucy_wire::jam::codec::Schemas;
 
     #[test]
     fn pending_tiles_use_a_timer_and_only_the_leader_has_the_flag() {
-        let templates = RetailTemplates::from_reader(
-            br#"{"format":1,"server":[
-                ["70E5A247",24900,{"+0x80":[],"+0x98":[]}],
-                ["779A8581",24300,{"+0x78":{"+0x30":[]},"+0xF8":{"+0x0":[]}}]
-            ]}"#
-            .as_slice(),
-        )
-        .unwrap();
-        let collection = Collection::new(&templates, Arc::new(ItemDb::default())).unwrap();
+        let collection = Collection::new(Arc::new(ItemDb::default()), ItemPrices::default());
         let profile = Profile::default();
         let members = [
             PartyMember {
@@ -192,10 +184,8 @@ mod tests {
     fn solo_and_group_party_payloads_match_the_python_wire_bytes() {
         let runtime = lucy_testkit::runtime_dir().join("data");
         let schemas = Schemas::lobby();
-        let templates = RetailTemplates::captured();
-        let items = Arc::new(ItemDb::load(&runtime).unwrap());
-        let reaper = items.hero_by_name("Reaper").unwrap();
-        let collection = Collection::new(&templates, items).unwrap();
+        let collection = Collection::load(&runtime).unwrap();
+        let reaper = collection.items().hero_by_name("Reaper").unwrap();
         let mut lead = Profile {
             player_name: "Lead".into(),
             level: 3000,
