@@ -691,7 +691,7 @@ impl PartialEq for EntityVariables {
             return *self
                 .reflexive
                 .0
-                .get_or_init(|| self.variables == self.variables);
+                .get_or_init(|| PartialEq::eq(&self.variables, &self.variables));
         }
         self.variables == other.variables
     }
