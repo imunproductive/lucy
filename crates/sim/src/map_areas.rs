@@ -175,7 +175,7 @@ use lucy_physics::{
     collision::{
         cache::{HalfEdge, Hull, Mesh, Placement as CachePlacement, Shape, Triangle},
         index::SceneTriangle,
-        scene::{CollisionScene, SceneError},
+        scene::{CollisionScene, SceneError, probe_triangles},
     },
     contact::{
         math::ContactFrame,
@@ -548,9 +548,15 @@ impl PlaceableBody {
 
     /// Its shapes in the world as the client places them
     /// ([`ModelPose::place`]), each in its frame times its scale as the
-    /// movement cache places a prop's (`ContactWorld::from_movement_cache`).
-    /// An animated part of an idle animation is a moving shape, at the
-    /// placeable's frame until the match poses it ([`Self::idle`]).
+    /// movement cache places a prop's (`ContactWorld::from_movement_cache`),
+    /// with its triangles for the mover's ground rays as the movement
+    /// cache's triangle index keeps a prop's (`StaticShape::with_ground`):
+    /// the client's ray meets them, so a mover stands on the face under
+    /// its centre, not on what the disc's sweep catches beside it (the
+    /// Training Partner console's top, refs `MapEntities.md`
+    /// "RangeConsole"). An animated part of an idle animation is a moving
+    /// shape, at the placeable's frame until the match poses it
+    /// ([`Self::idle`]).
     pub fn shapes(&self) -> Result<Vec<StaticShape>, ContactWorldError> {
         self.model
             .iter()
@@ -568,7 +574,9 @@ impl PlaceableBody {
                         scaled_solid(solid, scale).ok_or(ContactWorldError::InvalidGeometry)?
                     }
                 };
-                let placed = StaticShape::new(geometry, Some(frame))?;
+                let ground = probe_triangles(&shape.cache_shape(), scale)
+                    .map_err(|_| ContactWorldError::InvalidGeometry)?;
+                let placed = StaticShape::new(geometry, Some(frame))?.with_ground(ground)?;
                 Ok(match place {
                     ShapePlace::Fixed(..) => placed,
                     ShapePlace::Bone(_) => placed.moving(),

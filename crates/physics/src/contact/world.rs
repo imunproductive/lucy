@@ -40,6 +40,8 @@ use std::sync::{Arc, PoisonError, RwLock};
 
 use crate::collision::cache::{CacheError, CollisionCache, Hull, Mesh, Placement, Shape};
 use crate::collision::grid::{ColumnGrid, ColumnRange, GridBuilder};
+use crate::collision::index::{GroundHit, SceneTriangle, TriangleIndex};
+use crate::collision::scene::placed_triangles;
 use crate::contact::gjk::PointSetSize;
 use crate::contact::gjk::sweep::{
     CastFrame, CastOptions, CastShape, MeshProbe, ShapeHit, mesh_sweep, shape_cast,
@@ -123,6 +125,28 @@ pub struct StaticShape {
     moving: Option<RwLock<Placed>>,
     /// The group that switches it ([`ContactWorld::with_switched`]).
     switch: Option<usize>,
+    /// Its triangles where the mover's ground rays meet them
+    /// ([`ContactWorld::ground`]).
+    ground: Option<Ground>,
+}
+
+/// A shape's triangles in its own frame (`collision::scene::probe_triangles`)
+/// and where it stands now, indexed for the mover's ground rays.
+struct Ground {
+    local: Box<[SceneTriangle]>,
+    placed: RwLock<Arc<TriangleIndex>>,
+}
+
+impl Ground {
+    fn index(
+        local: &[SceneTriangle],
+        frame: Option<ContactFrame>,
+    ) -> Result<Arc<TriangleIndex>, ContactWorldError> {
+        let frame = frame.unwrap_or(ContactFrame::IDENTITY);
+        TriangleIndex::new(placed_triangles(local, frame.translation, frame.rotation))
+            .map(Arc::new)
+            .map_err(|_| ContactWorldError::InvalidGeometry)
+    }
 }
 
 /// Where a shape stands: its frame, the matrix the casts take, its fat
@@ -173,6 +197,22 @@ impl StaticShape {
             placed,
             moving: None,
             switch: None,
+            ground: None,
+        })
+    }
+
+    /// This shape, whose triangles `local` (in its frame,
+    /// `collision::scene::probe_triangles`) the mover's ground rays meet
+    /// too ([`ContactWorld::ground`]): a server placeable's, which the
+    /// movement cache's triangle index leaves out.
+    pub fn with_ground(self, local: Vec<SceneTriangle>) -> Result<Self, ContactWorldError> {
+        let placed = Ground::index(&local, self.frame())?;
+        Ok(Self {
+            ground: Some(Ground {
+                local: local.into(),
+                placed: RwLock::new(placed),
+            }),
+            ..self
         })
     }
 
@@ -318,6 +358,8 @@ pub struct ContactWorld {
     /// The moving shapes ([`StaticShape::moving`]), out of the grid: every
     /// query looks at each where it stands now.
     moving: Vec<u32>,
+    /// The shapes with ground triangles ([`StaticShape::with_ground`]).
+    grounded: Vec<u32>,
     /// Whether each switched group is on.
     switches: Box<[AtomicBool]>,
     /// Each switched group's shapes.
@@ -336,6 +378,7 @@ impl ContactWorld {
     fn build(shapes: Vec<StaticShape>, groups: usize) -> Result<Self, ContactWorldError> {
         let mut grid = GridBuilder::with_large_limit(HUGE_PROXY_COLUMNS);
         let mut moving = Vec::new();
+        let mut grounded = Vec::new();
         let mut ranges = vec![0..0; groups];
         for (index, shape) in shapes.iter().enumerate() {
             let id = u32::try_from(index).map_err(|_| ContactWorldError::IndexLimit)?;
@@ -345,6 +388,9 @@ impl ContactWorld {
                     *range = id..id;
                 }
                 range.end = id + 1;
+            }
+            if shape.ground.is_some() {
+                grounded.push(id);
             }
             if shape.is_moving() {
                 moving.push(id);
@@ -362,6 +408,7 @@ impl ContactWorld {
             shapes,
             grid: grid.build(),
             moving,
+            grounded,
             switches: (0..groups).map(|_| AtomicBool::new(false)).collect(),
             groups: ranges.into(),
             epoch: AtomicU64::new(0),
@@ -408,6 +455,13 @@ impl ContactWorld {
                 continue;
             }
             let placed = Placed::new(&shape.geometry, Some(frame))?;
+            if let Some(ground) = &shape.ground {
+                let index = Ground::index(&ground.local, Some(frame))?;
+                *ground
+                    .placed
+                    .write()
+                    .unwrap_or_else(PoisonError::into_inner) = index;
+            }
             *cell.write().unwrap_or_else(PoisonError::into_inner) = placed;
             moved = true;
         }
@@ -441,6 +495,37 @@ impl ContactWorld {
         self.shapes[id as usize]
             .switch
             .is_none_or(|group| self.is_on(group))
+    }
+
+    /// The highest of its shapes' ground triangles ([`StaticShape::with_ground`],
+    /// the server placeables' models, standing now) under `(x, z)` between
+    /// `bottom` and `top`, as `TriangleIndex::ground` finds the map's, with
+    /// the shape's id: the client's ground ray meets every shape of its
+    /// physics world that stops the mover (refs `MapEntities.md`
+    /// "RangeConsole").
+    pub fn ground(
+        &self,
+        x: f64,
+        z: f64,
+        top: f64,
+        bottom: f64,
+        category: u16,
+    ) -> Option<(GroundHit, u32)> {
+        let mut best: Option<(GroundHit, u32)> = None;
+        for &id in &self.grounded {
+            let shape = &self.shapes[id as usize];
+            let Some(ground) = shape.ground.as_ref().filter(|_| self.shape_on(id)) else {
+                continue;
+            };
+            let index = Arc::clone(&ground.placed.read().unwrap_or_else(PoisonError::into_inner));
+            let Some(hit) = index.ground(x, z, top, bottom, category) else {
+                continue;
+            };
+            if best.is_none_or(|(best, _)| hit.y > best.y) {
+                best = Some((hit, id));
+            }
+        }
+        best
     }
 
     /// Consume the movement cache and retain only the selected placement groups.
@@ -853,6 +938,92 @@ mod tests {
         assert!(!world.place([(1, frame)]).unwrap());
         assert_eq!(world.epoch(), epoch + 1);
         assert!(world.place([(0, frame)]).is_err());
+    }
+
+    #[test]
+    fn a_placed_shapes_ground_is_a_props_while_it_stands_where_it_stands() {
+        use crate::collision::scene::{CollisionScene, probe_triangles};
+
+        let mesh = Mesh {
+            vertices: vec![[0.0, 0.5, 0.0], [0.0, 0.5, 2.0], [2.0, 1.0, 0.0]],
+            triangles: vec![Triangle {
+                corners: [0, 1, 2],
+                wings: [-1; 3],
+                mask: 0x18,
+                surface: 0,
+            }],
+        };
+        let shape = Shape::Mesh {
+            mesh: mesh.clone(),
+            mask: 0x18,
+        };
+        let scale = [1.25, 0.75, 1.5];
+        let frame = ContactFrame {
+            translation: [5.0, 1.0, 3.0],
+            rotation: [0.0, 0.382_683_43, 0.0, 0.923_879_5],
+        };
+        let shape_at = |frame: ContactFrame| {
+            let geometry = StaticGeometry::Mesh(Arc::new(
+                ContactMesh::new(Arc::new(mesh.clone()), scale, 0x18).unwrap(),
+            ));
+            StaticShape::new(geometry, Some(frame))
+                .unwrap()
+                .with_ground(probe_triangles(&shape, scale).unwrap())
+                .unwrap()
+        };
+        let world = ContactWorld::new(Vec::new())
+            .unwrap()
+            .with_switched(vec![vec![shape_at(frame)], vec![shape_at(frame).moving()]])
+            .unwrap();
+        // The same prop in a movement cache's view.
+        let prop = CollisionScene::placed_model(
+            std::slice::from_ref(&shape),
+            Placement {
+                model: 0,
+                group: 0,
+                translation: frame.translation,
+                scale,
+                rotation: frame.rotation,
+            },
+        )
+        .unwrap();
+        let corners = prop.triangles().triangles().next().unwrap().vertices;
+        let [x, z] = [0, 2].map(|k| corners.iter().map(|corner| corner[k]).sum::<f64>() / 3.0);
+        let hit = prop.triangles().ground(x, z, 5.0, -5.0, 0x08).unwrap();
+        assert_eq!(world.ground(x, z, 5.0, -5.0, 0x08), None, "both off");
+        world.switch(0, true);
+        assert_eq!(world.ground(x, z, 5.0, -5.0, 0x08), Some((hit, 0)));
+        assert_eq!(
+            world.ground(x, z, 5.0, -5.0, 0x01),
+            None,
+            "another category"
+        );
+        // The moving one, moved 10 m along x, on alone.
+        world.switch(0, false);
+        world.switch(1, true);
+        assert_eq!(world.ground(x, z, 5.0, -5.0, 0x08), Some((hit, 1)));
+        let moved = ContactFrame {
+            translation: [15.0, 1.0, 3.0],
+            ..frame
+        };
+        assert!(world.place([(1, moved)]).unwrap());
+        assert_eq!(world.ground(x, z, 5.0, -5.0, 0x08), None);
+        let moved_prop = CollisionScene::placed_model(
+            &[shape],
+            Placement {
+                model: 0,
+                group: 0,
+                translation: moved.translation,
+                scale,
+                rotation: moved.rotation,
+            },
+        )
+        .unwrap();
+        let hit = moved_prop
+            .triangles()
+            .ground(x + 10.0, z, 5.0, -5.0, 0x08)
+            .unwrap();
+        assert_eq!(world.ground(x + 10.0, z, 5.0, -5.0, 0x08), Some((hit, 1)));
     }
 
     #[test]
