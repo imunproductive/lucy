@@ -8,6 +8,8 @@ Double-click `START.cmd` in the checkout. It:
 2. builds `lucy.exe` and `owwfd_relay.dll` (`cargo build --release --locked --workspace`), which does nothing if the build is current;
 3. runs `target\release\lucy.exe` with the arguments you gave it.
 
+In a release download, `START.cmd` only runs the `lucy.exe` next to it: there is nothing to build.
+
 Without arguments, `lucy` asks for the mode:
 
 ```

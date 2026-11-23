@@ -1,6 +1,6 @@
 # Building from source
 
-Lucy has no ready-made download. You build it from the source code on your own PC. The build makes two files in `target\release`:
+A ready-made download for Windows is on the repository's **Releases** page on GitHub: a zip with `lucy.exe`, the relay and this guide. Unzip it and read its `README.md`; you need nothing below. This page is for building Lucy from the source code on your own PC instead. The build makes two files in `target\release`:
 
 - `lucy.exe`, the program;
 - `owwfd_relay.dll`, the relay that `lucy` loads into the game.
