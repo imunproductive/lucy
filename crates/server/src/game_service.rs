@@ -1241,6 +1241,9 @@ struct RoomSettings {
     timers: Timers,
     bot_plate: Arc<BotPlate>,
     hurt: HurtFeedback,
+    /// The seed of the room's AI heroes ([`router::Router`]'s); none: the
+    /// OS's ([`ai::seed`]).
+    ai_seed: Option<u64>,
     events: router::Events,
 }
 

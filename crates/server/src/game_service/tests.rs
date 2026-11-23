@@ -11,6 +11,10 @@ use lucy_wire::{
 use std::collections::HashSet;
 
 const MATCH: MatchId = [5, 8];
+/// The match tests' scene seed (`SceneAssets::with_seed`): the same mode
+/// random value and match seed each run, as the AI heroes' fixed seed on
+/// the virtual clock (`lockstep.rs`).
+const SCENE_SEED: u64 = 0x0f4a_1225;
 
 fn player() -> Vec<MatchPlayer> {
     vec![MatchPlayer {
@@ -1053,6 +1057,7 @@ fn busy_peers_resume_in_round_robin_order_after_the_global_input_budget() {
         timers: Timers::default(),
         bot_plate: Arc::default(),
         hurt: HurtFeedback::default(),
+        ai_seed: None,
         events: router::Events::nowhere(MATCH),
     };
     // The seats take connections 1 to 5, in slot order.
@@ -5457,6 +5462,7 @@ fn a_skirmish_match_on_another_map_plays_at_once_and_takes_a_third_player() {
         SceneAssets::load(&runtime)
             .unwrap()
             .with_collision_folder(collision.path())
+            .with_seed(SCENE_SEED)
             .with_collision_build(collision_build(lucy_testkit::game_dir())),
     );
     let catalog = MapCatalog::load(runtime.join("data")).unwrap();
@@ -5737,6 +5743,7 @@ fn slow_an_assault_match_on_anubis_captures_a_and_b_and_sends_the_players_home()
     let assets = Arc::new(
         SceneAssets::load(&runtime)
             .unwrap()
+            .with_seed(SCENE_SEED)
             .with_collision_build(collision_build(lucy_testkit::game_dir())),
     );
     let catalog = MapCatalog::load(runtime.join("data")).unwrap();
@@ -5979,6 +5986,7 @@ fn slow_a_practice_vs_ai_match_plays_its_ai_heroes_to_the_end() {
     let runtime = lucy_testkit::runtime_dir();
     let mut assets = SceneAssets::load(&runtime)
         .unwrap()
+        .with_seed(SCENE_SEED)
         .with_collision_build(collision_build(lucy_testkit::game_dir()));
     // The roster heroes' graphs still have gaps, and every body's graph
     // `0B8B` reaches TrackStatTime (`STU_441B50E4`) on the ultimate's
@@ -6275,6 +6283,7 @@ fn slow_a_competitive_assault_on_anubis_swaps_sides_and_spawn_rooms() {
     let assets = Arc::new(
         SceneAssets::load(&runtime)
             .unwrap()
+            .with_seed(SCENE_SEED)
             .with_collision_build(collision_build(lucy_testkit::game_dir())),
     );
     let catalog = MapCatalog::load(runtime.join("data")).unwrap();

@@ -206,6 +206,10 @@ pub(super) struct Router {
     bot_plate: Arc<BotPlate>,
     /// The live hurt feedback switch, which every room takes.
     hurt: HurtFeedback,
+    /// The seed of every match's AI heroes on the test's virtual clock
+    /// (`lockstep.rs`), so a test plays the same match each run; none: the
+    /// OS's for each match ([`super::ai::seed`]).
+    pub(super) ai_seed: Option<u64>,
 }
 
 impl Router {
@@ -224,6 +228,7 @@ impl Router {
             timers: Timers::default(),
             bot_plate: Arc::default(),
             hurt: HurtFeedback::default(),
+            ai_seed: None,
         }
     }
 
@@ -345,6 +350,7 @@ impl Router {
             timers: self.timers,
             bot_plate: Arc::clone(&self.bot_plate),
             hurt: self.hurt,
+            ai_seed: self.ai_seed,
             events: Events {
                 id,
                 sender: self.events.clone(),

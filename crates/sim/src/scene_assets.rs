@@ -156,6 +156,9 @@ pub struct SceneAssets {
     owner_bodies: Mutex<HashMap<u64, Option<Arc<OwnerBodyFactory>>>>,
     bot_unknowns: Unknowns,
     player_unknowns: Unknowns,
+    /// A test's seed for each match's random values
+    /// ([`crate::scene::MatchDraws::seeded`]); none: the OS's.
+    seed: Option<u64>,
     /// Players' bodies' ultimate generation variables; None: the rulesets'
     /// (`lucy_script::ultimate::generation_variables`).
     ult_generation: Option<lucy_script::wire::Variables>,
@@ -327,6 +330,9 @@ pub struct PreparedScene {
     /// The match's value of the mode entity's component 114 field 9
     /// ([`crate::scene::mode_create`]), drawn once per match.
     mode_random: f32,
+    /// The match's random table index (`STU_CBF6FF14`), drawn with
+    /// `mode_random` ([`crate::scene::MatchDraws`]).
+    match_seed: u16,
 }
 
 impl SceneAssets {
@@ -384,6 +390,7 @@ impl SceneAssets {
                 owner_bodies: Mutex::default(),
                 bot_unknowns: Unknowns::for_build(),
                 player_unknowns: Unknowns::for_build(),
+                seed: None,
                 ult_generation: None,
                 bots: BotCatalog::load(data.join("ai_spawners_174.json"))?,
                 movers: Arc::new(MoverCatalog::load(
@@ -404,6 +411,14 @@ impl SceneAssets {
                 map_areas: joined(map_areas)?,
             })
         })
+    }
+
+    /// Draw each match's random values from `seed` with its map and
+    /// ruleset instead of the OS's, so a test plays the same match each run
+    /// ([`crate::scene::MatchDraws`]).
+    pub fn with_seed(mut self, seed: u64) -> Self {
+        self.seed = Some(seed);
+        self
     }
 
     /// Build missing or outdated collision caches from the install.
@@ -622,7 +637,11 @@ impl SceneAssets {
             self.stats
                 .component(&PlayerStats::default(), map.mode_guid, None, None);
         let map_mode = map.mode_guid;
-        let mode_random = crate::scene::draw_mode_random();
+        let draws = match self.seed {
+            Some(seed) => crate::scene::MatchDraws::seeded(seed, map.map_guid, map.ruleset),
+            None => crate::scene::MatchDraws::random(),
+        };
+        let mode_random = draws.mode_random;
         let mode_rules =
             scripts
                 .mode_rules
@@ -718,6 +737,7 @@ impl SceneAssets {
             kill_height,
             safety_net,
             mode_random,
+            match_seed: draws.match_seed,
             placed_scripts,
             server_placeables,
             removed_placeables: Vec::new(),
@@ -1059,6 +1079,12 @@ impl PreparedScene {
     /// `STU_B182C5C9` reads ([`crate::scene::mode_create`]).
     pub fn mode_random(&self) -> f32 {
         self.mode_random
+    }
+
+    /// The match's random table index (`STU_CBF6FF14`), drawn once with
+    /// [`Self::mode_random`].
+    pub fn match_seed(&self) -> u16 {
+        self.match_seed
     }
 
     /// The rules of the mode's match flow (`mode_rules_data`).
