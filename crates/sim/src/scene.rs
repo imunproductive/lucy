@@ -449,28 +449,52 @@ pub fn mode_create(mode: u64, mode_random: f32) -> EntityUpdate {
     )
 }
 
-/// One match's value of the mode entity's component 114 field 9: uniform
-/// in [0, 1), from 24 random bits so that each value is an exact `f32`.
-/// Retail's draw is server-side and not known; `0F4A` uid 1299 keeps it
-/// as the payload's random speed factor #29093 for the whole match.
-pub fn draw_mode_random() -> f32 {
-    (random_bits() >> 40) as f32 / (1u32 << 24) as f32
+/// A match's random values, drawn once as its scene is prepared from 64
+/// bits: the OS's, or a test's seed with the map and ruleset
+/// ([`crate::scene_assets::SceneAssets::with_seed`]), so that a test plays
+/// the same match each run.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MatchDraws {
+    /// The mode entity's component 114 field 9: uniform in [0, 1), from 24
+    /// random bits so that each value is an exact `f32`. Retail's draw is
+    /// server-side and not known; `0F4A` uid 1299 keeps it as the
+    /// payload's random speed factor #29093 for the whole match.
+    pub mode_random: f32,
+    /// The match's random table index (`STU_CBF6FF14`, server-only;
+    /// Control `0EC2` picks its stages from the table at it): 14 random
+    /// bits, the table's index range, so that the graph's `index + round`
+    /// stays exact as an `f32`. Retail's value is not known.
+    pub match_seed: u16,
 }
 
-/// One match's random table index (`STU_CBF6FF14`, server-only; Control
-/// `0EC2` picks its stages from the table at it): 14 random bits, the
-/// table's index range, so that the graph's `index + round` stays exact as
-/// an `f32`. Retail's value is not known.
-pub fn draw_match_seed() -> u16 {
-    (random_bits() >> 50) as u16
-}
+impl MatchDraws {
+    /// The values of 64 random bits: the top 24 and the bottom 14.
+    pub fn from_bits(bits: u64) -> Self {
+        Self {
+            mode_random: (bits >> 40) as f32 / (1u32 << 24) as f32,
+            match_seed: (bits & 0x3fff) as u16,
+        }
+    }
 
-/// 64 bits from the OS-seeded hasher keys.
-fn random_bits() -> u64 {
-    use std::hash::{BuildHasher, Hasher};
-    std::collections::hash_map::RandomState::new()
-        .build_hasher()
-        .finish()
+    /// 64 bits from the OS-seeded hasher keys.
+    pub fn random() -> Self {
+        use std::hash::{BuildHasher, Hasher};
+        Self::from_bits(
+            std::collections::hash_map::RandomState::new()
+                .build_hasher()
+                .finish(),
+        )
+    }
+
+    /// A test's draws: `seed` with the map and ruleset, through SplitMix64
+    /// (the same every run; each map and ruleset its own).
+    pub fn seeded(seed: u64, map: u64, ruleset: u64) -> Self {
+        let mut bits = seed ^ map.rotate_left(17) ^ ruleset.rotate_left(41);
+        bits = bits.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        bits = (bits ^ (bits >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        bits = (bits ^ (bits >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        Self::from_bits(bits ^ (bits >> 31))
+    }
 }
 
 /// A bot's create: its body with its full pools, its filter bits, and its

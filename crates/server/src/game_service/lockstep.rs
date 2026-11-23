@@ -15,7 +15,9 @@
 //! ([`RoomLoop::pass`]). Between steps the router and the rooms answer the
 //! service's requests (`snapshot` and the like) at the last tick's time, so
 //! they see the same state whichever thread runs first. Nothing in a test's
-//! run depends on the PC's speed.
+//! run depends on the PC's speed, nor on chance: the AI heroes draw from a
+//! fixed seed ([`AI_SEED`]), and a match test's scene from its own
+//! (`SceneAssets::with_seed`: the mode random value and match seed).
 //!
 //! A match's scene is still prepared on a thread of its own, in real time
 //! ([`GameService::open_world`]): [`Lockstep::await_scenes`] holds the clock
@@ -56,6 +58,10 @@ use super::{
 /// The service's address on the in-memory network.
 const SERVER: SocketAddr = SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::LOCALHOST), 3_074);
 
+/// The seed of every match's AI heroes on the virtual clock (the module
+/// notes; [`Router`]).
+const AI_SEED: u64 = 0x0f4a_1225;
+
 /// A game service on a virtual clock (the module notes). It is the
 /// [`GameService`] it derefs to, plus the clock and the network.
 pub(crate) struct Lockstep {
@@ -71,8 +77,12 @@ impl Lockstep {
         let (requests, receiver) = mpsc::sync_channel(RECEIVE_BATCH);
         let (controls, steps) = mpsc::channel();
         let wire = Wire::default();
+        let mut router = Router::new(schemas, None);
+        // The AI heroes' picks and play from a fixed seed: the same match
+        // each run.
+        router.ai_seed = Some(AI_SEED);
         let service = Service {
-            router: Router::new(schemas, None),
+            router,
             rooms: Vec::new(),
         };
         let stopping = Arc::new(AtomicBool::new(false));

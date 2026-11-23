@@ -1128,6 +1128,9 @@ struct RoomState {
 struct RoomSettings {
     schemas: Arc<Schemas>,
     timers: Timers,
+    /// The seed of the room's AI heroes ([`router::Router`]'s); none: the
+    /// OS's ([`ai::seed`]).
+    ai_seed: Option<u64>,
     events: router::Events,
 }
 

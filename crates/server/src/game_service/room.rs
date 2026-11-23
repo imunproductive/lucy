@@ -274,12 +274,13 @@ impl RoomState {
         }
         let mut room = Room::new(map, players, world);
         let seats = ai.map_or_else(Vec::new, |difficulty| {
-            let mut random = Random::new(ai::seed());
+            let mut random = Random::new(settings.ai_seed.unwrap_or_else(ai::seed));
             room.add_ai(difficulty, &mut random)
         });
         let RoomSettings {
             schemas,
             timers,
+            ai_seed: _,
             events,
         } = settings;
         let (clock, _) = GameClock::opened(now);
