@@ -2445,69 +2445,94 @@ fn doomfists_meteor_strike_flies_over_the_range_and_lands_where_his_client_did()
     }
 }
 
-/// Doomfist rides a Practice Range platform (`800000C2`, path follower
-/// `0516`) as his client did (game session `D:/Temp/mm/r2`, 2026-11-23;
-/// the client's mover samples in `fixtures/range_platform_ride.txt`:
-/// frame, position, velocity, in the platform's frame while he rides it).
-/// A scratch server put him 1 m above the platform's origin at frame 4445;
-/// he lands on it at 4463, stands while it carries him along its loop at
-/// 4 m/s, walks off its edge at 4749-4786 and falls. The replay of his
-/// commands (yaw -31010, `extra` 51, the walk) gives his client's feet in
-/// the platform's frame (node 1) on every frame from the landing to the
-/// step off its edge, and the platform as his parent.
-///
-/// Not equal yet (refs `MapEntities.md` "MovingMaps"): the velocity
-/// relative to the platform, by a few 1/1024 m/s while he stands (the
-/// platform velocity's precision), and the step off the edge, where his
-/// client keeps the platform two frames longer (4761, 4762).
+/// Soldier: 76 rides a Practice Range platform (`800000C2`, path follower
+/// `0516`, node 1), jumps on it and walks off it as his client did (game
+/// session `D:/Temp/pe/fix_range1`, 2026-11-24, the server's records with
+/// movement flag 0x1000000, `lucy_physics::mover::platform::WORLD_AXES`).
+/// `fixtures/range_platform_jump.txt`: each line the live server's command
+/// (frame, forward, right, yaw, pitch, buttons, extra), then his client's
+/// mover after it (`+0x10B0`: the parent's entity, 0 for none; feet and
+/// velocity, in the platform's frame and relative to it while he rides),
+/// `-` for a frame the sampler missed. A scratch server put him 1 m above
+/// the platform's origin at frame 4627; he lands on it at 4645 and stands
+/// (velocity 0 relative to it), jumps at 4782 and leaves it with its
+/// velocity (3.35, 2.37 m/s in the air), lands on it again at 4825, walks
+/// off its edge at 4938-4960 and falls to the floor. The replay equals his
+/// client's parent, feet and velocity on every sampled frame but these,
+/// where the live server didn't either: his client took the teleport three
+/// frames late (4627-4629); the first frames on the platform after each
+/// landing (4645-4647, 4825-4826: his client's feet 2-3 cm along it);
+/// 4771 (the feet one 1/1024 step apart in the bob) and the first two in
+/// the air after the jump (4783, 4784: 2 mm, the platform velocity's
+/// precision); the step off the edge, where his client left the ground a
+/// frame sooner (4956-4962). Before the flag his client turned the stored
+/// velocity by the platform's rotation and dropped its velocity on the
+/// jump: refs `MapEntities.md` "PlatformExit".
 #[test]
 #[ignore = "requires the derived 104319 data and the install"]
-fn doomfist_rides_a_range_platform_in_its_frame_as_his_client_did() {
+fn soldier_jumps_and_walks_off_a_range_platform_as_his_client_did() {
     const PLATFORM: u32 = 0x8000_00C2;
-    let client: Vec<(u32, [f64; 3])> = include_str!("../../../fixtures/range_platform_ride.txt")
+    const UNEQUAL: [u32; 18] = [
+        4627, 4628, 4629, 4645, 4646, 4647, 4771, 4783, 4784, 4825, 4826, 4956, 4957, 4958, 4959,
+        4960, 4961, 4962,
+    ];
+    let lines: Vec<Vec<&str>> = include_str!("../../../fixtures/range_platform_jump.txt")
         .lines()
-        .map(|line| {
-            let v: Vec<f64> = line
-                .split_whitespace()
-                .map(|x| x.parse().unwrap())
-                .collect();
-            (v[0] as u32, [v[1], v[2], v[3]])
-        })
+        .map(|line| line.split_whitespace().collect())
         .collect();
-    let mut player = Player::spawn(DOOMFIST);
-    let command = |forward| Command {
-        yaw: -31010,
-        forward,
-        extra: 51,
-        ..Command::default()
-    };
-    while player.frame < 4444 {
-        player.step(command(0));
+    let mut player = Player::spawn(SOLDIER);
+    while player.frame < 4626 {
+        player.step(Command {
+            yaw: -31010,
+            extra: 65,
+            ..Command::default()
+        });
     }
     // The scratch server's teleport: 1 m above the platform's origin as
-    // it stood for command 4445.
+    // it stood for command 4627.
     player
         .world
         .mover
         .as_mut()
         .unwrap()
-        .teleport([42.673_008, 7.431_227, -15.695_88], None);
-    while player.frame < 4760 {
-        let frame = player.frame + 1;
-        player.step(command(if (4749..=4786).contains(&frame) {
-            127
-        } else {
-            0
-        }));
-        let record = player.world.mover.as_ref().unwrap().record();
-        let feet = client.iter().find(|(f, _)| *f == frame).unwrap().1;
-        if frame < 4463 {
-            // The fall after the teleport: his client took the teleported
-            // state a frame late, so its fall runs one frame behind.
+        .teleport([50.046875, 7.53515625, -7.4453125], None);
+    let mut compared = 0;
+    for line in &lines {
+        let number = |at: usize| line[at].parse::<i64>().unwrap();
+        let frame = number(0) as u32;
+        assert_eq!(frame, player.frame + 1);
+        player.step(Command {
+            forward: number(1) as i8,
+            right: number(2) as i8,
+            yaw: number(3) as i32,
+            pitch: number(4) as i32,
+            buttons: number(5) as u32,
+            extra: number(6) as u16,
+            ..Command::default()
+        });
+        if line[7] == "-" || UNEQUAL.contains(&frame) {
             continue;
         }
-        assert_eq!(record.position, feet, "frame {frame}");
+        let value = |at: usize| line[at].parse::<f64>().unwrap();
+        let record = player.world.mover.as_ref().unwrap().record();
         let riding = record.parent.map(|parent| (parent.entity, parent.node));
-        assert_eq!(riding, Some((PLATFORM, 1)), "frame {frame}");
+        let expected = match number(7) {
+            0 => None,
+            entity => Some((entity as u32, 1)),
+        };
+        assert_eq!(riding, expected, "frame {frame}");
+        assert!(expected.is_none_or(|(entity, _)| entity == PLATFORM));
+        assert_eq!(
+            record.position,
+            [value(8), value(9), value(10)],
+            "frame {frame}"
+        );
+        assert_eq!(
+            record.velocity,
+            [value(11), value(12), value(13)],
+            "frame {frame}"
+        );
+        compared += 1;
     }
+    assert_eq!(compared, 379);
 }

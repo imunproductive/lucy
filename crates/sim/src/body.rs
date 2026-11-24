@@ -7,6 +7,7 @@ use std::f64::consts::PI;
 
 use crate::pools::PoolCatalog;
 use lucy_content::heroes::Hero;
+use lucy_physics::mover::platform::WORLD_AXES;
 use lucy_wire::entity::{
     Component, ComponentValue, Create, CreateFrame, EntityUpdate, FRAME_ZERO_BACK, LeaseBlock,
     Movement, NO_INPUT, Operation, SkinTheme,
@@ -50,15 +51,17 @@ pub enum BodyView<'a> {
     Observer { pose: Movement, gravity: f64 },
 }
 
-/// Initial owner movement uses its pose and crouch flag. The client's mover
-/// continues from this state without an input history or animation counters.
+/// Initial owner movement uses its record's pose, crouch flag and
+/// [`WORLD_AXES`] (the client's mover sets that at its init; a create
+/// without it would clear it). The client's mover continues from this
+/// state without an input history or animation counters.
 pub fn owner_pose(source: Movement) -> Movement {
     Movement {
         position: source.position,
         yaw: source.yaw,
         pitch: source.pitch,
         velocity: source.velocity,
-        flags: source.flags & CROUCHED_MOVEMENT_FLAG,
+        flags: source.flags & (CROUCHED_MOVEMENT_FLAG | WORLD_AXES),
         ..Movement::default()
     }
 }

@@ -9,10 +9,24 @@
 //! tick: the parent drops the first tick the probe finds no platform (a
 //! jump's next tick, since the probe reaches nothing in the air). While it
 //! has a parent the movement state keeps its position in the parent's
-//! frame and its velocity relative to the platform in the frame's axes,
-//! and the movement records carry the parent (entity and node) with those
-//! local values; the owner's client compares all of them exactly
+//! frame, and the movement records carry the parent (entity and node) with
+//! that local position; the owner's client compares all of them exactly
 //! (`0x7FF789B73E00`), so a different parent is a correction.
+//!
+//! The velocity stays in world axes ([`WORLD_AXES`]): the mover's init
+//! (`0x7FF789AD0540` +0xE22) sets movement flag 0x1000000 and nothing in
+//! the client clears it but a record or create without it. With it the
+//! velocity getter and setter (`0x7FF789B73D60`, `0x7FF789B76A70`) and the
+//! friction's add (`0x7FF789B6DA60`) take the stored numbers as they are,
+//! so on a platform the stored velocity is the velocity relative to it, in
+//! world axes, and the platform's own motion comes from the carry alone.
+//! The reparent (`0x7FF789B4ADA0`) adds the old platform's velocity `p`
+//! (`0x7FF789ACD630`: getter plus `p`, stored) and takes the new one's off
+//! (`0x7FF789ACD520`: getter less `p`): a body leaving a platform keeps its
+//! motion, unturned. Without the flag (the server's records before
+//! 2026-11-24) the same code turns the numbers by the platform's rotation
+//! and drops its velocity: a still rider stopped dead on a jump and a
+//! moving one left turned by the platform's yaw.
 //!
 //! The parent's frame (`0x7FF789B71FD0`) is its component 1 transform as
 //! posed for the tick (the tick's rewind scope poses it at the command's
@@ -20,19 +34,15 @@
 //! unit with `rsqrtps`), without scale. Within one tick (`0x7FF789B4B1D0`):
 //! the stored local point placed by the frame is where the probe starts,
 //! plus `dt · p` (`p` the platform velocity of the tick before); the
-//! world velocity is `R · v + p`; the capsule stays where the last tick
-//! left it, and the sweep adds the carry `D`, the local point's place now
-//! less the capsule's feet (`0x7FF789B46560`: `dt · p` on the tick it
-//! takes a new platform, 0 without one); after the move the feet go back
-//! into the frame (its inverse by cofactors, `0x7FF789884370`) and the
-//! velocity by the transposed rows less `p` (`0x7FF789B76A70`), both then
-//! on the 1/1024 grid. The platform velocity `p` (`0x7FF789B6E4E0`) is the
-//! local point's move between the platform posed at the view time and
-//! `dt` before it, divided by `dt`, times component 77's factor; it is
-//! taken again every tick at the reparent. The reparent moves the
-//! velocity's numbers between frames without turning them: `v + Rᵀp` of
-//! the old platform, then less `Rᵀp` of the new one, so landing on a
-//! turned platform turns the world velocity by its turn.
+//! capsule stays where the last tick left it, and the sweep adds the carry
+//! `D`, the local point's place now less the capsule's feet
+//! (`0x7FF789B46560`: `dt · p` on the tick it takes a new platform, 0
+//! without one); after the move the feet go back into the frame (its
+//! inverse by cofactors, `0x7FF789884370`), on the 1/1024 grid. The
+//! platform velocity `p` (`0x7FF789B6E4E0`) is the local point's move
+//! between the platform posed at the view time and `dt` before it, divided
+//! by `dt`, times component 77's factor; it is taken again every tick at
+//! the reparent.
 //!
 //! The client takes `rsqrtps`/`rcpps` estimates for the frame's rows and
 //! its inverse; the port takes them correctly rounded (they differ between
@@ -41,6 +51,12 @@
 use super::{Mover, posture::snap};
 use crate::contact::math::{ContactFrame, Vec3, add, scale, sub};
 use crate::contact::world::{ContactWorld, Platform};
+
+/// Movement flag 0x1000000: the velocity (and the facing) in world axes
+/// whatever the parent. The client's mover init sets it on every mover
+/// (`0x7FF789AD0540`); the records carry it so that the owner's client
+/// keeps it ([`Mover::record`]).
+pub const WORLD_AXES: u32 = 0x0100_0000;
 
 /// The platform frames dt before the moving shapes' current poses, which
 /// give the platform velocity: the match keeps the clocks it posed the
@@ -98,12 +114,6 @@ impl Matrix {
         add(self.turn(point), self.origin)
     }
 
-    /// A world vector in the rows' axes, by the transposed rows
-    /// (`0x7FF789B76A70`): `(M_i.y v.y + M_i.x v.x) + M_i.z v.z`.
-    pub(crate) fn turn_back(&self, [x, y, z]: Vec3) -> Vec3 {
-        self.rows.map(|row| (row[1] * y + row[0] * x) + row[2] * z)
-    }
-
     /// Its inverse by cofactors (`0x7FF789884260`, `0x7FF789884370`).
     pub(crate) fn inverse(&self) -> Self {
         let [r0, r1, r2] = self.rows;
@@ -135,7 +145,7 @@ pub(crate) struct Riding {
     pub(crate) platform: Platform,
     /// The feet in the platform's frame, on the 1/1024 grid.
     pub(crate) local: Vec3,
-    /// The velocity relative to the platform, in its axes.
+    /// The velocity relative to the platform, in world axes.
     pub(crate) velocity: Vec3,
     /// The platform velocity (`p`) the tick took.
     pub(crate) carry: Vec3,
@@ -178,7 +188,7 @@ pub(crate) struct RideStart {
 }
 
 impl Mover {
-    /// Put a riding mover's pose in the world where its platform stands
+    /// Put a riding mover's feet in the world where its platform stands
     /// now (see the module notes); a platform gone drops it, the pose as
     /// it was.
     pub(super) fn ride_in_world(&mut self, dt: f32) -> RideStart {
@@ -192,7 +202,7 @@ impl Mover {
         let placed = matrix.place(riding.local);
         let feet = self.pose.position.map(|axis| axis as f32);
         self.pose.position = placed.map(f64::from);
-        self.pose.velocity = add(matrix.turn(riding.velocity), riding.carry).map(f64::from);
+        self.pose.velocity = riding.velocity.map(f64::from);
         RideStart {
             carry: sub(placed, feet),
             shift: scale(riding.carry, dt),
@@ -209,20 +219,19 @@ impl Mover {
         let old = self.riding.and_then(|riding| {
             let matrix = frame_now(world, &riding.platform)?;
             let carry = platform_velocity(clock, &riding.platform, &matrix, riding.local, dt);
-            Some((riding, matrix, carry))
+            Some((riding, carry))
         });
         let same = |platform: &Platform| {
             found
                 .is_some_and(|found| found.entity == platform.entity && found.node == platform.node)
         };
-        if let Some((riding, matrix, carry)) = old.filter(|(riding, ..)| same(&riding.platform)) {
+        if let Some((riding, carry)) = old.filter(|(riding, _)| same(&riding.platform)) {
             self.riding = Some(Riding { carry, ..riding });
-            self.pose.velocity = add(matrix.turn(riding.velocity), carry).map(f64::from);
             return start.carry;
         }
-        // The velocity's numbers move between the frames unturned.
+        // The old platform's velocity on, the new one's off.
         let raw = match old {
-            Some((riding, matrix, carry)) => add(riding.velocity, matrix.turn_back(carry)),
+            Some((riding, carry)) => add(riding.velocity, carry),
             None => self.pose.velocity.map(|axis| axis as f32),
         };
         self.riding = None;
@@ -237,15 +246,32 @@ impl Mover {
             .inverse()
             .place(self.pose.position.map(|axis| axis as f32));
         let carry = platform_velocity(clock, &platform, &matrix, local, dt);
-        let velocity = sub(raw, matrix.turn_back(carry));
+        let velocity = sub(raw, carry);
         self.riding = Some(Riding {
             platform,
             local,
             velocity,
             carry,
         });
-        self.pose.velocity = add(matrix.turn(velocity), carry).map(f64::from);
+        self.pose.velocity = velocity.map(f64::from);
         scale(carry, dt)
+    }
+
+    /// Leave the platform outside the tick's probe (a behaviour or an
+    /// authored motion taking over: the client's reparent to none from
+    /// them): the feet where the platform has them now, its velocity added.
+    pub(super) fn leave_platform(&mut self, dt: f32) {
+        let Some(riding) = self.riding.take() else {
+            return;
+        };
+        let world = self.body.world();
+        let Some(matrix) = frame_now(world, &riding.platform) else {
+            return;
+        };
+        let clock = self.platforms.as_deref();
+        let carry = platform_velocity(clock, &riding.platform, &matrix, riding.local, dt);
+        self.pose.position = matrix.place(riding.local).map(f64::from);
+        self.pose.velocity = add(riding.velocity, carry).map(f64::from);
     }
 
     /// A riding mover's moved feet (world) back in its platform's frame on
@@ -258,20 +284,13 @@ impl Mover {
         Some(matrix.place(riding.local))
     }
 
-    /// The moved velocity (world): on a platform, relative to it in its
-    /// axes, on the grid; in the world otherwise.
+    /// The moved velocity on the grid, kept as it is: relative to the
+    /// platform on one ([`WORLD_AXES`]).
     pub(super) fn settle_velocity(&mut self, velocity: [f64; 3]) {
-        let world = velocity.map(|axis| axis as f32);
-        let settled = self.riding.as_mut().and_then(|riding| {
-            let matrix = frame_now(self.body.world(), &riding.platform)?;
-            let local = matrix.turn_back(sub(world, riding.carry));
-            riding.velocity = local.map(|axis| snap(f64::from(axis)) as f32);
-            Some(add(matrix.turn(riding.velocity), riding.carry))
-        });
-        self.pose.velocity = match settled {
-            Some(world) => world.map(f64::from),
-            None => velocity.map(snap),
-        };
+        self.pose.velocity = velocity.map(snap);
+        if let Some(riding) = self.riding.as_mut() {
+            riding.velocity = self.pose.velocity.map(|axis| axis as f32);
+        }
     }
 }
 
@@ -317,8 +336,5 @@ mod tests {
         for axis in 0..3 {
             assert!((back[axis] - point[axis]).abs() < 1e-5, "{back:?}");
         }
-        let turned = matrix.turn([0.0, 0.0, 1.0]);
-        let local = matrix.turn_back(turned);
-        assert!((local[2] - 1.0).abs() < 1e-6 && local[0].abs() < 1e-6);
     }
 }

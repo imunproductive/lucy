@@ -294,16 +294,19 @@ impl Mover {
         self.pose
     }
 
-    /// Its movement state as the records carry it: on a platform, the
-    /// platform as its parent and the feet and velocity in its frame
-    /// ([`platform`]).
+    /// Its movement state as the records carry it: flag
+    /// [`platform::WORLD_AXES`] as the client's mover has it from its init,
+    /// and on a platform the platform as its parent with the feet in its
+    /// frame and the velocity relative to it ([`platform`]).
     pub fn record(&self) -> Movement {
+        let flags = self.pose.flags | platform::WORLD_AXES;
         let Some(riding) = self.riding else {
-            return self.pose;
+            return Movement { flags, ..self.pose };
         };
         Movement {
             position: riding.local.map(f64::from),
             velocity: riding.velocity.map(f64::from),
+            flags,
             parent: Some(MovementParent {
                 entity: riding.platform.entity,
                 node: riding.platform.node,
@@ -524,7 +527,7 @@ impl Mover {
             // Assumption: a behaviour that takes over the move, or an
             // authored motion, leaves the platform (the client's behaviour
             // kinds keep their own probe; not read).
-            self.riding = None;
+            self.leave_platform(dt as f32);
         }
         let mut carry = [0.0f32; 3];
         let normal = if driven {
