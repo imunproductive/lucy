@@ -6,6 +6,10 @@
 
 Lucy was originally forked from [ORPHEUS](https://github.com/leafall903/ORPHEUS) by leafall903 and contributors, and has since been largely rewritten. Everything it builds on is credited in [CREDITS.md](CREDITS.md).
 
+## Why
+
+Overwatch 1 was shut down in 2022 and replaced by Overwatch 2, and the game it was can no longer be played. Lucy is an attempt to preserve it: to keep the last version, 1.74, playable as it was, for the people who remember it and for anyone who wants to study it. It is non-commercial, and it ships no Blizzard content.
+
 ## Compared with retail Overwatch 1.74
 
 | Area | Feature | Status | Notes |
@@ -26,7 +30,7 @@ Lucy was originally forked from [ORPHEUS](https://github.com/leafall903/ORPHEUS)
 | | Hit registration | Works | On the client's own hitboxes |
 | | Damage, healing, deaths, respawns, ultimate charge | Works | |
 | | Kill feed, death cam, scoreboard | Works | |
-| | Map objects (cars, consoles) | Works | Spawn doors and moving platforms not yet |
+| | Map objects | Works | Moving platforms, boats and cars, which you can ride; spawn doors and lifts don't open or move yet |
 
 ## What Lucy adds
 
