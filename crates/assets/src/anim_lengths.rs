@@ -70,7 +70,10 @@
 //! graph `02C5` (node 51) plays alias `0C8:043C` without a length: 22 of
 //! the sets list it, 21 with a length, mostly as one leaf (Reaper's
 //! `0007.021`: 4.77 s), but Soldier: 76's `011C.021` doesn't, so on him
-//! that state ends at its begin. Every scalar these sets give is 0.
+//! that state ends at its begin. Every scalar these sets give is 0. The
+//! 292 emotes name 292 more sets, none a body's (Soldier: 76's default
+//! `0250.0904` plays `045C` from `06AD.021`: 5 s); 11 of their aliases
+//! give a scalar other than 0.
 //!
 //! The file: `{"bodies": {body: set}, "sets": {set: {alias: {"lengths":
 //! {category: seconds}, "scalars": {category: scalar | null}}}}}`, sorted,
