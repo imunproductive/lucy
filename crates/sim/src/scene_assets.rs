@@ -39,7 +39,7 @@ use crate::{
     pools::PoolCatalog,
     projectile_flight::WallHit,
     replication::OwnerBodyRuntime,
-    scene::{PlayerAppearance, initial_world, mode_ui, placeable_components},
+    scene::{PlayerAppearance, initial_world, mode_ui, placeable_components, placeable_movement},
     spawned::SpawnGraphs,
 };
 use lucy_content::{
@@ -1744,6 +1744,7 @@ impl PreparedScene {
                 operation: Some(Operation::Placeable(
                     placed.placeable,
                     placeable_components(placed),
+                    placeable_movement(placed),
                 )),
                 ..EntityUpdate::default()
             }),

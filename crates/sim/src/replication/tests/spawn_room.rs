@@ -1112,7 +1112,9 @@ fn the_server_placeables_follow_the_player_and_the_mode() {
     let creates: Vec<(u32, &Vec<lucy_wire::entity::Component>)> = updates
         .iter()
         .filter_map(|update| match &update.operation {
-            Some(Operation::Placeable(_, components)) => {
+            Some(Operation::Placeable(_, components, movement)) => {
+                // No Range placeable takes its transform from a state.
+                assert!(movement.is_none(), "{update:?}");
                 Some((update.entity & 0x7FFF_FFFF, components))
             }
             _ => None,
@@ -1145,7 +1147,11 @@ fn the_server_placeables_follow_the_player_and_the_mode() {
 /// Each map and mode gets its own server placeables: Rialto's 224 in
 /// Escort, and in Assault Volskaya's 159 less the 8 whose identifier
 /// `2962` only modes `1D`, `1E`, `59` and `70` list (its four `00F6`
-/// barriers, 1100 among them, and four `0D73` frames).
+/// barriers, 1100 among them, and four `0D73` frames). Volskaya's lift
+/// 1931 (definition `3CD8`, component 28 by component 34) is the one
+/// create that carries a movement state: its map place on the 1/1024 m
+/// grid, turned -5696/65536 of a turn, at frame 0 (refs `MapEntities.md`
+/// "MapMisc"; without it the client kept the lift at the world origin).
 #[test]
 #[ignore = "requires a derived 104319 pack and the install (Rialto's and Volskaya's collision)"]
 fn rialto_and_volskaya_get_their_server_placeables() {
@@ -1164,14 +1170,36 @@ fn rialto_and_volskaya_get_their_server_placeables() {
         let map = catalog.game_map(map, mode, name, false, &[6, 6]).unwrap();
         let loading = map.placeables.len();
         let scene = assets.prepare(map).unwrap();
-        let creates: Vec<u32> = scene
+        let creates: Vec<(u32, Option<Box<Movement>>)> = scene
             .initial_world(&viewer(&card))
             .unwrap()
-            .iter()
-            .filter(|update| matches!(update.operation, Some(Operation::Placeable(..))))
-            .map(|update| update.entity & 0x7FFF_FFFF)
+            .into_iter()
+            .filter_map(|update| match update.operation {
+                Some(Operation::Placeable(_, _, movement)) => {
+                    Some((update.entity & 0x7FFF_FFFF, movement))
+                }
+                _ => None,
+            })
             .collect();
         assert_eq!(creates.len(), loading + server, "{name}");
-        assert!(!creates.contains(&1100), "{name}");
+        assert!(!creates.iter().any(|(entity, _)| *entity == 1100), "{name}");
+        let placed: Vec<_> = creates
+            .into_iter()
+            .filter_map(|(entity, movement)| Some((entity, *movement?)))
+            .collect();
+        let expected = if name == "Assault" {
+            vec![(
+                1931,
+                Movement {
+                    position: [-64.6845703125, -1.9619140625, 53.1904296875],
+                    yaw: -5696,
+                    input_frame: Some(lucy_wire::entity::NO_INPUT),
+                    ..Movement::default()
+                },
+            )]
+        } else {
+            Vec::new()
+        };
+        assert_eq!(placed, expected, "{name}");
     }
 }

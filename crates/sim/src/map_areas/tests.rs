@@ -313,3 +313,53 @@ fn the_range_platforms_walk_their_path_where_the_clients_physics_world_had_them(
         );
     }
 }
+
+/// A placeable whose transform comes from a movement state (Volskaya's lift
+/// `3CD8`, component 28 by component 34) stands where its create puts it:
+/// on the 1/1024 m grid, turned by its yaw word, unscaled; a turn not about
+/// y alone is refused.
+#[test]
+fn a_state_placed_placeable_stands_where_its_create_puts_it() {
+    let lift = StatePlace::new(
+        [-64.685_005, -1.961_539_3, 53.190_575],
+        [0.0, 0.269_654_36, 0.0, -0.962_957_14],
+    )
+    .unwrap();
+    assert_eq!(
+        lift,
+        StatePlace {
+            position: [-64.684_570_312_5, -1.961_914_062_5, 53.190_429_687_5],
+            yaw: -5696,
+        }
+    );
+    assert!(StatePlace::new([0.0; 3], [0.1, 0.0, 0.0, 0.995]).is_none());
+    let data = MapAreaData::read(
+        br#"{"maps": {
+            "0x0800000000000001": {"server_placeables": [{"placeable": 341,
+                "definition": "0x0400000000001307", "position": [5.0001, 0, 5],
+                "rotation": [0, 0.7071068, 0, 0.7071068], "scale": [3, 3, 3], "state_placed": true}]}
+        },
+        "models": {
+            "0x0400000000001307": [{"kind": "capsule", "category": 1, "mask": 24,
+                "a": [0, 0, 0], "b": [1, 0, 0], "radius": 0.25}]
+        }}"#,
+    )
+    .unwrap();
+    let mut map = GameMap::practice_range();
+    map.map_guid = 0x0800_0000_0000_0001;
+    let none = BTreeSet::new();
+    let placed = &data.placed_scripts(&map, &none)[0];
+    assert_eq!(
+        placed.state_place,
+        Some(StatePlace {
+            position: [5.0, 0.0, 5.0],
+            yaw: 16384,
+        })
+    );
+    // The capsule's 1 m along x, unscaled, turned a quarter about y: it
+    // runs from (5, 0, 5) along -z.
+    let shapes = data.placeable_bodies(&map, &none)[0].shapes().unwrap();
+    let bounds = shapes[0].fat_bounds().unwrap();
+    assert!((bounds.low[0] - 4.75).abs() < 0.2 && (bounds.high[0] - 5.25).abs() < 0.2);
+    assert!((bounds.low[2] - 3.75).abs() < 0.2 && (bounds.high[2] - 5.25).abs() < 0.2);
+}
