@@ -991,18 +991,35 @@ pub fn create(origin: usize, entity: &Create, tick: u32) -> Result<BitWriter, Wo
     Ok(out)
 }
 
-/// A create of map placeable `index` at the map's transform, with
-/// `components` as its update body (applied before the entity's spawn
-/// callbacks run, as a full create's are).
+/// A create of map placeable `index` with `components` as its update body
+/// (applied before the entity's spawn callbacks run, as a full create's
+/// are): at the map's transform, or, with `movement`, at the movement
+/// state's (a bit after the index, then the state counted back from
+/// [`CREATE_BASE`] by [`FRAME_ZERO_BACK`]: frame 0, as a bot's create;
+/// the client's create `0x7FF78969C360` @`0x7FF78969C8BD` takes the
+/// entity's transform from it and stores it into component 28, which
+/// gives the transform of an entity with component 28 and no mover; refs
+/// `Payloads.md` "ModeGraph5 payload position" §2, `MapEntities.md`
+/// "MapAnim").
 pub fn create_placeable(
     origin: usize,
     index: u32,
     components: &[Component],
+    movement: Option<&Movement>,
 ) -> Result<BitWriter, WorldError> {
     let mut out = BitWriter::new();
     out.bit(true);
     out.bits(u64::from(index), 32)?;
-    out.bit(false); // Keep the map's transform.
+    out.bit(movement.is_some());
+    if let Some(movement) = movement {
+        write_movement(
+            &mut out,
+            movement,
+            Some(FRAME_ZERO_BACK),
+            Some(CREATE_BASE),
+            None,
+        )?;
+    }
     write_components(&mut out, origin, components)?;
     Ok(out)
 }
@@ -1016,8 +1033,9 @@ pub fn update(origin: usize, components: &[Component]) -> Result<BitWriter, Worl
 #[derive(Clone, Debug, PartialEq)]
 pub enum Operation {
     Create(Box<Create>),
-    /// A map placeable's index and the components of its create.
-    Placeable(u32, Vec<Component>),
+    /// A map placeable's index, the components of its create and the
+    /// movement state that places it ([`create_placeable`]).
+    Placeable(u32, Vec<Component>, Option<Box<Movement>>),
     Update(Vec<Component>),
     Destroy,
 }
@@ -1071,9 +1089,12 @@ fn write_entity(out: &mut BitWriter, item: &EntityUpdate, tick: u32) -> Result<(
     let origin = out.bit_len() + 14;
     let record = match operation {
         Operation::Create(entity) => Some(create(origin, entity, tick)?),
-        Operation::Placeable(index, components) => {
-            Some(create_placeable(origin, *index, components)?)
-        }
+        Operation::Placeable(index, components, movement) => Some(create_placeable(
+            origin,
+            *index,
+            components,
+            movement.as_deref(),
+        )?),
         Operation::Update(components) => Some(update(origin, components)?),
         Operation::Destroy => None,
     };

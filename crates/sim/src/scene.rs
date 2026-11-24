@@ -199,7 +199,7 @@ use lucy_script::{
 use lucy_wire::{
     entity::{
         Component, ComponentValue, Create, CreateFrame, EntityUpdate, FRAME_ZERO_BACK,
-        GAME_MODE_ENTITY, Movement, Operation, PLAYER_PATH, SkinTheme, WITH_PARTICIPANT,
+        GAME_MODE_ENTITY, Movement, NO_INPUT, Operation, PLAYER_PATH, SkinTheme, WITH_PARTICIPANT,
         WITH_SCALE, WITH_TRANSFORM, WheelLoadout,
     },
     jam::codec::Fields,
@@ -536,7 +536,7 @@ pub fn initial_world(
     let mut updates = Vec::with_capacity(map.placeables.len() + 2 + 2 * bots.len());
     updates.extend(map.placeables.iter().map(|&index| EntityUpdate {
         entity: 0x8000_0000 | index,
-        operation: Some(Operation::Placeable(index, Vec::new())),
+        operation: Some(Operation::Placeable(index, Vec::new(), None)),
         ..EntityUpdate::default()
     }));
     updates.push(player_create(map, player, None, Some(board))?);
@@ -677,6 +677,19 @@ pub fn placeable_components(placed: &PlacedScript) -> Vec<Component> {
     } else {
         Vec::new()
     }
+}
+
+/// The movement state of a server placeable's create: a placeable whose
+/// transform comes from one (component 28 without 39) gets its place
+/// ([`crate::map_areas::StatePlace`]) at frame 0.
+pub fn placeable_movement(placed: &PlacedScript) -> Option<Box<Movement>> {
+    let place = placed.state_place?;
+    Some(Box::new(Movement {
+        position: place.position,
+        yaw: place.yaw,
+        input_frame: Some(NO_INPUT),
+        ..Movement::default()
+    }))
 }
 
 /// A body's target tags component (76): the tags its states add, then the

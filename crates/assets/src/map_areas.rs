@@ -80,6 +80,16 @@
 //! (category 0x1000, animated). The server's mover takes them
 //! (`lucy_sim` `map_areas::PlaceableBody`).
 //!
+//! A server placeable whose definition gives it component 28 (its
+//! transform from a movement state: `STU_E272A026`, or `STU_6235CCE1`,
+//! component 34, which brings 28) and not component 39 is written with
+//! `state_placed` and its rotation and scale: the client keeps its model at
+//! the world origin until a movement state places it (the create's, or a
+//! movement record), so the server's create carries its place (refs
+//! `MapEntities.md` "MapMisc": the lifts of graph `2ABA`, Volskaya's
+//! `3CD8` among them). Ten placeables on four map records, every one
+//! turned about y alone.
+//!
 //! The team walls are among them: the server placeables that run graph
 //! `0FA8` (definitions `1C90` and `1C91`: 263 and 264 placeables on 24 map
 //! records; 237 of the `1C90` stand exactly where a `1C91` stands). Their
@@ -193,6 +203,14 @@ const CARRIED_BY: [u32; 5] = [
 /// (the spawn doors `0D32`); until it comes, the client keeps the model,
 /// and its physics, at the world origin.
 const POSED: u32 = 0x4962_57B5;
+/// The definition component classes that give the entity component 28
+/// (its transform from a movement state) without component 39:
+/// `STU_E272A026` (28) and `STU_6235CCE1` (34, which brings 28). Without a
+/// movement state the client keeps the model, and its physics, at the
+/// world origin, so the server's create carries the map's place (the lift
+/// `3CD8` of Volskaya and `3C40` of map `02AF`/`06AB`, graph `2ABA`;
+/// `17B3` of map `06FE`; refs `MapEntities.md` "MapMisc").
+const STATE_PLACED: [u32; 2] = [0xE272_A026, 0x6235_CCE1];
 const TARGET_TAG: u16 = 0x06C;
 const MAP: u16 = 0x002;
 /// The collision mask of a kill volume: query category `0x02` alone.
@@ -213,6 +231,8 @@ whose definition (003) has neither component 0x737C5C41 nor 0xCA1FB0B8 (those ar
 list), with its definition, its first identifier and its second identifier (body +16), and when its \
 definition's model has static physics shapes that stop the team proxies 0x18 (STUModel m_CB4D298D) \
 its rotation x y z w and scale; when its definition has STU_496257B5, posed: true; when its \
+definition has STU_E272A026 or STU_6235CCE1 and not STU_496257B5, state_placed: true and its rotation \
+x y z w and scale; when its \
 definition has STUMirroredIdleAnimComponent, moving: true, \
 and its STU_5AD3B86B instance data's idle start (s32 +12, 30 fps frames) and rate (f32 +8); when its \
 definition has STU_66A032BC and its instance data STU_0993C1FE names a path (embedded STU_C12A012E), \
@@ -222,7 +242,8 @@ while its next waypoint, m_2D9F5A0A at +0x80, has a next) and rotations (each wa
 too); when its definition has STU_FBBC6291 and any of STU_E272A026, STU_6235CCE1, STU_496257B5, \
 STUMirroredIdleAnimComponent or STU_66A032BC, platform: STU_FBBC6291 m_2F528438 (1 without it); its \
 models: each such definition's shapes in model space with the \
-category the client files each under (meshes: holder mask, vertices, triangles as corners, wings, \
+category the client files each under (0x1000 for a state_placed definition's category 1 shapes) \
+(meshes: holder mask, vertices, triangles as corners, wings, \
 mask, surface; polytopes: mask, centroid, vertices, planes, faces, half edges as twin, origin, face, \
 next; capsules and spheres: mask and geometry), the model node it hangs on (m_30F925F4) and that \
 node's place in the model (translation, rotation x y z w), and for a moving definition with \
@@ -546,9 +567,13 @@ fn server_placeables(
         let found = components.of(entity.definition);
         let moving = found.is_some_and(|found| found.contains(&MIRRORED_IDLE_ANIM));
         let posed = found.is_some_and(|found| found.contains(&POSED));
+        let state_placed = !posed
+            && found.is_some_and(|found| STATE_PLACED.iter().any(|class| found.contains(class)));
         // The idle animation poses the animated parts on their bones,
         // where the path (component 98) puts the model when it has one.
-        if placeable_shapes(install, models, entity.definition, moving)? {
+        if placeable_shapes(install, models, entity.definition, moving, state_placed)?
+            || state_placed
+        {
             entry.insert("rotation".into(), json!(entity.rotation.map(short)));
             entry.insert("scale".into(), json!(entity.scale.map(short)));
         }
@@ -574,6 +599,9 @@ fn server_placeables(
         }
         if posed {
             entry.insert("posed".into(), json!(true));
+        }
+        if state_placed {
+            entry.insert("state_placed".into(), json!(true));
         }
         let carries = found.is_some_and(|found| {
             found.contains(&PLATFORM) && CARRIED_BY.iter().any(|class| found.contains(class))
@@ -680,12 +708,18 @@ struct Models {
 /// stop the mover, its model's shapes kept in `models` by definition the
 /// first time (null when it has none; see the module notes). A `moving`
 /// definition's animated shapes name the bone they hang on, and its idle
-/// animation goes into the models too ([`idle_animation`]).
+/// animation goes into the models too ([`idle_animation`]). A
+/// `state_placed` definition's shapes of category 1 go under 0x1000: the
+/// client files them there (game check 2026-11-24, MapMisc: Volskaya's
+/// lift `3CD8`, its hull and mesh in the physics world as 0x1000, where
+/// `props` gives the hull 1; the model flag at +177 that
+/// `props::Structured::static_category` takes as unset, inference).
 fn placeable_shapes(
     install: &Install,
     models: &mut Models,
     definition: u64,
     moving: bool,
+    state_placed: bool,
 ) -> Result<bool> {
     let key = guid_hex(definition);
     if let Some(found) = models.shapes.get(&key) {
@@ -706,7 +740,11 @@ fn placeable_shapes(
         .iter()
         .map(|part| {
             let mut json = shape_json(&part.shape);
-            json["category"] = json!(part.category);
+            let category = match part.category {
+                1 if state_placed => ANIMATED,
+                category => category,
+            };
+            json["category"] = json!(category);
             if let Some(node) = part.node {
                 json["node"] = json!(node);
             }

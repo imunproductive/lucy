@@ -119,6 +119,12 @@
 //!   frame mesh too (a create with the map's place as that state stands
 //!   the doors in their doorways, but closed: they shut the Practice
 //!   Range's spawn in; refs `MapEntities.md` "MapAnim", loose end);
+//! - a movement state (component 28 from `STU_E272A026`, or from
+//!   `STU_6235CCE1`, component 34, without component 39: the lifts of
+//!   graph `2ABA`, Volskaya's `3CD8`): without one the client keeps the
+//!   whole model at the world origin, so the server's create carries the
+//!   map's place ([`StatePlace`]: the position on the 1/1024 m grid, the
+//!   turn as a 16-bit yaw), and the shapes stand there, unscaled;
 //! - an idle animation (`STUMirroredIdleAnimComponent`): the static parts
 //!   (category 1 or 0x80) at the placeable's place (Hanamura's `13C7`), the
 //!   animated ones (category 0x1000) where the animation puts their bones:
@@ -411,6 +417,10 @@ pub struct PlacedScript {
     /// Its second identifier, by which a mode graph removes it
     /// (`STU_A3DC6A25`: Hanamura's health packs carry `2AB0.01C`).
     pub second_identifier: Option<u64>,
+    /// Its definition gives it component 28 without component 39 (the
+    /// lifts of graph `2ABA`): its create carries this place
+    /// ([`StatePlace`]).
+    pub state_place: Option<StatePlace>,
 }
 
 impl PlacedScript {
@@ -426,6 +436,49 @@ impl PlacedScript {
             position: self.position,
             overrides: &self.overrides,
             extra: &self.extra,
+        }
+    }
+}
+
+/// Where a placeable whose transform comes from a movement state stands
+/// (component 28 from `STU_E272A026` or `STU_6235CCE1`, without component
+/// 39; see the module notes): the map's place as its create's movement
+/// state carries it, the position on the 1/1024 m grid and its turn about
+/// y as a 16-bit yaw word.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StatePlace {
+    /// Metres, on the grid.
+    pub position: [f64; 3],
+    /// 0 along +z, 16384 along +x (refs `Payloads.md` "ModeGraph5 payload
+    /// position" §2).
+    pub yaw: i32,
+}
+
+impl StatePlace {
+    /// The place of a placeable the map puts at `position`, turned by
+    /// `rotation` (x, y, z, w); none for a turn that isn't about y alone
+    /// (the ten such placeables of 1.74 are all turned about y).
+    pub fn new(position: [f64; 3], rotation: [f32; 4]) -> Option<Self> {
+        let [x, y, z, w] = rotation.map(f64::from);
+        if x.abs() > 1e-6 || z.abs() > 1e-6 {
+            return None;
+        }
+        // Forward (the turn's z column): (2wy, 0, 1 - 2y²).
+        let yaw = (2.0 * w * y).atan2(1.0 - 2.0 * y * y);
+        let steps = (yaw * 32768.0 / std::f64::consts::PI).round() as i64;
+        Some(Self {
+            position: position.map(|axis| (axis * 1024.0).round_ties_even() / 1024.0),
+            yaw: i32::from(steps as u16 as i16),
+        })
+    }
+
+    /// Its frame as the client builds it from the state: the yaw word
+    /// times 2π/65536 in float (`0x7FF7895AE980`), a turn about y.
+    pub fn frame(&self) -> ContactFrame {
+        let half = f64::from(f32::from(self.yaw as u16) * 9.587_38e-5_f32) * 0.5;
+        ContactFrame {
+            translation: self.position.map(|axis| axis as f32),
+            rotation: [0.0, half.sin() as f32, 0.0, half.cos() as f32],
         }
     }
 }
@@ -923,6 +976,10 @@ struct RawServerPlaceable {
     /// (component 39; [`ModelPose::Origin`]).
     #[serde(default)]
     posed: bool,
+    /// Its definition gives it component 28 without component 39: its
+    /// create carries its place ([`StatePlace`]).
+    #[serde(default)]
+    state_placed: bool,
     #[serde(default)]
     second_identifier: Option<String>,
     /// Its rotation and scale, when its definition has `models` shapes.
@@ -1252,6 +1309,24 @@ impl MapAreaData {
                 };
                 let definition = guid("definition", raw.definition)?.unwrap_or_default();
                 let second_identifier = guid("second identifier", raw.second_identifier)?;
+                let state_place = match (raw.state_placed, raw.rotation) {
+                    (false, _) => None,
+                    (true, Some(rotation)) => {
+                        Some(StatePlace::new(raw.position, rotation).ok_or_else(|| {
+                            invalid(format!(
+                                "{FILE}: map {key}: placeable {}: state placed with a turn not \
+                                 about y",
+                                placeable.placeable
+                            ))
+                        })?)
+                    }
+                    (true, None) => {
+                        return Err(invalid(format!(
+                            "{FILE}: map {key}: placeable {}: state placed without rotation",
+                            placeable.placeable
+                        )));
+                    }
+                };
                 if let Some(model) = models.get(&definition) {
                     let (Some(rotation), Some(scale)) = (raw.rotation, raw.scale) else {
                         return Err(invalid(format!(
@@ -1278,11 +1353,22 @@ impl MapAreaData {
                         })?;
                     bodies.push(PlaceableBody {
                         placeable,
-                        frame: ContactFrame {
-                            translation: raw.position.map(|axis| axis as f32),
-                            rotation,
+                        frame: state_place.map_or(
+                            ContactFrame {
+                                translation: raw.position.map(|axis| axis as f32),
+                                rotation,
+                            },
+                            |place| place.frame(),
+                        ),
+                        // The movement state carries no scale: the client
+                        // keeps such a model unscaled (Anubis's door 971,
+                        // map scale 0.5, when its create carried its place;
+                        // refs `MapEntities.md` "MapAnim").
+                        scale: if state_place.is_some() {
+                            [1.0; 3]
+                        } else {
+                            scale
                         },
-                        scale,
                         model: Arc::clone(model),
                         team_wall,
                         pose: match rigs.get(&definition).filter(|_| raw.moving) {
@@ -1310,6 +1396,7 @@ impl MapAreaData {
                     extra: raw.script.extra,
                     moving: raw.moving,
                     second_identifier,
+                    state_place,
                 }));
                 server_placeables.push(placeable);
             }
