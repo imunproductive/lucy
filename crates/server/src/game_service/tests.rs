@@ -4326,16 +4326,36 @@ fn the_owners_helix_release_follows_its_impact_with_a_leading_client() {
     server.stop().unwrap();
 }
 
-/// combat.py `_shoot` for Genji's fan (graph `0304` state 11, his secondary
-/// fire: three shuriken a shot, sync NONE): the server flies one shuriken
-/// along the aim for its damage alone, as Python does whatever the count,
-/// so a training bot 3.3 m ahead takes one hit of 29 (variable `01DC`,
-/// which node 79 sets) a shot. Nobody sees a server projectile: Genji's
-/// client gets no confirmation of a shuriken (definition `07CA`) and the
-/// other client no copy or shot record.
+/// Genji's fan (graph `0304` state 11, his secondary fire: three shuriken
+/// a shot, sync NONE, launch `STU_1145C42E`): the server flies each
+/// shuriken along the client's fan (`weapon_spread::fan_directions`:
+/// level, 4.5° to either side of the aim and along it) for its damage
+/// alone, so a training bot 3.3 m ahead takes three hits of 29 (variable
+/// `01DC`, which node 79 sets) a shot, where the one shuriken along the
+/// aim hit once before the fan layout. Nobody sees a server projectile:
+/// Genji's client gets no confirmation of a shuriken (definition `07CA`)
+/// and the other client no copy or shot record.
 #[test]
 #[ignore = "requires a prepared 104319 Practice Range scene"]
-fn genjis_fan_hits_a_bot_once_a_shot_for_its_damage_alone_unseen() {
+fn genjis_fan_hits_a_bot_with_each_shuriken_for_its_damage_alone_unseen() {
+    genjis_fan_hits(3.3, 0.0, 3);
+}
+
+/// A side shuriken of Genji's fan hits on its own: aimed 4.5° beside a
+/// training bot 14 m ahead, the shuriken on the bot's side flies straight
+/// at it, while the middle one passes 1.1 m from its axis, beyond its arms
+/// and shoulders (0.64 m and 0.8 m out; at 8 m the middle one, 0.63 m
+/// off, struck an arm), and the far one 2.2 m: one hit of 29.
+#[test]
+#[ignore = "requires a prepared 104319 Practice Range scene"]
+fn genjis_side_shuriken_hits_a_bot_beside_the_aim() {
+    genjis_fan_hits(14.0, 4.5, 1);
+}
+
+/// One fan of Genji's at a hostile training bot `ahead` metres along his
+/// spawn's facing, aimed `turn` degrees beside it: the bot takes
+/// `hits_wanted` hits of 29, and no client sees a shuriken.
+fn genjis_fan_hits(ahead: f64, turn: f64, hits_wanted: usize) {
     use lucy_script::vm::Unknowns;
     use lucy_sim::{
         projectiles::{SEEN_FIRST, SEEN_SPAN},
@@ -4343,7 +4363,6 @@ fn genjis_fan_hits_a_bot_once_a_shot_for_its_damage_alone_unseen() {
     };
     use lucy_wire::commands::SECONDARY;
     const SHURIKEN: u32 = 0x07ca;
-    const AHEAD: f64 = 3.3;
 
     let mut assets = SceneAssets::load(lucy_testkit::runtime_dir()).unwrap();
     assets.set_player_unknowns(Unknowns::Tolerate);
@@ -4364,8 +4383,11 @@ fn genjis_fan_hits_a_bot_once_a_shot_for_its_damage_alone_unseen() {
                 .iter_mut()
                 .find(|bot| bot.spawn.team == 1 && !bot.spawn.firing && bot.spawn.route.is_empty())
                 .unwrap();
-            bot.position = [x + AHEAD * sin, y, z + AHEAD * cos];
-            aim = Some((bot.entity, (yaw * 65536.0 / 360.0).round() as i32 as i16));
+            bot.position = [x + ahead * sin, y, z + ahead * cos];
+            aim = Some((
+                bot.entity,
+                ((yaw + turn) * 65536.0 / 360.0).round() as i32 as i16,
+            ));
         },
     );
     let (bot, yaw) = aim.unwrap();
@@ -4414,7 +4436,7 @@ fn genjis_fan_hits_a_bot_once_a_shot_for_its_damage_alone_unseen() {
         genji.pump(&schemas);
         viewer.pump(&schemas);
     }
-    // The other two shuriken of the shot never fly.
+    // The rest of the shot's shuriken land, or miss, within a second.
     let settled = server.now() + Duration::from_secs(1);
     while server.now() < settled {
         command(&mut genji, 0);
@@ -4427,7 +4449,7 @@ fn genjis_fan_hits_a_bot_once_a_shot_for_its_damage_alone_unseen() {
         hits.iter()
             .map(|(_, target, amount)| (target.clone(), amount.clone()))
             .collect::<Vec<_>>(),
-        [(Value::Unsigned(u64::from(bot)), Value::Unsigned(29))],
+        vec![(Value::Unsigned(u64::from(bot)), Value::Unsigned(29)); hits_wanted],
         "{hits:?}"
     );
     assert!(

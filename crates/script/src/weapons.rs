@@ -956,11 +956,13 @@ pub(crate) fn authored_rings(
     Ok(rings)
 }
 
+/// The client's degrees to radians (`0x7FF78B51FC98`), float32.
+pub const RADIANS_PER_DEGREE: f32 = 0.017_453_292;
+
 /// The launch class whose `m_0D30E40C` rows lay a shot's projectiles out
-/// in rings (`STU_B101467F`: `m_6425FFB9` the ring's share of `m_spread`
-/// degrees, `m_B19BD35D` its pellets).
+/// in rings (`STU_B101467F`: `m_6425FFB9` the ring's share of the spread,
+/// `m_B19BD35D` its pellets).
 const RING_LAUNCH: &str = "STU_613BDDB0";
-const RING_ROW: &str = "STU_B101467F";
 /// The most pellets the server flies for one shot (upstream's limit of
 /// its collision work, `projectiles.py` `MAX_PELLETS`).
 const MAX_PELLETS: f64 = 64.0;
@@ -969,70 +971,113 @@ const MAX_PELLETS: f64 = 64.0;
 /// spread).
 const SPREAD_LAUNCH: &str = "STU_239B571E";
 
-/// The pellet rings of a volley that fires several projectiles a shot:
-/// each ring's tilt from the aim in radians and its pellets, in authored
-/// order. None when the launch has no rings, or they don't add up to the
-/// volley's `m_numProjectilesPerShot` (2 to 64), a ring's share is outside
-/// 0 to 1, or the spread outside 0° to 180°. Ported from leafall903/ORPHEUS
-/// (MIT) `projectiles.py` `launch_directions`, commit 7cb4018 (Doomfist's
-/// Hand Cannon: 1, 4 and 6 pellets at 0, 0.5 and 1 of 2.5°). Unlike
-/// upstream, this holds for any sync, not only SHOTS_ONLY.
+/// A ring launch (`STU_613BDDB0`) as the client's projectile setup
+/// `0x7FF789C97AF0` evaluates it into the launch runtime
+/// (`@0x7ff789c98713`..`@0x7ff789c988bd`, `@0x7ff789c98a7a`); its layout
+/// is `weapon_spread::ring_directions` (`0x7FF789C90310`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PelletRings {
+    /// `m_spread`, degrees (runtime `+0x28`).
+    pub spread: f32,
+    /// `m_92308789`, degrees (`+0x2C`): each pellet's random turn, at most
+    /// this much, toward and across its ring; the rings shrink by it.
+    pub jitter: f32,
+    /// `m_391F15AF` in radians in [0, 2π) (`+0x30`): the turn of every
+    /// ring's first pellet around the aim; none (the client's −1) when
+    /// unset: drawn per shot.
+    pub roll: Option<f32>,
+    /// The rows `m_0D30E40C` in authored order (`+0x38`): each ring's share
+    /// of the spread (`m_6425FFB9`) and its pellets (`m_B19BD35D`).
+    pub rows: Vec<(f32, i32)>,
+    /// The launch's own `m_6425FFB9` (`+0xC`, default 1): below 1 the
+    /// layout's vertical part shrinks by it, above 1 its horizontal part.
+    pub aspect: f32,
+}
+
+/// The pellet rings of a volley that fires several projectiles a shot
+/// (`m_numProjectilesPerShot` 2 to 64; upstream 7cb4018 laid out rings for
+/// such volleys alone, a launch of one projectile stays along its aim
+/// here): Doomfist's Hand Cannon (`0D0A` st2), Reaper's Hellfire Shotguns
+/// (`0019`), Roadhog's Scrap Gun (`01C6` st9, st14), Ashe's Coach Gun
+/// (`1513`), Wrecking Ball's Minefield (`1517`), Torbjörn's secondary
+/// (`1683`), Echo's Tri-Shot (`19E5`). None for another launch. Values
+/// as the client reads them: an unset float is 0, an unset roll none, an
+/// unset aspect 1.
 pub fn pellet_rings(
     node: &Node,
     mut evaluate: impl FnMut(&Json) -> Result<Value, EvalError>,
-) -> Result<Option<Vec<(f64, u32)>>, EvalError> {
+) -> Result<Option<PelletRings>, EvalError> {
     let launch = match node.field("m_5EC1EB38") {
         Some(launch) if launch.get("$").and_then(Json::as_str) == Some(RING_LAUNCH) => launch,
         _ => return Ok(None),
     };
-    // Upstream reads only plain numbers: anything else is no layout.
-    let mut number = |config: Option<&Json>| -> Result<Option<f64>, EvalError> {
-        let Some(config) = config.filter(|config| !config.is_null()) else {
-            return Ok(None);
-        };
-        Ok(match evaluate(config)? {
-            Value::Integer(value) => Some(value as f64),
-            Value::Float(value) if value.is_finite() => Some(value),
-            _ => None,
-        })
-    };
-    let Some(count) = number(node.field("m_numProjectilesPerShot"))?
-        .filter(|count| (2.0..=MAX_PELLETS).contains(count))
-    else {
+    let count = authored_number(node.field("m_numProjectilesPerShot"), 1.0, &mut evaluate)?;
+    if !(2.0..=MAX_PELLETS).contains(&count) {
         return Ok(None);
+    }
+    let spread = authored_number(launch.get("m_spread"), 0.0, &mut evaluate)? as f32;
+    let jitter = authored_number(launch.get("m_92308789"), 0.0, &mut evaluate)? as f32;
+    let roll = match launch.get("m_391F15AF").filter(|roll| !roll.is_null()) {
+        Some(roll) => {
+            // `@0x7ff789c9877b`..`@0x7ff789c987b4`: wrapped into [0, 2π).
+            let roll = authored_number(Some(roll), 0.0, &mut evaluate)? as f32 * RADIANS_PER_DEGREE;
+            Some(if roll < 0.0 {
+                roll - (roll * 0.159_154_94) as i32 as f32 * std::f32::consts::TAU
+                    + std::f32::consts::TAU
+            } else {
+                roll
+            })
+        }
+        None => None,
     };
-    let Some(rows) = launch
+    let mut rows = Vec::new();
+    for row in launch
         .get("m_0D30E40C")
         .and_then(Json::as_array)
-        .filter(|rows| rows.len() as f64 <= count)
-    else {
-        return Ok(None);
-    };
-    let Some(spread) =
-        number(launch.get("m_spread"))?.filter(|spread| (0.0..=180.0).contains(spread))
-    else {
-        return Ok(None);
-    };
-    let mut rings = Vec::with_capacity(rows.len());
-    for row in rows {
-        if row.get("$").and_then(Json::as_str) != Some(RING_ROW) {
-            return Ok(None);
-        }
-        let share = number(row.get("m_6425FFB9"))?;
-        let pellets = number(row.get("m_B19BD35D"))?;
-        let (Some(share), Some(pellets)) = (share, pellets) else {
-            return Ok(None);
-        };
-        if !(0.0..=1.0).contains(&share)
-            || !(1.0..=count).contains(&pellets)
-            || pellets.fract() != 0.0
-        {
-            return Ok(None);
-        }
-        rings.push(((share * spread).to_radians(), pellets as u32));
+        .into_iter()
+        .flatten()
+    {
+        let share = authored_number(row.get("m_6425FFB9"), 0.0, &mut evaluate)? as f32;
+        let pellets = authored_number(row.get("m_B19BD35D"), 0.0, &mut evaluate)? as i32;
+        rows.push((share, pellets));
     }
-    let total: f64 = rings.iter().map(|&(_, pellets)| f64::from(pellets)).sum();
-    Ok((total == count).then_some(rings))
+    let aspect = authored_number(launch.get("m_6425FFB9"), 1.0, &mut evaluate)? as f32;
+    Ok(Some(PelletRings {
+        spread,
+        jitter,
+        roll,
+        rows,
+        aspect,
+    }))
+}
+
+/// The launch class that lays a shot's projectiles out in a fan
+/// (`m_spread` the fan's width, `m_A2A9890A` its turn about the aim, both
+/// in degrees): Genji's Fan of Blades (`0304` st11, 3 a shot), the only
+/// one in 1.74.
+const FAN_LAUNCH: &str = "STU_1145C42E";
+
+/// A fan launch's layout, in radians as float32: its width, the cone the
+/// client gives the shot direction (`0x7FF789C6EAA0`: the launch runtime's
+/// slot `+0x20`, `m_spread` for a fan, × π/180), and its turn about the
+/// aim (`m_A2A9890A` × π/180, the runtime's `+0x2C`; the projectile setup
+/// `0x7FF789C97AF0` evaluates both, `@0x7ff789c98947`, `@0x7ff789c98978`).
+/// None for another launch. The layout itself:
+/// `weapon_spread::fan_directions`.
+pub fn pellet_fan(
+    node: &Node,
+    mut evaluate: impl FnMut(&Json) -> Result<Value, EvalError>,
+) -> Result<Option<(f32, f32)>, EvalError> {
+    let launch = match node.field("m_5EC1EB38") {
+        Some(launch) if launch.get("$").and_then(Json::as_str) == Some(FAN_LAUNCH) => launch,
+        _ => return Ok(None),
+    };
+    let width = authored_number(launch.get("m_spread"), 0.0, &mut evaluate)? as f32;
+    let turn = authored_number(launch.get("m_A2A9890A"), 0.0, &mut evaluate)? as f32;
+    Ok(Some((
+        width * RADIANS_PER_DEGREE,
+        turn * RADIANS_PER_DEGREE,
+    )))
 }
 
 /// The cone of a growing spread at `normalized` (0 to 1): `m_7F0FED02`
@@ -1367,7 +1412,7 @@ mod tests {
         .unwrap()
     }
 
-    fn rings(count: i64, spread: Json, rows: &[(f64, i64)]) -> Node {
+    fn rings(count: i64, spread: Json, rows: &[(f64, i64)], extra: Json) -> Node {
         let rows: Vec<_> = rows
             .iter()
             .map(|&(share, pellets)| {
@@ -1375,9 +1420,13 @@ mod tests {
                     "m_B19BD35D":{"$":"STUConfigVarInt","m_value":pellets}})
             })
             .collect();
+        let mut launch = json!({"$":"STU_613BDDB0","m_0D30E40C":rows,"m_spread":spread});
+        for (key, value) in extra.as_object().into_iter().flatten() {
+            launch[key] = value.clone();
+        }
         volley(json!({
             "m_numProjectilesPerShot":{"$":"STUConfigVarInt","m_value":count},
-            "m_5EC1EB38":{"$":"STU_613BDDB0","m_0D30E40C":rows,"m_spread":spread}
+            "m_5EC1EB38":launch
         }))
     }
 
@@ -1525,30 +1574,57 @@ mod tests {
         assert_eq!(lift(&volley(json!({}))).unwrap(), 0.0);
     }
 
-    /// Graph `0D0A` state 2's rings (upstream 7cb4018): 1, 4 and 6 pellets
-    /// at 0, 0.5 and 1 of the spread, in degrees; anything that doesn't add
-    /// up, or isn't a plain number in range, is no layout.
+    /// Ring launches as the client's setup reads them (`0x7FF789C97AF0`):
+    /// Doomfist's Hand Cannon (`0D0A` st2: 1, 4 and 6 pellets at 0, 0.5 and
+    /// 1 of the spread, jitter 0.3°, roll 0) and Roadhog's hitscan (`01C6`
+    /// st14: 20°, jitter 2°, no roll, aspect 0.1); a negative roll wraps
+    /// into [0, 2π); a volley of one projectile or another launch has none.
     #[test]
     fn pellet_rings_read_the_authored_layout() {
         let read = |node: &Node| pellet_rings(node, |value| evaluate(value, &mut EmptyContext));
         let float = |value: f64| json!({"$":"STUConfigVarFloat","m_value":value});
+        let int = |value: i64| json!({"$":"STUConfigVarInt","m_value":value});
         let hand_cannon = [(0.0, 1), (0.5, 4), (1.0, 6)];
-        let layout = read(&rings(11, float(2.5), &hand_cannon)).unwrap().unwrap();
+        let layout = read(&rings(
+            11,
+            float(2.5),
+            &hand_cannon,
+            json!({"m_92308789":float(0.3),"m_391F15AF":int(0)}),
+        ))
+        .unwrap()
+        .unwrap();
         assert_eq!(
             layout,
-            [
-                (0.0, 1),
-                (1.25f64.to_radians(), 4),
-                (2.5f64.to_radians(), 6)
-            ]
+            PelletRings {
+                spread: 2.5,
+                jitter: 0.3,
+                roll: Some(0.0),
+                rows: vec![(0.0, 1), (0.5, 4), (1.0, 6)],
+                aspect: 1.0,
+            }
         );
+        let scrap = read(&rings(
+            16,
+            int(20),
+            &[(0.0, 1), (0.5, 5), (1.0, 10)],
+            json!({"m_92308789":int(2),"m_6425FFB9":float(0.1)}),
+        ))
+        .unwrap()
+        .unwrap();
+        assert_eq!((scrap.spread, scrap.jitter), (20.0, 2.0));
+        assert_eq!((scrap.roll, scrap.aspect), (None, 0.1));
+        let back = read(&rings(
+            3,
+            float(1.0),
+            &[(1.0, 3)],
+            json!({"m_391F15AF":int(-90)}),
+        ))
+        .unwrap()
+        .unwrap();
+        assert!((back.roll.unwrap() - 270f32.to_radians()).abs() < 1e-6);
         for node in [
-            rings(12, float(2.5), &hand_cannon),
-            rings(11, float(181.0), &hand_cannon),
-            rings(11, json!(null), &hand_cannon),
-            rings(1, float(2.5), &[(0.0, 1)]),
-            rings(11, float(2.5), &[(0.0, 1), (1.5, 4), (1.0, 6)]),
-            rings(11, float(2.5), &[(0.0, 1), (0.5, 4), (1.0, 6), (1.0, 0)]),
+            rings(1, float(2.5), &[(0.0, 1)], json!({})),
+            rings(65, float(2.5), &[(0.0, 65)], json!({})),
             volley(json!({"m_numProjectilesPerShot":3,
                 "m_5EC1EB38":{"$":"STU_1145C42E","m_spread":9}})),
         ] {
@@ -1578,5 +1654,19 @@ mod tests {
             spread_cone(&other, 1.0, |_| panic!("no configs")).unwrap(),
             None
         );
+    }
+
+    /// Genji's Fan of Blades (`0304` st11): 9° wide, turned 90° about the
+    /// aim, as float32 × the client's π/180; another launch has no fan.
+    #[test]
+    fn pellet_fan_reads_the_width_and_turn() {
+        let node = volley(json!({"m_numProjectilesPerShot":3,
+            "m_5EC1EB38":{"$":"STU_1145C42E",
+                "m_spread":{"$":"STUConfigVarFloat","m_value":9.0},
+                "m_A2A9890A":{"$":"STUConfigVarInt","m_value":90}}}));
+        let fan = pellet_fan(&node, |value| evaluate(value, &mut EmptyContext)).unwrap();
+        assert_eq!(fan, Some((9.0 * 0.017_453_292, 90.0 * 0.017_453_292)));
+        let other = volley(json!({"m_5EC1EB38":{"$":"STU_613BDDB0"}}));
+        assert_eq!(pellet_fan(&other, |_| panic!("no configs")).unwrap(), None);
     }
 }

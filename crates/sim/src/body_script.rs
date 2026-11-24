@@ -20,7 +20,7 @@ use crate::{
     },
     replication::{BodyStep, OwnerBodyRuntime, RESPAWN_READY, hero_setting_variables},
     scene::target_tags_component,
-    weapon_spread::{lifted, ring_directions, shot_directions},
+    weapon_spread::{fan_directions, lifted, ring_directions, shot_directions, shot_seed},
 };
 use lucy_content::{hero_settings::HeroSettings, heroes::Hero};
 #[cfg(any(test, feature = "fixtures"))]
@@ -33,8 +33,8 @@ use lucy_physics::{
 use lucy_script::{
     ai_definitions::AiControl,
     codecs::CodecTable,
-    expr::{EntityRelation, Scope, Variable, team_from_filter, to_float},
-    graph::GraphStore,
+    expr::{EntityRelation, EvalError, Scope, Variable, team_from_filter, to_float},
+    graph::{GraphStore, Node},
     map_tags::MapTags,
     placed::{DummyChange, EntityVolumes, NextDummy},
     player::{MODE_OVERTIME, PlayerWorld},
@@ -44,11 +44,11 @@ use lucy_script::{
     vm::{
         AssistLink, AuraChange, BodyEffects, Component, GameMessage, Knockback, MAX_INIT_WORK,
         MapRays, MessageEnd, Motion, MoveRequest, ParentWrite, Pickup, PlayRequest, RaisedCriteria,
-        Root, Scaled, ScopeChange, ScopeSource, Site, Snapshot, StateKind, TargetCandidate,
-        TrackedStat, Unknowns, VoiceRequest, World,
+        Root, Scaled, ScopeChange, ScopeSource, ShotEvent, Site, Snapshot, StateKind,
+        TargetCandidate, TrackedStat, Unknowns, VoiceRequest, World,
     },
     weapons::{
-        DamageTags, HitDefinition, ProjectileBallistics, launch_direction, launch_lift,
+        DamageTags, HitDefinition, ProjectileBallistics, launch_direction, launch_lift, pellet_fan,
         pellet_rings, ray_profile,
     },
     wire::{Value, Variables},
@@ -397,6 +397,42 @@ fn log_assumption(graph: u32, node: Option<u16>, class: &str, answer: &str) {
     if logged.insert((graph, node, class.to_owned())) {
         eprintln!("statescript graph {graph:04X} node {node:?}: {class} -> {answer}");
     }
+}
+
+/// The directions of a shot's `count` projectiles or pellets around
+/// `direction` as its launch lays them out on the client: rings
+/// (`weapon_spread::ring_directions`; their jitter and an unset roll draw
+/// from the tables at the shot's reconstructed seed) or a fan
+/// (`weapon_spread::fan_directions`), for a volley of several a shot; else
+/// none.
+fn launch_layout(
+    shot: &ShotEvent,
+    node: &Node,
+    direction: [f64; 3],
+    count: u8,
+    mut evaluate: impl FnMut(&Json) -> Result<Value, EvalError>,
+) -> Result<Option<Vec<[f64; 3]>>, EvalError> {
+    if let Some(rings) = pellet_rings(node, &mut evaluate)? {
+        if rings.jitter != 0.0 || rings.roll.is_none() {
+            log_assumption(
+                shot.graph,
+                Some(node.pos),
+                "STU_613BDDB0",
+                "ring jitter and roll seeded from the body, instance, state and counter",
+            );
+        }
+        let base = shot_seed(shot, node.state.unwrap_or_default());
+        return Ok(Some(ring_directions(
+            direction,
+            count,
+            &rings,
+            base,
+            shot.ordinal,
+        )));
+    }
+    Ok(pellet_fan(node, &mut evaluate)?
+        .filter(|_| count > 1)
+        .map(|(width, turn)| fan_directions(direction, count, width, turn)))
 }
 
 pub struct PlayerBodyRuntime {
@@ -890,7 +926,6 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                     for class in &ballistics.unmodelled {
                         log_assumption(shot.graph, None, class, "flies as if it weren't there");
                     }
-                    let rings = pellet_rings(node, &mut evaluate).ok()?;
                     // projectiles.py `fired`: the owner's client shoots a
                     // networked, predicted volley's projectile under its
                     // body's lease, and the server confirms and releases it;
@@ -922,7 +957,6 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                         && !local_prediction(node)
                         && ballistics.definition.is_some()
                         && spawn.is_none()
-                        && rings.is_none()
                         && projectiles == 1;
                     if !leased && !server_shown && !ballistics.damaging() {
                         return None;
@@ -945,22 +979,15 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                         log_spread();
                         spread
                     };
-                    // Pellet rings (Doomfist's Hand Cannon, Roadhog's Scrap
-                    // Gun, Torbjörn's secondary, Echo's Tri-Shot): each of
-                    // the shot's projectiles flies for its damage, around
-                    // the direction (upstream 7cb4018, any sync).
-                    let pellets = match rings {
-                        Some(rings) => {
-                            log_assumption(
-                                shot.graph,
-                                Some(node.pos),
-                                "STU_613BDDB0",
-                                "pellets evenly spaced around each ring, the first on the right",
-                            );
-                            ring_directions(direction, &rings)
-                        }
-                        None => vec![direction],
-                    };
+                    // Rings (Doomfist's Hand Cannon, Roadhog's Scrap Gun,
+                    // Torbjörn's secondary, Echo's Tri-Shot) or a fan
+                    // (Genji's Fan of Blades), never of one projectile:
+                    // each of the shot's projectiles flies for its damage,
+                    // along the client's layout around the direction (any
+                    // sync).
+                    let pellets = launch_layout(&shot, node, direction, projectiles, &mut evaluate)
+                        .ok()?
+                        .unwrap_or_else(|| vec![direction]);
                     return Some(vec![PosedShot::Projectile(Box::new(PosedProjectile {
                         shot,
                         ballistics,
@@ -999,18 +1026,9 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                 // `b26caa8b`; the client's launches number them, see
                 // `weapon_spread::shot_directions`): Tracer's Pulse Pistols
                 // (`0016` rid12) fire 2 a shot, one per pistol.
-                let directions = match pellet_rings(node, &mut evaluate).ok()? {
-                    Some(rings) => {
-                        log_assumption(
-                            shot.graph,
-                            Some(node.pos),
-                            "STU_613BDDB0",
-                            "pellets evenly spaced around each ring, the first on the right",
-                        );
-                        ring_directions(spread, &rings)
-                    }
-                    None => spreads,
-                };
+                let directions = launch_layout(&shot, node, spread, pellets, &mut evaluate)
+                    .ok()?
+                    .unwrap_or(spreads);
                 Some(
                     directions
                         .into_iter()
