@@ -40,12 +40,12 @@ enum AnimationRun {
     Untimed,
     /// Its length is unknown: it never ends by itself (an assumption).
     Endless,
-    /// Timer 1 after `delay_ms` (`seconds` long), then the finish unless
-    /// the client ends it (`m_154DBA91`).
+    /// Timer 1 after `delay_ms` (`seconds` long), with the finish unless
+    /// the state holds (`m_2DEAE6A9`).
     Timed {
         seconds: f32,
         delay_ms: u64,
-        client_ends: bool,
+        holds: bool,
     },
 }
 
@@ -337,25 +337,72 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
         })
     }
 
+    /// An emote's blend tree (`STU_A875CA49`): its begin takes the blend
+    /// tree set `m_65D335ED` (0 when it names none) to layer on the body's
+    /// animation lookups while it runs ([`Self::blend_trees`]).
+    pub(super) fn begin_blend_tree(&mut self, key: StateKey, node: &Node) {
+        let set = field(&node.fields, "m_65D335ED");
+        let tree = match self.evaluate(key.instance, node, set, Some(key)) {
+            Some(Value::Asset(tree)) => tree,
+            _ => 0,
+        };
+        if let Some(state) = self.state_mut(key)
+            && let StateKind::BlendTree { tree: kept, .. } = &mut state.kind
+        {
+            *kept = tree;
+        }
+    }
+
+    /// The blend tree sets the running `STU_A875CA49` states layer on the
+    /// body, the highest level first, then the latest begun (an inference:
+    /// the client's model keeps four levels, `0x7FF789B19530`, and which
+    /// one answers an alias two of them list is not read; the one graph
+    /// that layers a set, `023A`, does it at level 2, and only body
+    /// `040A`'s own set also lists emote aliases).
+    fn blend_trees(&self) -> Vec<u64> {
+        let mut layers: Vec<(u8, u64, u64)> = self
+            .machine
+            .snapshot
+            .instances
+            .values()
+            .flat_map(|instance| instance.states.values())
+            .filter(|state| state.active)
+            .filter_map(|state| match state.kind {
+                StateKind::BlendTree { tree, level } if tree != 0 => {
+                    Some((level, state.start_ms, tree))
+                }
+                _ => None,
+            })
+            .collect();
+        layers.sort_by_key(|&(level, begun_ms, _)| std::cmp::Reverse((level, begun_ms)));
+        layers.into_iter().map(|(_, _, tree)| tree).collect()
+    }
+
     /// `Anim` (leafall903/ORPHEUS `c239a84`, `src/ow174/game/script/nodes.py`
     /// `Anim`, the client's `CC19A0`/`CC1E70`). On begin, an `m_EBEFB4A7`
     /// output reads the animation's scalar (slot 2) while the state runs,
     /// when the body's data has one. A true `m_37EE887D` arms no timer.
     /// Otherwise the state runs for its authored length `m_86701C3E`; a
     /// length under 1000 × `f32::EPSILON` (none authored reads 0) is the
-    /// model's: the animation's length on this body
-    /// ([`World::animation_length`]) times `m_speedScalar` (1 without one).
-    /// Then timer 1 follows `m_A3B86BB0` and, unless `m_154DBA91` is true,
-    /// the state finishes. An alias the body's set lacks is 0 s long (the
-    /// client's lookup fails), so that state ends in the frame it began, as
-    /// the client's does (OwnerPrediction.md "DayFirstShot2"). An alias
+    /// model's: the animation's length on this body with the running blend
+    /// trees ([`Self::blend_trees`]) times `m_speedScalar` (1 without
+    /// one). Then timer 1 follows `m_A3B86BB0` and, unless `m_2DEAE6A9` is
+    /// true, the state finishes: the client's timer `0x7FF789BD1E70` posts
+    /// timer 1 (`0x7FF78AA814E0`) at the length's end always, and the
+    /// finish (`0x7FF78AA812E0`) only when the begin (`0x7FF789BCD510`)
+    /// found `m_2DEAE6A9` false (state `+835`): with it the state, and its
+    /// animation layer, stays on until something else ends it
+    /// (`m_154DBA91` is a play parameter, `0x7FF789BD19A0` `+56`). An
+    /// alias the body's set lacks is 0 s long (the client's lookup fails),
+    /// so that state ends in the frame it began, as the client's does
+    /// (OwnerPrediction.md "DayFirstShot2"), unless it holds. An alias
     /// whose length the data can't tell, with no authored length, never
     /// ends by itself (an assumption, as the Python reference:
-    /// docs/notes/behavior.md). A state that plays (it has time left, or
-    /// no timer) stores its handle in `m_7CCEC4F0`: the client's play
-    /// `0x7FF789BD5810` writes `{3, instance, state, 0}` (a type 7 value,
-    /// `0x7FF78AAB4A10`), which `STU_6E18DEA0` reads to restart it
-    /// ([`Self::restart_animation`]).
+    /// docs/notes/behavior.md). A state that plays (it has time left, it
+    /// holds, or it has no timer) stores its handle in `m_7CCEC4F0`: the
+    /// client's play `0x7FF789BD5810` writes `{3, instance, state, 0}` (a
+    /// type 7 value, `0x7FF78AAB4A10`), which `STU_6E18DEA0` reads to
+    /// restart it ([`Self::restart_animation`]).
     pub(super) fn arm_animation(
         &mut self,
         key: StateKey,
@@ -380,7 +427,8 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
             let scalar = match played {
                 AnimAlias::Zero => Some(0.0),
                 AnimAlias::Played(alias, category) => {
-                    self.world.animation_scalar(site, alias, category)
+                    let trees = self.blend_trees();
+                    self.world.animation_scalar(site, &trees, alias, category)
                 }
                 AnimAlias::Unknown => None,
             };
@@ -403,7 +451,9 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
         };
         let plays = match run {
             AnimationRun::Untimed | AnimationRun::Endless => true,
-            AnimationRun::Timed { delay_ms, .. } => delay_ms > 0,
+            AnimationRun::Timed {
+                delay_ms, holds, ..
+            } => delay_ms > 0 || holds,
         };
         if plays {
             match expr::lvalue(field(&node.fields, "m_7CCEC4F0")) {
@@ -426,13 +476,11 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
     /// Posts an `Anim` state's timer 1 and its finish.
     fn arm_animation_timer(&mut self, key: StateKey, run: AnimationRun) -> Result<(), InitFault> {
         if let AnimationRun::Timed {
-            delay_ms,
-            client_ends,
-            ..
+            delay_ms, holds, ..
         } = run
         {
             self.post_after(key.instance, delay_ms, Event::Timer(key.raw, 1))?;
-            if !client_ends {
+            if !holds {
                 self.post_after(key.instance, delay_ms, Event::Finish(key.raw))?;
             }
         }
@@ -466,7 +514,8 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
             let length = match played {
                 AnimAlias::Zero => Some(0.0),
                 AnimAlias::Played(alias, category) => {
-                    self.world.animation_length(site, alias, category)
+                    let trees = self.blend_trees();
+                    self.world.animation_length(site, &trees, alias, category)
                 }
                 AnimAlias::Unknown => None,
             };
@@ -493,13 +542,12 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
             self.report(site, Issue::UnsupportedField("animation duration"));
             return None;
         }
-        let removes_self = field(&node.fields, "m_154DBA91");
-        let client_ends =
-            !removes_self.is_null() && truthy(&self.evaluate(id, node, removes_self, None)?);
+        let holds = field(&node.fields, "m_2DEAE6A9");
+        let holds = !holds.is_null() && truthy(&self.evaluate(id, node, holds, None)?);
         Some(AnimationRun::Timed {
             seconds,
             delay_ms: delay.max(0.0) as u64,
-            client_ends,
+            holds,
         })
     }
 
@@ -510,9 +558,9 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
     /// its play put its length less 1/30 s after it began playing (none
     /// without time to run), or at any time with its `m_2DEAE6A9`. The
     /// restart takes the state's length again and arms its timer 1 that
-    /// far from now (with the finish, as its begin does); its begin plugs
-    /// don't run again. Anything else (no handle, another state, an ended
-    /// one) changes nothing.
+    /// far from now (with the finish unless it holds, as its begin does);
+    /// its begin plugs don't run again. Anything else (no handle, another
+    /// state, an ended one) changes nothing.
     pub(super) fn restart_animation(&mut self, target: &Value) -> Result<(), InitFault> {
         let &Value::Handle {
             instance, state, ..
@@ -537,16 +585,13 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
         let Some(node) = self.graph(instance).state(usize::from(state)) else {
             return Ok(());
         };
-        let looped = field(&node.fields, "m_2DEAE6A9");
-        let looped = !looped.is_null()
-            && self
-                .evaluate(instance, node, looped, None)
-                .is_some_and(|value| truthy(&value));
         let Some(run) = self.animation_run(instance, node, None) else {
             return Ok(());
         };
         let AnimationRun::Timed {
-            seconds, delay_ms, ..
+            seconds,
+            delay_ms,
+            holds,
         } = run
         else {
             return Ok(());
@@ -564,7 +609,7 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
             let end = due_ms.saturating_sub(delay_ms) as f64 + f64::from(end_ms);
             now > begun_ms + 1 && end_ms > 0.0 && (now as f64) < end - 1.0
         });
-        if !(playing || looped) || delay_ms == 0 {
+        if !(playing || holds) || delay_ms == 0 {
             return Ok(());
         }
         self.machine.queues.retain(

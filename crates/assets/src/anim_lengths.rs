@@ -10,6 +10,9 @@
 //! **The body's set.** A body (`003`) names its blend tree set (`021`) in
 //! its model component (`m_animBlendTreeSet`). A body needs exactly one set
 //! (as upstream's greeting table); a body with none or several is left out.
+//! Every emote's set (`STUUnlock_Emote` `m_emoteBlendTreeSet`) is listed
+//! too: the emote graph `023A` layers it on the body (`STU_A875CA49`), and
+//! the client's lookups then find the emote's alias in it.
 //!
 //! **The alias's item.** The set lists the aliases (`m_253EE7C8`, `0C8`
 //! keys) and, in the same order, one item each (`m_blendTreeItems`); a set
@@ -593,7 +596,7 @@ pub(crate) fn derive(install: &Install, out: &Path) -> Result<Vec<Output>> {
     }
     let categories = categories(install)?;
     let mut sets = BTreeMap::new();
-    for &set in bodies_table.values() {
+    for set in bodies_table.values().copied().chain(emote_sets(install)?) {
         if sets.contains_key(&set) {
             continue;
         }
@@ -613,6 +616,23 @@ pub(crate) fn derive(install: &Install, out: &Path) -> Result<Vec<Output>> {
         path: "data/game_anim_lengths_174.json".into(),
         bytes: serde_json::to_vec(&file).expect("JSON values serialize"),
     }])
+}
+
+/// Every emote's blend tree set (`STUUnlock_Emote` `m_emoteBlendTreeSet`,
+/// as the graph bundle's `emote_assets` lists them): the emote graph `023A`
+/// layers it on the body (`STU_A875CA49`), and its `Anim` states play the
+/// emote's alias from it.
+fn emote_sets(install: &Install) -> Result<BTreeSet<u64>> {
+    let (emotes, _) = crate::graphs::wheel_cosmetics(install)?;
+    emotes
+        .as_object()
+        .into_iter()
+        .flat_map(|emotes| emotes.values())
+        .map(|assets| {
+            let set = assets.get(1).and_then(serde_json::Value::as_str);
+            parse_guid(set.ok_or_else(|| asset_error(format!("an emote without a set: {assets}")))?)
+        })
+        .collect()
 }
 
 #[cfg(test)]

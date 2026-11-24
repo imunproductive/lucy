@@ -303,16 +303,28 @@ impl World for BotWorld {
 
     /// From the body's compiled animation data
     /// ([`crate::anim_lengths::AnimLengths`]).
-    fn animation_length(&self, _site: Site, alias: u64, category: u64) -> Option<f64> {
+    fn animation_length(
+        &self,
+        _site: Site,
+        trees: &[u64],
+        alias: u64,
+        category: u64,
+    ) -> Option<f64> {
         self.graphs
             .anim_lengths()
-            .length(self.body, alias, category)
+            .length(self.body, trees, alias, category)
     }
 
-    fn animation_scalar(&self, _site: Site, alias: u64, category: u64) -> Option<f64> {
+    fn animation_scalar(
+        &self,
+        _site: Site,
+        trees: &[u64],
+        alias: u64,
+        category: u64,
+    ) -> Option<f64> {
         self.graphs
             .anim_lengths()
-            .scalar(self.body, alias, category)
+            .scalar(self.body, trees, alias, category)
     }
 
     /// The reconstruction policy for the behaviors the server starts: the
