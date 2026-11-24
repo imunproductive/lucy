@@ -2857,7 +2857,7 @@ impl WorldDelivery {
             return;
         };
         mover.teleport(position, yaw);
-        let pose = mover.pose();
+        let pose = mover.record();
         let history = self.body_script.as_mut().and_then(|script| {
             let tail = RECORD_TAIL_MS.div_ceil(script.runtime.frame_ms());
             script.corrections.as_mut().map(|history| (history, tail))
@@ -6636,7 +6636,7 @@ impl WorldDelivery {
             }
         };
         let movement = mover.pose();
-        let pose = owner_pose(movement);
+        let pose = owner_pose(mover.record());
         let generation = self
             .generation
             .checked_add(1)
