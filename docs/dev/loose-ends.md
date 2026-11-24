@@ -2,6 +2,14 @@
 
 Small things left undone by finished work. Each entry says what is missing, where, and where the evidence is. Bigger plans live elsewhere (the netcode rework: steps 2 and 3, rewinding and corrections for every hero). Remove an entry when it is done. Questions only the client's code can answer are on the IDA list instead (see [AGENTS.md](../../AGENTS.md#leftovers)).
 
+## Next up (user, 2026-11-24)
+
+The user's game check of main `feeffaa1` left three items to do next, in this order of size. Each has its full entry below.
+
+1. **Volskaya's end-of-match robot** (about a day; entry "Volskaya's end-of-match robot is missing" under Maps). Place the component-39 placeables without collision at create time (the robot 1474 `09BF`, also 437 `0A9A`), and support `STUConfigVarEntityReference` overrides (null when no placeable matches) so graph `0712` starts. Check at the end of a Volskaya match: the robot animates behind the winning team.
+2. **Volskaya's lift moves** (about two days once `day/modegraph5` is merged; entry "The lifts of graph `2ABA` stand but don't move" under Maps). It stands in place since MapMisc; it needs `2ABA`'s gap closed, the track derived and its movement sent each tick. Same graph on Hollywood's three lifts. Also re-check the corrections while standing on it now that PlatformExit's world-axes flag is merged.
+3. **"HOLD F1 TO VIEW HERO DETAILS" after every respawn** (large; entry under Interface and voice). The client's graph `2931` shows the hint once per hero; our respawn makes a new body where retail revives the same one, which re-fires its hero watches. Revive the same body on respawn (the respawn-chain migration); this should also keep ultimate charge across respawns ("Ultimate charge resets after a respawn" under Combat and kills). Teleports re-fire it through a body rollback: check once respawns are fixed.
+
 ## Combat and kills
 
 - **Explosions: what the server still measures otherwise than the client's own push** (2026-11-23, PortProjectiles; behavior.md "Walls stop explosions", "His own push"; `projectile_flight.rs` `in_sight`, `own_blast`, `push_at`). (1) The push itself follows the client's formula now (`weapons::Knockback::push`, `0x7FF789C7B3C0`, with the self scale), but the client measures its distance from the sight rays' origin (0.2 m back along the flight) to the body's axis segment less its radius, while the server measures it from the explosion to the body's hit shapes or capsule, and aims the line at the body's centre. (2) The sight rays' origin steps back along the projectile's direction as the server flies it; for a projectile stuck to a body it is the direction it flew in, an assumption. (3) What the client's motion step's `+0x24C` counts (gravity off while 0) is not traced; no volley both sets `m_D0C4CF49` and bounces. (4) Why a range of 0 doesn't stop the client's projectiles (`0x7FF789C82C80` would) is not found.
