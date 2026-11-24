@@ -1,26 +1,22 @@
 //! Shot spread for build 104319: the client's random tables, its circular
-//! cone, and the pellet rings of a volley that fires several projectiles a
-//! shot.
+//! cone, the pellet rings of a volley that fires several projectiles a
+//! shot, and the client's fan (`fan_directions`).
 //!
 //! Ported from leafall903/ORPHEUS (MIT), `src/ow174/game/weapon_spread.py`
-//! (commit c239a84) and `src/ow174/game/projectiles.py`
-//! `launch_directions` (commit 7cb4018). The tables are the client's
+//! (commit c239a84). The tables are the client's
 //! (`lucy_script::random_tables`).
-//! Upstream's notes on what is known and what is a guess:
+//! What is known and what is a guess:
 //! - The tables (`uniform_table`, `float_table`), the seed arithmetic
-//!   (`seed_base`, `seed_index`) and the cone (`direction`) are the
-//!   client's (addresses in each item).
+//!   (`seed_base`, `seed_index`), the cone (`direction`), the ring layout
+//!   (`ring_directions`) and the fan (`fan_directions`) are the client's
+//!   (addresses in each item).
 //! - Which server values stand for the seed's four identities (owner,
 //!   instance, state, counter) is not mapped to the client's: the shot's
 //!   body entity, instance id, state node and activation counter are a
-//!   reconstruction (`mccree.py` `fan_direction`), so a server shot does
-//!   not leave along the very direction the client drew.
-//! - The ring layout (`ring_directions`) is upstream's reconstruction, not
-//!   the client's: rings `m_6425FFB9` × `m_spread` degrees out, pellets
-//!   evenly spaced around each from the right of the aim, no per-shot
-//!   rotation.
-
-use std::f64::consts::TAU;
+//!   reconstruction (`mccree.py` `fan_direction`, `shot_seed`), so a server
+//!   shot does not leave along the very direction the client drew where
+//!   the layout draws from the tables (the cone, a ring's jitter and drawn
+//!   roll). The fan draws nothing.
 
 use lucy_physics::static_ray::Vec3;
 use lucy_script::{
@@ -28,7 +24,7 @@ use lucy_script::{
     graph::Node,
     random_tables::{TABLE, float_table, uniform_table},
     vm::ShotEvent,
-    weapons::spread_cone,
+    weapons::{PelletRings, RADIANS_PER_DEGREE, spread_cone},
     wire::Value,
 };
 use serde_json::Value as Json;
@@ -77,20 +73,54 @@ pub fn direction(
         values[next] as f32 * cone * 2f32.powi(-32)
     };
     let forward = forward.map(|part| f64::from(part as f32));
+    let axis = rotate(right_of(forward), forward, f64::from(angle));
+    rotate(forward, axis, f64::from(radius)).map(|part| f64::from(part as f32))
+}
+
+/// The client's horizontal axis of a launch's layouts (`D80090`, `D808F0`):
+/// `forward` × up, normalized, or +x when its squared length is below the
+/// client's limit.
+fn right_of(forward: Vec3) -> Vec3 {
     let right = cross(forward, [0.0, 1.0, 0.0]);
     // A camera straight up keeps its tiny horizontal axis (cos(π/2) is
     // about 6e-17): only a length below the client's limit falls back.
     let squared = right
         .iter()
         .fold(0.0, |sum, part| sum + f64::from((part * part) as f32)) as f32;
-    let right = if f64::from(squared) >= SMALLEST_SQUARED {
+    if f64::from(squared) >= SMALLEST_SQUARED {
         let length = f64::from(squared).sqrt();
         right.map(|part| part / length)
     } else {
         [1.0, 0.0, 0.0]
-    };
-    let axis = rotate(right, forward, f64::from(angle));
-    rotate(forward, axis, f64::from(radius)).map(|part| f64::from(part as f32))
+    }
+}
+
+/// A fan launch's shot (`STU_1145C42E`, `lucy_script::weapons::pellet_fan`:
+/// `width` and `turn` in radians): its `count` projectiles as the client
+/// lays them out (`0x7FF789C908F0`, the launch's slot `+0x30`, which the
+/// shot direction `0x7FF789C6EBA0` calls with each pellet's number). The
+/// fan's axis is the aim's right (`right_of`) turned `turn` about the aim;
+/// pellet `p` is the aim turned about that axis by (2·p/(count − 1) − 1) ·
+/// width/2, a lone one by 0. No seed: every client and the server draw
+/// the same fan. Float32 at the client's steps; the lift comes after
+/// (`lifted`). Genji's (`0304` st11: 3, 9°, 90°) lies level: 4.5° to +x,
+/// along the aim, 4.5° to −x for an aim along +z.
+pub fn fan_directions(forward: Vec3, count: u8, width: f32, turn: f32) -> Vec<Vec3> {
+    let forward = forward.map(|part| f64::from(part as f32));
+    let axis =
+        rotate(right_of(forward), forward, f64::from(turn)).map(|part| f64::from(part as f32));
+    let count = count.max(1);
+    (0..count)
+        .map(|pellet| {
+            let share = if count > 1 {
+                f32::from(pellet) / (f32::from(count) - 1.0)
+            } else {
+                0.5
+            };
+            let angle = (share + share - 1.0) * (width * 0.5);
+            rotate(forward, axis, f64::from(angle)).map(|part| f64::from(part as f32))
+        })
+        .collect()
 }
 
 /// A shot's directions, one per pellet (`pellets`, at least one): `aim`
@@ -124,12 +154,7 @@ pub fn shot_directions(
     let Some((cone, state)) = cone else {
         return Ok(vec![aim; pellets as usize]);
     };
-    let base = seed_base(
-        shot.entity,
-        u32::from(shot.instance),
-        u32::from(state),
-        u32::from(shot.activation),
-    );
+    let base = shot_seed(shot, state);
     Ok((0..pellets)
         .map(|pellet| direction(aim, cone, base, shot.ordinal, pellet, false))
         .collect())
@@ -151,35 +176,130 @@ pub fn lifted(direction: Vec3, lift: f64) -> Vec3 {
     raised.map(|part| f64::from(part / length))
 }
 
-/// The pellet rings of a shot (upstream 7cb4018 `launch_directions`): for
-/// each ring of (tilt in radians, pellets), the pellets evenly spaced
-/// around `forward` that far out, the first on its right; a ring of tilt 0
-/// fires its pellets along `forward`.
-pub fn ring_directions(forward: Vec3, rings: &[(f64, u32)]) -> Vec<Vec3> {
-    let [x, y, z] = forward;
-    let horizontal = x.hypot(z);
-    let right = if horizontal != 0.0 {
-        [z / horizontal, 0.0, -x / horizontal]
-    } else {
-        [1.0, 0.0, 0.0]
-    };
-    let up = [y * right[2], horizontal, -y * right[0]];
-    let mut directions = Vec::with_capacity(rings.iter().map(|&(_, count)| count as usize).sum());
-    for &(tilt, pellets) in rings {
-        if tilt == 0.0 {
-            directions.extend(std::iter::repeat_n(forward, pellets as usize));
-            continue;
+/// The seed of a volley's shot (`seed_base`) from the shot's body entity,
+/// instance, the volley's `m_states` index and activation counter:
+/// upstream's reconstruction (see `shot_directions`), the owner word a
+/// guess.
+pub fn shot_seed(shot: &ShotEvent, state: u16) -> u16 {
+    seed_base(
+        shot.entity,
+        u32::from(shot.instance),
+        u32::from(state),
+        u32::from(shot.activation),
+    )
+}
+
+/// The client's uniform draw from its table (`0x7FF78A75B1F0`): `low` +
+/// the table's value at `index` (14-bit mask) · (`high` − `low`) · 2⁻³²,
+/// in float32.
+fn uniform(index: usize, low: f32, high: f32) -> f32 {
+    uniform_table()[index & INDEX_MASK] as f32 * (high - low) * 2f32.powi(-32) + low
+}
+
+/// A ring launch's shot (`STU_613BDDB0`, `lucy_script::weapons::pellet_rings`)
+/// of `count` projectiles, as the client lays each out (`0x7FF789C90310`,
+/// the launch's slot `+0x30`, called by the shot direction
+/// `0x7FF789C6EBA0` with the pellet's number):
+/// - pellet `p` falls in the first row whose pellets it hasn't passed (the
+///   last row takes any beyond), the `i`-th of its `n`;
+/// - its turn around the aim is 2π · i/n plus the roll (`m_391F15AF`, or
+///   when unset a draw in [0, 2π) at the table index `base` + 7 · `shot`,
+///   the same for every pellet of the shot);
+/// - its tilt from the aim is the row's share × max(0, spread − jitter)°,
+///   plus a draw in ±jitter at `seed_index(base, shot, p)`;
+/// - the aim's right (`right_of`) turned that far around the aim is the
+///   axis the aim tilts about; with a jitter over 1.2e-5 rad the result
+///   turns again, by a draw in ±jitter at the next index, about aim ×
+///   axis (across the ring);
+/// - an aspect other than 1 (`PelletRings::aspect`) shrinks the result's
+///   part along the aim's up by it (below 1) or along its horizontal side
+///   by its inverse (above 1); the shot direction normalizes after the
+///   lift (`lifted`).
+///
+/// So a ring's first pellet, at roll 0, tilts up from the aim, the next
+/// ones go round toward −x for an aim along +z. The seed identities are
+/// upstream's reconstruction (`shot_seed`), so the jitter and a drawn
+/// roll are not the client's own draws; the rest is exact. Float32 at the
+/// client's steps.
+pub fn ring_directions(
+    forward: Vec3,
+    count: u8,
+    rings: &PelletRings,
+    base: u16,
+    shot: u32,
+) -> Vec<Vec3> {
+    let forward = forward.map(|part| f64::from(part as f32));
+    let jitter = rings.jitter * RADIANS_PER_DEGREE;
+    let roll = rings.roll.unwrap_or_else(|| {
+        let index = base.wrapping_add((shot as u16).wrapping_mul(7));
+        uniform(usize::from(index), 0.0, std::f32::consts::TAU)
+    });
+    let shrunk = ((rings.spread - rings.jitter) * RADIANS_PER_DEGREE).max(0.0);
+    let right = right_of(forward);
+    let aspect = rings.aspect.max(1.192_092_9e-7);
+    (0..u32::from(count.max(1)))
+        .map(|pellet| {
+            let (turn, tilt) = ring_place(&rings.rows, pellet, shrunk);
+            let seed = seed_index(base, shot, pellet);
+            let toward = uniform(seed, -jitter, jitter);
+            let across = uniform(seed + 1, -jitter, jitter);
+            let axis =
+                rotate(right, forward, f64::from(turn + roll)).map(|part| f64::from(part as f32));
+            let mut out = rotate(forward, axis, f64::from(toward + tilt));
+            if jitter > 1.192_092_9e-5 {
+                let side = unit_or(cross(forward, axis), [0.0, 0.0, 1.0]);
+                out = rotate(out, side, f64::from(across));
+            }
+            if aspect != 1.0 && aspect > 0.0 {
+                let flat = unit_or(cross([0.0, 1.0, 0.0], forward), [1.0, 0.0, 0.0]);
+                let up = cross(forward, flat);
+                let (up_scale, flat_scale) = if aspect > 1.0 {
+                    (1.0, 1.0 / aspect)
+                } else {
+                    (aspect, 1.0)
+                };
+                let (on_up, on_flat, on_forward) = (
+                    dot(out, up) * f64::from(up_scale),
+                    dot(out, flat) * f64::from(flat_scale),
+                    dot(out, forward),
+                );
+                out = std::array::from_fn(|axis| {
+                    on_up * up[axis] + on_flat * flat[axis] + on_forward * forward[axis]
+                });
+            }
+            out.map(|part| f64::from(part as f32))
+        })
+        .collect()
+}
+
+/// A pellet's turn around the aim (2π · i/n, before the roll) and tilt
+/// (the row's share of `shrunk`) in its ring (`0x7FF789C90310`
+/// `@0x7ff789c90387`..`@0x7ff789c903eb`); none without rows.
+fn ring_place(rows: &[(f32, i32)], pellet: u32, shrunk: f32) -> (f32, f32) {
+    let mut index = pellet as i32;
+    for (row, &(share, pellets)) in rows.iter().enumerate() {
+        if index < pellets || row + 1 == rows.len() {
+            let turn = index as f32 / pellets.max(1) as f32 * std::f32::consts::TAU;
+            return (turn, shrunk * share);
         }
-        let (radial, along) = tilt.sin_cos();
-        for index in 0..pellets {
-            let (sin, cos) = (TAU * f64::from(index) / f64::from(pellets)).sin_cos();
-            let (across, above) = (radial * cos, radial * sin);
-            directions.push(std::array::from_fn(|axis| {
-                along * forward[axis] + across * right[axis] + above * up[axis]
-            }));
-        }
+        index -= pellets;
     }
-    directions
+    (0.0, 0.0)
+}
+
+fn dot(a: Vec3, b: Vec3) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+/// `vector` normalized, or `fallback` when its squared length is below
+/// the client's limit.
+fn unit_or(vector: Vec3, fallback: Vec3) -> Vec3 {
+    let squared = dot(vector, vector);
+    if squared >= SMALLEST_SQUARED {
+        vector.map(|part| part / squared.sqrt())
+    } else {
+        fallback
+    }
 }
 
 fn cross(a: Vec3, b: Vec3) -> Vec3 {
@@ -294,20 +414,50 @@ mod tests {
         assert!(distinct.len() > 24);
     }
 
-    /// Upstream `test_hand_cannon_sweeps_all_eleven_pellets_from_one_shot`:
-    /// Doomfist's rings (1, 4 and 6 pellets at 0, 0.5 and 1 of 2.5°) leave
-    /// at 0°, 1.25° and 2.5°, eleven distinct unit directions.
+    fn rings(
+        spread: f32,
+        jitter: f32,
+        roll: Option<f32>,
+        rows: &[(f32, i32)],
+        aspect: f32,
+    ) -> PelletRings {
+        PelletRings {
+            spread,
+            jitter,
+            roll,
+            rows: rows.to_vec(),
+            aspect,
+        }
+    }
+
+    /// The angle between two directions, well conditioned near 0.
+    fn degrees_off(forward: Vec3, direction: Vec3) -> f64 {
+        let across = cross(forward, direction);
+        dot(across, across)
+            .sqrt()
+            .atan2(dot(forward, direction))
+            .to_degrees()
+    }
+
+    /// Doomfist's rings (`0D0A` st2: 1, 4 and 6 pellets at 0, 0.5 and 1 of
+    /// 2.5°, roll 0), here without his 0.3° jitter: the client's layout
+    /// (`0x7FF789C90310`) leaves at 0°, 1.25° and 2.5°, eleven distinct
+    /// unit directions; a ring's first pellet tilts up from the aim, the
+    /// next a quarter turn on, toward −x for an aim along +z.
     #[test]
     fn hand_cannon_rings_leave_at_their_angles() {
-        let spread = 2.5f64;
-        let rings = [0.0, 0.5, 1.0].map(|share: f64| (share * spread).to_radians());
+        let hand_cannon = [(0.0, 1), (0.5, 4), (1.0, 6)];
+        let forward = [0.0, 0.0, 1.0];
         let directions = ring_directions(
-            [0.0, 0.0, 1.0],
-            &[(rings[0], 1), (rings[1], 4), (rings[2], 6)],
+            forward,
+            11,
+            &rings(2.5, 0.0, Some(0.0), &hand_cannon, 1.0),
+            77,
+            3,
         );
         let mut angles: Vec<f64> = directions
             .iter()
-            .map(|[x, y, z]| (x.hypot(*y).atan2(*z).to_degrees() * 1e4).round() / 1e4)
+            .map(|&direction| (degrees_off(forward, direction) * 1e3).round() / 1e3)
             .collect();
         angles.sort_by(f64::total_cmp);
         let mut expected = vec![0.0];
@@ -318,27 +468,101 @@ mod tests {
         distinct.sort_by(|a, b| a.partial_cmp(b).unwrap());
         distinct.dedup();
         assert_eq!(distinct.len(), 11);
-        for direction in &directions {
-            let length: f64 = direction.iter().map(|part| part * part).sum();
-            assert!((length - 1.0).abs() < 1e-12);
+        for &direction in &directions {
+            assert!((dot(direction, direction) - 1.0).abs() < 1e-6);
         }
-        // The first pellet of a ring is on the aim's right, the next
-        // above: a quarter turn apart for four.
         let ring = &directions[1..5];
-        assert!(ring[0][0] > 0.0 && ring[0][1].abs() < 1e-12);
-        assert!(ring[1][1] > 0.0 && ring[1][0].abs() < 1e-12);
+        assert!(ring[0][1] > 0.0 && ring[0][0].abs() < 1e-6);
+        assert!(ring[1][0] < 0.0 && ring[1][1].abs() < 1e-6);
+        assert!(ring[2][1] < 0.0 && ring[2][0].abs() < 1e-6);
     }
 
-    /// A ring around an aim looking up and to the side keeps its tilt.
+    /// With his 0.3° jitter the rings shrink to share × 2.2° and each
+    /// pellet turns by two draws of at most 0.3°, the same for the same
+    /// seed and shot, others for another shot.
     #[test]
-    fn rings_tilt_around_any_aim() {
+    fn a_ring_jitter_shrinks_the_rings_and_moves_each_pellet() {
+        let hand_cannon = rings(2.5, 0.3, Some(0.0), &[(0.0, 1), (0.5, 4), (1.0, 6)], 1.0);
         let forward = [0.48, 0.6, -0.64];
-        let tilt = 5f64.to_radians();
-        for direction in ring_directions(forward, &[(tilt, 6)]) {
-            let dot: f64 = forward.iter().zip(direction).map(|(a, b)| a * b).sum();
-            assert!((dot - tilt.cos()).abs() < 1e-12);
+        let directions = ring_directions(forward, 11, &hand_cannon, 77, 3);
+        let shares = [0.0, 0.5, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0];
+        let mut moved = false;
+        for (&direction, share) in directions.iter().zip(shares) {
+            let off = degrees_off(forward, direction) - share * 2.2;
+            assert!(off.abs() <= 0.6, "{off}");
+            moved |= off.abs() > 1e-3;
         }
-        let straight = ring_directions([0.0, 1.0, 0.0], &[(tilt, 3)]);
-        assert_eq!(straight.len(), 3);
+        assert!(moved);
+        assert_eq!(
+            directions,
+            ring_directions(forward, 11, &hand_cannon, 77, 3)
+        );
+        assert_ne!(
+            directions,
+            ring_directions(forward, 11, &hand_cannon, 77, 4)
+        );
+    }
+
+    /// Roadhog's hitscan Scrap Gun shot (`01C6` st14: 16 pellets at 0, 0.5
+    /// and 1 of 20°, jitter 2°, no roll, aspect 0.1) lies flat: its part
+    /// along the aim's up is a tenth of a cone's, its sides reach out.
+    #[test]
+    fn an_aspect_below_one_flattens_the_rings() {
+        let scrap = rings(20.0, 2.0, None, &[(0.0, 1), (0.5, 5), (1.0, 10)], 0.1);
+        for forward in [[0.0, 0.0, 1.0], [0.48, 0.6, -0.64]] {
+            let up = cross(
+                forward,
+                unit_or(cross([0.0, 1.0, 0.0], forward), [1.0, 0.0, 0.0]),
+            );
+            let directions = ring_directions(forward, 16, &scrap, 512, 9);
+            assert_eq!(directions.len(), 16);
+            let limit = 0.1 * 22f64.to_radians().sin() + 1e-6;
+            for &direction in &directions {
+                assert!(dot(direction, up).abs() <= limit);
+            }
+            let widest = directions
+                .iter()
+                .map(|&direction| (direction[0] * forward[2] - direction[2] * forward[0]).abs())
+                .fold(0.0, f64::max);
+            assert!(widest > 0.15, "{widest}");
+        }
+        // The roll is drawn per shot.
+        let forward = [0.0, 0.0, 1.0];
+        assert_ne!(
+            ring_directions(forward, 16, &scrap, 512, 9),
+            ring_directions(forward, 16, &scrap, 512, 10)
+        );
+    }
+
+    /// Genji's Fan of Blades (`0304` st11: 3 a shot, 9° wide, turned 90°;
+    /// the client's `0x7FF789C908F0`): level, 4.5° to +x, along the aim,
+    /// 4.5° to −x.
+    #[test]
+    fn genjis_fan_lies_level_across_the_aim() {
+        let (width, turn) = (9.0 * 0.017_453_292f32, 90.0 * 0.017_453_292f32);
+        let fan = fan_directions([0.0, 0.0, 1.0], 3, width, turn);
+        let (sin, cos) = 4.5f64.to_radians().sin_cos();
+        assert_eq!(fan.len(), 3);
+        close(fan[0], [sin, 0.0, cos], 1e-6);
+        close(fan[1], [0.0, 0.0, 1.0], 1e-7);
+        close(fan[2], [-sin, 0.0, cos], 1e-6);
+        // Looking up and to the side: the side pellets 4.5° off the aim,
+        // mirrored about it, the middle one along it; the fan holds the
+        // aim's right (its plane has no part along the aim's up).
+        let forward = [0.48, 0.6, -0.64];
+        let fan = fan_directions(forward, 3, width, turn);
+        let dot = |a: Vec3, b: Vec3| a.iter().zip(b).map(|(a, b)| a * b).sum::<f64>();
+        close(fan[1], forward, 1e-6);
+        for side in [fan[0], fan[2]] {
+            assert!((dot(side, forward) - cos).abs() < 1e-6);
+        }
+        let right = right_of(forward);
+        let up = cross(right, forward);
+        for pellet in &fan {
+            assert!(dot(*pellet, up).abs() < 1e-6);
+        }
+        assert!(dot(fan[0], right) < 0.0 && dot(fan[2], right) > 0.0);
+        // A lone projectile leaves along the aim.
+        close(fan_directions(forward, 1, width, turn)[0], forward, 1e-6);
     }
 }

@@ -366,7 +366,8 @@ pub struct PosedProjectile {
     pub projectiles: u8,
     /// The directions the server flies the shot's projectiles in for their
     /// damage: one per projectile when the volley lays them out in rings
-    /// (`STU_613BDDB0`, `weapon_spread::ring_directions`), else `direction`
+    /// (`STU_613BDDB0`, `weapon_spread::ring_directions`) or a fan
+    /// (`STU_1145C42E`, `weapon_spread::fan_directions`), else `direction`
     /// alone (combat.py `_shoot` flew one whatever the count). A bot's
     /// flies along `direction` alone (combat.py's NPC path).
     pub pellets: Vec<[f64; 3]>,
@@ -1451,6 +1452,15 @@ impl Combat {
             )
             .map_err(io::Error::other)?;
         for impact in &step.impacts {
+            tracing::debug!(
+                target: "lucy::hits",
+                "projectile of {:08X} at tick {}: struck {:08X} at {:.3} m{}",
+                shooter.source,
+                context.tick,
+                impact.entity,
+                impact.distance,
+                if impact.critical { ", critical" } else { "" }
+            );
             if self.enemy_of(scene, shooter, impact.entity) {
                 flight.strike(impact.critical);
             }

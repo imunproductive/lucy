@@ -921,14 +921,23 @@ impl BodyScript {
     /// Grenade, [`PosedProjectile::server_shown`]) flies and every client
     /// sees it, its shooter's included ([`ServerCopies`]). combat.py
     /// `_shoot`: another unleased one flies for its damage alone. A shot of
-    /// pellet rings flies each pellet for its damage (upstream 7cb4018); a
-    /// leased one's confirmation and release still follow one projectile
-    /// along the aim, which then does no damage, so the wire is as without
-    /// rings.
+    /// pellet rings (upstream 7cb4018) or a fan (Genji's Fan of Blades)
+    /// flies each pellet for its damage; a leased one's confirmation and
+    /// release still follow one projectile along the aim, which then does
+    /// no damage, so the wire is as without them.
     fn launch_projectile(&mut self, projectile: PosedProjectile) {
         let bound = (projectile.ballistics.bound() / TICK_PERIOD.as_secs_f64()).ceil() as u32;
         let definition = projectile.ballistics.definition;
         let damaging = projectile.ballistics.damaging();
+        tracing::debug!(
+            target: "lucy::hits",
+            "projectile volley of {:08X} at frame {}: from {:.3?} along {:.4?}, pellets {:.4?}",
+            projectile.shot.entity,
+            projectile.shot.frame,
+            projectile.origin,
+            projectile.direction,
+            projectile.pellets
+        );
         let rings = projectile.pellets.len() > 1;
         let pellets: Vec<_> = if rings && damaging {
             projectile

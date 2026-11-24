@@ -780,7 +780,8 @@ fn projectile_volleys_fly_leased_for_damage_alone_or_not_at_all() {
     assert_eq!(trio.pellets, [aim_direction(&fire)]);
     // Echo's Tri-Shot layout (one ring of 3 at 0.6 of the spread, here 5°):
     // the leased shot still leaves along the aim, and its three pellets
-    // fly 3° around it for the damage (upstream 7cb4018).
+    // fly 3° around it for the damage, laid out as the client does
+    // (`weapon_spread::ring_directions`).
     fields["m_5EC1EB38"] = json!({"$":"STU_613BDDB0","m_spread":5,"m_0D30E40C":[
         {"$":"STU_B101467F","m_6425FFB9":0.6,"m_B19BD35D":3}]});
     let ringed = shoot(fields.clone()).expect("a ringed volley of three flies");
@@ -788,16 +789,33 @@ fn projectile_volleys_fly_leased_for_damage_alone_or_not_at_all() {
     assert_eq!(ringed.direction, aim_direction(&fire));
     let angle = |pellet: &[f64; 3]| {
         let aim = aim_direction(&fire);
-        let dot: f64 = aim.iter().zip(pellet).map(|(a, b)| a * b).sum();
-        dot.clamp(-1.0, 1.0).acos().to_degrees()
+        let across = [
+            aim[1] * pellet[2] - aim[2] * pellet[1],
+            aim[2] * pellet[0] - aim[0] * pellet[2],
+            aim[0] * pellet[1] - aim[1] * pellet[0],
+        ];
+        let sin = across.iter().map(|part| part * part).sum::<f64>().sqrt();
+        let cos: f64 = aim.iter().zip(pellet).map(|(a, b)| a * b).sum();
+        sin.atan2(cos).to_degrees()
     };
     assert_eq!(ringed.pellets.len(), 3);
     assert!(
         ringed
             .pellets
             .iter()
-            .all(|pellet| (angle(pellet) - 3.0).abs() < 1e-9)
+            .all(|pellet| (angle(pellet) - 3.0).abs() < 1e-4)
     );
+    // Genji's fan (`STU_1145C42E`, 9° wide, turned 90°): along the aim and
+    // 4.5° to either side (`weapon_spread::fan_directions`).
+    let mut fan = fields.clone();
+    fan["m_5EC1EB38"] = json!({"$":"STU_1145C42E","m_spread":9.0,"m_A2A9890A":90});
+    let fanned = shoot(fan).expect("a fan of three flies");
+    let angles: Vec<_> = fanned
+        .pellets
+        .iter()
+        .map(|pellet| (angle(pellet) * 1e3).round() / 1e3)
+        .collect();
+    assert_eq!(angles, [4.5, 0.0, 4.5]);
     // More than 7 a shot resolve to shots only (projectiles.py `_sync`);
     // Roadhog's rings lay out 25 pellets around the aim.
     fields["m_numProjectilesPerShot"] = json!(25);
@@ -813,14 +831,16 @@ fn projectile_volleys_fly_leased_for_damage_alone_or_not_at_all() {
     let mut angles: Vec<_> = pellets
         .pellets
         .iter()
-        .map(|pellet| (angle(pellet) * 1e6).round() / 1e6)
+        .map(|pellet| (angle(pellet) * 1e3).round() / 1e3)
         .collect();
     angles.dedup();
     assert_eq!(angles, [0.0, 1.5, 3.0, 5.0]);
-    // Rings that don't add up to the count fly one along the aim.
+    // Rows that don't add up to the count: the client lays out the
+    // count's pellets all the same, the last ring one short.
     fields["m_numProjectilesPerShot"] = json!(24);
     let uneven = shoot(fields).expect("the damage flies");
-    assert_eq!(uneven.pellets, [aim_direction(&fire)]);
+    assert_eq!(uneven.pellets.len(), 24);
+    assert_eq!(uneven.pellets[..24], pellets.pellets[..24]);
 }
 
 /// leafall903/ORPHEUS (MIT) c239a84 `weapon_spread.py` and e5463e3: a
