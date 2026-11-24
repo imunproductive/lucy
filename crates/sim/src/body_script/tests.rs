@@ -1566,6 +1566,11 @@ fn wheel_choices_run_the_callout_graph() {
 /// ([`GraphStore::wheel_cosmetics`], from the install's unlock), every
 /// state of the path runs (`STU_ABEDF4B8`, `STU_A875CA49`,
 /// `STU_58E77FC5`, `STU_D040C3EF`, `STU_06AB2ECE`): nothing is unsupported.
+/// 0.25 s in, `023A` st0 plays the emote's alias, which Soldier: 76's own
+/// blend tree set lacks; its length comes from the emote's set, which
+/// `023A` st60 (`STU_A875CA49`) layers on the body, so the emote runs that
+/// long (it ended at st0's begin, 0 s, when the server read the body's set
+/// alone), and then ends with its graphs.
 #[test]
 #[ignore = "requires the derived 104319 statescript catalog"]
 fn an_emote_choice_runs_the_emote_graphs() {
@@ -1618,6 +1623,7 @@ fn an_emote_choice_runs_the_emote_graphs() {
     world.vitals = Vitals::empty();
     world.pool_types_known = true;
     world.target_tags = body.target_tags.clone();
+    let (emote_alias, emote_tree) = (cosmetics.emote_aliases[0], cosmetics.emote_blend_trees[0]);
     world.cosmetics = cosmetics;
     let mut component = Component::start(
         Arc::clone(&graphs),
@@ -1664,6 +1670,71 @@ fn an_emote_choice_runs_the_emote_graphs() {
             "{graph:04X} runs"
         );
     }
+    let lengths = graphs.anim_lengths();
+    let body_alone = lengths.length(0x0400_0000_0000_03cf, &[], emote_alias, 0);
+    assert_eq!(
+        body_alone,
+        Some(0.0),
+        "Soldier: 76's own set lacks the emote"
+    );
+    let layered = lengths.length(0x0400_0000_0000_03cf, &[emote_tree], emote_alias, 0);
+    assert_eq!(layered, Some(f64::from(5.000_000_5_f32)), "the emote's set");
+    let emote = |component: &Component| {
+        let snapshot = component.snapshot().unwrap();
+        snapshot
+            .instances
+            .iter()
+            .find(|(_, instance)| instance.graph == 0x023a)
+            .map(|(&id, instance)| {
+                let st0 = instance.states.get(&0).filter(|state| state.active);
+                let finish = snapshot.pending_timers.get(&id).and_then(|timers| {
+                    timers
+                        .iter()
+                        .find(|timer| timer.raw_state == 0 && timer.finish)
+                        .map(|timer| timer.due_ms)
+                });
+                (st0.map(|state| state.start_ms), finish)
+            })
+    };
+    let mut frame = 10;
+    let begun_ms = loop {
+        component
+            .advance_frame(FIRST_TICK + frame, &mut world)
+            .unwrap();
+        frame += 1;
+        if let Some((Some(begun_ms), finish)) = emote(&component) {
+            assert_eq!(finish, Some(begun_ms + 5000), "st0 finishes after 5 s");
+            break begun_ms;
+        }
+        assert!(frame < 40, "023A st0 begins 0.25 s in");
+    };
+    // The frame whose 16 ms hold st0's finish ends the emote.
+    let mut ended_ms = None;
+    while ended_ms.is_none() {
+        let frame_ms = u64::from(FIRST_TICK + frame) * 16;
+        component
+            .advance_frame(FIRST_TICK + frame, &mut world)
+            .unwrap();
+        frame += 1;
+        match emote(&component) {
+            Some((Some(start), _)) => assert_eq!(start, begun_ms),
+            None => ended_ms = Some(frame_ms),
+            Some((None, _)) => panic!("023A runs on without st0"),
+        }
+    }
+    assert_eq!(
+        ended_ms,
+        Some((begun_ms + 5000) / 16 * 16),
+        "the emote ends with st0, begun at {begun_ms} ms"
+    );
+    let snapshot = component.snapshot().unwrap();
+    assert!(
+        !snapshot
+            .instances
+            .values()
+            .any(|instance| matches!(instance.graph, 0x069a | 0x1040)),
+        "069A and 1040 end with it"
+    );
 }
 
 /// The wheel's spam limit runs on the server as `05AD` has it: each Hello

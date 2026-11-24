@@ -5970,7 +5970,13 @@ impl World for Animations {
         Unknowns::Refuse
     }
 
-    fn animation_length(&self, _site: Site, alias: u64, category: u64) -> Option<f64> {
+    fn animation_length(
+        &self,
+        _site: Site,
+        _trees: &[u64],
+        alias: u64,
+        category: u64,
+    ) -> Option<f64> {
         (alias == ANIMATED_ALIAS).then_some(if category == ANIMATED_CATEGORY {
             0.5
         } else {
@@ -5978,7 +5984,13 @@ impl World for Animations {
         })
     }
 
-    fn animation_scalar(&self, _site: Site, alias: u64, _category: u64) -> Option<f64> {
+    fn animation_scalar(
+        &self,
+        _site: Site,
+        _trees: &[u64],
+        alias: u64,
+        _category: u64,
+    ) -> Option<f64> {
         (alias == ANIMATED_ALIAS).then_some(0.75)
     }
 }
@@ -6065,6 +6077,37 @@ fn an_anim_that_skips_its_timer_stays_on() {
     assert_eq!(anim_timers(&component), []);
     component.advance_frame(200, &mut Animations).unwrap();
     assert_eq!(active(component.snapshot().unwrap(), 1), [0]);
+}
+
+/// The client's timer `0x7FF789BD1E70`: timer 1 comes at the length's end
+/// always, the finish only without `m_2DEAE6A9`, which keeps the state on
+/// (a spawn door's `0D32` st0: 0.05 s, `m_2DEAE6A9` true), also with no
+/// time to run (a zero alias: timer 1 runs at its begin, and no finish
+/// follows). `m_154DBA91` is a play parameter: the state finishes.
+#[test]
+fn an_anim_with_m_2deae6a9_holds_after_its_length() {
+    let holds = json!({
+        "m_2DEAE6A9":{"$":"STUConfigVarBool","m_value":1},
+        "m_7CC54480":{"$":"STUConfigVarBool","m_value":1},
+        "m_86701C3E":{"$":"STUConfigVarFloat","m_value":0.05},
+    });
+    let mut component = start_anim(anim_alias(ANIMATED), holds, &mut Animations);
+    assert_eq!(anim_timers(&component), [(1650, false)]);
+    component.advance_frame(200, &mut Animations).unwrap();
+    assert_eq!(active(component.snapshot().unwrap(), 1), [0]);
+    let holds = json!({"m_2DEAE6A9":{"$":"STUConfigVarBool","m_value":1}});
+    let mut component = start_anim(Json::Null, holds, &mut Animations);
+    assert_eq!(anim_timers(&component), []);
+    component.advance_frame(200, &mut Animations).unwrap();
+    assert_eq!(active(component.snapshot().unwrap(), 1), [0]);
+    let plays = json!({
+        "m_154DBA91":{"$":"STUConfigVarBool","m_value":1},
+        "m_86701C3E":{"$":"STUConfigVarFloat","m_value":0.05},
+    });
+    let mut component = start_anim(anim_alias(ANIMATED), plays, &mut Animations);
+    assert_eq!(anim_timers(&component), [(1650, false), (1650, true)]);
+    component.advance_frame(200, &mut Animations).unwrap();
+    assert_eq!(active(component.snapshot().unwrap(), 1), Vec::<u16>::new());
 }
 
 /// An alias the body's data doesn't know, with no authored length, never

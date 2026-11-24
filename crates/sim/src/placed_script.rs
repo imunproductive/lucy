@@ -686,10 +686,10 @@ mod tests {
     /// holds its pickup; and the pad `26F8` (586: the Training Partner
     /// setting, ruleset 29450, is on, so it keeps itself); the console
     /// `265F` still meets gaps and sends nothing. Each door's frame
-    /// changes twice in its first 300 frames: as
-    /// it takes `13C0`'s `0702` (st12, remote slot 7, writes its remote sync
-    /// variables #8869 and #8870 from `03C5` and `03C4`) and by its alias
-    /// states (see `0D32`; which wait ends first is not pinned here).
+    /// changes once in its first 300 frames, as it takes `13C0`'s `0702`
+    /// (st12, remote slot 7, writes its remote sync variables #8869 and
+    /// #8870 from `03C5` and `03C4`) and begins its open state st0, which
+    /// holds (`m_2DEAE6A9`, `vm/timers.rs`): it no longer ends 0.05 s on.
     #[test]
     #[ignore = "requires the derived 104319 data"]
     fn the_range_placeables_run_their_graphs_and_have_frames() {
@@ -730,7 +730,7 @@ mod tests {
                 .frames()
                 .find(|(entity, _)| *entity == 0x8000_0000 | door)
                 .unwrap();
-            assert_eq!(frame.serial, 3, "door {door}");
+            assert_eq!(frame.serial, 2, "door {door}");
         }
         let gaps = world.gaps();
         assert!(

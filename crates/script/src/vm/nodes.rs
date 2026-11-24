@@ -1096,13 +1096,21 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
                 StateKind::Plain
             }
             // An emote's blend tree (`023A` st60): a registered linked state
-            // (begin/end 0x7FF789CBAD60/0x7FF789CBADC0 keep the class's
+            // (begin/end 0x7FF789BCAD60/0x7FF789BCADC0 keep the class's
             // ordered list, reader 0x7FF78AA81D80 the link alone, as
-            // `STU_9028E035`'s). The client takes the tree (`m_65D335ED`)
-            // and level (`m_level`) from the running chain; the server
-            // animates nothing, so it is a plain state sent without a link,
-            // as the statuses are (leafall903/ORPHEUS (MIT) `4e432ef0`).
-            "STU_A875CA49" => StateKind::Plain,
+            // `STU_9028E035`'s). The client's begin takes the level
+            // (`m_level`, node `+240`) and layers the tree (`m_65D335ED`) on
+            // the model (0x7FF789BD6030), whose alias lookups then find the
+            // emote's animations; the server keeps the tree for its `Anim`
+            // lengths. Sent without a link, as the statuses are
+            // (leafall903/ORPHEUS (MIT) `4e432ef0`).
+            "STU_A875CA49" => StateKind::BlendTree {
+                tree: 0,
+                level: field(&node.fields, "m_level")
+                    .as_u64()
+                    .and_then(|level| u8::try_from(level).ok())
+                    .unwrap_or(0),
+            },
             // The local animation mode (`023A` st95, owner-only, codec
             // `none`): its begin and end (0x7FF78990CA80, 0x7FF78990CDE0)
             // set and clear a mode 0-3 (`m_4DA577AC`) on the client's own
@@ -1402,6 +1410,7 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
                 self.register_tick(key, self.machine.now_ms);
             }
             StateKind::Anim => self.arm_animation(key, node, depth)?,
+            StateKind::BlendTree { .. } => self.begin_blend_tree(key, node),
             StateKind::SendMessage => self.begin_send_state(key, node)?,
             StateKind::CosmeticEntity => self.begin_cosmetic(key, node, depth)?,
             StateKind::ChaseVar => self.begin_chase(key, node, depth)?,

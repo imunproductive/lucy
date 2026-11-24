@@ -225,14 +225,30 @@ impl World for PlayerWorld {
 
     /// From the body's compiled animation data
     /// ([`crate::anim_lengths::AnimLengths`]).
-    fn animation_length(&self, site: Site, alias: u64, category: u64) -> Option<f64> {
+    fn animation_length(
+        &self,
+        site: Site,
+        trees: &[u64],
+        alias: u64,
+        category: u64,
+    ) -> Option<f64> {
         let body = self.body.filter(|_| site.entity == self.entity)?;
-        self.graphs.anim_lengths().length(body, alias, category)
+        self.graphs
+            .anim_lengths()
+            .length(body, trees, alias, category)
     }
 
-    fn animation_scalar(&self, site: Site, alias: u64, category: u64) -> Option<f64> {
+    fn animation_scalar(
+        &self,
+        site: Site,
+        trees: &[u64],
+        alias: u64,
+        category: u64,
+    ) -> Option<f64> {
         let body = self.body.filter(|_| site.entity == self.entity)?;
-        self.graphs.anim_lengths().scalar(body, alias, category)
+        self.graphs
+            .anim_lengths()
+            .scalar(body, trees, alias, category)
     }
 
     fn equipped_cosmetic(&self, site: Site, entity: u32, kind: Cosmetic, slot: i64) -> Option<u64> {

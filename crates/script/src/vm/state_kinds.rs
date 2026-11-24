@@ -2,9 +2,9 @@
 //!
 //! Client research (1.74): Anim (OnBegin 0x7FF78981DD90): with
 //! m_playOverDuration (m_86701C3E) set, a timer at start + d follows
-//! m_A3B86BB0 (animation finished), and unless m_clientAnimRemovesSelf
-//! (m_154DBA91) the state finishes at start + d; without it the duration is
-//! the animation asset's. Effect: its payload is its activation counter & 3
+//! m_A3B86BB0 (animation finished), and unless m_2DEAE6A9 the state
+//! finishes at start + d (timer 0x7FF789BD1E70, `vm/timers.rs`); without
+//! it the duration is the animation asset's. Effect: its payload is its activation counter & 3
 //! (reader 0x7FF789894540). ClientOnlyPulser (vtable 0x7FF78B549DE8): OnEnter
 //! and every begin while active (0x7FF78990D6D0) pulse once, and the client
 //! follows m_B6A27F9A once per pulse (0x7FF78990D872). Its payload (reader

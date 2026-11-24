@@ -999,17 +999,30 @@ pub trait World {
 
     /// The length in seconds of the animation `alias` plays on this
     /// world's body with animation category `category` set (0: none), from
-    /// the body's compiled animation data; none when the data can't tell
-    /// (`World.animation_duration` in leafall903/ORPHEUS `c239a84`,
-    /// `src/ow174/game/script/runtime.py`).
-    fn animation_length(&self, _site: Site, _alias: u64, _category: u64) -> Option<f64> {
+    /// the body's compiled animation data with the blend tree sets `trees`
+    /// the body's graphs layer on it (`STU_A875CA49`, first first); none
+    /// when the data can't tell (`World.animation_duration` in
+    /// leafall903/ORPHEUS `c239a84`, `src/ow174/game/script/runtime.py`).
+    fn animation_length(
+        &self,
+        _site: Site,
+        _trees: &[u64],
+        _alias: u64,
+        _category: u64,
+    ) -> Option<f64> {
         None
     }
 
     /// The scalar an `Anim` state playing `alias` writes to its output
     /// (`World.animation_scalar`, the same source); none when the data
     /// can't tell.
-    fn animation_scalar(&self, _site: Site, _alias: u64, _category: u64) -> Option<f64> {
+    fn animation_scalar(
+        &self,
+        _site: Site,
+        _trees: &[u64],
+        _alias: u64,
+        _category: u64,
+    ) -> Option<f64> {
         None
     }
 
@@ -1499,6 +1512,14 @@ pub enum StateKind {
     MovementMod,
     MovementSample(u16),
     Anim,
+    /// An emote's blend tree (`STU_A875CA49`, `vm/timers.rs`
+    /// `begin_blend_tree`): the blend tree set its begin read
+    /// (`m_65D335ED`, 0 for none) at its level (`m_level`), layered on the
+    /// body's animation lookups while it runs.
+    BlendTree {
+        tree: u64,
+        level: u8,
+    },
     Effect,
     SendMessage,
     CosmeticEntity,

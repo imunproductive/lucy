@@ -376,7 +376,7 @@ const UNLOCK: u16 = 0x0a5;
 /// (`STUUnlock_VoiceLine`) effect `m_F57B051E`: the asset reference at
 /// `+0x118`, whose GUID is the `+0x120` `Eval_STU_2977339D` plays
 /// (0x7FF78984D1F0; `python -m tools.owindex STU_8A9D1F89`).
-fn wheel_cosmetics(install: &Install) -> Result<(Json, Json)> {
+pub(crate) fn wheel_cosmetics(install: &Install) -> Result<(Json, Json)> {
     use crate::game_queues::{Node, key, load, typed};
     let mut emotes = Map::new();
     let mut voice_lines = Map::new();

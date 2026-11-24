@@ -3085,9 +3085,11 @@ fn state_payload(
         // gave a plain state (the base `State.payload`) and Disable Button
         // no link (`ow174/game/script/driver.py` `_add_state`). The field of
         // view (`STU_75D1C308`) and the aim speed (`STU_3716E1D4`) are such
-        // plain states: left out, the owner's client never runs them.
+        // plain states: left out, the owner's client never runs them. An
+        // emote's blend tree (`STU_A875CA49`) goes without its link too.
         (
             StateKind::Plain
+            | StateKind::BlendTree { .. }
             | StateKind::DisableButton { .. }
             | StateKind::Status
             | StateKind::CombatMod

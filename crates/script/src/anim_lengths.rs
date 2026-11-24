@@ -7,8 +7,10 @@
 //! A lookup takes the body's blend tree set, the alias and the animation
 //! category the state names (0 for none), and falls back to the alias's
 //! length for every category (`any`) when that category has no entry.
-//! An alias the body's set doesn't list is 0 s long, as the client's lookup
-//! gives it (OwnerPrediction.md "DayFirstShot2").
+//! The blend tree sets a body's graphs layer on it (an emote's,
+//! `STU_A875CA49`) come first, the first that lists the alias answering.
+//! An alias none of them nor the body's set lists is 0 s long, as the
+//! client's lookup gives it (OwnerPrediction.md "DayFirstShot2").
 //! Ported from leafall903/ORPHEUS (MIT), commit `c239a84`,
 //! `src/ow174/game/script/driver.py` (`wheel_animation_durations`,
 //! `wheel_animation_scalars`, `animation_duration`): lengths outside
@@ -121,13 +123,30 @@ impl AnimLengths {
         self.lengths.is_empty() && self.scalars.is_empty()
     }
 
-    /// The length in seconds of `alias` on `body` with `category` set (0:
-    /// none): 0 when the body's set doesn't list the alias (the client's
-    /// lookup `BB8970` fails and its `Anim` state keeps the length 0); none
-    /// when the data can't tell.
-    pub fn length(&self, body: u64, alias: u64, category: u64) -> Option<f64> {
+    /// The set that answers for `alias` on `body` with the blend tree sets
+    /// `trees` layered on it: the first of `trees` that lists the alias,
+    /// else the body's set, with whether it lists the alias.
+    fn set_for(&self, body: u64, trees: &[u64], alias: u64) -> Option<(u64, bool)> {
+        let listed = |set| {
+            self.aliases
+                .get(set)
+                .is_some_and(|aliases| aliases.contains(&alias))
+        };
+        if let Some(&tree) = trees.iter().find(|tree| listed(tree)) {
+            return Some((tree, true));
+        }
         let set = *self.bodies.get(&body)?;
-        if !self.aliases.get(&set)?.contains(&alias) {
+        self.aliases.get(&set)?;
+        Some((set, listed(&set)))
+    }
+
+    /// The length in seconds of `alias` on `body`, with the blend tree
+    /// sets `trees` layered on it, with `category` set (0: none): 0 when no
+    /// set lists the alias (the client's lookup `BB8970` fails and its
+    /// `Anim` state keeps the length 0); none when the data can't tell.
+    pub fn length(&self, body: u64, trees: &[u64], alias: u64, category: u64) -> Option<f64> {
+        let (set, listed) = self.set_for(body, trees, alias)?;
+        if !listed {
             return Some(0.0);
         }
         self.lengths
@@ -136,10 +155,11 @@ impl AnimLengths {
             .copied()
     }
 
-    /// The scalar `alias` outputs on `body` with `category` set; none when
-    /// the data can't tell.
-    pub fn scalar(&self, body: u64, alias: u64, category: u64) -> Option<f64> {
-        let set = *self.bodies.get(&body)?;
+    /// The scalar `alias` outputs on `body`, with the blend tree sets
+    /// `trees` layered on it, with `category` set; none when the data
+    /// can't tell.
+    pub fn scalar(&self, body: u64, trees: &[u64], alias: u64, category: u64) -> Option<f64> {
+        let (set, _) = self.set_for(body, trees, alias)?;
         match self.scalars.get(&(set, alias, category)) {
             Some(scalar) => *scalar,
             None => self.scalars.get(&(set, alias, ANY)).copied().flatten(),
@@ -156,6 +176,9 @@ mod tests {
     const OTHER: u64 = 0x0C80_0000_0000_0001;
     const CATEGORY: u64 = 0x0280_0000_0000_011B;
 
+    const EMOTE: u64 = 0x0040_0000_0000_0644;
+    const EMOTE_ALIAS: u64 = 0x0C80_0000_0000_045C;
+
     fn table() -> AnimLengths {
         AnimLengths::from_json(
             br#"{
@@ -167,6 +190,9 @@ mod tests {
                     },
                     "0x0C80000000000001": {"lengths": {"any": 7200.0, "0x028000000000011B": 0.1}},
                     "0x0C80000000000002": {}
+                }, "0x0040000000000644": {
+                    "0x0C8000000000045C": {"lengths": {"any": 3.0}, "scalars": {"any": 0.5}},
+                    "0x0C8000000000043C": {"lengths": {"any": 2.0}}
                 }}
             }"#,
         )
@@ -180,24 +206,41 @@ mod tests {
     fn a_length_falls_back_to_every_category() {
         let table = table();
         assert_eq!(
-            table.length(BODY, ALIAS, CATEGORY),
+            table.length(BODY, &[], ALIAS, CATEGORY),
             Some(f64::from(0.7_f32))
         );
-        assert_eq!(table.length(BODY, ALIAS, 0), Some(1.5));
-        assert_eq!(table.length(BODY, ALIAS, CATEGORY + 1), Some(1.5));
-        assert_eq!(table.length(BODY + 1, ALIAS, 0), None);
-        assert_eq!(table.length(BODY, ALIAS + 1, 0), Some(0.0));
+        assert_eq!(table.length(BODY, &[], ALIAS, 0), Some(1.5));
+        assert_eq!(table.length(BODY, &[], ALIAS, CATEGORY + 1), Some(1.5));
+        assert_eq!(table.length(BODY + 1, &[], ALIAS, 0), None);
+        assert_eq!(table.length(BODY, &[], ALIAS + 1, 0), Some(0.0));
         // A listed alias whose length the derivation couldn't read.
-        assert_eq!(table.length(BODY, 0x0C80_0000_0000_0002, 0), None);
+        assert_eq!(table.length(BODY, &[], 0x0C80_0000_0000_0002, 0), None);
+    }
+
+    /// An emote's blend tree set layered on the body answers for the
+    /// aliases it lists, before the body's set; the body's set answers
+    /// for the rest.
+    #[test]
+    fn a_layered_set_answers_for_its_aliases() {
+        let table = table();
+        assert_eq!(table.length(BODY, &[], EMOTE_ALIAS, 0), Some(0.0));
+        assert_eq!(table.length(BODY, &[EMOTE], EMOTE_ALIAS, 0), Some(3.0));
+        assert_eq!(table.scalar(BODY, &[EMOTE], EMOTE_ALIAS, 0), Some(0.5));
+        assert_eq!(table.length(BODY, &[EMOTE], ALIAS, 0), Some(2.0));
+        assert_eq!(
+            table.length(BODY, &[EMOTE], OTHER, CATEGORY),
+            Some(f64::from(0.1_f32))
+        );
+        assert_eq!(table.length(BODY, &[EMOTE + 1], EMOTE_ALIAS, 0), Some(0.0));
     }
 
     /// Upstream `wheel_animation_durations` keeps lengths up to an hour.
     #[test]
     fn a_length_over_an_hour_is_dropped() {
         let table = table();
-        assert_eq!(table.length(BODY, OTHER, 0), None);
+        assert_eq!(table.length(BODY, &[], OTHER, 0), None);
         assert_eq!(
-            table.length(BODY, OTHER, CATEGORY),
+            table.length(BODY, &[], OTHER, CATEGORY),
             Some(f64::from(0.1_f32))
         );
     }
@@ -207,9 +250,9 @@ mod tests {
     #[test]
     fn an_unknown_scalar_hides_every_category() {
         let table = table();
-        assert_eq!(table.scalar(BODY, ALIAS, 0), Some(0.25));
-        assert_eq!(table.scalar(BODY, ALIAS, CATEGORY), None);
-        assert_eq!(table.scalar(BODY, OTHER, 0), None);
+        assert_eq!(table.scalar(BODY, &[], ALIAS, 0), Some(0.25));
+        assert_eq!(table.scalar(BODY, &[], ALIAS, CATEGORY), None);
+        assert_eq!(table.scalar(BODY, &[], OTHER, 0), None);
         assert!(!table.is_empty() && AnimLengths::default().is_empty());
     }
 }
