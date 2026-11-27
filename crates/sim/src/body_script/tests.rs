@@ -1611,18 +1611,24 @@ fn an_emote_choice_runs_the_emote_graphs() {
         }
     }
     for (name, body_id, camera_distance, camera_height, camera_bone) in [
-        ("Soldier: 76", 0x0400_0000_0000_03cf, 3.0, 0.25, 0x0003),
+        (
+            "Soldier: 76",
+            0x0400_0000_0000_03cf,
+            Value::Float(3.0),
+            0.25,
+            0x0003,
+        ),
         (
             "Pharah",
             0x0400_0000_0000_0032,
-            3.0,
+            Value::Integer(3),
             f64::from(0.3_f32),
             0x0003,
         ),
         (
             "Junkrat",
             0x0400_0000_0000_0380,
-            2.5,
+            Value::Float(2.5),
             f64::from(0.2_f32),
             0x0109,
         ),
@@ -1750,7 +1756,7 @@ fn an_emote_choice_runs_the_emote_graphs() {
             .values()
             .find(|instance| instance.graph == 0x004b)
             .unwrap();
-        assert_eq!(body_root.variables[&2286], Value::Float(camera_distance));
+        assert_eq!(body_root.variables[&2286], camera_distance);
         assert_eq!(body_root.variables[&2287], Value::Float(camera_height));
         assert_eq!(
             body_root.variables[&2296],

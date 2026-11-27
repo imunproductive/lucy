@@ -628,7 +628,12 @@ impl BotBody {
             .collect();
         let firing = !weapon_buttons.is_empty() && graphs.graph(FIRING_GRAPH).is_some();
         let mut roots = body_roots(body)?;
-        crate::vm::body_defaults(&mut roots, &graphs)?;
+        // Hero-body defaults (players use the same schema). Non-hero
+        // definitions can declare entity references, which need world
+        // binding context: docs/dev/loose-ends.md "Non-hero root defaults".
+        if body.hero.is_some() {
+            crate::vm::body_defaults(&mut roots, &graphs)?;
+        }
         let mut world = BotWorld {
             graphs: Arc::clone(&graphs),
             hero: spawn.hero,
