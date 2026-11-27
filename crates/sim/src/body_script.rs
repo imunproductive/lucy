@@ -610,9 +610,11 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                 .map_err(unsupported)?;
         }
         let dead = total <= 0.0;
-        self.component
-            .set_entity_variable(DEAD_FLAG, Value::Bool(dead), &mut self.world)
-            .map_err(unsupported)?;
+        if dead || self.component.owner_dead() {
+            self.component
+                .set_entity_variable(DEAD_FLAG, Value::Bool(dead), &mut self.world)
+                .map_err(unsupported)?;
+        }
         self.component.set_owner_dead(dead);
         Ok(())
     }
