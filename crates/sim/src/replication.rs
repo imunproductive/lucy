@@ -425,6 +425,11 @@ pub trait OwnerBodyRuntime: Send {
         Ok(())
     }
 
+    /// A native revival places the mover before its health/death watches
+    /// and revive-message actions run. Their position/heading reads must
+    /// see that pose, not the corpse's last scripted command.
+    fn placed(&mut self, _pose: Movement) {}
+
     /// An aura comes on the body or goes off it (`vm/auras.rs` in
     /// `lucy_script`): a hit's, or an ApplyAura's.
     fn change_aura(&mut self, _change: &AuraChange) -> io::Result<()> {
@@ -5715,7 +5720,11 @@ impl WorldDelivery {
         self.knocks = KnockCredit::default();
         self.spawn_room = None;
         self.respawn_hero = None;
+        let pose = self.mover.as_ref().map(Mover::pose);
         if let Some(script) = &mut self.body_script {
+            if let Some(pose) = pose {
+                script.runtime.placed(pose);
+            }
             if let Some(vitals) = script.runtime.vitals_mut() {
                 vitals.revive();
             }

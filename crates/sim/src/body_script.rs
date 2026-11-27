@@ -461,6 +461,26 @@ impl PlayerBodyRuntime {
             log_assumption(item.site.graph, item.site.node, &item.class, item.answer);
         }
     }
+
+    fn positioned(&mut self, pose: Movement, fresh: bool) {
+        self.world.position = pose.position;
+        // Its own body, as the target searches see it, stands where it moved.
+        let entity = self.world.entity;
+        if let Some(own) = self
+            .world
+            .targets
+            .iter_mut()
+            .flatten()
+            .find(|candidate| candidate.entity == entity)
+        {
+            own.feet = pose.position;
+        }
+        // Command gaps and timer advances retain the last movement record.
+        self.world.movement_fresh = fresh;
+        if fresh {
+            self.world.movement = pose;
+        }
+    }
 }
 
 impl OwnerBodyRuntime for PlayerBodyRuntime {
@@ -475,6 +495,10 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
         }
         vitals.clear_changed();
         Some(vitals.cumulative_component())
+    }
+
+    fn placed(&mut self, pose: Movement) {
+        self.positioned(pose, true);
     }
 
     fn take_target_tags_update(&mut self) -> Option<EntityComponent> {
@@ -499,30 +523,13 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                 "the owner VM frame is outside the command sequence",
             ));
         }
-        let pose = mover.pose();
-        self.world.position = pose.position;
+        self.positioned(mover.pose(), step == BodyStep::Posed);
         let speed_scale = Some(mover.speed_scale());
         let speed_changed = self.world.speed_scale != speed_scale;
         self.world.speed_scale = speed_scale;
         self.world.knockback_scale = Some(mover.knockback_scale());
         self.world.trial = Some(mover.trial());
         self.world.eye_height = Some(self.combat.eyes.height(mover.crouched()));
-        // Its own body, as the target searches see it, stands where it moved.
-        let entity = self.world.entity;
-        if let Some(own) = self
-            .world
-            .targets
-            .iter_mut()
-            .flatten()
-            .find(|candidate| candidate.entity == entity)
-        {
-            own.feet = pose.position;
-        }
-        // Command gaps and timer advances retain the last movement record.
-        self.world.movement_fresh = step == BodyStep::Posed;
-        if step == BodyStep::Posed {
-            self.world.movement = pose;
-        }
         // The client's speed-scale native (`Eval_STU_ED807E07`
         // 0x7FF789BE3570) makes the state that evaluates it a dependent of
         // the mover (kind 17, `0x7FF789AEBA60`): a stack of it takes the
