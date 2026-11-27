@@ -349,6 +349,14 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
         Ok(modifiers)
     }
 
+    /// A mover number as the client reads it (`0x7FF789806350`, which
+    /// converts with `0x7FF789E74C80`): the default when the field is
+    /// absent; an array gives its first element; a present but empty value
+    /// (an unset variable, value type 0xFF) gives 0.0. `023A` st1 multiplies
+    /// mods 17, 18, 19 and 21 by the unset `#2101` during a one-shot emote,
+    /// so the emote locks the throttles (EmoteWalk, refs `Emotes.md`).
+    /// [ASSUMPTION] Another value (an asset, a vector, an empty array) gives
+    /// the default: the client returns whatever its `xmm1` holds then.
     pub(super) fn movement_number(
         &mut self,
         id: u16,
@@ -360,9 +368,10 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
             return Some(default);
         }
         let value = self.evaluate(id, node, config, None)?;
-        Some(match value {
-            Value::Bool(_) | Value::Integer(_) | Value::Float(_) => {
-                f64::from(expr::to_float(&value) as f32)
+        Some(match expr::first_scalar(&value) {
+            Some(Value::Null) => 0.0,
+            Some(scalar @ (Value::Bool(_) | Value::Integer(_) | Value::Float(_))) => {
+                f64::from(expr::to_float(scalar) as f32)
             }
             _ => default,
         })
