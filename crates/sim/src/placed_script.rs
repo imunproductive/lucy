@@ -184,6 +184,14 @@ impl PlacedScripts {
                 // The clients get what the graphs make (`update_placed`).
                 world.make_entities();
                 world.set_next_dummy(self.next_dummy);
+                world.set_tracks(
+                    self.placed
+                        .iter()
+                        .filter_map(|placed| {
+                            Some((placed.entity(), Arc::clone(placed.track.as_ref()?)))
+                        })
+                        .collect(),
+                );
                 world.place(self.placed.iter().map(|placed| placed.placement()));
                 world
             }
@@ -596,7 +604,7 @@ mod tests {
         scene_assets::{PreparedScene, SceneAssets},
     };
     use lucy_content::maps::{GameMap, SpawnChoice};
-    use lucy_script::wire::Variables;
+    use lucy_script::wire::{Value, Variables};
 
     /// The Practice Range as the room runs it (`game_service.rs` `tick`,
     /// `update_flows`, `route_messages`): `13C0` from the room's first
@@ -807,6 +815,7 @@ mod tests {
             health: None,
             hardpoints: None,
             spawned: Vec::new(),
+            movement_parent: None,
         }]);
         // The server routes a tick's messages after the placeables ran
         // that tick (`GameService::tick`: `advance_placed`, then
@@ -1008,6 +1017,7 @@ mod tests {
             health: None,
             hardpoints: None,
             spawned: Vec::new(),
+            movement_parent: None,
         }]);
         range.scene.take_scope_changes();
         for tick in 101..=112 {
@@ -1222,6 +1232,7 @@ mod tests {
             health: None,
             hardpoints: None,
             spawned: Vec::new(),
+            movement_parent: None,
         };
         let outside = [spawn[0] + 60.0, spawn[1], spawn[2] + 60.0];
         let bodies = |at: [f64; 3]| {
@@ -1276,6 +1287,125 @@ mod tests {
         assert_eq!(
             run(&mut range, 121..=140),
             (vec![], vec![(129, 0x0000_1001)])
+        );
+    }
+
+    /// The install's 2ABA, not a Rust lift rule: requires a real movement
+    /// parent, waits for a rider, pauses at half progress and returns.
+    #[test]
+    #[ignore = "requires the derived 104319 data and the Volskaya collision"]
+    fn the_lift_graph_drives_its_derived_track_up_and_back() {
+        const LIFT: u32 = 0x8000_078b;
+        let runtime = lucy_testkit::runtime_dir();
+        let assets = SceneAssets::load(&runtime).unwrap().with_collision_build(
+            crate::scene_assets::install_collision_build(lucy_testkit::game_dir()),
+        );
+        let catalog = lucy_content::maps::MapCatalog::load(runtime.join("data")).unwrap();
+        let map = catalog
+            .game_map(
+                0x0800_0000_0000_01db,
+                crate::match_flow::ASSAULT,
+                "Assault",
+                false,
+                &[6, 6],
+            )
+            .unwrap();
+        let mut scene = assets.prepare(map).unwrap();
+        let definition = Arc::clone(
+            scene
+                .server_placeables()
+                .iter()
+                .find(|p| p.entity() == LIFT)
+                .unwrap(),
+        );
+        let track = Arc::clone(definition.track.as_ref().unwrap());
+        assert_eq!(
+            track
+                .waypoints()
+                .iter()
+                .map(|point| point.entity & 0x7fff_ffff)
+                .collect::<Vec<_>>(),
+            [1576, 1577, 1578]
+        );
+        let rise = track.position(track.waypoints()[1].distance)[1] - track.position(0.0)[1];
+        assert!((rise - 4.5).abs() < 0.01, "{rise}");
+        scene.advance_placed(0, &[]);
+        let mut rider = TargetCandidate {
+            entity: 0xa000_0101,
+            team: Some(0),
+            dead: false,
+            controller: Some(0xa000_0100),
+            player: Some(0xa000_0100),
+            ai: false,
+            ai_control: None,
+            feet: definition.position,
+            height: 1.8,
+            radius: 0.4,
+            yaw: 0.0,
+            tags: Some(Arc::new(Default::default())),
+            health: None,
+            hardpoints: None,
+            spawned: Vec::new(),
+            movement_parent: None,
+        };
+        for tick in 1..=140 {
+            scene.set_placed_target_candidates(std::slice::from_ref(&rider));
+            scene.advance_placed(tick, &[]);
+        }
+        assert!(
+            scene
+                .placed_scripts()
+                .world()
+                .unwrap()
+                .entity(LIFT)
+                .unwrap()
+                .track_distance()
+                .is_none()
+        );
+        rider.movement_parent = Some(LIFT);
+        let mut phases = Vec::new();
+        let mut previous_distance = None;
+        let mut finished = false;
+        for tick in 141..=450 {
+            scene.set_placed_target_candidates(std::slice::from_ref(&rider));
+            scene.advance_placed(tick, &[]);
+            let world = scene.placed_scripts().world().unwrap();
+            let lift = world.entity(LIFT).unwrap();
+            assert!(lift.complete(), "{:?}", world.gaps());
+            rider.feet = lift.position;
+            let snapshot = lift.snapshot().unwrap();
+            let instance = &snapshot.instances[&1];
+            let phase = instance
+                .variables
+                .get(&2034)
+                .cloned()
+                .unwrap_or(Value::Null);
+            if phases.last() != Some(&phase) {
+                phases.push(phase.clone());
+            }
+            if let Some(distance) = lift.track_distance() {
+                assert_eq!(lift.position, track.position(distance));
+                if let Some(before) = previous_distance {
+                    assert!(distance - before <= 8.0 * 0.016 + 1e-10);
+                }
+                previous_distance = Some(distance);
+                if distance == track.length() {
+                    assert_eq!(lift.position, track.position(track.length()));
+                    finished = true;
+                    break;
+                }
+            }
+        }
+        assert!(finished, "phases: {phases:?}");
+        assert_eq!(
+            phases,
+            [
+                Value::Integer(0),
+                Value::Integer(1),
+                Value::Integer(2),
+                Value::Integer(3),
+                Value::Integer(0)
+            ]
         );
     }
 }

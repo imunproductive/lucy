@@ -492,6 +492,7 @@ mod tests {
             health: None,
             hardpoints: None,
             spawned: Vec::new(),
+            movement_parent: None,
         }
     }
 

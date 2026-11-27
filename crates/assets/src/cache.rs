@@ -18,7 +18,7 @@ use crate::{Install, Result, asset_error, build};
 pub const BUILD: &str = "104319";
 /// Bump when a derivation's output changes; it names the format in the docs
 /// and the changelog. Staleness is decided by [`DERIVATIONS_KEY`].
-pub const DERIVATIONS_VERSION: u32 = 61;
+pub const DERIVATIONS_VERSION: u32 = 62;
 /// A hash of the code the derived files depend on (the library sources of
 /// `assets`, `casc`, `fixed` and `stu`, `build.rs`): a cache derived by other
 /// code is derived again, even under the same [`DERIVATIONS_VERSION`].

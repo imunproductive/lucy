@@ -143,6 +143,7 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
         state.pending_check = false;
         state.delayed_timers = [false; 2];
         state.tracked.clear();
+        state.dropped_targets.clear();
         state.presenter = None;
         if matches!(kind, StateKind::SubScript { .. }) {
             state.kind = StateKind::SubScript { child: None };

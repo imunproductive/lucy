@@ -258,6 +258,8 @@ pub struct TargetTagEffect {
 #[derive(Clone, Debug, PartialEq)]
 pub struct TargetCandidate {
     pub entity: u32,
+    /// The actual native movement parent, not the entity's owner.
+    pub movement_parent: Option<u32>,
     /// Its team; none in a free-for-all, where a body is only its own ally.
     pub team: Option<u8>,
     pub dead: bool,
@@ -480,6 +482,13 @@ pub fn listed_relation(
         })
     };
     match relation {
+        EntityRelation::MovementParent => Some(
+            bodies
+                .iter()
+                .find(|body| body.entity == entity)
+                .and_then(|body| body.movement_parent)
+                .unwrap_or(0),
+        ),
         EntityRelation::Controller => bodies
             .iter()
             .find(|body| body.entity == entity)
@@ -1656,7 +1665,9 @@ pub enum StateKind {
     /// (`STU_CB4905E9`); its scope instances are [`State::scopes`].
     Scope,
     /// A parametric mover (`STU_49FE0019`), last advanced at this time.
-    TrackMove { last_ms: u64 },
+    TrackMove {
+        last_ms: u64,
+    },
     /// A UX presenter (`STU_4BD2E886`, `vm/presenter.rs`): its fades and
     /// bit are [`State::presenter`].
     Presenter,
@@ -1723,6 +1734,9 @@ pub struct State {
     /// A target search's bodies, in the order they came in, while it runs
     /// (`vm/targets.rs`).
     pub tracked: Vec<TrackedTarget>,
+    /// TrackTargets' dropped bodies waiting out `m_93AB8C13`; timestamps
+    /// are when each body stopped passing the search.
+    pub dropped_targets: Vec<TrackedTarget>,
     watch_seen: Option<Value>,
     ending: bool,
     pending_change: bool,
@@ -1749,6 +1763,7 @@ impl State {
             chase: None,
             ability_cooldown: None,
             tracked: Vec::new(),
+            dropped_targets: Vec::new(),
             watch_seen: None,
             ending: false,
             pending_change: false,

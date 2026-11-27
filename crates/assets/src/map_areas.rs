@@ -602,6 +602,10 @@ fn server_placeables(
         }
         if state_placed {
             entry.insert("state_placed".into(), json!(true));
+            if !posed && let Some(track) = crate::objectives::placed_track(placed, base, entities)?
+            {
+                entry.insert("track".into(), track);
+            }
         }
         let carries = found.is_some_and(|found| {
             found.contains(&PLATFORM) && CARRIED_BY.iter().any(|class| found.contains(class))

@@ -52,7 +52,7 @@ use crate::{
     ai_spawners::component,
     asset_error,
     game_maps::{
-        self, GraphVars, TARGET_AREA, TARGET_TAG_DATA, chunk_index, graph_vars, instance,
+        self, GraphVars, Placed, TARGET_AREA, TARGET_TAG_DATA, chunk_index, graph_vars, instance,
         map_chunks, read_map,
     },
     guid_hex,
@@ -321,31 +321,13 @@ fn map_objectives(chunks: &[(u64, Vec<u8>)], defaults: &Defaults) -> Result<Map<
             destinations.push(destination);
             payloads.push(payload);
         }
-        if let Some((stu, root)) = instance(placed, WAYPOINT_DATA) {
-            let vector = |at: usize| -> Result<[f32; 3]> {
-                let mut out = [0.0; 3];
-                for (k, value) in out.iter_mut().enumerate() {
-                    *value = stu.f32(root + at + 4 * k).ok_or_else(|| {
-                        asset_error(format!("waypoint {flat} runs past its blob"))
-                    })?;
-                }
-                Ok(out)
-            };
-            let event = match graphs.get(&WAYPOINT_GRAPH) {
+        if let Some(mut waypoint) = read_waypoint(placed, flat)? {
+            waypoint.event = match graphs.get(&WAYPOINT_GRAPH) {
                 Some(vars) => {
                     let number = |key| defaults.number(WAYPOINT_GRAPH, vars, key);
                     Some((number(PAUSE)?, number(AUTO_NEXT)? != 0.0))
                 }
                 None => None,
-            };
-            let waypoint = Waypoint {
-                placeable: flat,
-                position: vector(80)?,
-                curve: [vector(16)?, vector(32)?, vector(48)?, vector(64)?],
-                next: stu.uuid(root + 128).unwrap_or_default(),
-                length: stu.f32(root + 160).unwrap_or_default(),
-                barrier: stu.u8(root + 164).unwrap_or_default() != 0,
-                event,
             };
             waypoints.insert(placed.entity.uuid(), waypoint);
         }
@@ -369,6 +351,55 @@ fn map_objectives(chunks: &[(u64, Vec<u8>)], defaults: &Defaults) -> Result<Map<
         );
     }
     Ok(out)
+}
+
+/// Read the native waypoint once for both payloads and placed lifts.
+fn read_waypoint(placed: &Placed<'_>, flat: usize) -> Result<Option<Waypoint>> {
+    let Some((stu, root)) = instance(placed, WAYPOINT_DATA) else {
+        return Ok(None);
+    };
+    let vector = |at: usize| -> Result<[f32; 3]> {
+        let mut out = [0.0; 3];
+        for (k, value) in out.iter_mut().enumerate() {
+            *value = stu
+                .f32(root + at + 4 * k)
+                .ok_or_else(|| asset_error(format!("waypoint {flat} runs past its blob")))?;
+        }
+        Ok(out)
+    };
+    Ok(Some(Waypoint {
+        placeable: flat,
+        position: vector(80)?,
+        curve: [vector(16)?, vector(32)?, vector(48)?, vector(64)?],
+        next: stu.uuid(root + 128).unwrap_or_default(),
+        length: stu.f32(root + 160).unwrap_or_default(),
+        barrier: stu.u8(root + 164).unwrap_or_default() != 0,
+        event: None,
+    }))
+}
+
+/// A state-placed model's native parametric track, in the same format as
+/// a payload's. No objective or mode behavior is enabled by deriving it.
+pub(crate) fn placed_track(
+    placed: &Placed<'_>,
+    base: usize,
+    entities: &[Placed<'_>],
+) -> Result<Option<Json>> {
+    let Some(destination) = instance(placed, MOVEMENT_DATA)
+        .and_then(|(stu, root)| stu.uuid(root + DESTINATION))
+        .filter(|uuid| *uuid != [0; 16])
+    else {
+        return Ok(None);
+    };
+    let mut waypoints = HashMap::new();
+    for (number, placed) in entities.iter().enumerate() {
+        if let Some(waypoint) = read_waypoint(placed, base + number)? {
+            waypoints.insert(placed.entity.uuid(), waypoint);
+        }
+    }
+    track(&waypoints, destination)
+        .map(|points| Some(Json::Array(points)))
+        .map_err(asset_error)
 }
 
 fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {

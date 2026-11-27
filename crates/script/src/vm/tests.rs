@@ -4989,6 +4989,7 @@ fn body(entity: u32, team: u8, feet: [f64; 3]) -> TargetCandidate {
         health: None,
         hardpoints: None,
         spawned: Vec::new(),
+        movement_parent: None,
     }
 }
 
@@ -5220,6 +5221,105 @@ fn a_target_search_follows_bodies_in_and_out_of_its_sphere() {
         "{:?}",
         snapshot.assumptions
     );
+}
+
+/// Grace holds a dropped body for 700 ms; re-entry clears the timer.
+#[test]
+fn target_grace_expires_and_reentry_resets_the_drop_time() {
+    use crate::{
+        codecs::CodecTable,
+        snapshot::{SnapshotEncoder, View},
+    };
+    let graphs = Arc::new(search_fixture(
+        allies_filter(),
+        json!({
+            "m_93AB8C13":{"$":"STUConfigVarFloat","m_value":0.7}
+        }),
+    ));
+    let mut world = Bodies(vec![
+        body(SEARCHER, 0, [0.0; 3]),
+        body(ALLY, 0, [1.0, 0.0, 0.0]),
+    ]);
+    let mut component = Component::start(
+        Arc::clone(&graphs),
+        SEARCHER,
+        Variables::new(),
+        vec![Root::new(1, 42)],
+        0,
+        &mut world,
+        MAX_INIT_WORK,
+    )
+    .unwrap();
+    world.0[1].feet = [40.0, 0.0, 0.0];
+    component.advance_frame(1, &mut world).unwrap();
+    assert_eq!(found(&component).0, [ALLY]);
+    world.0[1].feet = [1.0, 0.0, 0.0];
+    component.advance_frame(2, &mut world).unwrap();
+    assert!(
+        component.snapshot().unwrap().instances[&1].states[&0]
+            .dropped_targets
+            .is_empty()
+    );
+    world.0[1].feet = [40.0, 0.0, 0.0];
+    let dropped_frame = 3;
+    let expiry_frame = dropped_frame + 700_u32.div_ceil(FRAME_MS as u32);
+    for frame in dropped_frame..expiry_frame {
+        component.advance_frame(frame, &mut world).unwrap();
+        assert_eq!(found(&component).0, [ALLY]);
+    }
+    let codecs = CodecTable::client();
+    let encoder = SnapshotEncoder::new(&graphs, &codecs);
+    let projected = encoder
+        .project(component.snapshot().unwrap(), View::Owner)
+        .unwrap();
+    let age = u64::from(expiry_frame - 1 - dropped_frame) * FRAME_MS;
+    assert_eq!(
+        projected.state_payload(1, 0).unwrap()["targets"],
+        Value::Array(vec![Value::Array(vec![
+            Value::Entity(ALLY),
+            Value::Integer(age as i64)
+        ])])
+    );
+    component.advance_frame(expiry_frame, &mut world).unwrap();
+    assert!(found(&component).0.is_empty());
+}
+
+#[test]
+fn the_native_movement_parent_is_not_the_owner_or_controller() {
+    const PLATFORM: u32 = 0x8000_078b;
+    let mut rider = body(ALLY, 0, [0.0; 3]);
+    rider.controller = Some(0xa000_0200);
+    rider.movement_parent = Some(PLATFORM);
+    let mut world = Bodies(vec![rider, body(ENEMY, 1, [0.0; 3])]);
+    for (entity, parent) in [(ALLY, PLATFORM), (ENEMY, 0), (PLATFORM, 0), (0, 0)] {
+        let config = json!({"$":"STU_42259244","m_entity":var(100, true)});
+        let graphs = Arc::new(store(vec![graph(
+            42,
+            vec![
+                entry(&[(1, "m_inPlug")]),
+                node(
+                    1,
+                    "STUStatescriptActionSetVar",
+                    None,
+                    json!({
+                        "m_out_Var":var(999, true), "m_value":config
+                    }),
+                ),
+            ],
+            json!([]),
+            json!([0]),
+        )]));
+        let component = start_with(
+            graphs,
+            Variables::from([(100, Value::Entity(entity))]),
+            0,
+            &mut world,
+        );
+        assert_eq!(
+            component.snapshot().unwrap().variables[&999],
+            Value::Entity(parent)
+        );
+    }
 }
 
 /// A search with `m_DD792FF0` 3 searches at its begin, then only every 12

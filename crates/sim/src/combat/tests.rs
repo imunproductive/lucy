@@ -490,6 +490,7 @@ fn shooters_hit_other_teams_and_everyone_in_a_free_for_all() {
             tags: None,
             ai: None,
             dealt: Vec::new(),
+            movement_parent: None,
         },
         history: TargetHistory::new(None),
     };
@@ -586,6 +587,7 @@ fn target_searches_see_the_players_then_the_bots() {
         tags: None,
         ai: None,
         dealt: Vec::new(),
+        movement_parent: Some(0x8000_0123),
     };
     combat.record_poses(&scene, &[player], 1000);
     let candidates = combat.target_candidates(&scene);
@@ -608,6 +610,7 @@ fn target_searches_see_the_players_then_the_bots() {
             health: None,
             hardpoints: None,
             spawned: Vec::new(),
+            movement_parent: Some(0x8000_0123),
         }
     );
     for (slot, (candidate, bot)) in candidates[1..].iter().zip(scene.bots()).enumerate() {
@@ -667,6 +670,7 @@ fn a_players_shot_on_another_player_carries_its_tags_and_way() {
         tags: None,
         ai: None,
         dealt: Vec::new(),
+        movement_parent: None,
     };
     combat.record_poses(
         &scene,
@@ -828,6 +832,7 @@ fn the_biotic_rifle_heals_hurt_allies_and_damages_enemies() {
         tags: None,
         ai: None,
         dealt: Vec::new(),
+        movement_parent: None,
     };
     combat.record_poses(&scene, &[player(true)], context.tick);
     assert!(fire(&mut combat, &mut scene).is_none());
@@ -941,6 +946,7 @@ fn a_projectile_deals_with_the_modifiers_of_its_launch() {
         tags: None,
         ai: None,
         dealt,
+        movement_parent: None,
     };
     let nano = || player(SHOOTER.source, vec![boost(SHOOTER.source, 0.5)]);
     let plain = || player(SHOOTER.source, Vec::new());

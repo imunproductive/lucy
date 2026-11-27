@@ -1,10 +1,11 @@
-//! A payload's track: the map's linked list of waypoints from the payload
-//! placeable's `STUParametricMovementComponentInstanceData.m_destination`
+//! A map entity's parametric track: the map's linked list of waypoints
+//! from its `STUParametricMovementComponentInstanceData.m_destination`
 //! (`STUWaypointInstanceData`, refs `Payloads.md` §4), as cubic Bézier
 //! segments measured in their stored lengths (`m_9741DF92`, about 4%
-//! shorter than the curves).
+//! shorter than the curves). Used by the lifts' `2ABA`; the held
+//! modegraph5 branch also uses it for payloads.
 //!
-//! The payload's graph `1225` reads and moves it through server-only
+//! The graphs read and move it through server-only
 //! classes the client never runs (`Payloads.md` "ModeGraph4 client
 //! pass"): the length (`STU_C5B280AA`), a checkpoint's waypoint, distance
 //! and pose (`STU_B252507B`), the waypoints before one (`STU_700B1181`),

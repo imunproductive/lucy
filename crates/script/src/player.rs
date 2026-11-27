@@ -850,6 +850,13 @@ impl World for PlayerWorld {
     }
 
     fn related_entity(&mut self, site: Site, relation: EntityRelation, entity: u32) -> Option<u32> {
+        if relation == EntityRelation::MovementParent {
+            return if entity == self.entity {
+                Some(self.movement.parent.map_or(0, |parent| parent.entity))
+            } else {
+                crate::vm::listed_relation(self.targets.as_deref().unwrap_or(&[]), relation, entity)
+            };
+        }
         if !self.is_player_site(site)
             || !valid_entity(self.controller)
             || self.controller == self.entity
@@ -1220,6 +1227,7 @@ mod tests {
             health: None,
             hardpoints: None,
             spawned: Vec::new(),
+            movement_parent: None,
             tags: None,
         }
     }
@@ -1248,6 +1256,23 @@ mod tests {
             graph: 42,
             node: None,
         };
+        world.movement.parent = Some(lucy_wire::entity::MovementParent {
+            entity: 0x8000_0011,
+            node: 0,
+        });
+        world.targets.as_mut().unwrap()[1].movement_parent = Some(0x8000_0022);
+        for (entity, parent) in [
+            (BODY, 0x8000_0011),
+            (0xa000_0102, 0x8000_0022),
+            (0xa000_0103, 0),
+            (CONTROLLER, 0),
+            (0x8000_0011, 0),
+        ] {
+            assert_eq!(
+                world.related_entity(site, EntityRelation::MovementParent, entity),
+                Some(parent)
+            );
+        }
         for entity in [BODY, CONTROLLER, 0xa000_0102] {
             assert_eq!(world.entity_exists(site, entity), Some(true));
         }

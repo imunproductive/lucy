@@ -565,6 +565,7 @@ pub struct BotReplacement {
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlayerTarget {
     pub body: u32,
+    pub movement_parent: Option<u32>,
     pub team: u8,
     pub pose: TargetPose,
     pub dead: bool,
@@ -798,6 +799,7 @@ impl Combat {
                 tags,
                 health,
                 spawned: Vec::new(),
+                movement_parent: None,
                 hardpoints: None,
             };
         self.players
@@ -811,6 +813,7 @@ impl Combat {
                     ai_control: target.ai,
                     spawned: self.spawned.owned_by(target.body),
                     hardpoints: target.hardpoints.clone(),
+                    movement_parent: target.movement_parent,
                     ..candidate(
                         target.body,
                         target.team,
@@ -829,6 +832,7 @@ impl Combat {
                 let vitals = self.targets.get(slot).map(|target| &target.vitals);
                 TargetCandidate {
                     hardpoints: scene.body_hardpoints(bot.spawn.body),
+                    movement_parent: bot.movement_parent(),
                     ..candidate(
                         bot.entity,
                         bot.spawn.team,

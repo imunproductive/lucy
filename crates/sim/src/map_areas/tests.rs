@@ -363,3 +363,21 @@ fn a_state_placed_placeable_stands_where_its_create_puts_it() {
     assert!((bounds.low[0] - 4.75).abs() < 0.2 && (bounds.high[0] - 5.25).abs() < 0.2);
     assert!((bounds.low[2] - 3.75).abs() < 0.2 && (bounds.high[2] - 5.25).abs() < 0.2);
 }
+
+/// A rider sees the same grid positions the movement records carry at
+/// its delayed view time; the previous frame also supplies exit velocity.
+#[test]
+fn a_track_platform_interpolates_its_sent_positions_at_view_time() {
+    let mut motion = TrackMotion::new([1.0, 2.0, 3.0]);
+    motion.record(1.0, [1.0, 4.0, 3.0]);
+    motion.record(2.0, [1.0, 8.0, 3.0]);
+    assert_eq!(motion.at(-1.0), [1.0, 2.0, 3.0]);
+    assert_eq!(motion.at(0.5), [1.0, 3.0, 3.0]);
+    assert_eq!(motion.at(1.5), [1.0, 6.0, 3.0]);
+    assert_eq!(motion.at(3.0), [1.0, 8.0, 3.0]);
+    for frame in 3..=300 {
+        motion.record(f64::from(frame), [1.0, frame as f32, 3.0]);
+    }
+    assert_eq!(motion.positions.len(), TrackMotion::CAPACITY);
+    assert_eq!(motion.at(299.5), [1.0, 299.5, 3.0]);
+}

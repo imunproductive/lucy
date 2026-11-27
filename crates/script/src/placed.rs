@@ -582,11 +582,18 @@ impl World for EntityWorld<'_, '_> {
     }
 
     fn track_distance(&self, _site: Site, entity: u32) -> Option<f64> {
-        (entity == self.entity).then_some(*self.track_distance).flatten()
+        (entity == self.entity)
+            .then_some(*self.track_distance)
+            .flatten()
     }
 
     fn place_on_track(&mut self, _site: Site, entity: u32, distance: f64) -> bool {
-        let Some(track) = self.shared.tracks.get(&entity).filter(|_| entity == self.entity) else {
+        let Some(track) = self
+            .shared
+            .tracks
+            .get(&entity)
+            .filter(|_| entity == self.entity)
+        else {
             return false;
         };
         *self.position = track.position(distance);

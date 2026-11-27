@@ -509,6 +509,7 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
         self.world.eye_height = Some(self.combat.eyes.height(mover.crouched()));
         // Its own body, as the target searches see it, stands where it moved.
         let entity = self.world.entity;
+        let parent = mover.record().parent;
         if let Some(own) = self
             .world
             .targets
@@ -517,11 +518,13 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
             .find(|candidate| candidate.entity == entity)
         {
             own.feet = pose.position;
+            own.movement_parent = parent.map(|parent| parent.entity);
         }
         // Command gaps and timer advances retain the last movement record.
         self.world.movement_fresh = step == BodyStep::Posed;
         if step == BodyStep::Posed {
             self.world.movement = pose;
+            self.world.movement.parent = parent;
         }
         // The client's speed-scale native (`Eval_STU_ED807E07`
         // 0x7FF789BE3570) makes the state that evaluates it a dependent of

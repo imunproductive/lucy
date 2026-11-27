@@ -1629,6 +1629,7 @@ fn doomfists_slam_shockwave_strikes_the_enemies_ahead_of_its_landing() {
         tags: None,
         health: None,
         spawned: Vec::new(),
+        movement_parent: None,
         hardpoints: None,
     };
     let candidates = [
@@ -2277,6 +2278,7 @@ fn doomfists_meteor_strike_flies_over_the_range_and_lands_where_his_client_did()
         tags: None,
         health: None,
         spawned: Vec::new(),
+        movement_parent: None,
         hardpoints: None,
     };
     // The two Training Bots by the landing in m1 (`0x80008805`, `0x80008802`:

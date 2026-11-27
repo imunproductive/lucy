@@ -1,4 +1,4 @@
-//! A payload on its track ([`crate::track`]): the mover state
+//! A map entity on its track ([`crate::track`]): the mover state
 //! `STU_49FE0019` and the action `STU_4A4BEDAA`, which the client
 //! registers with no behaviour (`python tools/stu.py 49FE0019`: record
 //! #243, reader, writer and block the nullsub; `4A4BEDAA` has no
@@ -27,6 +27,10 @@
 //! moving forward (the one it starts on too, so a run from the start
 //! tells waypoint 0); a rollback stops at the last barrier
 //! ([`Track::floor`], `Payloads.md` §4).
+//!
+//! `2ABA` (lifts) binds no distance variable. Its distance is held by the
+//! native movement component through `World::track_distance`; progress
+//! still goes to #18393. Placement and translation retain the map rotation.
 
 use super::*;
 
@@ -75,7 +79,7 @@ impl<W: World + ?Sized> Vm<'_, '_, '_, W> {
         let length = track.length();
         let distance_var = field(&node.fields, "m_971B2969");
         let from = if distance_var.is_null() {
-            None
+            self.world.track_distance(site, entity)
         } else {
             let Some(value) = self.evaluate(id, node, distance_var, None) else {
                 return Ok(());
@@ -90,17 +94,22 @@ impl<W: World + ?Sized> Vm<'_, '_, '_, W> {
         } else {
             0.0
         };
-        let markers = track
-            .waypoints()
-            .iter()
-            .filter(|waypoint| waypoint.objective.is_some())
-            .map(|waypoint| (waypoint.objective, waypoint.distance))
-            .collect::<BTreeMap<_, _>>()
-            .into_values()
-            .map(|distance| Value::Float(distance / length))
-            .collect();
-        self.put(id, node, "m_0ECFADFE", Value::Array(markers))?;
-        // The hold names no distance: the payload stays where it is.
+        // Markers are immutable; do not rebuild them each tick or when
+        // this graph has no marker output (the lifts' `2ABA`).
+        if seconds == 0.0 && !field(&node.fields, "m_0ECFADFE").is_null() {
+            let markers = track
+                .waypoints()
+                .iter()
+                .filter(|waypoint| waypoint.objective.is_some())
+                .map(|waypoint| (waypoint.objective, waypoint.distance))
+                .collect::<BTreeMap<_, _>>()
+                .into_values()
+                .map(|distance| Value::Float(distance / length))
+                .collect();
+            self.put(id, node, "m_0ECFADFE", Value::Array(markers))?;
+        }
+        // `2ABA` binds progress only. The distance belongs to the native
+        // movement component, not to an optional script output.
         let Some(from) = from else {
             self.put(id, node, "m_F620FC2A", Value::Bool(false))?;
             return Ok(());
@@ -120,20 +129,14 @@ impl<W: World + ?Sized> Vm<'_, '_, '_, W> {
         if speed <= 0.0 || seconds <= 0.0 {
             return Ok(());
         }
-        let passed: Vec<u32> = track
-            .waypoints()
-            .iter()
-            .filter(|waypoint| {
-                from <= waypoint.distance
-                    && (waypoint.distance < to || (to >= length && waypoint.distance <= to))
-            })
-            .map(|waypoint| waypoint.entity)
-            .collect();
-        for waypoint in passed {
+        for waypoint in track.waypoints().iter().filter(|waypoint| {
+            from <= waypoint.distance
+                && (waypoint.distance < to || (to >= length && waypoint.distance <= to))
+        }) {
             if !self.state(key).is_some_and(|state| state.active) {
                 return Ok(());
             }
-            self.put(id, node, "m_330800D9", Value::Entity(waypoint))?;
+            self.put(id, node, "m_330800D9", Value::Entity(waypoint.entity))?;
             self.follow(id, node, "m_625C2727", Some(key), 0)?;
         }
         if to >= length && from < length {
