@@ -1454,12 +1454,13 @@ impl Combat {
         for impact in &step.impacts {
             tracing::debug!(
                 target: "lucy::hits",
-                "projectile of {:08X} at tick {}: struck {:08X} at {:.3} m{}",
+                "projectile of {:08X} at tick {}: struck {:08X} at {:.3} m{} for {:.3}",
                 shooter.source,
                 context.tick,
                 impact.entity,
                 impact.distance,
-                if impact.critical { ", critical" } else { "" }
+                if impact.critical { ", critical" } else { "" },
+                impact.damage
             );
             if self.enemy_of(scene, shooter, impact.entity) {
                 flight.strike(impact.critical);
@@ -1473,6 +1474,13 @@ impl Combat {
                 impact,
                 flight.launch_modifiers(),
             ));
+        }
+        if let Some(end) = &step.end {
+            tracing::debug!(
+                target: "lucy::hits",
+                "projectile of {:08X} ended at tick {} after {:.6} s at {:.3?}, exploded {}",
+                shooter.source, context.tick, end.travelled, end.point, end.exploded
+            );
         }
         if step.end.is_some() && flight.damaging() {
             self.count_shot(shooter, flight.struck());
