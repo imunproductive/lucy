@@ -387,34 +387,44 @@ fn a_team_spreads_over_the_objective_and_leaves_staggered() {
         cells.push(feet);
         // The next life has the same entity. It still gets the spawn
         // stagger rather than retaining the previous life's departure.
-        let mut dead = senses(
-            4000,
-            feet,
-            &[],
-            Goal::Objective(objective),
-            Some(&nav),
-            &paths,
-            &clear,
-        );
-        dead.feet = None;
-        ai.command(&dead);
-        let mut revived_first = None;
-        for tick in 4001..4300 {
-            let command = ai.command(&senses(
-                tick,
-                start,
-                &[],
-                Goal::Objective(objective),
-                Some(&nav),
-                &paths,
-                &clear,
-            ));
-            if command.forward != 0 || command.right != 0 {
-                revived_first = Some(tick);
-                break;
+        for (life, round_restart) in [false, true].into_iter().enumerate() {
+            let first_tick = 4001 + life as u32 * 1000;
+            if round_restart {
+                ai.revived();
+            } else {
+                let mut dead = senses(
+                    first_tick - 1,
+                    feet,
+                    &[],
+                    Goal::Objective(objective),
+                    Some(&nav),
+                    &paths,
+                    &clear,
+                );
+                dead.feet = None;
+                ai.command(&dead);
             }
+            let mut revived_first = None;
+            for tick in first_tick..first_tick + 300 {
+                let command = ai.command(&senses(
+                    tick,
+                    start,
+                    &[],
+                    Goal::Objective(objective),
+                    Some(&nav),
+                    &paths,
+                    &clear,
+                ));
+                if command.forward != 0 || command.right != 0 {
+                    revived_first = Some(tick);
+                    break;
+                }
+            }
+            assert_eq!(
+                revived_first,
+                Some(first_tick + ticks(STAGGER * rank as f64))
+            );
         }
-        assert_eq!(revived_first, Some(4001 + ticks(STAGGER * rank as f64)));
     }
     assert_eq!(first_steps, [0, ticks(1.5), ticks(3.0)]);
     for (index, a) in cells.iter().enumerate() {

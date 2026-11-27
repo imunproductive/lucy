@@ -482,6 +482,12 @@ impl AiController {
         self.difficulty
     }
 
+    /// A new round can revive a living body without a dead sample or an
+    /// entity change. Its next command still starts at the spawn anew.
+    pub fn revived(&mut self) {
+        self.body = None;
+    }
+
     /// The player it shoots at, if any.
     pub fn target(&self) -> Option<usize> {
         self.target.map(|aim| aim.slot)
@@ -505,7 +511,7 @@ impl AiController {
             // Dead or not yet in the world: no input, as a client's.
             // Revival retains the entity. Forget the life, not just its
             // route, so the next living sample gets the spawn reset too.
-            self.body = None;
+            self.revived();
             self.target = None;
             self.forget_walk();
             self.last = None;

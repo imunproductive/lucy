@@ -324,7 +324,7 @@ impl RoomState {
                 for &(connection, slot) in &connections {
                     let viewer = room.appearance(slot).expect("seated player");
                     let peer = self.peers.get_mut(&connection).expect("room peer");
-                    if let Err(error) = peer.world.spawn_again(
+                    match peer.world.spawn_again(
                         &world.scene,
                         &viewer,
                         tick,
@@ -332,7 +332,15 @@ impl RoomState {
                         room.players[slot].quanta(),
                         select,
                     ) {
-                        eprintln!("{:08X} could not respawn ({error})", viewer.entity);
+                        Ok(true) => {
+                            if let Some(ai) = &mut peer.ai {
+                                ai.revived();
+                            }
+                        }
+                        Ok(false) => {}
+                        Err(error) => {
+                            eprintln!("{:08X} could not respawn ({error})", viewer.entity);
+                        }
                     }
                 }
             }

@@ -208,6 +208,14 @@ impl AiSeat {
         }
     }
 
+    /// A round restart retains the body, but begins its walking decisions
+    /// afresh, even if it was alive before the restart.
+    pub(super) fn revived(&mut self) {
+        if let Plays::Ai(controller) = &mut self.plays {
+            controller.revived();
+        }
+    }
+
     /// His tick: into the world with the first player, his hero, then his
     /// command, which he gives once his body has taken the last one.
     #[allow(clippy::too_many_arguments)]

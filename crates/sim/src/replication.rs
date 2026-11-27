@@ -5606,16 +5606,10 @@ impl WorldDelivery {
             return Ok(false);
         };
         let resurrect = death.revive_at.is_some();
-        let (guid, skin) = self.respawn_hero.filter(|_| !resurrect).unwrap_or_else(|| {
-            let skin = viewer
-                .card
-                .skins
-                .get(&body.hero)
-                .copied()
-                .unwrap_or_default();
-            (body.hero, skin)
-        });
-        if guid != body.hero {
+        if let Some((guid, skin)) = self
+            .respawn_hero
+            .filter(|(guid, _)| !resurrect && *guid != body.hero)
+        {
             let Some(entity) = self.next_body(now) else {
                 if let Some(death) = &mut self.death {
                     death.due = Some(now.saturating_add(RESPAWN_RETRY));
