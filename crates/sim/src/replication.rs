@@ -6944,6 +6944,25 @@ impl WorldDelivery {
                     }),
             );
         }
+        if let Some(world) = scene.placed_scripts().world() {
+            records.extend(scene.server_placeables().iter().filter_map(|placed| {
+                placed.track.as_ref()?;
+                let native = world.entity(placed.entity())?;
+                native.track_distance()?;
+                let place = placed.state_place?;
+                self.created.contains(&placed.entity()).then(|| EntityUpdate {
+                    entity: placed.entity(),
+                    movement: Some(Movement {
+                        position: native.position.map(|axis| (axis * 1024.0).round_ties_even() / 1024.0),
+                        yaw: place.yaw,
+                        input_frame: Some(lucy_wire::entity::NO_INPUT),
+                        frame: None,
+                        ..Movement::default()
+                    }),
+                    ..EntityUpdate::default()
+                })
+            }));
+        }
         records
     }
 }
