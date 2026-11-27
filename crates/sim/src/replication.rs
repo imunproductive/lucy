@@ -2866,7 +2866,11 @@ impl WorldDelivery {
             return;
         };
         mover.teleport(position, yaw);
-        let pose = mover.record();
+        let mut pose = mover.record();
+        // A dead body's script still consumes commands while its mover
+        // stands. Its teleport belongs to that current command clock, not
+        // the mover's old frame at death.
+        pose.frame = self.input.processed.or(pose.frame);
         let history = self.body_script.as_mut().and_then(|script| {
             let tail = RECORD_TAIL_MS.div_ceil(script.runtime.frame_ms());
             script.corrections.as_mut().map(|history| (history, tail))
@@ -3917,10 +3921,12 @@ impl WorldDelivery {
         };
         if let Some((entity, health, dead)) = health {
             let mut components = vec![health];
-            // A death's pools come with the filter bits that say the body
-            // is dead (`scene` module notes).
-            if let Some(body) = self.body.filter(|body| dead && body.id.entity == entity) {
-                components.push(filter_component(body_filter(body.team_bit, true)));
+            // Both transitions matter: a revival removes DEAD on the same
+            // entity. Preserve the live body's invulnerability status.
+            if let Some(body) = self.body.filter(|body| body.id.entity == entity) {
+                let bits = body_filter(body.team_bit, dead)
+                    | if !dead && self.shield.0 { SHIELDED } else { 0 };
+                components.push(filter_component(bits));
             }
             self.body_health += 1;
             self.queue_health(EntityUpdate {
@@ -5565,20 +5571,11 @@ impl WorldDelivery {
         Ok(())
     }
 
-    /// combat.py `_respawn`: once the body's respawn is due ([`BodyDeath`]:
-    /// its `0C8E` sent `0685`), a dead player gets a new body of the same
-    /// hero at his spawn point, as a hero switch does (match.py
-    /// `switch_hero`), revived ([`Self::revived`]). While every id of his
-    /// body ring is still reserved, he tries again RESPAWN_RETRY later.
-    /// True when he respawned.
-    ///
-    /// Retail revives the dead body itself (`STU_621AF478`), whose entity
-    /// variables stay, so the new body that stands for it starts with the
-    /// dead one's ultimate charge #342e (before the revive message, so
-    /// `0B8B` rid66's "spawn with the ultimate" ruleset key still fills
-    /// it). A body of another hero (a pick while dead) starts from 0, as a
-    /// hero change does: `0C90` st131 sends the new body `14F2.025` with
-    /// the share #32319 the mode's #32271 keeps, none by default.
+    /// Once `0C8E`'s countdown sends `0685`, revive the possessed body at
+    /// its spawn (`0C90` node 4 / `13C1` node 73, `STU_621AF478`).
+    /// Its entity, component, script instances and variables survive; only
+    /// a different hero picked while dead needs a new body. A Workshop
+    /// Resurrect revives this body where it lies, without a hero change.
     pub fn respawn_due(
         &mut self,
         scene: &PreparedScene,
@@ -5608,13 +5605,8 @@ impl WorldDelivery {
             self.death = None;
             return Ok(false);
         };
-        let Some(entity) = self.next_body(now) else {
-            if let Some(death) = &mut self.death {
-                death.due = Some(now.saturating_add(RESPAWN_RETRY));
-            }
-            return Ok(false);
-        };
-        let (guid, skin) = self.respawn_hero.unwrap_or_else(|| {
+        let resurrect = death.revive_at.is_some();
+        let (guid, skin) = self.respawn_hero.filter(|_| !resurrect).unwrap_or_else(|| {
             let skin = viewer
                 .card
                 .skins
@@ -5623,45 +5615,31 @@ impl WorldDelivery {
                 .unwrap_or_default();
             (body.hero, skin)
         });
-        let hero = scene
-            .heroes()
-            .get(guid)
-            .ok_or_else(|| invalid("the dead body's hero is unknown"))?;
-        let charge = self
-            .body_script
-            .as_ref()
-            .filter(|script| guid == body.hero && script.id == body.id)
-            .and_then(|script| script.runtime.snapshot())
-            .and_then(|snapshot| {
-                let charge = snapshot.variables.get(&lucy_script::ultimate::ULT_CHARGE)?;
-                Some(Variables::from([(
-                    lucy_script::ultimate::ULT_CHARGE,
-                    charge.clone(),
-                )]))
-            });
-        self.switch(scene, viewer, tick, quanta, entity, (hero, skin), false)?;
-        if let Some(charge) = charge {
-            let failure = self
-                .body_script
-                .as_mut()
-                .and_then(|script| script.runtime.set_entity_variables(&charge).err());
-            if let Some(error) = failure {
-                self.drop_failed_script(&error.to_string());
-            }
-        }
-        self.revived();
-        if let Some(feet) = death.revive_at {
-            self.teleport_current(feet, None);
+        if guid != body.hero {
+            let Some(entity) = self.next_body(now) else {
+                if let Some(death) = &mut self.death {
+                    death.due = Some(now.saturating_add(RESPAWN_RETRY));
+                }
+                return Ok(false);
+            };
+            let hero = scene
+                .heroes()
+                .get(guid)
+                .ok_or_else(|| invalid("the dead body's hero is unknown"))?;
+            self.switch(scene, viewer, tick, quanta, entity, (hero, skin), false)?;
+            self.revived(true);
+        } else {
+            let placement = (!resurrect)
+                .then(|| self.spawn_placement(scene, viewer))
+                .transpose()?;
+            self.revive_current(placement, !resurrect);
         }
         Ok(true)
     }
 
-    /// A new round puts the player back in his team's spawn room: a new
-    /// body of his hero there, dead or alive. With `select` hero select
-    /// opens too, as before the second side of an Assault, Escort or Hybrid
-    /// match (game-rules.md 2), and stays open while the heroes assemble. A
-    /// player without a hero keeps waiting in hero select. True when he got
-    /// a new body.
+    /// A new round returns the possessed body to its team's spawn room.
+    /// Only a pending different hero creates a new body. With `select`, hero
+    /// select opens and stays open while the heroes assemble.
     pub fn spawn_again(
         &mut self,
         scene: &PreparedScene,
@@ -5677,16 +5655,21 @@ impl WorldDelivery {
         let Some(body) = self.body else {
             return Ok(false);
         };
-        let Some(entity) = self.next_body(now) else {
-            return Ok(false);
-        };
         let (guid, skin) = self.respawn_hero.unwrap_or((body.hero, body.skin));
-        let hero = scene
-            .heroes()
-            .get(guid)
-            .ok_or_else(|| invalid("the body's hero is unknown"))?;
-        self.switch(scene, viewer, tick, quanta, entity, (hero, skin), false)?;
-        self.revived();
+        if guid != body.hero {
+            let Some(entity) = self.next_body(now) else {
+                return Ok(false);
+            };
+            let hero = scene
+                .heroes()
+                .get(guid)
+                .ok_or_else(|| invalid("the body's hero is unknown"))?;
+            self.switch(scene, viewer, tick, quanta, entity, (hero, skin), false)?;
+            self.revived(true);
+        } else {
+            let placement = self.spawn_placement(scene, viewer)?;
+            self.revive_current(Some(placement), true);
+        }
         if select && self.can_handle_game_message() {
             // `288B` opens as on the client's H; it stays shown open while
             // the heroes assemble.
@@ -5697,23 +5680,72 @@ impl WorldDelivery {
         Ok(true)
     }
 
-    /// The new body of a respawn or a new round stands for retail's revived
-    /// one (loose ends, "A respawn makes a new body"): it gets the revive
-    /// message `0013.025` with `00C6` on. On it the hero's `01CA` (rid56)
-    /// raises his respawn line `05D8` on his controller 1.5 s later (none
-    /// in Elimination, `0020` or `0029`), which every hero's voice set
-    /// answers with stimulus `002C` (once per 20 s). Assumptions: retail
-    /// sends `0013` (no graph does; its 44 listeners reset ability state
-    /// with `00C6` on, as for a new life) when it revives the body, with
-    /// `00C6` on; the first spawn of a hero gets none.
-    fn revived(&mut self) {
+    fn spawn_placement(
+        &self,
+        scene: &PreparedScene,
+        viewer: &PlayerAppearance<'_>,
+    ) -> io::Result<([f64; 3], i32)> {
+        if let Some(placement) = self.placement {
+            return Ok(placement);
+        }
+        let (position, degrees) = scene
+            .map()
+            .spawn_point_in(viewer.team, viewer.spawn, viewer.room)
+            .ok_or_else(|| invalid("no spawn for the selected hero"))?;
+        Ok((
+            position,
+            (degrees * 65536.0 / 360.0).round_ties_even() as i32,
+        ))
+    }
+
+    /// The server-native part of `STU_621AF478`: restore the existing
+    /// body's pools and life flag, optionally placing it at a spawn pose.
+    /// Both the countdown stand-in and Workshop's World::revive reach here.
+    /// The controller chain can later supply its evaluated position/heading
+    /// here instead of the stand-in's spawn selection. The surviving graphs
+    /// handle `0013` and end their death/camera/ability states.
+    fn revive_current(&mut self, placement: Option<([f64; 3], i32)>, respawn: bool) {
+        if let Some((position, yaw)) = placement {
+            self.teleport_current(position, Some(yaw));
+            self.spawn_view = self
+                .body
+                .filter(|_| !self.headless)
+                .map(|body| (body.id, yaw));
+        } else if let Some(position) = self.mover.as_ref().map(|mover| mover.pose().position) {
+            // A resurrection in place still ends native motion/velocity;
+            // it does not turn the view or change the corpse's heading.
+            self.teleport_current(position, None);
+        }
+        self.death = None;
+        self.attackers.clear();
+        self.knocks = KnockCredit::default();
+        self.spawn_room = None;
+        self.respawn_hero = None;
+        if let Some(script) = &mut self.body_script {
+            if let Some(vitals) = script.runtime.vitals_mut() {
+                vitals.revive();
+            }
+            if let Err(error) = script.runtime.health_changed() {
+                self.drop_failed_script(&error.to_string());
+            }
+        } else if let Some(vitals) = &mut self.plain_vitals {
+            vitals.revive();
+        }
+        self.body_health += 1;
+        self.revived(respawn);
+    }
+
+    /// `0013.025` notifies the surviving graphs of the native revive.
+    /// `00C6` distinguishes a respawn (the `01CA` respawn line) from a
+    /// resurrection in place. `0B8B` also honors spawn-with-ultimate here.
+    fn revived(&mut self, respawn: bool) {
         let Some(script) = &mut self.body_script else {
             return;
         };
         if let Err(error) = script.runtime.receive_message(
             0,
             REVIVED,
-            Variables::from([(REVIVED_RESPAWN, ScriptValue::Bool(true))]),
+            Variables::from([(REVIVED_RESPAWN, ScriptValue::Bool(respawn))]),
         ) {
             self.drop_failed_script(&error.to_string());
         }
@@ -5768,8 +5800,8 @@ impl WorldDelivery {
         let mut messages = script.runtime.take_messages();
         // The mode body script's `0685`: the dead body may respawn now.
         // Retail's mode graph takes it (`0C8F`, then `0687` to the
-        // controller, whose `0C90` revives the body); the server respawns
-        // the player itself (loose ends, "A respawn makes a new body").
+        // controller, whose `0C90` revives the body); this native delivery
+        // currently applies the chosen spawn directly.
         let sender = script.id;
         let revived = script.runtime.take_revive();
         messages.retain(|message| {
@@ -5780,9 +5812,7 @@ impl WorldDelivery {
             !ready
         });
         // Its graphs revived it (the Workshop's Resurrect, `0C8E` rid76):
-        // back at once where the body lies. Retail revives the same body
-        // (`STU_621AF478`); the server makes a new one there, as for any
-        // respawn.
+        // back at once where the body lies, on this same component and id.
         let feet = self.mover.as_ref().map(|mover| mover.pose().position);
         if revived && let Some(death) = self.death.as_mut().filter(|death| death.body == sender) {
             death.due = Some(Duration::ZERO);
@@ -6488,16 +6518,17 @@ impl WorldDelivery {
             }
         }
         if dead {
-            for command in pending.poses.by_ref().take(budget - used) {
-                used += 1;
-                if let Some(script) = script.as_mut().filter(|_| failed.is_none()) {
-                    if let Err(error) =
-                        script.advance(mover, command, BodyStep::Posed, rewind, true)
+            used += mover
+                .step_pending_with(&mut pending.poses, budget - used, |mover, command| {
+                    if let Some(script) = script.as_mut().filter(|_| failed.is_none())
+                        && let Err(error) =
+                            script.advance(mover, command, BodyStep::Posed, rewind, true)
                     {
                         failed = Some(error.to_string());
                     }
-                }
-            }
+                    Ok(())
+                })
+                .map_err(invalid)?;
             if let Some(error) = failed {
                 self.drop_failed_script(&error);
             }

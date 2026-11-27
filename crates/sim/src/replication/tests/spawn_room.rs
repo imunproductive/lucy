@@ -315,6 +315,9 @@ fn respawn_frame(
                 .unwrap();
         }
         world.take_body_messages();
+        // The room routes voice requests every tick too. Do not leave a
+        // death cry pending until the revived body's next life.
+        world.take_voice_lines(scene, *tick);
         let frame = world.input.processed;
         // A late clock: only the body's `0685` may make it due.
         if world
@@ -631,9 +634,15 @@ fn a_hero_change_in_the_room_keeps_position_and_yaw() {
     world.area_step(&scene, &viewer);
     assert_eq!(world.in_spawn_room(), Some(true));
     let before = world.mover.as_ref().unwrap().pose();
+    let body = world.current_body();
     let tracer = scene.heroes().find_hero("Tracer").unwrap().guid;
     pick(&mut world, &scene, &viewer, tracer);
     assert_eq!(world.hero(), Some(tracer));
+    assert_ne!(
+        world.current_body(),
+        body,
+        "a different hero needs a new body"
+    );
     let after = world.mover.as_ref().unwrap().pose();
     assert_eq!(after.position, before.position);
     assert_eq!(after.yaw, 12345);
@@ -655,6 +664,21 @@ fn a_fall_onto_the_catch_floor_kills_and_respawns_after_the_delay() {
     let viewer = viewer(&card);
     let mut world = spawned(&scene, &viewer);
     let body = world.current_body().unwrap();
+    let id = world.body.unwrap().id;
+    let instances: Vec<_> = world
+        .body_script
+        .as_ref()
+        .unwrap()
+        .runtime
+        .snapshot()
+        .unwrap()
+        .instances
+        .iter()
+        .filter(|(_, instance)| {
+            instance.parent.is_none() || matches!(instance.graph, 0x0b8b | 0x01cb)
+        })
+        .map(|(&id, instance)| (id, instance.graph))
+        .collect();
     grant(&mut world, 300.0);
     // Feet on the pit floor, where a fall out of the range ends.
     place(&mut world, &scene, [95.0, -11.0, 10.0], 0);
@@ -704,10 +728,37 @@ fn a_fall_onto_the_catch_floor_kills_and_respawns_after_the_delay() {
         respawn_frame(&mut world, &scene, &viewer, &mut tick, 400),
         Some(FIRST_TICK + 188)
     );
-    // The new body stands for retail's revived one: it keeps the charge,
-    // the 300 granted and the 5 of each 1 s Wait of `0B8B`'s loop (rid3,
-    // rid4) the dead body ran in its 188 frames (3.008 s): still possessed,
-    // it charges on (its st0 tests the possessor, not life).
+    // The same possessed body keeps the 300 granted and the 5 of each
+    // 1 s Wait of `0B8B`'s loop the dead body ran in 188 frames (3.008 s).
+    assert_eq!(world.current_body(), Some(body));
+    assert_eq!(world.body.unwrap().id, id);
+    assert!(!world.body_dead());
+    assert_eq!(world.health_share(), Some(1.0));
+    let snapshot = world
+        .body_script
+        .as_ref()
+        .unwrap()
+        .runtime
+        .snapshot()
+        .unwrap();
+    for (id, graph) in instances {
+        assert_eq!(
+            snapshot.instances.get(&id).map(|instance| instance.graph),
+            Some(graph)
+        );
+    }
+    assert_eq!(
+        snapshot.variables.get(&lucy_script::bot::DEAD_FLAG),
+        Some(&ScriptValue::Bool(false))
+    );
+    let camera = snapshot
+        .instances
+        .values()
+        .find(|instance| instance.graph == 0x01cb)
+        .unwrap();
+    for state in [14, 30] {
+        assert!(!camera.states.get(&state).is_some_and(|state| state.active));
+    }
     assert_eq!(charge(&world), 315.0);
     let (spawn, _) = scene
         .map()
@@ -715,7 +766,7 @@ fn a_fall_onto_the_catch_floor_kills_and_respawns_after_the_delay() {
         .unwrap();
     let back = world.body_position().unwrap();
     assert!((back[0] - spawn[0]).abs() < 0.01 && (back[2] - spawn[2]).abs() < 0.01);
-    // The new body takes the revive message (`0013.025`, `00C6` on): its
+    // The surviving body takes the revive message (`0013.025`, `00C6` on):
     // `01CA` raises the respawn line `05D8` on the controller 1.5 s later,
     // which Soldier: 76's set answers with stimulus `002C`, once.
     let mut said = Vec::new();
@@ -1062,6 +1113,7 @@ fn a_pick_while_dead_takes_the_respawn() {
         Some(FIRST_TICK + 188)
     );
     assert_eq!(world.hero(), Some(tracer));
+    assert_ne!(world.current_body(), Some(body));
     assert_eq!(charge(&world), 0.0);
 }
 

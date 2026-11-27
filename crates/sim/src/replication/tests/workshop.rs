@@ -594,7 +594,7 @@ fn dpk_archive_c32s2_landing_in_level_ones_ring_selects_it() {
 
 /// "Death Reset": Player Died → Respawn (`1383`: `06B6` {`0919` true} to
 /// his body, whose `0C8E` rid14 sets #30857 and sends `0685` to the mode
-/// at once, rid8 → rid6 → rid2), so a new body comes on the next ticks,
+/// at once, rid8 → rid6 → rid2), so the body revives on the next tick,
 /// not after `0C8E`'s own count (#9575, at least 1 s, rid55 st34).
 #[test]
 #[ignore = "requires an Overwatch 1.74 install and the DPK archive (just test-dpk <install> <archive>)"]
@@ -604,15 +604,16 @@ fn dpk_archive_c32s2_respawns_a_killed_player_at_once() {
     let body = parkour.world.current_body().unwrap();
     parkour.kill();
     let mut ticks = 0;
-    while parkour.world.current_body() == Some(body) {
+    while parkour.world.body_dead() {
         parkour.tick();
         ticks += 1;
         assert!(ticks < 200, "no respawn");
     }
     // The tick after the kill: the rules see him dead (Player Died),
     // Respawn's `06B6` reaches his body, whose `0685` makes the respawn
-    // due, and the new body comes, all in that tick.
+    // due, and the same body revives, all in that tick.
     assert_eq!(ticks, 1);
+    assert_eq!(parkour.world.current_body(), Some(body));
 }
 
 /// "Spectate | Uppercut + Slam + Ultimate": the chord stops the run's
@@ -621,7 +622,7 @@ fn dpk_archive_c32s2_respawns_a_killed_player_at_once() {
 /// health changes) with respawning off (`1CE0`'s `0DE0` to `0C8E`), so he
 /// stays dead; "Death Reset" waits for Spectate false. The chord pressed
 /// again resurrects him (`1481` → `0A21` → `0C8E` rid76 `STU_621AF478`):
-/// a new body where he lay, the timer going again. Before, Kill named no
+/// the same body where he lay, the timer going again. Before, Kill named no
 /// body, and the run ended with the chord held, started over at once and
 /// spectated again.
 #[test]
@@ -657,7 +658,7 @@ fn dpk_archive_c32s2_spectates_with_the_time_paused() {
         assert!(ticks < 20, "never resurrected");
     }
     parkour.run(1.0);
-    assert_ne!(parkour.world.current_body(), body);
+    assert_eq!(parkour.world.current_body(), body);
     assert!(
         distance(parkour.feet(), [18.363, 4.117, 9.094]) < 0.5,
         "{:?}",

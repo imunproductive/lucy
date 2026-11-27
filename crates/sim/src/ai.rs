@@ -503,6 +503,9 @@ impl AiController {
         };
         let Some(feet) = senses.feet else {
             // Dead or not yet in the world: no input, as a client's.
+            // Revival retains the entity. Forget the life, not just its
+            // route, so the next living sample gets the spawn reset too.
+            self.body = None;
             self.target = None;
             self.forget_walk();
             self.last = None;
@@ -510,7 +513,7 @@ impl AiController {
             return command;
         };
         if senses.body != self.body {
-            // A new body at the spawn: everything starts again.
+            // A first spawn, hero change, or revival starts a new life.
             self.body = senses.body;
             self.forget_walk();
             self.leaves = None;

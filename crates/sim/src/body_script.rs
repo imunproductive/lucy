@@ -589,8 +589,8 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
     /// that dies also raises its dead flag #478: no graph writes it, and
     /// the graphs that show a body to others read it (`0D24`'s health bar
     /// and name tag, `01CF`), so the server sets it as it does for a dying
-    /// bot (assumption: retail did so for every body that died). A body
-    /// can't come back to life; a respawn is a new body.
+    /// bot. Clearing it on revival lets `01CB` end its death-camera subgraph
+    /// and `0C8E` return to its living path, on the existing instances.
     fn health_changed(&mut self) -> io::Result<()> {
         let (total, maximum) = (self.world.vitals.total(), self.world.vitals.maximum());
         for (variable, value) in [
@@ -603,11 +603,9 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                 .map_err(unsupported)?;
         }
         let dead = total <= 0.0;
-        if dead {
-            self.component
-                .set_entity_variable(DEAD_FLAG, Value::Bool(true), &mut self.world)
-                .map_err(unsupported)?;
-        }
+        self.component
+            .set_entity_variable(DEAD_FLAG, Value::Bool(dead), &mut self.world)
+            .map_err(unsupported)?;
         self.component.set_owner_dead(dead);
         Ok(())
     }

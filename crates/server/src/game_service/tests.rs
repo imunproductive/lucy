@@ -6280,7 +6280,7 @@ fn slow_a_practice_vs_ai_match_plays_its_ai_heroes_to_the_end() {
 
 /// A Competitive Assault match on Temple of Anubis, driven by `0F4A` in
 /// its own time, plays both sides: team 1 attacks first and takes A, then
-/// time runs out on B; before the second side both players get a new body
+/// time runs out on B; before the second side both players' bodies revive
 /// in their new side's spawn room (team 0 now in the attackers' room, team
 /// 1 in the defenders'), where team 0 takes A too. Equal progress with no
 /// time left: a draw for both. The server's wait after the match's end is
@@ -6457,11 +6457,13 @@ fn slow_a_competitive_assault_on_anubis_swaps_sides_and_spawn_rooms() {
         blue.pump(&schemas);
         red.pump(&schemas);
     }
-    // The second side's bodies, in the swapped rooms.
+    // The second side moves the same bodies into the swapped rooms. The
+    // draw below proves team 0 reached A, placed at the attacking spawn.
     for watcher in [&*blue, &*red] {
+        assert!(watcher.created(watcher.owner | 1).is_some());
         assert!(
-            watcher.created(watcher.owner | 2).is_some(),
-            "{:08X}: a new body for the second side",
+            watcher.created(watcher.owner | 2).is_none(),
+            "{:08X}: a round restart must retain the possessed body",
             watcher.owner
         );
     }

@@ -1348,11 +1348,11 @@ impl Others {
         if seen.health == body.health {
             return Ok(());
         }
-        let mut components = vec![vitals.component()];
-        if vitals.death().is_some() {
-            let team = player_team_bit(map, other.team)?;
-            components.push(filter_component(body_filter(team, true)));
-        }
+        let team = player_team_bit(map, other.team)?;
+        let components = vec![
+            vitals.component(),
+            filter_component(body_filter(team, vitals.death().is_some())),
+        ];
         seen.health = body.health;
         output.records.push((
             EntityUpdate {
