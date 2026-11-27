@@ -37,6 +37,7 @@ mod switches;
 mod targets;
 mod time_scale;
 mod timers;
+mod track;
 mod turn;
 mod view_limits;
 mod volleys;
@@ -75,6 +76,7 @@ use crate::{
     },
     graph::{Body, Graph, GraphStore, Node, asset_guid, member},
     timeline::{ButtonEdge, FRAME_MS, QueueFull, Timeline, button_edges, frame_start},
+    track::Track,
     vitals::PoolKind,
     wheel,
     wire::{Value, Variables},
@@ -839,6 +841,22 @@ pub trait World {
     /// (`STU_F7FD94F9`). None: unknown here.
     fn body_radius(&self, _site: Site, _entity: u32) -> Option<f64> {
         None
+    }
+
+    /// The immutable parametric track belonging to this entity.
+    fn track(&self, _site: Site, _entity: u32) -> Option<Arc<Track>> {
+        None
+    }
+
+    /// Its native distance along that track, including when the graph
+    /// binds no distance output (`2ABA`).
+    fn track_distance(&self, _site: Site, _entity: u32) -> Option<f64> {
+        None
+    }
+
+    /// Place an entity at a distance along its parametric track.
+    fn place_on_track(&mut self, _site: Site, _entity: u32, _distance: f64) -> bool {
+        false
     }
 
     /// The rate (radians a second, movement state `+0xD0`) of the turn
@@ -1637,6 +1655,8 @@ pub enum StateKind {
     /// listed value (`STU_77E13026`) or a played graph per target
     /// (`STU_CB4905E9`); its scope instances are [`State::scopes`].
     Scope,
+    /// A parametric mover (`STU_49FE0019`), last advanced at this time.
+    TrackMove { last_ms: u64 },
     /// A UX presenter (`STU_4BD2E886`, `vm/presenter.rs`): its fades and
     /// bit are [`State::presenter`].
     Presenter,

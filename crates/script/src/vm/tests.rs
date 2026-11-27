@@ -14,6 +14,7 @@ mod flow;
 mod messages;
 mod motions;
 mod rays;
+mod track;
 
 fn node(position: u16, class: &str, state: Option<u16>, mut fields: Json) -> Json {
     fields["m_2BBEEAB8"] = json!(state.is_some());
