@@ -10,12 +10,16 @@ The lock is the folder `D:/Temp/lucy-game.lock` (the convention agents use) with
 to whoever asked first instead of whoever retries at the right moment.
 
 A lock held longer than `--stale` minutes (default 25) while no Overwatch process
-runs is taken over: its holder died or forgot to release it.
+runs is taken over: its holder died or forgot to release it. A holder or waiter
+that was killed (a job deadline, a cancelled agent) can't clean up, so tickets and
+`owner.txt` carry the process id: a dead waiter's ticket is dropped and a dead
+holder's lock is taken over at once when no Overwatch runs.
 """
 
 from __future__ import annotations
 
 import argparse
+import ctypes
 import os
 import subprocess
 import sys
@@ -34,6 +38,28 @@ def overwatch_running() -> bool:
     return "Overwatch" in out
 
 
+def alive(pid: int) -> bool:
+    """Whether process `pid` still runs (Windows: an open handle whose exit code is STILL_ACTIVE)."""
+    kernel = ctypes.windll.kernel32
+    handle = kernel.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return False
+    try:
+        code = ctypes.c_ulong()
+        return bool(kernel.GetExitCodeProcess(handle, ctypes.byref(code))) and code.value == 259
+    finally:
+        kernel.CloseHandle(handle)
+
+
+def recorded_pid(path: Path, line: int) -> int | None:
+    """The process id on `line` of a ticket or owner.txt, or None (none recorded, or an older file)."""
+    try:
+        words = path.read_text(encoding="utf-8").split()
+        return int(words[line]) if len(words) > line and int(words[line]) > 0 else None
+    except (OSError, ValueError):
+        return None
+
+
 def holder() -> tuple[str, float] | None:
     """The holder's name (the first word of owner.txt) and when it took the lock."""
     if not LOCK.exists():
@@ -45,12 +71,19 @@ def holder() -> tuple[str, float] | None:
         return "(unknown)", LOCK.stat().st_mtime
 
 
-def take(name: str) -> bool:
+def holder_died() -> bool:
+    """Whether the holder recorded its process and that process is gone. A holder that took the lock from
+    the command line (`acquire` then exit, holding it for a later game) records none."""
+    pid = recorded_pid(OWNER, 2)
+    return pid is not None and not alive(pid)
+
+
+def take(name: str, pid: int) -> bool:
     try:
         LOCK.mkdir()
     except FileExistsError:
         return False
-    OWNER.write_text(f"{name}\n{time.time()}\n", encoding="utf-8")
+    OWNER.write_text(f"{name}\n{time.time()}\n{pid}\n", encoding="utf-8")
     return True
 
 
@@ -62,20 +95,33 @@ def drop() -> None:
         pass
 
 
+def prune_dead_tickets() -> None:
+    """Drop the tickets of waiters that were killed while queueing (their `finally` never ran)."""
+    for ticket in QUEUE.iterdir():
+        pid = recorded_pid(ticket, 0)
+        if pid is not None and not alive(pid):
+            ticket.unlink(missing_ok=True)
+
+
 def acquire(args: argparse.Namespace) -> None:
+    """Wait for the lock in turn, then hold it. `args.hold_pid` is the process that holds it (default this
+    one; 0 from the command line, whose process exits while the lock stays held)."""
     QUEUE.mkdir(parents=True, exist_ok=True)
     ticket = QUEUE / f"{time.time():017.6f}-{args.name}"
-    ticket.touch()
+    ticket.write_text(f"{os.getpid()}\n", encoding="utf-8")
+    hold_pid = getattr(args, "hold_pid", os.getpid())
     try:
         announced = None
         while True:
+            prune_dead_tickets()
             first = min(QUEUE.iterdir(), default=None)
-            if first == ticket and take(args.name):
+            if first == ticket and take(args.name, hold_pid):
                 print(f"{args.name} holds the game lock")
                 return
             held = holder()
-            if held and time.time() - held[1] > args.stale * 60 and not overwatch_running():
-                print(f"taking over a stale lock of {held[0]}")
+            stale = held is not None and time.time() - held[1] > args.stale * 60
+            if held and (stale or holder_died()) and not overwatch_running():
+                print(f"taking over the {'stale' if stale else 'dead holder'} lock of {held[0]}")
                 drop()
                 continue
             state = (held[0] if held else None, first.name if first else None)
@@ -102,7 +148,9 @@ def status(_: argparse.Namespace) -> None:
     else:
         print("free")
     for ticket in sorted(QUEUE.iterdir()) if QUEUE.exists() else []:
-        print("  waiting:", ticket.name.split("-", 1)[1])
+        pid = recorded_pid(ticket, 0)
+        note = "" if pid is None else f" (pid {pid}{'' if alive(pid) else ', dead'})"
+        print("  waiting:", ticket.name.split("-", 1)[1] + note)
     print("Overwatch running" if overwatch_running() else "no Overwatch running")
 
 
@@ -112,7 +160,7 @@ def main() -> None:
     command = commands.add_parser("acquire")
     command.add_argument("name")
     command.add_argument("--stale", type=float, default=25)
-    command.set_defaults(run=acquire)
+    command.set_defaults(run=acquire, hold_pid=0)
     command = commands.add_parser("release")
     command.add_argument("name")
     command.set_defaults(run=release)
