@@ -4326,6 +4326,27 @@ fn a_timed_chases_duration_is_its_clients_f32_milliseconds() {
     assert_eq!(chase.remaining_ms, Some(1400));
 }
 
+/// The native rate step (`0x7FF78AAAFD57` / `0x7FF78AAAFD5C`) converts
+/// milliseconds with cvtsi2ss and mulss by f32 0.001, then mulss by rate.
+/// A double intermediate differs for Storm Bow's 608 ms draw.
+#[test]
+fn a_timed_chases_rate_step_uses_the_clients_f32_seconds() {
+    let chase = ChasePayload {
+        current: Value::Float(0.0),
+        reached: false,
+        remaining_ms: None,
+        last_ms: 0,
+        timed: Some(TimedChase {
+            destination: Value::Float(1.0),
+            rate: 1.375,
+        }),
+    };
+    assert_eq!(
+        chase.value_at(608),
+        Value::Float(f64::from(608.0_f32 * 0.001_f32 * 1.375_f32))
+    );
+}
+
 #[test]
 fn keyed_set_var_replaces_equal_keys_and_an_uncastable_ray_only_follows_its_plug() {
     let keyed = |position, key: i64, value: i64, next: u16| {

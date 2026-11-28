@@ -30,7 +30,6 @@ use crate::wire::{
 };
 use lucy_core::bits::{BitError, BitWriter};
 
-const OWNER_HEALTH: u32 = 253;
 /// How long a frame action stays sendable after it ran (upstream
 /// `WHEEL_CALLOUT_MS`, server delivery policy).
 pub const ACTION_LIFETIME_MS: u64 = 2000;
@@ -1428,7 +1427,9 @@ impl<'a> SnapshotEncoder<'a> {
             snapshot,
             0,
             &snapshot.variables,
-            &BTreeSet::from([OWNER_HEALTH]),
+            // Entity variables use the graphs' sync lists, including health
+            // (#253e: e.g. Storm Bow 00B9 slot 125; refs HanzoCharge.md).
+            &BTreeSet::new(),
             view,
             kept.map(|kept| &kept.variables),
         )? {

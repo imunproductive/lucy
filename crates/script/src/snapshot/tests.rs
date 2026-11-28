@@ -171,8 +171,11 @@ fn check(bits: &BitWriter, length: usize, hex: &str) {
     assert_eq!((bits.bit_len(), actual.as_str()), (length, hex));
 }
 
+/// This Python-derived baseline intentionally gains eligible entity health:
+/// #253 = Float(200) adds 9 id + 4 tag + 32 float + 1 no-binding bits.
+/// The owner's payload crosses 255 bits, adding 9 more chunk-length bits.
 #[test]
-fn baseline_matches_python_for_both_views_and_enters_the_acknowledged_stream() {
+fn baseline_for_both_views_enters_the_acknowledged_stream() {
     let (graphs, snapshot) = fixture();
     let codecs = CodecTable::from_json(CODECS).unwrap();
     let encoder = SnapshotEncoder::new(&graphs, &codecs);
@@ -183,8 +186,9 @@ fn baseline_matches_python_for_both_views_and_enters_the_acknowledged_stream() {
     assert_eq!(owner.instances[&2].parent, Some((1, 1)));
     assert_eq!(
         owner.variables.values.keys().copied().collect::<Vec<_>>(),
-        [7, 55]
+        [7, 55, 253]
     );
+    assert_eq!(owner.entity_variable(253), Some(&Value::Float(200.0)));
     assert_eq!(
         owner.instances[&1]
             .variables
@@ -199,13 +203,13 @@ fn baseline_matches_python_for_both_views_and_enters_the_acknowledged_stream() {
 
     check(
         &encoder.full(&owner).unwrap(),
-        250,
-        "081500102b00142000e820031610e246e8012811840cc5128000006040000000",
+        296,
+        "081500102b00142000e820031610e246e8e9470000a421004a042143b10420000018100000",
     );
     check(
         &encoder.full(&observer).unwrap(),
-        257,
-        "081500102b00142000e820031610e246e8012811840cc512800000604000f83b00",
+        303,
+        "081500102b00142000e820031610e246e8e9470000a421004a042143b104200000181000fe0e",
     );
     let mut stream = BodyStream::new(ENTITY);
     let chunk = encoder.queue_full(&mut stream, &owner).unwrap();
@@ -215,8 +219,8 @@ fn baseline_matches_python_for_both_views_and_enters_the_acknowledged_stream() {
     assert!(stream.base().is_none());
     check(
         chunk.update.chunk.as_ref().unwrap(),
-        286,
-        "000004a08f500100b102400102800e326001216e841e801241c8502c0108000006040000",
+        341,
+        "000004082500a102006205800204001d64c00242dc083dfd08008034044089206428960004000003020000",
     );
     stream.create_arrived();
     assert!(stream.ready_to_send(chunk.last));
@@ -2149,7 +2153,8 @@ fn a_delta_lists_a_variable_that_went_from_unset_to_false_or_zero() {
 /// instance's variable out of frames, not the entity variable of the same
 /// identifier: 104319's lists name instance variables only, and `01D8`'s
 /// #417 left out Doomfist's airborne flag #417e (refs report
-/// `Doomfist.md` §13). The owner's health (#253) stays out.
+/// `Doomfist.md` §13). Health #253e must also reach client-only readers:
+/// Storm Bow `00B9` st41 gates its custom reticle on #253e > 0.
 #[test]
 fn a_graphs_server_only_variables_leave_out_its_instance_variables_only() {
     let (graphs, mut snapshot) = fixture();
@@ -2162,7 +2167,10 @@ fn a_graphs_server_only_variables_leave_out_its_instance_variables_only() {
             projected.variables.values.get(&420),
             Some(&Value::Integer(666))
         );
-        assert!(!projected.variables.values.contains_key(&OWNER_HEALTH));
+        assert_eq!(
+            projected.variables.values.get(&253),
+            Some(&Value::Float(200.0))
+        );
         assert!(!projected.instances[&1].variables.values.contains_key(&420));
     }
 }
