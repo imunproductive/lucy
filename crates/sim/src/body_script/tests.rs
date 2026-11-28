@@ -2185,6 +2185,64 @@ fn run_frames(runtime: &mut PlayerBodyRuntime, spawn: OwnerBodySpawn, frames: u3
     }
 }
 
+/// Storm Bow `00B9` st7 chases #677 toward 1 at 1.375/s; release captures
+/// it in #18954 before st4 fires at 25 + 85 * charge metres per second.
+#[test]
+#[ignore = "requires the derived 104319 statescript catalog"]
+fn hanzos_storm_bow_arrow_speed_follows_the_authored_draw_charge() {
+    const HANZO: u64 = 0x02e0_0000_0000_0005;
+    for held_frames in [13, 38, 63] {
+        let (mut runtime, spawn) = charge_body(HANZO, None);
+        let mover = Mover::new(
+            MoverSettings::default(),
+            Arc::new(ContactWorld::new(Vec::new()).unwrap()),
+            spawn.pose.position,
+            0,
+            0x18,
+        )
+        .unwrap();
+        // Finish the initial weapon raise before beginning each independent draw.
+        run_frames(&mut runtime, spawn, 64);
+        let first = spawn.frame + 65;
+        for frame in first..first + held_frames {
+            let command = Command {
+                frame,
+                buttons: lucy_wire::commands::FIRE,
+                ..Command::default()
+            };
+            runtime.advance(command, &mover, BodyStep::Posed).unwrap();
+            assert!(runtime.take_shots(Some(command), &mover).is_empty());
+        }
+        let release = Command {
+            frame: first + held_frames,
+            ..Command::default()
+        };
+        runtime.advance(release, &mover, BodyStep::Posed).unwrap();
+        let snapshot = runtime.snapshot().unwrap();
+        let (&bow_id, bow) = snapshot
+            .instances
+            .iter()
+            .find(|(_, instance)| instance.graph == 0x00b9)
+            .expect("Storm Bow");
+        eprintln!(
+            "hold={held_frames} bow={bow_id} vars={:?} states={:?} diagnostics={:?}",
+            bow.variables,
+            bow.states,
+            snapshot.diagnostics
+        );
+        let shots = runtime.take_shots(Some(release), &mover);
+        let [PosedShot::Projectile(arrow)] = shots.as_slice() else {
+            panic!("hold={held_frames}: expected one arrow, got {shots:?}");
+        };
+        let charge = ((held_frames * FRAME_MS as u32) as f32 * 0.001 * 1.375).min(1.0);
+        assert_eq!(
+            arrow.ballistics.speed,
+            25.0 + 85.0 * f64::from(charge),
+            "hold={held_frames}"
+        );
+    }
+}
+
 /// Graph `0B8B` charges the ultimate: its server-only loop adds 5 points
 /// after each 1 s Wait once `01C7` turned #2426e on (from `002D.025`); the
 /// damage the body dealt (`0012.025`) to a hostile body adds its amount,
