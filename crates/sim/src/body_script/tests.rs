@@ -534,6 +534,11 @@ fn verified_body_starts_fresh_instances_and_advances_only_its_own_retail_clock()
         )
         .unwrap();
     assert_eq!(first.world.movement, posed);
+    // Timer-only advances retain the pose sample, not a stale native parent.
+    first.world.movement.parent = Some(lucy_wire::entity::MovementParent {
+        entity: 0x8000_0001,
+        node: 0,
+    });
     first
         .advance(
             Command {
