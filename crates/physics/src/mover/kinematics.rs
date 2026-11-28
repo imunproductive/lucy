@@ -142,12 +142,14 @@ impl MotionInput {
     /// The command's input under the frame's mods: the aim held to mods
     /// 28..31's limits (0x7FF789B4C6A0: the yaw limits move by a turn to lie
     /// within half a turn of the yaw, the pitch also keeps to +-89 degrees)
-    /// and the move's throttles through mods 17..19. The throttle bytes stay
-    /// the command's. [ASSUMPTION] a held yaw is rounded back to turn units
-    /// half away from zero, as the pitch is.
+    /// and the move's throttles through mods 17..19. The record's throttle
+    /// bytes follow the modified direction (0x7FF789B4D9C0), not the command:
+    /// zero throttles do not refresh the remembered input frame.
+    /// [ASSUMPTION] a held yaw is rounded back to turn units half away from
+    /// zero, as the pitch is.
     pub fn new(command: &Command, mods: &ActiveModifiers) -> Self {
-        let (right, right_byte) = throttle(command.right);
-        let (forward, forward_byte) = throttle(command.forward);
+        let right = throttle(command.right);
+        let forward = throttle(command.forward);
         let [yaw_min, yaw_max, pitch_min, pitch_max] = mods.aim_limits().map(|limit| limit as f32);
         let yaw = command.yaw as i16 as f32 * PITCH_RADIANS;
         let middle = (yaw_min + yaw_max) * 0.5;
@@ -174,7 +176,8 @@ impl MotionInput {
             },
             pitch: units(held) as i16,
             aim_held: pitch != held || yaw != yaw_held,
-            throttles: [right_byte, forward_byte],
+            throttles: [right, forward]
+                .map(|value| ((value as f32 * 127.0).clamp(-127.0, 127.0)) as i8),
             right,
             forward,
         }
@@ -197,9 +200,8 @@ fn units(radians: f32) -> i32 {
     rounded as i32
 }
 
-fn throttle(byte: i8) -> (f64, i8) {
-    let throttle = f32::from(byte.max(-127)) * THROTTLE_UNIT;
-    (f64::from(throttle), (throttle * 127.0) as i8)
+fn throttle(byte: i8) -> f64 {
+    f64::from(f32::from(byte.max(-127)) * THROTTLE_UNIT)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -470,6 +472,48 @@ mod tests {
             .pitch,
             89
         );
+    }
+
+    #[test]
+    fn movement_modifiers_are_reflected_in_record_throttle_bytes() {
+        let mut timeline = ModifierTimeline::default();
+        timeline.track(
+            0,
+            &[(17, 0.5), (18, 0.25), (19, 0.75)]
+                .into_iter()
+                .enumerate()
+                .map(|(slot, (index, value))| {
+                    (
+                        ModifierKey {
+                            instance: 1,
+                            state: 1,
+                            slot,
+                        },
+                        Modifier {
+                            index,
+                            operation: Operation::Multiply,
+                            value,
+                            priority: 1.0,
+                        },
+                    )
+                })
+                .collect(),
+        );
+        let mods = timeline.at(1);
+        let input = |right, forward| {
+            MotionInput::new(
+                &Command {
+                    right,
+                    forward,
+                    ..Command::default()
+                },
+                &mods,
+            )
+        };
+        // B4D9C0 multiplies the post-mod floats by 127, clamps and truncates:
+        // 127 * 0.75 -> 95, 127 * 0.5 -> 63, 127 * 0.25 -> 31.
+        assert_eq!(input(-127, 127).throttles, [-95, 63]);
+        assert_eq!(input(127, -127).throttles, [95, -31]);
     }
 
     #[test]
