@@ -125,8 +125,9 @@ LOGIN_PIXEL = (0.44, 0.88)
 # while the screen shows, false once the pick closes it (ClientProbe.md "ProbeDll3").
 HERO_SELECT_GRAPH = "288B"
 SCREEN_SHOWN = 1962
-# The player's entity variables after a pick: #2114e on once the pick is locked in, #940e the hero.
-PICKED, PICKED_HERO = 2114, 940
+# The player's entity variables after a pick: #2114e on once the pick is locked in, #940e the hero picked,
+# #13161e the hero he plays.
+PICKED, PICKED_HERO, CURRENT_HERO = 2114, 940, 13161
 
 
 class Session:
@@ -423,14 +424,18 @@ class Session:
     def picked_hero(self):
         """The hero the client has locked in (its `#940e`, a hero GUID such as 0x02E000000000012F), once its
         `#2114e` is on (288B rid114 on the server's `06E4`, rid237 when `#940e == #13161e`; st47 turns it off
-        while hero select is open); else None."""
+        while hero select is open), or, with the screen closed, once he plays the hero he picked (`#940e ==
+        #13161e`): in a Workshop match on Volskaya `#2114e` stayed off with Soldier: 76 in play, as the server
+        sent no `06E4` (2026-11-28, VolskayaLift; loose-ends.md). Else None."""
         from . import statescript as ss
         inst = self._hero_select_instance()
         if not inst:
             return None
-        values = ss.host_entity_variables(self.probe, inst["host"], {PICKED, PICKED_HERO})
+        values = ss.host_entity_variables(self.probe, inst["host"], {PICKED, PICKED_HERO, CURRENT_HERO})
         hero = values.get(PICKED_HERO)
-        if values.get(PICKED) is not True or not isinstance(hero, dict) or hero.get("type") != 4:
+        if not isinstance(hero, dict) or hero.get("type") != 4:
+            return None
+        if values.get(PICKED) is not True and values.get(CURRENT_HERO) != hero:
             return None
         return int.from_bytes(bytes.fromhex(hero["hex"])[:8], "little")
 
@@ -475,31 +480,74 @@ class Session:
 
     def pick_hero(self, hero=None, timeout=60.0):
         """Hero select: waits for it, clicks the hero's portrait (`hero` or the session's; none keeps the one
-        shown), then SELECT, until the client has locked a hero in and closed the screen (`picked_hero`).
-        Returns that hero's GUID, None on the timeout. It also turns the frame sampler on (no recording), which
-        finds the body later."""
+        shown), and presses SELECT only once the client previews that hero (288B's local `#14152`, which st8's
+        preview model reads), clicking the portrait again every 2 s until it does; then waits until the client
+        has locked a hero in and closed the screen (`picked_hero`). A portrait click the screen didn't take
+        used to leave SELECT on the hero shown (Roadhog came out as Junkrat, Pharah as Zarya, Soldier: 76 as
+        Sombra, 2026-11-28; the preview gate is SameBody's). Returns that hero's GUID, None on the timeout;
+        RuntimeError when the client locked in another hero. It also turns the frame sampler on (no
+        recording), which finds the body later."""
+        from . import statescript as ss
         hero = hero or self.hero
-        hero_at = None
+        hero_at = wanted = None
         if hero:
             from tools.owdbg.actions import _hero
-            hero_at = _hero(hero)[1]
+            key, hero_at = _hero(hero)
+            wanted = self._hero_id(key)
         self.probe.sampler(every=0)
         end = time.monotonic() + timeout
-        clicked_hero, selects = False, 0
+        next_portrait, selects = 0.0, 0
         while time.monotonic() < end:
             shown = self.hero_select_shown()
             picked = None if shown else self.picked_hero()
             if picked:
                 self.log(f"[owprobe] t={self.elapsed():.0f}s picked hero {picked:016X}")
+                if wanted is not None and picked & 0xFFFF_FFFF_FFFF != wanted:
+                    raise RuntimeError(f"asked for {hero} ({wanted:X}) but the client locked in {picked:016X}")
                 return picked
-            if shown:
-                if hero_at and not clicked_hero:
-                    self.click(hero_at, f"{hero}'s portrait")
-                    clicked_hero = True
-                elif selects < 6:
-                    self.click(SELECT, "SELECT")
-                    selects += 1
-            time.sleep(1.5)
+            if not shown:
+                time.sleep(0.5)
+                continue
+            if hero_at and time.monotonic() >= next_portrait:
+                self.click(hero_at, f"{hero}'s portrait")
+                next_portrait = time.monotonic() + 2.0
+                time.sleep(0.2)
+                continue
+            if wanted is not None and self._previewed_hero(ss) != wanted:
+                time.sleep(0.1)
+                continue
+            if selects < 6:
+                self.click(SELECT, "SELECT")
+                selects += 1
+            time.sleep(1.0)
+        return None
+
+    def _previewed_hero(self, ss):
+        """The id of the hero the hero select screen previews (288B's local `#14152`), or None."""
+        inst = self._hero_select_instance()
+        value = ss.variables(self.probe, inst["address"], {14152}).get(14152) if inst else None
+        if not isinstance(value, dict) or value.get("type") != 4:
+            return None
+        return int.from_bytes(bytes.fromhex(value["hex"])[:8], "little") & 0xFFFF_FFFF_FFFF
+
+    def _hero_id(self, key):
+        """The hero GUID's id (`0x6E` for Soldier: 76) of a portrait key (`tools.owdbg.actions` names), from
+        the derived hero list in the state's cache; None when it isn't there."""
+        import json
+        import unicodedata
+
+        from tools.owdbg.actions import HERO_NAMES
+        files = sorted((self.state / "cache").glob("*/data/extracted_heroes.json")) if self.state else []
+        if not files:
+            return None
+        def plain(name):
+            text = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
+            return re.sub(r"[^a-z0-9]", "", text.lower())
+        ids = {plain(h.get("Name", "")): int(guid.split(".")[0], 16)
+               for guid, h in json.loads(files[0].read_text("utf-8")).items() if h.get("IsHero")}
+        for name in [key, *(alias for alias, target in HERO_NAMES.items() if target == key)]:
+            if name in ids:
+                return ids[name]
         return None
 
     def server_log_matches(self, pattern):
