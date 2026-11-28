@@ -1,6 +1,6 @@
 use super::*;
 use crate::instance::TOURNAMENT_QUANTA;
-use lucy_physics::mover::sample_movement_flags;
+use lucy_physics::mover::{modifiers::Operation, sample_movement_flags};
 use lucy_physics::{
     collision::index::TriangleIndex, contact::world::ContactWorld, mover::settings::MoverSettings,
 };
@@ -1586,155 +1586,267 @@ fn an_emote_choice_runs_the_emote_graphs() {
     let graphs =
         Arc::new(GraphStore::load_runtime(root.join("data"), "game_graphs_174.json.gz").unwrap());
     let items = ItemDb::load(&root.join("data")).unwrap();
-    let emote = items
-        .unlocks
-        .values()
-        .find(|unlock| {
-            unlock.item_type == "Emote"
-                && unlock.hero.as_deref() == Some("Soldier: 76")
-                && unlock.level == Some(0)
-        })
-        .expect("Soldier: 76's default emote")
-        .guid;
-    let equipped = WheelLoadout {
-        emotes: [emote; 4],
-        ..WheelLoadout::default()
-    };
-    let cosmetics = graphs.wheel_cosmetics(&equipped);
-    assert_ne!(cosmetics.emote_aliases[0], 0, "the emote's animation alias");
-    assert_ne!(cosmetics.emote_blend_trees[0], 0, "the emote's blend trees");
-    let pools = crate::pools::PoolCatalog::from_graphs(&graphs)
-        .unwrap()
-        .hero_pools(SOLDIER)
-        .unwrap();
-    let body = &graphs.bodies()[&0x0400_0000_0000_03cf];
-    let roots = lucy_script::vm::player_roots(body, &graphs).unwrap();
-    let health = pools.total();
-    let variables = lucy_script::vm::player_entity_variables(body, health, health);
-    let mut world = PlayerWorld::new(
-        Arc::clone(&graphs),
-        0xa000_0100,
-        0xa000_0101,
-        crate::scene::team_bit(0).unwrap(),
-        PRACTICE_RANGE_MODE,
-        SOLDIER,
-    );
-    world.position = GameMap::practice_range().spawn_point(0, 0).unwrap().0;
-    world.vitals = Vitals::empty();
-    world.pool_types_known = true;
-    world.target_tags = body.target_tags.clone();
-    let (emote_alias, emote_tree) = (cosmetics.emote_aliases[0], cosmetics.emote_blend_trees[0]);
-    world.cosmetics = cosmetics;
-    let mut component = Component::start(
-        Arc::clone(&graphs),
-        world.entity,
-        variables,
-        roots,
-        FIRST_TICK,
-        &mut world,
-        MAX_INIT_WORK,
-    )
-    .unwrap();
-    component.advance_frame(FIRST_TICK, &mut world).unwrap();
-    let mut choice = Fields::new();
-    choice.insert(0x78, Field::Unsigned(0x0a90_0000_0000_01a1));
-    choice.insert(0x80, Field::Bool(false));
-    let (message, parameters) = crate::wheel::selection(&Message {
-        id: crate::wheel::COMMUNICATION_ACTION,
-        fields: choice,
-    })
-    .unwrap();
-    assert_ne!(
-        component
-            .receive_message(0, message, parameters, &mut world)
-            .unwrap(),
-        0
-    );
-    for frame in 1..10 {
-        component
-            .advance_frame(FIRST_TICK + frame, &mut world)
-            .unwrap();
+    let pool_catalog = crate::pools::PoolCatalog::from_graphs(&graphs).unwrap();
+    // The VM's `0033` roots now include its zero armour/shield defaults.
+    // They must agree with the same schema plus hero bindings read by the
+    // native pool catalog, for every playable hero.
+    for body in graphs.bodies().values() {
+        let Some(hero) = body.hero.as_deref().and_then(lucy_core::guid::parse_guid) else {
+            continue;
+        };
+        let roots = lucy_script::vm::player_roots(body, &graphs).unwrap();
+        let Some(root) = roots.iter().find(|root| root.graph == 0x0033) else {
+            continue;
+        };
+        let pools = pool_catalog.hero_pools(hero).unwrap();
+        for (variable, amount) in [
+            (199, pools.health),
+            (1736, pools.armour),
+            (221, pools.shields),
+        ] {
+            assert_eq!(
+                lucy_script::expr::to_float(&root.variables[&variable]),
+                amount
+            );
+        }
     }
-    let snapshot = component.snapshot().unwrap();
-    assert!(
-        snapshot.diagnostics.is_empty(),
-        "{:?}",
-        snapshot.diagnostics
-    );
-    for graph in [0x069a, 0x1040, 0x023a] {
-        assert!(
-            snapshot
-                .instances
-                .values()
-                .any(|instance| instance.graph == graph),
-            "{graph:04X} runs"
+    for (name, body_id, camera_distance, camera_height, camera_bone) in [
+        (
+            "Soldier: 76",
+            0x0400_0000_0000_03cf,
+            Value::Float(3.0),
+            0.25,
+            0x0003,
+        ),
+        (
+            "Pharah",
+            0x0400_0000_0000_0032,
+            Value::Integer(3),
+            f64::from(0.3_f32),
+            0x0003,
+        ),
+        (
+            "Junkrat",
+            0x0400_0000_0000_0380,
+            Value::Float(2.5),
+            f64::from(0.2_f32),
+            0x0109,
+        ),
+    ] {
+        let body = &graphs.bodies()[&body_id];
+        let hero = lucy_core::guid::parse_guid(body.hero.as_deref().unwrap()).unwrap();
+        let emote = items
+            .unlocks
+            .values()
+            .find(|unlock| {
+                unlock.item_type == "Emote"
+                    && unlock.hero.as_deref() == Some(name)
+                    && unlock.level == Some(0)
+            })
+            .expect("the hero's default emote")
+            .guid;
+        let equipped = WheelLoadout {
+            emotes: [emote; 4],
+            ..WheelLoadout::default()
+        };
+        let cosmetics = graphs.wheel_cosmetics(&equipped);
+        assert_ne!(cosmetics.emote_aliases[0], 0, "the emote's animation alias");
+        assert_ne!(cosmetics.emote_blend_trees[0], 0, "the emote's blend trees");
+        let pools = pool_catalog.hero_pools(hero).unwrap();
+        let roots = lucy_script::vm::player_roots(body, &graphs).unwrap();
+        let health = pools.total();
+        let variables = lucy_script::vm::player_entity_variables(body, health, health);
+        let mut world = PlayerWorld::new(
+            Arc::clone(&graphs),
+            0xa000_0100,
+            0xa000_0101,
+            crate::scene::team_bit(0).unwrap(),
+            PRACTICE_RANGE_MODE,
+            hero,
         );
-    }
-    let lengths = graphs.anim_lengths();
-    let body_alone = lengths.length(0x0400_0000_0000_03cf, &[], emote_alias, 0);
-    assert_eq!(
-        body_alone,
-        Some(0.0),
-        "Soldier: 76's own set lacks the emote"
-    );
-    let layered = lengths.length(0x0400_0000_0000_03cf, &[emote_tree], emote_alias, 0);
-    assert_eq!(layered, Some(f64::from(5.000_000_5_f32)), "the emote's set");
-    let emote = |component: &Component| {
+        world.position = GameMap::practice_range().spawn_point(0, 0).unwrap().0;
+        world.vitals = Vitals::empty();
+        world.pool_types_known = true;
+        world.target_tags = body.target_tags.clone();
+        let (emote_alias, emote_tree) =
+            (cosmetics.emote_aliases[0], cosmetics.emote_blend_trees[0]);
+        world.cosmetics = cosmetics;
+        let mut component = Component::start(
+            Arc::clone(&graphs),
+            world.entity,
+            variables,
+            roots,
+            FIRST_TICK,
+            &mut world,
+            MAX_INIT_WORK,
+        )
+        .unwrap();
+        component.advance_frame(FIRST_TICK, &mut world).unwrap();
+        let mut choice = Fields::new();
+        choice.insert(0x78, Field::Unsigned(0x0a90_0000_0000_01a1));
+        choice.insert(0x80, Field::Bool(false));
+        let (message, parameters) = crate::wheel::selection(&Message {
+            id: crate::wheel::COMMUNICATION_ACTION,
+            fields: choice,
+        })
+        .unwrap();
+        assert_ne!(
+            component
+                .receive_message(0, message, parameters, &mut world)
+                .unwrap(),
+            0
+        );
+        for frame in 1..10 {
+            component
+                .advance_frame(FIRST_TICK + frame, &mut world)
+                .unwrap();
+        }
         let snapshot = component.snapshot().unwrap();
-        snapshot
+        assert!(
+            snapshot.diagnostics.is_empty(),
+            "{:?}",
+            snapshot.diagnostics
+        );
+        for graph in [0x069a, 0x1040, 0x023a] {
+            assert!(
+                snapshot
+                    .instances
+                    .values()
+                    .any(|instance| instance.graph == graph),
+                "{graph:04X} runs"
+            );
+        }
+        // `023A` st1 multiplies throttles 17, 18, 19 and 21 by the unset
+        // #2101 (client value type 0xFF -> 0.0), and sets 20 to 0.
+        let emote_instance = snapshot
             .instances
             .iter()
             .find(|(_, instance)| instance.graph == 0x023a)
-            .map(|(&id, instance)| {
-                let st0 = instance.states.get(&0).filter(|state| state.active);
-                let finish = snapshot.pending_timers.get(&id).and_then(|timers| {
-                    timers
-                        .iter()
-                        .find(|timer| timer.raw_state == 0 && timer.finish)
-                        .map(|timer| timer.due_ms)
-                });
-                (st0.map(|state| state.start_ms), finish)
-            })
-    };
-    let mut frame = 10;
-    let begun_ms = loop {
-        component
-            .advance_frame(FIRST_TICK + frame, &mut world)
+            .map(|(&id, _)| id)
             .unwrap();
-        frame += 1;
-        if let Some((Some(begun_ms), finish)) = emote(&component) {
-            assert_eq!(finish, Some(begun_ms + 5000), "st0 finishes after 5 s");
-            break begun_ms;
-        }
-        assert!(frame < 40, "023A st0 begins 0.25 s in");
-    };
-    // The frame whose 16 ms hold st0's finish ends the emote.
-    let mut ended_ms = None;
-    while ended_ms.is_none() {
-        let frame_ms = u64::from(FIRST_TICK + frame) * 16;
-        component
-            .advance_frame(FIRST_TICK + frame, &mut world)
-            .unwrap();
-        frame += 1;
-        match emote(&component) {
-            Some((Some(start), _)) => assert_eq!(start, begun_ms),
-            None => ended_ms = Some(frame_ms),
-            Some((None, _)) => panic!("023A runs on without st0"),
-        }
-    }
-    assert_eq!(
-        ended_ms,
-        Some((begun_ms + 5000) / 16 * 16),
-        "the emote ends with st0, begun at {begun_ms} ms"
-    );
-    let snapshot = component.snapshot().unwrap();
-    assert!(
-        !snapshot
+        let assert_locked = |component: &mut Component, world: &mut PlayerWorld| {
+            let mut locks = component
+                .movement_modifiers(world)
+                .unwrap()
+                .unwrap()
+                .into_iter()
+                .filter(|(key, _)| key.instance == emote_instance)
+                .map(|(_, modifier)| (modifier.index, modifier.operation, modifier.value))
+                .collect::<Vec<_>>();
+            locks.sort_by_key(|lock| lock.0);
+            assert_eq!(
+                locks,
+                [
+                    (17, Operation::Multiply, 0.0),
+                    (18, Operation::Multiply, 0.0),
+                    (19, Operation::Multiply, 0.0),
+                    (20, Operation::Set, 0.0),
+                    (21, Operation::Multiply, 0.0),
+                ],
+                "{name}"
+            );
+        };
+        assert_locked(&mut component, &mut world);
+        // Camera st3 (`STU_28839E23`) reads `004B`'s public schema defaults
+        // under the hero's overrides (Emotes.md §1).
+        let body_root = component
+            .snapshot()
+            .unwrap()
             .instances
             .values()
-            .any(|instance| matches!(instance.graph, 0x069a | 0x1040)),
-        "069A and 1040 end with it"
-    );
+            .find(|instance| instance.graph == 0x004b)
+            .unwrap();
+        assert_eq!(body_root.variables[&2286], camera_distance);
+        assert_eq!(body_root.variables[&2287], Value::Float(camera_height));
+        assert_eq!(
+            body_root.variables[&2296],
+            Value::Asset(0x0880_0000_0000_0000 | camera_bone)
+        );
+        if hero != SOLDIER {
+            // Pharah and Junkrat are windowed heroes: a movement record
+            // cannot hide a wrong server-side throttle. Hold forward through
+            // two seconds of their emote and check its lock still runs.
+            for frame in 10..135 {
+                component
+                    .advance_command(
+                        Command {
+                            frame: FIRST_TICK + frame,
+                            forward: 127,
+                            ..Command::default()
+                        },
+                        &mut world,
+                    )
+                    .unwrap();
+                assert_locked(&mut component, &mut world);
+            }
+            continue;
+        }
+        let lengths = graphs.anim_lengths();
+        let body_alone = lengths.length(0x0400_0000_0000_03cf, &[], emote_alias, 0);
+        assert_eq!(
+            body_alone,
+            Some(0.0),
+            "Soldier: 76's own set lacks the emote"
+        );
+        let layered = lengths.length(0x0400_0000_0000_03cf, &[emote_tree], emote_alias, 0);
+        assert_eq!(layered, Some(f64::from(5.000_000_5_f32)), "the emote's set");
+        let emote = |component: &Component| {
+            let snapshot = component.snapshot().unwrap();
+            snapshot
+                .instances
+                .iter()
+                .find(|(_, instance)| instance.graph == 0x023a)
+                .map(|(&id, instance)| {
+                    let st0 = instance.states.get(&0).filter(|state| state.active);
+                    let finish = snapshot.pending_timers.get(&id).and_then(|timers| {
+                        timers
+                            .iter()
+                            .find(|timer| timer.raw_state == 0 && timer.finish)
+                            .map(|timer| timer.due_ms)
+                    });
+                    (st0.map(|state| state.start_ms), finish)
+                })
+        };
+        let mut frame = 10;
+        let begun_ms = loop {
+            component
+                .advance_frame(FIRST_TICK + frame, &mut world)
+                .unwrap();
+            frame += 1;
+            if let Some((Some(begun_ms), finish)) = emote(&component) {
+                assert_eq!(finish, Some(begun_ms + 5000), "st0 finishes after 5 s");
+                break begun_ms;
+            }
+            assert!(frame < 40, "023A st0 begins 0.25 s in");
+        };
+        // The frame whose 16 ms hold st0's finish ends the emote.
+        let mut ended_ms = None;
+        while ended_ms.is_none() {
+            let frame_ms = u64::from(FIRST_TICK + frame) * 16;
+            component
+                .advance_frame(FIRST_TICK + frame, &mut world)
+                .unwrap();
+            frame += 1;
+            match emote(&component) {
+                Some((Some(start), _)) => assert_eq!(start, begun_ms),
+                None => ended_ms = Some(frame_ms),
+                Some((None, _)) => panic!("023A runs on without st0"),
+            }
+        }
+        assert_eq!(
+            ended_ms,
+            Some((begun_ms + 5000) / 16 * 16),
+            "the emote ends with st0, begun at {begun_ms} ms"
+        );
+        let snapshot = component.snapshot().unwrap();
+        assert!(
+            !snapshot
+                .instances
+                .values()
+                .any(|instance| matches!(instance.graph, 0x069a | 0x1040)),
+            "069A and 1040 end with it"
+        );
+    }
 }
 
 /// The wheel's spam limit runs on the server as `05AD` has it: each Hello

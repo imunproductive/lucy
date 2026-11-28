@@ -2166,6 +2166,43 @@ fn authored_sprint_stack_gates_track_input_and_reveal_the_base_on_release() {
     );
 }
 
+/// The float config reader `0x7FF789806350` preserves the caller's
+/// default for an absent config; its converter `0x7FF789E74C80` gives 0
+/// for an evaluated null (type 0xFF), not the default. `023A` st1 reads
+/// unset #2101 this way during a one-shot emote.
+#[test]
+fn mover_numbers_distinguish_an_absent_config_from_an_unset_variable() {
+    let graphs = Arc::new(store(vec![graph(
+        42,
+        vec![node(0, "STUStatescriptActionSetVar", None, json!({}))],
+        json!([]),
+        json!([]),
+    )]));
+    let mut component = Component::start(
+        Arc::clone(&graphs),
+        42,
+        Variables::new(),
+        vec![Root::new(1, 42)],
+        0,
+        &mut EmptyWorld,
+        MAX_INIT_WORK,
+    )
+    .unwrap();
+    let node = graphs.graph(42).unwrap().node(0).unwrap();
+    let mut world = EmptyWorld;
+    let mut vm = Vm::new(&graphs, erase(&mut world), &mut component.machine);
+    for default in [1.0, 0.0, f64::from(f32::MAX), f64::from(f32::MIN_POSITIVE)] {
+        assert_eq!(
+            vm.movement_number(1, node, &Json::Null, default),
+            Some(default)
+        );
+        assert_eq!(
+            vm.movement_number(1, node, &var(2101, false), default),
+            Some(0.0)
+        );
+    }
+}
+
 #[test]
 #[ignore = "requires a derived 1.74 graph bundle"]
 fn isolated_soldier_sprint_ability_matches_the_authored_toggle_and_modifier_states() {

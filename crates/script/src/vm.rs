@@ -147,7 +147,9 @@ impl Root {
     }
 }
 
-/// Initial body bindings use their asset order. Entries run after all roots exist.
+/// Initial body bindings use their asset order. Entries run after all roots
+/// exist. A hero body's roots then take their graphs' public schema
+/// defaults under the bindings ([`body_defaults`]).
 pub fn body_roots(body: &Body) -> Result<Vec<Root>, InitFault> {
     let mut roots = Vec::new();
     for (offset, binding) in body.graphs.iter().enumerate() {
@@ -188,9 +190,39 @@ pub fn bind_values<'a>(
     Ok(())
 }
 
+/// Write the graph's public schema defaults (`m_publicSchema.m_entries`)
+/// into the root for the variables no binding set: a binding names only
+/// what it changes. Hero bodies: `004B` declares the emote camera's
+/// distance #2286 3.0, height #2287 0.25 and bone #2296 `0003`, which
+/// Soldier: 76's binding leaves out (EmoteWalk, refs `Emotes.md`).
+pub fn bind_defaults(root: &mut Root, graph: &Graph) -> Result<(), InitFault> {
+    let entries = graph
+        .fields
+        .get("m_publicSchema")
+        .and_then(|schema| schema.get("m_entries"))
+        .and_then(Json::as_array);
+    let mut defaults = Root::new(root.id, root.graph);
+    bind_values(&mut defaults, entries.into_iter().flatten())?;
+    for (key, value) in defaults.variables {
+        root.variables.entry(key).or_insert(value);
+    }
+    Ok(())
+}
+
+/// [`bind_defaults`] for each of a body's roots whose graph is known.
+pub fn body_defaults(roots: &mut [Root], graphs: &GraphStore) -> Result<(), InitFault> {
+    for root in roots {
+        if let Some(graph) = graphs.graph(root.graph) {
+            bind_defaults(root, graph)?;
+        }
+    }
+    Ok(())
+}
+
 /// Initial body bindings, then the manager and equipped weapon slots in asset order.
 pub fn player_roots(body: &Body, graphs: &GraphStore) -> Result<Vec<Root>, InitFault> {
     let mut roots = body_roots(body)?;
+    body_defaults(&mut roots, graphs)?;
     let mut id = roots.last().map_or(0, |root| root.id);
     let mut append = |graph, slot: Option<usize>| {
         id = id.checked_add(1).ok_or(InitFault::InstanceIdExhausted)?;

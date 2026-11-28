@@ -752,7 +752,7 @@ pub fn valid_entity(id: u32) -> bool {
     id != 0 && (id & 0x1fff_ffff) != 0x1fff_ffff
 }
 
-fn first_scalar(mut value: &Value) -> Option<&Value> {
+pub(crate) fn first_scalar(mut value: &Value) -> Option<&Value> {
     while let Value::Array(items) = value {
         value = items.first()?;
     }
