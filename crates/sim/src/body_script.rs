@@ -524,8 +524,10 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
         self.world.movement_fresh = step == BodyStep::Posed;
         if step == BodyStep::Posed {
             self.world.movement = pose;
-            self.world.movement.parent = parent;
         }
+        // The native relationship is the mover's current parent even
+        // when a timer-only advance retains the previous movement sample.
+        self.world.movement.parent = parent;
         // The client's speed-scale native (`Eval_STU_ED807E07`
         // 0x7FF789BE3570) makes the state that evaluates it a dependent of
         // the mover (kind 17, `0x7FF789AEBA60`): a stack of it takes the

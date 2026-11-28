@@ -1310,7 +1310,7 @@ mod tests {
                 &[6, 6],
             )
             .unwrap();
-        let mut scene = assets.prepare(map).unwrap();
+        let scene = assets.prepare(map).unwrap();
         let definition = Arc::clone(
             scene
                 .server_placeables()
@@ -1329,7 +1329,22 @@ mod tests {
         );
         let rise = track.position(track.waypoints()[1].distance)[1] - track.position(0.0)[1];
         assert!((rise - 4.5).abs() < 0.01, "{rise}");
-        scene.advance_placed(0, &[]);
+        // Run only this placed graph. Advancing every Volskaya placeable
+        // tests unrelated scripts and makes a short lift cycle expensive.
+        let mut world = MapEntityWorld::start(
+            Arc::clone(&scene.placed_scripts().graphs),
+            scene.map().mode_guid,
+            scene.map().ruleset,
+            scene.mode_random(),
+            Unknowns::Refuse,
+            [],
+            Some(scene.map_tags()),
+            Some(scene.map_rays()),
+            None,
+            0,
+        );
+        world.set_tracks(BTreeMap::from([(LIFT, Arc::clone(&track))]));
+        world.place([definition.placement()]);
         let mut rider = TargetCandidate {
             entity: 0xa000_0101,
             team: Some(0),
@@ -1349,27 +1364,17 @@ mod tests {
             movement_parent: None,
         };
         for tick in 1..=140 {
-            scene.set_placed_target_candidates(std::slice::from_ref(&rider));
-            scene.advance_placed(tick, &[]);
+            world.set_players(vec![rider.clone()]);
+            world.advance(tick);
         }
-        assert!(
-            scene
-                .placed_scripts()
-                .world()
-                .unwrap()
-                .entity(LIFT)
-                .unwrap()
-                .track_distance()
-                .is_none()
-        );
+        assert!(world.entity(LIFT).unwrap().track_distance().is_none());
         rider.movement_parent = Some(LIFT);
         let mut phases = Vec::new();
         let mut previous_distance = None;
         let mut finished = false;
         for tick in 141..=450 {
-            scene.set_placed_target_candidates(std::slice::from_ref(&rider));
-            scene.advance_placed(tick, &[]);
-            let world = scene.placed_scripts().world().unwrap();
+            world.set_players(vec![rider.clone()]);
+            world.advance(tick);
             let lift = world.entity(LIFT).unwrap();
             assert!(lift.complete(), "{:?}", world.gaps());
             rider.feet = lift.position;

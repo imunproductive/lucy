@@ -6956,9 +6956,7 @@ impl WorldDelivery {
                     .then(|| EntityUpdate {
                         entity: placed.entity(),
                         movement: Some(Movement {
-                            position: native
-                                .position
-                                .map(|axis| (axis * 1024.0).round_ties_even() / 1024.0),
+                            position: native.position,
                             yaw: place.yaw,
                             input_frame: Some(lucy_wire::entity::NO_INPUT),
                             frame: None,
