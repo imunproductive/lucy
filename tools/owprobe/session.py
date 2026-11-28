@@ -46,10 +46,23 @@ def _derived_stamp(cache):
     return stamps[0].read_text("utf-8").strip() if stamps else None
 
 
-def _newest_agent_seed():
-    """The most recently published shared cache, or None."""
+def _agent_seed_for(lucy):
+    """The newest shared cache derived by the same derivation code as `lucy` (the stamp's `code <hash>`,
+    `cache::DERIVATIONS_KEY`, is compiled into the executable), else the newest one, else None. Branches
+    that change the derivations publish their own stamps, so the newest seed is often another code's."""
     caches = [c for c in AGENT_SEED.glob("*/cache") if _derived_stamp(c)]
-    return max(caches, key=lambda c: c.stat().st_mtime) if caches else None
+    if not caches:
+        return None
+    try:
+        image = Path(lucy).read_bytes()
+    except OSError:
+        image = b""
+
+    def code(cache):
+        line = next((ln for ln in _derived_stamp(cache).splitlines() if ln.startswith("code ")), "")
+        return line[len("code "):].strip().encode()
+    matching = [c for c in caches if code(c) and code(c) in image]
+    return max(matching or caches, key=lambda c: c.stat().st_mtime)
 
 
 def _publish_agent_seed(cache, stamp):
@@ -205,8 +218,8 @@ class Session:
 
     def prepare_state(self):
         """The temp state folder: the seed's profiles, and a cache of derived game data that is current for
-        this `lucy`. The cache comes from the agents' shared seed (`AGENT_SEED`, the newest one an earlier
-        session derived) unless `seed_state` was given, else from the seed state; `lucy doctor` derives it
+        this `lucy`. The cache comes from the agents' shared seed (`AGENT_SEED`, the newest one derived by
+        this `lucy`'s derivation code) unless `seed_state` was given, else from the seed state; `lucy doctor` derives it
         again when it is stale for this build, and a new derivation goes back into the shared seed."""
         if self.state is not None:
             return
@@ -216,7 +229,7 @@ class Session:
         for item in STATE_ITEMS:
             src = self.seed_state / item
             if item == "cache" and self.seed_state == USER_STATE:
-                src = _newest_agent_seed() or src
+                src = _agent_seed_for(self.lucy) or src
             if src.is_dir():
                 shutil.copytree(src, self.state / item)
             elif src.is_file():
