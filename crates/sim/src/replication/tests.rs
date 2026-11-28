@@ -1173,6 +1173,9 @@ fn owner_health_waits_for_creation_and_discards_superseded_lifetimes() {
     use lucy_wire::entity::{ARMOUR_POOL, POOLS, pool, pool_component};
 
     let id = avatar(1, 1);
+    // Every cumulative health revision carries its life filter too: losing
+    // the first revived-health packet must not strand the body as DEAD.
+    let alive = filter_component(body_filter(body(id).team_bit, false));
     let mut world = WorldDelivery::new(OWNER);
     world.started = Some(100);
     world.body = Some(body(id));
@@ -1196,7 +1199,10 @@ fn owner_health_waits_for_creation_and_discards_superseded_lifetimes() {
     transport_outcome(&mut world, &mut egress, 0, true);
 
     let old = world.ready()[0].tracked();
-    assert_eq!(old.update.operation, Some(Operation::Update(vec![first])));
+    assert_eq!(
+        old.update.operation,
+        Some(Operation::Update(vec![first, alive.clone()]))
+    );
     world.sent(&[0]);
     let latest = pool_component([
         (0, pool(1, 0, 200.0, 120.0)),
@@ -1217,7 +1223,7 @@ fn owner_health_waits_for_creation_and_discards_superseded_lifetimes() {
     let latest_record = ready.tracked();
     assert_eq!(
         latest_record.update.operation,
-        Some(Operation::Update(vec![latest]))
+        Some(Operation::Update(vec![latest, alive]))
     );
 
     world.sent(&[ready.index]);

@@ -1410,6 +1410,24 @@ fn a_body_that_dies_raises_its_dead_flag() {
     runtime.health_changed().unwrap();
     assert_eq!(flag(&runtime), Some(Value::Bool(true)));
     assert!(runtime.component.owner_dead());
+    runtime.vitals_mut().unwrap().revive();
+    let revived_pose = Movement {
+        position: [9.0, 1.0, -3.0],
+        yaw: 16384,
+        ..spawn.pose
+    };
+    runtime.placed(revived_pose);
+    runtime.health_changed().unwrap();
+    assert_eq!(runtime.vitals().unwrap().total(), total);
+    assert_eq!(flag(&runtime), Some(Value::Bool(false)));
+    assert!(!runtime.component.owner_dead());
+    assert_eq!(runtime.world.position, revived_pose.position);
+    assert_eq!(runtime.world.movement.yaw, revived_pose.yaw);
+    // The same component can enter its death path again.
+    assert!(runtime.vitals_mut().unwrap().damage(total, source).killed);
+    runtime.health_changed().unwrap();
+    assert_eq!(flag(&runtime), Some(Value::Bool(true)));
+    assert!(runtime.component.owner_dead());
 }
 
 /// The communication wheel on Soldier: 76's own graphs

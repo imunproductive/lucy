@@ -297,6 +297,18 @@ impl Vitals {
         }
     }
 
+    /// The native revive restores the body's permanent pools without replacing
+    /// their ids. Temporary pools belong to the states that created them.
+    pub fn revive(&mut self) {
+        self.death = None;
+        for pool in self.pools.iter_mut().filter(|pool| !pool.temporary) {
+            if pool.current != pool.maximum {
+                pool.current = pool.maximum;
+                self.changed |= 1 << pool.field;
+            }
+        }
+    }
+
     pub fn heal(&mut self, amount: f64) -> f64 {
         if self.death.is_some() || !amount.is_finite() || amount <= 0.0 {
             return 0.0;
@@ -427,6 +439,18 @@ mod tests {
             vitals.changed_component().unwrap().fields[0],
             Some(ComponentValue::Blob20(pool(1, 0, 10.0, 0.0)))
         );
+        vitals.clear_changed();
+        vitals.revive();
+        assert_eq!(vitals.death(), None);
+        assert_eq!(vitals.total(), 10.0);
+        assert_eq!(vitals.component(), Vitals::new(10.0, 0.0, 0.0).component());
+        assert_eq!(
+            vitals.changed_component().unwrap().fields[0],
+            Some(ComponentValue::Blob20(pool(1, 0, 10.0, 10.0)))
+        );
+        let next = Death { killer: 50, ..HIT };
+        assert!(vitals.damage(10.0, next).killed);
+        assert_eq!(vitals.death(), Some(next));
     }
 
     #[test]
@@ -539,5 +563,13 @@ mod tests {
         assert_eq!(damage.dealt, 100.0);
         assert_eq!(damage.drained, [(ADAPTIVE, 50.0)]);
         assert_eq!(vitals.damage(10.0, HIT).drained, []);
+        // Revival restores the same permanent pool, not the temporary
+        // shields owned by the graph's health states.
+        assert!(vitals.damage(10_000.0, HIT).killed);
+        vitals.revive();
+        assert_eq!(vitals.total(), 200.0);
+        assert_eq!(vitals.pool_current(1), Some(200.0));
+        assert_eq!(vitals.pool_current(2), Some(0.0));
+        assert_eq!(vitals.pool_current(3), Some(0.0));
     }
 }

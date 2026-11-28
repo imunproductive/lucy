@@ -385,6 +385,36 @@ fn a_team_spreads_over_the_objective_and_leaves_staggered() {
         }
         first_steps.push(first.unwrap());
         cells.push(feet);
+        // The next life has the same entity. It still gets the spawn
+        // stagger rather than retaining the previous life's departure.
+        let mut dead = senses(
+            4000,
+            feet,
+            &[],
+            Goal::Objective(objective),
+            Some(&nav),
+            &paths,
+            &clear,
+        );
+        dead.feet = None;
+        ai.command(&dead);
+        let mut revived_first = None;
+        for tick in 4001..4300 {
+            let command = ai.command(&senses(
+                tick,
+                start,
+                &[],
+                Goal::Objective(objective),
+                Some(&nav),
+                &paths,
+                &clear,
+            ));
+            if command.forward != 0 || command.right != 0 {
+                revived_first = Some(tick);
+                break;
+            }
+        }
+        assert_eq!(revived_first, Some(4001 + ticks(STAGGER * rank as f64)));
     }
     assert_eq!(first_steps, [0, ticks(1.5), ticks(3.0)]);
     for (index, a) in cells.iter().enumerate() {

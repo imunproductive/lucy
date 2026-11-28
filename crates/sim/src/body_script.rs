@@ -55,7 +55,7 @@ use lucy_script::{
 };
 use lucy_wire::{
     commands::Command,
-    entity::{Component as EntityComponent, GAME_MODE_ENTITY, Movement},
+    entity::{Component as EntityComponent, GAME_MODE_ENTITY, Movement, MovementParent},
 };
 
 /// The owner's health for the graphs, and the HUD panel's current and
@@ -461,6 +461,30 @@ impl PlayerBodyRuntime {
             log_assumption(item.site.graph, item.site.node, &item.class, item.answer);
         }
     }
+
+    fn positioned(&mut self, pose: Movement, parent: Option<MovementParent>, fresh: bool) {
+        self.world.position = pose.position;
+        // Its own body, as the target searches see it, stands where it moved.
+        let entity = self.world.entity;
+        if let Some(own) = self
+            .world
+            .targets
+            .iter_mut()
+            .flatten()
+            .find(|candidate| candidate.entity == entity)
+        {
+            own.feet = pose.position;
+            own.movement_parent = parent.map(|parent| parent.entity);
+        }
+        // Command gaps and timer advances retain the last movement record.
+        self.world.movement_fresh = fresh;
+        if fresh {
+            self.world.movement = pose;
+        }
+        // The native relationship is the mover's current parent even
+        // when a timer-only advance retains the previous movement sample.
+        self.world.movement.parent = parent;
+    }
 }
 
 impl OwnerBodyRuntime for PlayerBodyRuntime {
@@ -475,6 +499,10 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
         }
         vitals.clear_changed();
         Some(vitals.cumulative_component())
+    }
+
+    fn placed(&mut self, pose: Movement) {
+        self.positioned(pose, pose.parent, true);
     }
 
     fn take_target_tags_update(&mut self) -> Option<EntityComponent> {
@@ -499,35 +527,13 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                 "the owner VM frame is outside the command sequence",
             ));
         }
-        let pose = mover.pose();
-        self.world.position = pose.position;
+        self.positioned(mover.pose(), mover.record().parent, step == BodyStep::Posed);
         let speed_scale = Some(mover.speed_scale());
         let speed_changed = self.world.speed_scale != speed_scale;
         self.world.speed_scale = speed_scale;
         self.world.knockback_scale = Some(mover.knockback_scale());
         self.world.trial = Some(mover.trial());
         self.world.eye_height = Some(self.combat.eyes.height(mover.crouched()));
-        // Its own body, as the target searches see it, stands where it moved.
-        let entity = self.world.entity;
-        let parent = mover.record().parent;
-        if let Some(own) = self
-            .world
-            .targets
-            .iter_mut()
-            .flatten()
-            .find(|candidate| candidate.entity == entity)
-        {
-            own.feet = pose.position;
-            own.movement_parent = parent.map(|parent| parent.entity);
-        }
-        // Command gaps and timer advances retain the last movement record.
-        self.world.movement_fresh = step == BodyStep::Posed;
-        if step == BodyStep::Posed {
-            self.world.movement = pose;
-        }
-        // The native relationship is the mover's current parent even
-        // when a timer-only advance retains the previous movement sample.
-        self.world.movement.parent = parent;
         // The client's speed-scale native (`Eval_STU_ED807E07`
         // 0x7FF789BE3570) makes the state that evaluates it a dependent of
         // the mover (kind 17, `0x7FF789AEBA60`): a stack of it takes the
@@ -594,8 +600,8 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
     /// that dies also raises its dead flag #478: no graph writes it, and
     /// the graphs that show a body to others read it (`0D24`'s health bar
     /// and name tag, `01CF`), so the server sets it as it does for a dying
-    /// bot (assumption: retail did so for every body that died). A body
-    /// can't come back to life; a respawn is a new body.
+    /// bot. Clearing it on revival lets `01CB` end its death-camera subgraph
+    /// and `0C8E` return to its living path, on the existing instances.
     fn health_changed(&mut self) -> io::Result<()> {
         let (total, maximum) = (self.world.vitals.total(), self.world.vitals.maximum());
         for (variable, value) in [
@@ -608,9 +614,9 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                 .map_err(unsupported)?;
         }
         let dead = total <= 0.0;
-        if dead {
+        if dead || self.component.owner_dead() {
             self.component
-                .set_entity_variable(DEAD_FLAG, Value::Bool(true), &mut self.world)
+                .set_entity_variable(DEAD_FLAG, Value::Bool(dead), &mut self.world)
                 .map_err(unsupported)?;
         }
         self.component.set_owner_dead(dead);
