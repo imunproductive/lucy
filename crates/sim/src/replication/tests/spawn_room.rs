@@ -419,6 +419,7 @@ fn lift(
         gravity: 0.0,
         fuse: None,
         bounce: None,
+        landing: None,
         unmodelled: Vec::new(),
         ray_profile: None,
     };
@@ -506,6 +507,7 @@ fn blasted(
         direct: Some(hit(40.0)),
         blast: Some(Blast {
             hit: hit(80.0),
+            on_expiry: false,
             rings: vec![(1.0, 1.0), (3.0, 0.5)],
             self_damage: 0.5,
             aura: None,
@@ -523,6 +525,7 @@ fn blasted(
         gravity: 0.0,
         fuse: None,
         bounce: None,
+        landing: None,
         unmodelled: Vec::new(),
         ray_profile: None,
     };

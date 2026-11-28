@@ -1,8 +1,10 @@
 """The server's movement against the client's prediction, command frame by command frame.
 
 Server: the `lucy::pose` debug trace (`RUST_LOG=info,lucy::pose=debug`; one `owner pose` line per command
-frame a body ran: frame, position (feet), velocity, movement flags, the states that began and ended). Client: an
-owprobe trace (`trace --corrections`): each frame sample's mover state (component 31's copy at +0x10B0 of the state
+frame a body ran: frame, position (feet), velocity, movement flags, the states that began and ended).
+The optional platform parent/local/local_velocity fields are accepted and ignored: positions and velocities
+compared here are the world-space ones, including while riding a platform.
+Client: an owprobe trace (`trace --corrections`): each frame sample's mover state (component 31's copy at +0x10B0 of the state
 after the last command frame's tick: the frame it was simulated to, feet, velocity, flags) and the hits of the
 correction hooks. A command frame whose tick and the next one ran between two rendered frames has no sample: it
 is left out (the report counts them).
@@ -20,7 +22,8 @@ from collections import defaultdict
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 POSE = re.compile(r"owner pose body=(?P<body>[0-9A-Fa-f]+) frame=(?P<frame>\d+) position=\[(?P<pos>[^\]]*)\] "
-                  r"velocity=\[(?P<vel>[^\]]*)\] flags=(?P<flags>0x[0-9a-fA-F]+) began=\[(?P<began>[^\]]*)\] "
+                  r"velocity=\[(?P<vel>[^\]]*)\] flags=(?P<flags>0x[0-9a-fA-F]+)"
+                  r"(?: parent=.*? local=.*? local_velocity=.*?)? began=\[(?P<began>[^\]]*)\] "
                   r"ended=\[(?P<ended>[^\]]*)\]")
 
 

@@ -352,6 +352,8 @@ pub struct ProjectileBallistics {
     /// How it bounces off the map's surfaces (`m_E365DB20`); none ends it
     /// at the first surface it hits.
     pub bounce: Option<Bounce>,
+    /// The speed-gated landing timer (`m_8236947A`, `STU_20C861FB`).
+    pub landing: Option<Landing>,
     /// The volley's motion classes the flight doesn't model, which it flies
     /// as if they weren't there (Pharah's `STU_7A5DFFF8`), and the bounce
     /// fields it ignores ([`Bounce::from_authored`]).
@@ -399,6 +401,11 @@ pub struct Bounce {
     /// `m_0D20DAFD` (`+0x30`): how much of its speed into the surface it
     /// keeps, reversed; 1 when unset.
     pub restitution: f64,
+    /// Tangential speed lost per second at a bounce (`m_CE33458D`,
+    /// block +0x34), applied for one 16 ms simulation frame.
+    pub tangent_deceleration: f64,
+    /// Tangential speed retained after that loss (`m_C29D35E8`, +0x44).
+    pub tangent_scale: f64,
     /// The up parts of a surface's normal at and below which it is a
     /// ceiling, and at and above which a floor ([`Surface`]).
     pub ceiling: f64,
@@ -419,20 +426,18 @@ const BOUNCE_FLAGS: [&str; 6] = [
 /// unset one has: `m_C176AA10` (`+0x28`, a bounce rule for hits the
 /// collision marks `+0x3E` bit 0), `m_113221E0` and `m_E4405A7C` (`+0x2C`,
 /// `+0x2D`, for hits on bodies), `m_8CFC1C4D` (`+0x2E`: the bounce leaves
-/// along the normal), the four slowdowns `+0x34` to `+0x40` and the four
-/// scales `+0x44` to `+0x50` of the velocity's parts. A set one is ignored
+/// along the normal), the three component slowdowns `+0x38` to `+0x40`
+/// and scales `+0x48` to `+0x50`. A set one is ignored
 /// (recorded in [`ProjectileBallistics::unmodelled`]). `m_DF0FE3D5`
 /// (`+0x27`) is read by neither function.
-const BOUNCE_UNMODELLED: [(&str, f64); 12] = [
+const BOUNCE_UNMODELLED: [(&str, f64); 10] = [
     ("m_C176AA10", 0.0),
     ("m_113221E0", 0.0),
     ("m_E4405A7C", 0.0),
     ("m_8CFC1C4D", 0.0),
-    ("m_CE33458D", 0.0),
     ("m_F28BB504", 0.0),
     ("m_7D58A06F", 0.0),
     ("m_446C07E6", 0.0),
-    ("m_C29D35E8", 1.0),
     ("m_2F054D7D", 1.0),
     ("m_A28234C2", 1.0),
     ("m_DD899B9D", 1.0),
@@ -461,11 +466,20 @@ impl Bounce {
         }
         let count = authored_number(block.get("m_360294F0"), 0.0, evaluate)?;
         let restitution = authored_number(block.get("m_0D20DAFD"), 1.0, evaluate)?;
+        let tangent_deceleration = authored_number(block.get("m_CE33458D"), 0.0, evaluate)?;
+        let tangent_scale = authored_number(block.get("m_C29D35E8"), 1.0, evaluate)?;
         let ceiling = authored_number(node.field("m_7E3AEA51"), -SURFACE_COS, evaluate)?;
         let floor = authored_number(node.field("m_B752FBAE"), SURFACE_COS, evaluate)?;
-        if ![count, restitution, ceiling, floor]
-            .iter()
-            .all(|value| value.is_finite())
+        if ![
+            count,
+            restitution,
+            tangent_deceleration,
+            tangent_scale,
+            ceiling,
+            floor,
+        ]
+        .iter()
+        .all(|value| value.is_finite())
         {
             return Ok(None);
         }
@@ -474,6 +488,8 @@ impl Bounce {
             bounces: [flags[0], flags[1], flags[2]],
             ends: [flags[3], flags[4], flags[5]],
             restitution,
+            tangent_deceleration,
+            tangent_scale,
             ceiling,
             floor,
         }))
@@ -505,6 +521,18 @@ impl Bounce {
 const SURFACE_COS: f64 = std::f64::consts::FRAC_1_SQRT_2;
 /// The client's tolerance for a bounce scale that is 1 (`0.004`).
 const BOUNCE_EPSILON: f64 = 0.004;
+
+/// A low-speed collision can arm a shorter lifetime. The copier
+/// `0x7FF789C97AF0` places `STU_20C861FB` at setup +0xA0;
+/// `0x7FF789C85110` chooses its ceiling/wall/floor flags, and
+/// `0x7FF789C83CB0` tests the post-bounce speed before arming it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Landing {
+    pub surfaces: [bool; 3],
+    pub speed: f64,
+    pub lifetime: f64,
+    pub minimum_age: f64,
+}
 
 /// The class of a volley's literal ray profile reference (`m_C1903771`).
 const RAY_PROFILE_REFERENCE: &str = "STU_20DB8AB5";
@@ -549,6 +577,9 @@ pub const BLAST_SIGHT_PROFILE: u64 = 0x0690_0000_0000_0019;
 pub struct Blast {
     pub hit: HitDefinition,
     pub rings: Vec<(f64, f64)>,
+    /// Explode when the flight reaches its range or lifetime:
+    /// `m_EEB99E41`, setup blast +0x28, tested by `0x7FF789C84EC0`.
+    pub on_expiry: bool,
     /// The share of the explosion's damage its shooter takes where it
     /// reaches him: `m_8A3E3883` (none: 0). Read as the self-damage scale
     /// (assumption): 0.5 on Soldier: 76's Helix Rockets (`0254`), Pharah's
@@ -725,6 +756,7 @@ impl ProjectileBallistics {
             });
             Some(Blast {
                 hit,
+                on_expiry: authored_number(config.get("m_EEB99E41"), 0.0, &mut evaluate)? != 0.0,
                 rings,
                 self_damage: if self_damage.is_finite() {
                     self_damage.max(0.0)
@@ -781,6 +813,21 @@ impl ProjectileBallistics {
         } else {
             Bounce::from_authored(node, &mut evaluate, &mut unmodelled)?
         };
+        let landing =
+            if let Some(config) = node.field("m_8236947A").filter(|config| config.is_object()) {
+                Some(Landing {
+                    surfaces: [
+                        flag(config.get("m_C5B4A50A")),
+                        flag(config.get("m_C29C25F2")),
+                        flag(config.get("m_8E31802B")),
+                    ],
+                    speed: authored_number(config.get("m_B3F821A8"), 0.0, &mut evaluate)?,
+                    lifetime: authored_number(config.get("m_9655ED90"), 0.0, &mut evaluate)?,
+                    minimum_age: authored_number(config.get("m_BECDD49B"), 0.0, &mut evaluate)?,
+                })
+            } else {
+                None
+            };
         Ok(Some(Self {
             speed,
             lifetime,
@@ -792,6 +839,7 @@ impl ProjectileBallistics {
             gravity,
             fuse: sticks.then_some(STICK_FUSE),
             bounce,
+            landing,
             unmodelled,
             ray_profile: ray_profile(node, &mut evaluate),
         }))
@@ -1541,6 +1589,30 @@ mod tests {
             (Some(BLAST_SIGHT_PROFILE), 0.0)
         );
         assert_eq!((plain.lifetime, plain.range), (f64::from(5.0f32), None));
+        assert!(!blast.on_expiry);
+        assert_eq!(plain.landing, None);
+        let grenade = read(
+            json!({"m_E365DB20":{"m_CE33458D":float(300.0),"m_C29D35E8":float(0.75)},
+                "m_8236947A":{"m_B3F821A8":float(8.5),"m_9655ED90":float(0.2),
+                    "m_BECDD49B":float(0.5),"m_8E31802B":1}}),
+            json!({"m_EEB99E41":{"$":"STUConfigVarBool","m_value":1}}),
+        );
+        assert!(grenade.blast.as_ref().unwrap().on_expiry);
+        assert_eq!(
+            grenade.landing,
+            Some(Landing {
+                surfaces: [false, false, true],
+                speed: 8.5,
+                lifetime: f64::from(0.2f32),
+                minimum_age: 0.5,
+            })
+        );
+        let bounce = grenade.bounce.unwrap();
+        assert_eq!(
+            (bounce.tangent_deceleration, bounce.tangent_scale),
+            (300.0, 0.75)
+        );
+        assert!(grenade.unmodelled.is_empty());
         let pharah = read(
             json!({"m_FEC435C6":float(100.0)}),
             json!({"m_49F60FB8":1,"m_2FE97560":float(1.875),

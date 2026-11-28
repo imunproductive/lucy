@@ -475,31 +475,55 @@ class Session:
 
     def pick_hero(self, hero=None, timeout=60.0):
         """Hero select: waits for it, clicks the hero's portrait (`hero` or the session's; none keeps the one
-        shown), then SELECT, until the client has locked a hero in and closed the screen (`picked_hero`).
-        Returns that hero's GUID, None on the timeout. It also turns the frame sampler on (no recording), which
+        shown) before each SELECT, until the client has locked a hero in and closed the screen (`picked_hero`).
+        Returns that hero's GUID, None on the timeout; RuntimeError when the client locked in another hero
+        (a portrait click the screen didn't take leaves SELECT on the hero it showed: Roadhog came out as
+        Junkrat and Pharah as Zarya, 2026-11-28). It also turns the frame sampler on (no recording), which
         finds the body later."""
         hero = hero or self.hero
-        hero_at = None
+        hero_at = wanted = None
         if hero:
             from tools.owdbg.actions import _hero
-            hero_at = _hero(hero)[1]
+            key, hero_at = _hero(hero)
+            wanted = self._hero_id(key)
         self.probe.sampler(every=0)
         end = time.monotonic() + timeout
-        clicked_hero, selects = False, 0
+        selects = 0
         while time.monotonic() < end:
             shown = self.hero_select_shown()
             picked = None if shown else self.picked_hero()
             if picked:
                 self.log(f"[owprobe] t={self.elapsed():.0f}s picked hero {picked:016X}")
+                if wanted is not None and picked & 0xFFFF_FFFF_FFFF != wanted:
+                    raise RuntimeError(f"asked for {hero} ({wanted:X}) but the client locked in {picked:016X}")
                 return picked
-            if shown:
-                if hero_at and not clicked_hero:
+            if shown and selects < 6:
+                if hero_at:
                     self.click(hero_at, f"{hero}'s portrait")
-                    clicked_hero = True
-                elif selects < 6:
-                    self.click(SELECT, "SELECT")
-                    selects += 1
+                    time.sleep(0.5)
+                self.click(SELECT, "SELECT")
+                selects += 1
             time.sleep(1.5)
+        return None
+
+    def _hero_id(self, key):
+        """The hero GUID's id (`0x6E` for Soldier: 76) of a portrait key (`tools.owdbg.actions` names), from
+        the derived hero list in the state's cache; None when it isn't there."""
+        import json
+        import unicodedata
+
+        from tools.owdbg.actions import HERO_NAMES
+        files = sorted((self.state / "cache").glob("*/data/extracted_heroes.json")) if self.state else []
+        if not files:
+            return None
+        def plain(name):
+            text = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
+            return re.sub(r"[^a-z0-9]", "", text.lower())
+        ids = {plain(h.get("Name", "")): int(guid.split(".")[0], 16)
+               for guid, h in json.loads(files[0].read_text("utf-8")).items() if h.get("IsHero")}
+        for name in [key, *(alias for alias, target in HERO_NAMES.items() if target == key)]:
+            if name in ids:
+                return ids[name]
         return None
 
     def server_log_matches(self, pattern):
