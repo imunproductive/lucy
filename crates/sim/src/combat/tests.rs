@@ -854,6 +854,7 @@ fn the_biotic_rifle_heals_hurt_allies_and_damages_enemies() {
         gravity: 0.0,
         fuse: None,
         bounce: None,
+        landing: None,
         unmodelled: Vec::new(),
         ray_profile: None,
     };
@@ -955,6 +956,7 @@ fn a_projectile_deals_with_the_modifiers_of_its_launch() {
         gravity: 0.0,
         fuse: None,
         bounce: None,
+        landing: None,
         unmodelled: Vec::new(),
         ray_profile: None,
     };

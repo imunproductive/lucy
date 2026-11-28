@@ -99,6 +99,7 @@ pub struct ProjectileFlight {
     passes_bodies: bool,
     /// The surfaces it bounced off so far.
     bounces: u32,
+    landing_armed: bool,
     /// The scale of its speed its entity's graphs set
     /// ([`ProjectileFlight::set_speed_scale`]); 1 otherwise.
     speed_scale: f64,
@@ -125,8 +126,8 @@ pub struct FlightStep {
 #[derive(Debug, PartialEq)]
 pub struct FlightEnd {
     pub point: Vec3,
-    /// It ended with its explosion (it hit something or its fuse ran
-    /// out), not by running out of range or lifetime in the air.
+    /// It ended with its explosion: an impact, sticking fuse, or a
+    /// range/lifetime expiry whose authored explosion enables it.
     pub exploded: bool,
     /// Seconds from the launch to the end, a fuse included.
     pub travelled: f64,
@@ -189,6 +190,7 @@ impl ProjectileFlight {
             launched: None,
             passes_bodies: false,
             bounces: 0,
+            landing_armed: false,
             speed_scale: 1.0,
         })
     }
@@ -319,6 +321,7 @@ impl ProjectileFlight {
             // A bounce flies the rest of the piece from where it bounced.
             let mut left = piece;
             for _ in 0..=MAX_BOUNCES_A_PIECE {
+                left = left.min(self.remaining.max(0.0));
                 let (direction, mut reach) = self.chord(left);
                 let mut span = left;
                 let rest = self
@@ -364,7 +367,7 @@ impl ProjectileFlight {
                 left -= seconds;
                 match hit {
                     None if out_of_range => {
-                        step.end = Some(self.finish());
+                        self.expire(targets, wall, step)?;
                         return Ok(0.0);
                     }
                     None => break,
@@ -382,9 +385,13 @@ impl ProjectileFlight {
                     break;
                 }
             }
+            if self.remaining <= 0.0 {
+                self.expire(targets, wall, step)?;
+                return Ok(0.0);
+            }
         }
         if self.remaining <= 0.0 {
-            step.end = Some(self.finish());
+            self.expire(targets, wall, step)?;
         }
         Ok(0.0)
     }
@@ -430,21 +437,92 @@ impl ProjectileFlight {
         let into = dot(velocity, normal);
         if into < 0.0 {
             let scale = (1.0 + bounce.restitution) * into;
-            for (part, normal) in velocity.iter_mut().zip(normal) {
-                *part -= scale * normal;
+            if bounce.tangent_deceleration > 0.0 || (bounce.tangent_scale - 1.0).abs() > 0.004 {
+                let tangent =
+                    std::array::from_fn::<_, 3, _>(|axis| velocity[axis] - into * normal[axis]);
+                let tangent_speed = dot(tangent, tangent).sqrt();
+                let retained = if tangent_speed > 0.0 {
+                    let slowed = (tangent_speed
+                        - bounce.tangent_deceleration.max(0.0) * TICK_PERIOD.as_secs_f64())
+                    .max(0.0)
+                        / tangent_speed;
+                    if (bounce.tangent_scale - 1.0).abs() > 0.004 {
+                        slowed * bounce.tangent_scale
+                    } else {
+                        slowed
+                    }
+                } else {
+                    0.0
+                };
+                for axis in 0..3 {
+                    velocity[axis] =
+                        tangent[axis] * retained - bounce.restitution * into * normal[axis];
+                }
+            } else {
+                for axis in 0..3 {
+                    velocity[axis] -= scale * normal[axis];
+                }
             }
         }
         let speed = dot(velocity, velocity).sqrt();
-        if !(speed.is_finite() && speed > 0.0) {
+        if !speed.is_finite() {
             return false;
         }
         self.speed = speed;
-        self.direction = velocity.map(|part| part / speed);
+        self.direction = if speed > 0.0 {
+            velocity.map(|part| part / speed)
+        } else {
+            normal
+        };
         self.fall = 0.0;
         for (position, normal) in self.position.iter_mut().zip(normal) {
             *position += BOUNCE_PUSH * normal;
         }
+        self.arm_landing(normal);
         true
+    }
+
+    /// `0x7FF789C83CB0` arms only once, after the bounce, below the
+    /// configured speed. Its anchor is the later of this command frame
+    /// and launch + minimum age. `0x7FF789C7B1E0` offsets elapsed ticks by
+    /// trunc((original lifetime - landing lifetime) / tick period).
+    fn arm_landing(&mut self, normal: Vec3) {
+        let (Some(landing), Some(bounce)) = (self.ballistics.landing, self.ballistics.bounce)
+        else {
+            return;
+        };
+        if self.landing_armed
+            || !landing.surfaces[bounce.surface(normal) as usize]
+            || self.speed > landing.speed
+        {
+            return;
+        }
+        self.landing_armed = true;
+        let tick = TICK_PERIOD.as_secs_f64();
+        let frame_age = (self.travelled / tick - 1e-9).ceil() * tick;
+        let minimum_age = (landing.minimum_age / tick).trunc() * tick;
+        let offset = ((self.ballistics.lifetime - landing.lifetime) / tick).trunc() * tick;
+        let deadline = frame_age.max(minimum_age) + self.ballistics.lifetime - offset;
+        self.remaining = self.remaining.min((deadline - self.travelled).max(0.0));
+    }
+
+    fn expire(
+        &mut self,
+        targets: &[(u32, TargetPose)],
+        wall: &mut impl MapRay,
+        step: &mut FlightStep,
+    ) -> Result<(), IndexError> {
+        if self
+            .ballistics
+            .blast
+            .as_ref()
+            .is_some_and(|blast| blast.on_expiry)
+        {
+            self.explode(targets, wall, step)
+        } else {
+            step.end = Some(self.finish());
+            Ok(())
+        }
     }
 
     /// What it hit `distance` into this sweep (the body and how it entered
@@ -823,6 +901,7 @@ mod tests {
             direct: Some(hit(40.0)),
             blast: Some(Blast {
                 hit: hit(80.0),
+                on_expiry: false,
                 rings: vec![(1.0, 1.0), (3.0, 0.5)],
                 self_damage: 0.5,
                 aura: None,
@@ -841,6 +920,7 @@ mod tests {
             fuse: None,
             bounce: None,
             unmodelled: Vec::new(),
+            landing: None,
             ray_profile: None,
         }
     }
@@ -857,6 +937,7 @@ mod tests {
             direct: Some(hit(5.0)),
             blast: Some(Blast {
                 hit: hit(350.0),
+                on_expiry: false,
                 rings: vec![(2.0, 1.0), (4.0, 0.2)],
                 self_damage: 0.0,
                 aura: None,
@@ -868,6 +949,7 @@ mod tests {
             gravity,
             fuse: Some(STICK_FUSE),
             bounce: None,
+            landing: None,
             unmodelled: Vec::new(),
             ray_profile: None,
         }
@@ -1093,6 +1175,7 @@ mod tests {
             gravity: 0.0,
             fuse: None,
             bounce: Some(bounce),
+            landing: None,
             unmodelled: Vec::new(),
             ray_profile: None,
         };
@@ -1101,6 +1184,8 @@ mod tests {
             bounces: [true; 3],
             ends: [false; 3],
             restitution: 1.0,
+            tangent_deceleration: 0.0,
+            tangent_scale: 1.0,
             ceiling: -std::f64::consts::FRAC_1_SQRT_2,
             floor: std::f64::consts::FRAC_1_SQRT_2,
         };
@@ -1472,6 +1557,7 @@ mod tests {
             gravity: 0.0,
             fuse: None,
             bounce: None,
+            landing: None,
             unmodelled: Vec::new(),
             ray_profile: None,
         };
@@ -1529,5 +1615,88 @@ mod tests {
         assert!((flown - 10.0).abs() < 1e-9);
         let line = arc.point.iter().map(|part| part * part).sum::<f64>().sqrt();
         assert!(line < 10.0 && arc.travelled > 0.5, "{arc:?}");
+    }
+
+    /// Sigma's `187F` expiry flag runs the same native area hit as an
+    /// impact. The ray misses the bot, but its burst reaches the body.
+    #[test]
+    fn an_expiry_blast_reaches_a_body_beside_the_flight() {
+        for range_end in [false, true] {
+            let mut ballistics = helix();
+            ballistics.blast.as_mut().unwrap().on_expiry = true;
+            if range_end {
+                ballistics.range = Some(27.5);
+            } else {
+                ballistics.lifetime = 0.55;
+            }
+            let mut flight =
+                ProjectileFlight::new(ballistics, [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], Some(1000))
+                    .unwrap();
+            let targets = [(1, target(1.0, 27.5))];
+            let step = (1001..1100)
+                .map(|tick| flight.advance(tick, &targets, no_wall).unwrap())
+                .find(|step| step.end.is_some())
+                .unwrap();
+            assert_eq!(damage(&step), [(1, 80.0)]);
+            let end = step.end.unwrap();
+            assert!(end.exploded);
+            assert!((end.travelled - 0.55).abs() < 1e-9);
+        }
+    }
+
+    /// Junkrat `022B`: a slow floor bounce arms a 0.2 s lifetime no
+    /// earlier than launch + 0.5 s, not the volley's 10 s failsafe.
+    #[test]
+    fn a_slow_floor_bounce_arms_the_grenades_short_lifetime() {
+        use lucy_script::weapons::{Bounce, Landing};
+        let mut grenade = helix();
+        grenade.speed = 10.0;
+        grenade.lifetime = 10.0;
+        grenade.gravity = 12.25;
+        grenade.direct = None;
+        grenade.blast.as_mut().unwrap().on_expiry = true;
+        grenade.bounce = Some(Bounce {
+            count: 100,
+            bounces: [true; 3],
+            ends: [false; 3],
+            restitution: 0.5,
+            tangent_deceleration: 300.0,
+            tangent_scale: 0.75,
+            ceiling: -std::f64::consts::FRAC_1_SQRT_2,
+            floor: 0.5,
+        });
+        grenade.landing = Some(Landing {
+            surfaces: [false, false, true],
+            speed: 8.5,
+            lifetime: f64::from(0.2f32),
+            minimum_age: 0.5,
+        });
+        let mut flight = ProjectileFlight::new(
+            grenade.clone(),
+            [0.0, 0.1, 0.0],
+            [0.0, -1.0, 0.0],
+            Some(1000),
+        )
+        .unwrap();
+        let step = (1001..1700)
+            .map(|tick| flight.advance(tick, &[], cast(&floor())).unwrap())
+            .find(|step| step.end.is_some())
+            .unwrap();
+        let end = step.end.unwrap();
+        assert!(flight.landing_armed && end.exploded);
+        // Client integer ticks: floor(0.5 / .016) = 31; the elapsed
+        // offset floor((10 - f32(.2)) / .016) = 612. Deadline:
+        // 31*.016 + 10 - 612*.016 = .704 s.
+        assert!((end.travelled - 0.704).abs() < 1e-9, "{end:?}");
+
+        // The first oblique bounce still exceeds the speed gate:
+        // tangent (20 - 300*.016)*.75 = 11.4; normal 15*.5 = 7.5.
+        grenade.speed = 25.0;
+        let mut fast =
+            ProjectileFlight::new(grenade, [0.0; 3], [0.0, -0.6, 0.8], Some(1000)).unwrap();
+        assert!(fast.bounce([0.0, 1.0, 0.0], [0.0, -0.6, 0.8]));
+        fast.arm_landing([0.0, 1.0, 0.0]);
+        assert!(!fast.landing_armed);
+        assert!((fast.speed - (11.4f64.powi(2) + 7.5f64.powi(2)).sqrt()).abs() < 1e-9);
     }
 }
