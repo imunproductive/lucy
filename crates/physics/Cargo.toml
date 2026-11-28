@@ -12,6 +12,7 @@ flate2.workspace = true
 indexmap.workspace = true
 lzma-rust2.workspace = true
 lucy-core.workspace = true
+lucy-simd.workspace = true
 lucy-wire.workspace = true
 serde.workspace = true
 serde_json.workspace = true

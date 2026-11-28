@@ -11,11 +11,13 @@
 //! 0x7FF789AD0BD1).
 
 use crate::{
+    contact::math::TINY as TINY_SQUARED,
     mover::ground::{ProbeResult, capsule, pogo},
     mover::kinematics::{Ground, LAND_SPEED, WORLD_GRAVITY},
     mover::modifiers::{ActiveModifiers, CROUCH_INTENT, JUMP_INTENT, LAND_LIMIT},
     mover::settings::MoverSettings,
 };
+use lucy_simd::reciprocal_sqrt_estimate;
 use lucy_wire::{
     commands::{CROUCH, Command, JUMP, frame_distance},
     entity::POSITION_UNITS,
@@ -309,19 +311,36 @@ impl Posture {
     }
 
     /// Update the gravity portion after the contact solver projects velocity.
+    ///
+    /// `0x7FF789B4F530` normalizes the accumulated fall, projects the new
+    /// velocity onto it, then scales that unit vector by the projection.
+    /// Keep both float32 products: the native unit vector is not exactly
+    /// +/-1. Its `rsqrtps` estimate is CPU-specific, so a server and client
+    /// with different estimates can still disagree in the last bits.
     pub fn finish_fall(&mut self, gravity_scale: f64, vertical: f64) {
-        if self.fall.abs() <= TINY {
+        let squared = self.fall * self.fall;
+        let inverse = if squared > TINY_SQUARED {
+            let estimate = reciprocal_sqrt_estimate(squared);
+            (3.0 - (estimate * estimate) * squared) * (estimate * 0.5)
+        } else {
             return;
-        }
-        if self.landed {
-            self.fall = 0.0;
-        } else if self.flags & IN_AIR != 0 {
-            let gravity = f64::from((-WORLD_GRAVITY * gravity_scale) as f32);
-            if gravity * vertical < 0.0 {
+        };
+        let length = squared * inverse;
+        if length.abs() > TINY {
+            if self.landed {
                 self.fall = 0.0;
-            } else if vertical * 1.0_f64.copysign(f64::from(self.fall)) < f64::from(self.fall.abs())
-            {
-                self.fall = vertical as f32;
+            } else if self.flags & IN_AIR != 0 {
+                let gravity = (-WORLD_GRAVITY * gravity_scale) as f32;
+                let vertical = vertical as f32;
+                if gravity * vertical < 0.0 {
+                    self.fall = 0.0;
+                } else {
+                    let unit = self.fall * inverse;
+                    let projection = vertical * unit;
+                    if projection < length {
+                        self.fall = unit * projection;
+                    }
+                }
             }
         }
     }
@@ -406,5 +425,61 @@ impl Spring {
         [self.primary, self.secondary] = self
             .encoded
             .map(|steps| span * (f32::from(steps) / SPRING_STEPS) + self.low);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_fall_component_uses_the_native_unit_projection_products() {
+        for fall in [-0.28_f32, -0.56, -0.84, -1.724_616_8, -3.5, -7.0] {
+            let mut posture = Posture::new(&MoverSettings::default());
+            posture.flags = FELL;
+            posture.fall = fall;
+            let vertical = fall * 0.5;
+            let squared = fall * fall;
+            let r = reciprocal_sqrt_estimate(squared);
+            let inverse = (3.0 - (r * r) * squared) * (r * 0.5);
+            let unit = fall * inverse;
+            let expected = unit * (vertical * unit);
+            posture.finish_fall(1.75, f64::from(vertical));
+            assert_eq!(posture.fall.to_bits(), expected.to_bits(), "{fall}");
+
+            posture.finish_fall(1.75, 1.0);
+            assert_eq!(posture.fall, 0.0, "upward velocity clears the fall");
+            posture.fall = fall;
+            posture.flags = 0;
+            posture.landed = true;
+            posture.finish_fall(1.75, 0.0);
+            assert_eq!(posture.fall, 0.0, "landing clears the fall");
+        }
+    }
+
+    #[test]
+    fn the_captured_apex_fall_keeps_its_exact_native_bits() {
+        // PharahEmote run5, B73E00 hook5, frame5240: the preceding
+        // server fall is zero; its new vertical speed is the old scalar
+        // clamp's -0.044648438692092896. The Ryzen capture normalizes the
+        // -0.28 gravity increment with rsqrtps estimate 3.5712890625.
+        let mut posture = Posture::new(&MoverSettings::default());
+        posture.flags = FELL;
+        posture.apply_fall(1.75, 0.016);
+        let squared = posture.fall * posture.fall;
+        let r = reciprocal_sqrt_estimate(squared);
+        let inverse = (3.0 - (r * r) * squared) * (r * 0.5);
+        let unit = posture.fall * inverse;
+        let vertical = f32::from_bits(0xbd36_e148);
+        let expected = if r.to_bits() == 0x4064_9000 {
+            f32::from_bits(0xbd36_e14a)
+        } else {
+            // Intel/AMD estimates need not match. Assert the formula
+            // exactly instead: this CPU cannot replay the capture's last
+            // bits without substituting the other CPU's rsqrt table.
+            unit * (vertical * unit)
+        };
+        posture.finish_fall(1.75, f64::from(vertical));
+        assert_eq!(posture.fall.to_bits(), expected.to_bits());
     }
 }
