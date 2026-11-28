@@ -397,12 +397,18 @@ class Session:
         raise RuntimeError("no login within the timeout")
 
     def _hero_select_instance(self):
-        """The local player's screen `288B` instance (cached while it lives), or None."""
+        """The local player's screen `288B` instance (cached while it lives), or None. Searched on the local
+        player's entity only (the probe's `entity_id`): a scan of every entity's components took over 30 s on
+        a loaded PC, long enough for the server to drop the idle player. The entity is unknown until the
+        sampler's first player frame (None then; callers poll)."""
         from . import statescript as ss
         p = self.probe
         inst = self._hero_select
         if inst is None or p.read_u64(inst["address"] + ss.INSTANCE_GRAPH) != inst["guid"]:
-            found = ss.find_instances(p, HERO_SELECT_GRAPH)
+            entity = p.info().get("entity_id")
+            if not entity:
+                return None
+            found = ss.find_instances(p, HERO_SELECT_GRAPH, entity)
             inst = self._hero_select = min(found, key=lambda i: i["id"]) if found else None
         return inst
 
