@@ -480,11 +480,14 @@ class Session:
 
     def pick_hero(self, hero=None, timeout=60.0):
         """Hero select: waits for it, clicks the hero's portrait (`hero` or the session's; none keeps the one
-        shown) before each SELECT, until the client has locked a hero in and closed the screen (`picked_hero`).
-        Returns that hero's GUID, None on the timeout; RuntimeError when the client locked in another hero
-        (a portrait click the screen didn't take leaves SELECT on the hero it showed: Roadhog came out as
-        Junkrat and Pharah as Zarya, 2026-11-28). It also turns the frame sampler on (no recording), which
-        finds the body later."""
+        shown), and presses SELECT only once the client previews that hero (288B's local `#14152`, which st8's
+        preview model reads), clicking the portrait again every 2 s until it does; then waits until the client
+        has locked a hero in and closed the screen (`picked_hero`). A portrait click the screen didn't take
+        used to leave SELECT on the hero shown (Roadhog came out as Junkrat, Pharah as Zarya, Soldier: 76 as
+        Sombra, 2026-11-28; the preview gate is SameBody's). Returns that hero's GUID, None on the timeout;
+        RuntimeError when the client locked in another hero. It also turns the frame sampler on (no
+        recording), which finds the body later."""
+        from . import statescript as ss
         hero = hero or self.hero
         hero_at = wanted = None
         if hero:
@@ -493,7 +496,7 @@ class Session:
             wanted = self._hero_id(key)
         self.probe.sampler(every=0)
         end = time.monotonic() + timeout
-        selects = 0
+        next_portrait, selects = 0.0, 0
         while time.monotonic() < end:
             shown = self.hero_select_shown()
             picked = None if shown else self.picked_hero()
@@ -502,14 +505,30 @@ class Session:
                 if wanted is not None and picked & 0xFFFF_FFFF_FFFF != wanted:
                     raise RuntimeError(f"asked for {hero} ({wanted:X}) but the client locked in {picked:016X}")
                 return picked
-            if shown and selects < 6:
-                if hero_at:
-                    self.click(hero_at, f"{hero}'s portrait")
-                    time.sleep(0.5)
+            if not shown:
+                time.sleep(0.5)
+                continue
+            if hero_at and time.monotonic() >= next_portrait:
+                self.click(hero_at, f"{hero}'s portrait")
+                next_portrait = time.monotonic() + 2.0
+                time.sleep(0.2)
+                continue
+            if wanted is not None and self._previewed_hero(ss) != wanted:
+                time.sleep(0.1)
+                continue
+            if selects < 6:
                 self.click(SELECT, "SELECT")
                 selects += 1
-            time.sleep(1.5)
+            time.sleep(1.0)
         return None
+
+    def _previewed_hero(self, ss):
+        """The id of the hero the hero select screen previews (288B's local `#14152`), or None."""
+        inst = self._hero_select_instance()
+        value = ss.variables(self.probe, inst["address"], {14152}).get(14152) if inst else None
+        if not isinstance(value, dict) or value.get("type") != 4:
+            return None
+        return int.from_bytes(bytes.fromhex(value["hex"])[:8], "little") & 0xFFFF_FFFF_FFFF
 
     def _hero_id(self, key):
         """The hero GUID's id (`0x6E` for Soldier: 76) of a portrait key (`tools.owdbg.actions` names), from

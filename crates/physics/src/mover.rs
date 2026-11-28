@@ -907,7 +907,7 @@ mod tests {
         collision::scene::CollisionScene,
         contact::round::{RoundShape, Sphere},
         contact::world::{StaticGeometry, StaticShape},
-        mover::modifiers::Operation,
+        mover::modifiers::{Modifier, ModifierKey, Operation},
         mover::settings::MoverCatalog,
     };
     use lucy_wire::{
@@ -978,6 +978,61 @@ mod tests {
             }
         }
         outcomes
+    }
+
+    #[test]
+    fn zero_throttle_mods_preserve_the_last_nonzero_input_record() {
+        let rays = TriangleIndex::new([]).unwrap();
+        let mut mover = mover_in(Vec::new());
+        let command = |frame, forward| Command {
+            frame,
+            forward,
+            ..Command::default()
+        };
+        mover
+            .step_pose_to(&rays, command(1, 127), 0.016, None)
+            .unwrap();
+        // 023A st1 multiplies mods 17..19 by an empty #2101, which evaluates
+        // to zero. Native B4D9C0 then stores zero current throttle bytes and
+        // leaves the last nonzero input's frame/bytes alone (run5, hook5).
+        let lock = [17, 18, 19]
+            .into_iter()
+            .enumerate()
+            .map(|(slot, index)| {
+                (
+                    ModifierKey {
+                        instance: 1,
+                        state: 1,
+                        slot,
+                    },
+                    Modifier {
+                        index,
+                        operation: Operation::Multiply,
+                        value: 0.0,
+                        priority: 1.0,
+                    },
+                )
+            })
+            .collect();
+        mover.track_modifiers(1, &lock);
+        for frame in 2..=3 {
+            mover
+                .step_pose_to(&rays, command(frame, 127), 0.016, None)
+                .unwrap();
+            let record = mover.record();
+            assert_eq!(record.frame, Some(frame));
+            assert_eq!(record.throttles, [0, 0]);
+            assert_eq!(record.input_frame, Some(1));
+            assert_eq!(record.input_throttles, [0, 127]);
+        }
+        mover.track_modifiers(3, &BTreeMap::new());
+        mover
+            .step_pose_to(&rays, command(4, -127), 0.016, None)
+            .unwrap();
+        let record = mover.record();
+        assert_eq!(record.throttles, [0, -127]);
+        assert_eq!(record.input_frame, None);
+        assert_eq!(record.input_throttles, [0, -127]);
     }
 
     /// At 5 m/s the body goes 0.08 m a frame; the frame that would pass the
