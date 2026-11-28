@@ -125,8 +125,9 @@ LOGIN_PIXEL = (0.44, 0.88)
 # while the screen shows, false once the pick closes it (ClientProbe.md "ProbeDll3").
 HERO_SELECT_GRAPH = "288B"
 SCREEN_SHOWN = 1962
-# The player's entity variables after a pick: #2114e on once the pick is locked in, #940e the hero.
-PICKED, PICKED_HERO = 2114, 940
+# The player's entity variables after a pick: #2114e on once the pick is locked in, #940e the hero picked,
+# #13161e the hero he plays.
+PICKED, PICKED_HERO, CURRENT_HERO = 2114, 940, 13161
 
 
 class Session:
@@ -423,14 +424,18 @@ class Session:
     def picked_hero(self):
         """The hero the client has locked in (its `#940e`, a hero GUID such as 0x02E000000000012F), once its
         `#2114e` is on (288B rid114 on the server's `06E4`, rid237 when `#940e == #13161e`; st47 turns it off
-        while hero select is open); else None."""
+        while hero select is open), or, with the screen closed, once he plays the hero he picked (`#940e ==
+        #13161e`): in a Workshop match on Volskaya `#2114e` stayed off with Soldier: 76 in play, as the server
+        sent no `06E4` (2026-11-28, VolskayaLift; loose-ends.md). Else None."""
         from . import statescript as ss
         inst = self._hero_select_instance()
         if not inst:
             return None
-        values = ss.host_entity_variables(self.probe, inst["host"], {PICKED, PICKED_HERO})
+        values = ss.host_entity_variables(self.probe, inst["host"], {PICKED, PICKED_HERO, CURRENT_HERO})
         hero = values.get(PICKED_HERO)
-        if values.get(PICKED) is not True or not isinstance(hero, dict) or hero.get("type") != 4:
+        if not isinstance(hero, dict) or hero.get("type") != 4:
+            return None
+        if values.get(PICKED) is not True and values.get(CURRENT_HERO) != hero:
             return None
         return int.from_bytes(bytes.fromhex(hero["hex"])[:8], "little")
 
