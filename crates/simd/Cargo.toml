@@ -1,0 +1,11 @@
+[package]
+name = "lucy-simd"
+description = "Out-of-line hardware estimates for Cranelift callers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+safe_arch.workspace = true

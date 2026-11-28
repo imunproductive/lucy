@@ -167,6 +167,22 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## safe_arch
+
+Source: [`LICENSE-MIT.md`](https://docs.rs/crate/safe_arch/0.7.4/source/LICENSE-MIT.md) from safe_arch 0.7.4. The dependency offers Zlib, Apache-2.0 or MIT; Lucy uses it under MIT. In Lucy: safe x86-64 SSE wrappers in `crates/simd/src/lib.rs`, used for the mover's native reciprocal-square-root estimate in `crates/physics/src/mover/posture.rs`.
+
+```text
+MIT License
+
+Copyright (c) 2023 Daniel "Lokathor" Gee.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice (including the next paragraph) shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+
 ## Credited without code
 
 CREDITS.md also thanks projects whose findings, not code, Lucy uses: AipNooBest's overwatch-1.74-lobby-server (a finding about preloaded gun definitions; MIT, `Copyright (c) 2026 Arlecchino`), p3n1cillin/ow1-preservation (the HUD's team colours) and the researchers named at its end. No notice is needed for them.

@@ -15,6 +15,7 @@ license = "MIT"
 
 [workspace.dependencies]
 lucy-core = { path = "crates/core" }
+lucy-simd = { path = "crates/simd" }
 lucy-assets = { path = "crates/assets" }
 lucy-casc = { path = "crates/casc" }
 lucy-fixed = { path = "crates/fixed" }
@@ -49,6 +50,7 @@ prost = "0.14"
 prost-reflect = "0.16"
 roxmltree = "0.20"
 ruzstd = { version = "0.8", default-features = false, features = ["std"] }
+safe_arch = { version = "0.7.4", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha1 = "0.10"
@@ -81,6 +83,12 @@ opt-level = 3
 codegen-backend = "llvm"
 
 [profile.dev.package.lucy-stu]
+opt-level = 3
+codegen-backend = "llvm"
+
+# This one out-of-line estimate uses an SSE intrinsic Cranelift cannot lower.
+# Keep physics on Cranelift; only its small hardware bridge uses LLVM.
+[profile.dev.package.lucy-simd]
 opt-level = 3
 codegen-backend = "llvm"
 
