@@ -51,6 +51,22 @@ pub struct Posture {
     jumped: bool,
     pub fall: f32,
     spring: Spring,
+    #[cfg(test)]
+    pub(super) fall_projection: Option<FallProjection>,
+    #[cfg(test)]
+    fall_added: Option<f32>,
+}
+
+/// Inputs before grid quantization, for the corpus's independent fall models.
+/// None of this observation state exists in production builds.
+#[cfg(test)]
+pub(super) struct FallProjection {
+    pub accumulated: f32,
+    pub added: Option<f32>,
+    pub gravity_scale: f64,
+    pub vertical: f64,
+    pub landed: bool,
+    pub airborne: bool,
 }
 
 struct Spring {
@@ -98,6 +114,10 @@ impl Posture {
             jumped: false,
             fall: 0.0,
             spring,
+            #[cfg(test)]
+            fall_projection: None,
+            #[cfg(test)]
+            fall_added: None,
         }
     }
 
@@ -307,7 +327,12 @@ impl Posture {
     }
 
     pub fn apply_fall(&mut self, gravity_scale: f64, dt: f64) {
-        self.fall += (-WORLD_GRAVITY * gravity_scale) as f32 * dt as f32;
+        let added = (-WORLD_GRAVITY * gravity_scale) as f32 * dt as f32;
+        self.fall += added;
+        #[cfg(test)]
+        {
+            self.fall_added = Some(added);
+        }
     }
 
     /// Update the gravity portion after the contact solver projects velocity.
@@ -318,6 +343,17 @@ impl Posture {
     /// +/-1. Its `rsqrtps` estimate is CPU-specific, so a server and client
     /// with different estimates can still disagree in the last bits.
     pub fn finish_fall(&mut self, gravity_scale: f64, vertical: f64) {
+        #[cfg(test)]
+        {
+            self.fall_projection = Some(FallProjection {
+                accumulated: self.fall,
+                added: self.fall_added.take(),
+                gravity_scale,
+                vertical,
+                landed: self.landed,
+                airborne: self.flags & IN_AIR != 0,
+            });
+        }
         let squared = self.fall * self.fall;
         let inverse = if squared > TINY_SQUARED {
             let estimate = reciprocal_sqrt_estimate(squared);

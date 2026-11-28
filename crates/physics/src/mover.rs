@@ -1148,6 +1148,61 @@ mod tests {
         assert_eq!(sample_movement_flags(&pose), None);
     }
 
+    // The historical Python oracle used a scalar clamp, not B4F530's
+    // float32 normalization. Keep that oracle for the complete wire record;
+    // separately check the actual native fall at every pose, without a
+    // CPU-specific whole-record hash or a tolerance.
+    fn python_projected_fall(fall: f32, input: &posture::FallProjection) -> f32 {
+        if fall.abs() <= f32::EPSILON {
+            return fall;
+        }
+        if input.landed {
+            return 0.0;
+        }
+        if input.airborne {
+            let gravity = f64::from((-kinematics::WORLD_GRAVITY * input.gravity_scale) as f32);
+            if gravity * input.vertical < 0.0 {
+                return 0.0;
+            }
+            if input.vertical * 1.0_f64.copysign(f64::from(fall)) < f64::from(fall.abs()) {
+                return input.vertical as f32;
+            }
+        }
+        fall
+    }
+
+    fn native_projected_fall(fall: f32, input: &posture::FallProjection) -> f32 {
+        let squared = fall * fall;
+        if squared <= crate::contact::math::TINY {
+            return fall;
+        }
+        #[cfg(target_arch = "x86_64")]
+        let estimate = lucy_simd::reciprocal_sqrt_estimate(squared);
+        #[cfg(not(target_arch = "x86_64"))]
+        let estimate = (1.0 / f64::from(squared).sqrt()) as f32;
+        let inverse = (estimate * 0.5) * (3.0 - squared * (estimate * estimate));
+        let length = squared * inverse;
+        if length.abs() <= f32::EPSILON {
+            return fall;
+        }
+        if input.landed {
+            return 0.0;
+        }
+        if input.airborne {
+            let vertical = input.vertical as f32;
+            let gravity = (-kinematics::WORLD_GRAVITY * input.gravity_scale) as f32;
+            if gravity * vertical < 0.0 {
+                return 0.0;
+            }
+            let unit = fall * inverse;
+            let projected = vertical * unit;
+            if projected < length {
+                return unit * projected;
+            }
+        }
+        fall
+    }
+
     #[test]
     #[ignore = "requires a derived 104319 Practice Range movement cache"]
     fn practice_range_player_movement_records_match_python() {
@@ -1196,6 +1251,8 @@ mod tests {
             .unwrap();
             let first = 4000 + i as u32 * 500;
             let mut digest = Sha256::new();
+            let mut python_fall = 0.0_f32;
+            let mut native_fall = 0.0_f32;
             let mut visited = 0;
             for n in 0..304 {
                 if (20..24).contains(&n) || (80..118).contains(&n) || (210..278).contains(&n) {
