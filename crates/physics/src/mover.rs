@@ -1272,7 +1272,36 @@ mod tests {
                 mover
                     .step(scene.triangles(), command, 0.016, |mover, pose| {
                         visited += 1;
-                        let record = movement_record(&mover.pose(), Some(pose.frame + 2)).unwrap();
+                        let input = mover.posture.fall_projection.as_ref().unwrap();
+                        assert_eq!(input.gravity_scale, mover.base.gravity_scale);
+                        if let Some(added) = input.added {
+                            assert_eq!(
+                                added.to_bits(),
+                                ((-kinematics::WORLD_GRAVITY * input.gravity_scale) as f32
+                                    * 0.016_f32)
+                                    .to_bits()
+                            );
+                            python_fall += added;
+                            native_fall += added;
+                        }
+                        assert_eq!(
+                            input.accumulated.to_bits(),
+                            native_fall.to_bits(),
+                            "native accumulator {body:016X} frame {}",
+                            pose.frame
+                        );
+                        native_fall = native_projected_fall(native_fall, input);
+                        assert_eq!(
+                            mover.pose().fall.to_bits(),
+                            native_fall.to_bits(),
+                            "native projection {body:016X} frame {}",
+                            pose.frame
+                        );
+                        python_fall = python_projected_fall(python_fall, input);
+                        let mut python_reference = mover.pose();
+                        python_reference.fall = python_fall;
+                        let record =
+                            movement_record(&python_reference, Some(pose.frame + 2)).unwrap();
                         digest.update((record.bit_len() as u32).to_le_bytes());
                         digest.update(record.as_bytes());
                         let active = if (12..35).contains(&((pose.frame - first) % 72)) {
