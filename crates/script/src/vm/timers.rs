@@ -173,6 +173,7 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
                         let node = self.graph(id).state(usize::from(raw)).expect("search");
                         self.search_pickup(key, node, false)?;
                     }
+                    Some(StateKind::TrackMove { .. }) => self.tick_track_move(key)?,
                     _ => (),
                 }
             }

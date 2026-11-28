@@ -99,6 +99,10 @@ pub enum EntityRelation {
     /// and copies to `+0x20` (kind 4's raw field); the null entity for an
     /// entity that isn't a projectile.
     Shooter,
+    /// `STU_42259244`: the native movement state's parent entity
+    /// (component 31 state +0xB0, else component 28 +0x380;
+    /// `Eval_STU_42259244` 0x7FF789BE5950), null when unparented.
+    MovementParent,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2849,11 +2853,12 @@ impl Evaluator<'_> {
             // takes its target players' bodies and its killer's body with
             // it. Assumption: the possessed body too.
             "STU_F76C486C" | "STU_F7262B36" | "STU_0AC15F78" | "STU_DB742151" | "STU_0165541D"
-            | "STU_CF348C08" => {
+            | "STU_CF348C08" | "STU_42259244" => {
                 let (relation, operand) = match class {
                     "STU_F76C486C" => (EntityRelation::Owner, "m_D63CBEC2"),
                     "STU_F7262B36" => (EntityRelation::CurrentPossessor, "m_801B298F"),
                     "STU_DB742151" => (EntityRelation::Controller, "m_entity"),
+                    "STU_42259244" => (EntityRelation::MovementParent, "m_entity"),
                     _ => (EntityRelation::PossessedBody, "m_entity"),
                 };
                 if !native_shape(config, class, Some(operand)) {

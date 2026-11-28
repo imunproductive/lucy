@@ -1962,6 +1962,7 @@ mod tests {
                 health: None,
                 hardpoints: None,
                 spawned: Vec::new(),
+                movement_parent: None,
             };
             bot.set_target_candidates(&[body(ENTITY, 1), body(ANA, thrower_team)]);
             let landed = 130;

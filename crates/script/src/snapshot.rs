@@ -3189,10 +3189,17 @@ fn state_payload(
         ]),
         // The frame lists the dropped targets a search still holds for its
         // `m_93AB8C13` seconds (writer `0x7FF789BA5F80`), not the found
-        // ones (those go in the output variables). The server runs no
-        // search with that field (`vm/targets.rs`), so the list is empty.
+        // ones (those go in the output variables).
         (StateKind::TrackTargets, Some("targets")) => {
-            StatePayload::from([("targets".into(), Value::Array(Vec::new()))])
+            if !state.dropped_targets.is_empty() {
+                *fresh_until_ms = (*fresh_until_ms).min(now_ms);
+            }
+            StatePayload::from([("targets".into(), Value::Array(
+                state.dropped_targets.iter().map(|target| Value::Array(vec![
+                    Value::Entity(target.entity),
+                    Value::Integer(now_ms.saturating_sub(target.since_ms) as i64),
+                ])).collect()
+            ))])
         }
         (StateKind::Anim, Some("anim")) => StatePayload::from([(
             "counter".into(),

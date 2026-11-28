@@ -43,6 +43,7 @@ use crate::{
     graph::{GraphBinding, GraphStore},
     map_tags::{MapTags, TaggedEntity},
     target_tags::TargetTags,
+    track::{Track, Tracks},
     vm::{
         AuraChange, Component, DummyBot, EntityCreation, GameMessage, HealthChange, InitFault,
         MAX_INIT_WORK, MapRays, MessageEnd, ParentWrite, Pickup, PlayRequest, Root, ScopeChange,
@@ -188,6 +189,8 @@ pub type Gaps = BTreeMap<(u32, String), usize>;
 pub struct PlacedEntity {
     pub entity: u32,
     pub position: [f64; 3],
+    /// Native distance along its parametric track once placed on it.
+    track_distance: Option<f64>,
     component: Option<Component>,
     /// Why the component stopped or never started.
     fault: Option<String>,
@@ -258,6 +261,10 @@ impl PlacedEntity {
     pub fn speed_scale(&self) -> f64 {
         self.speed_scale
     }
+
+    pub fn track_distance(&self) -> Option<f64> {
+        self.track_distance
+    }
 }
 
 /// The volumes of the placed entities that have one: a spawn room's area
@@ -326,6 +333,7 @@ struct Shared<'a> {
     map_tags: Option<&'a MapTags>,
     map_rays: Option<&'a dyn MapRays>,
     volumes: Option<&'a dyn EntityVolumes>,
+    tracks: &'a Tracks,
     /// Whether the graphs may make entities ([`MapEntityWorld::make_entities`]).
     makes: bool,
     out: &'a mut Outputs,
@@ -343,7 +351,8 @@ impl Shared<'_> {
 struct EntityWorld<'a, 'b> {
     shared: &'b mut Shared<'a>,
     entity: u32,
-    position: [f64; 3],
+    position: &'b mut [f64; 3],
+    track_distance: &'b mut Option<f64>,
     team: &'b mut Option<i64>,
     target_tags: &'b mut TargetTags,
     owner: Option<u32>,
@@ -552,7 +561,7 @@ impl World for EntityWorld<'_, '_> {
 
     fn entity_position(&self, _site: Site, entity: u32) -> Option<[f64; 3]> {
         if entity == self.entity {
-            return Some(self.position);
+            return Some(*self.position);
         }
         self.shared
             .players
@@ -566,6 +575,30 @@ impl World for EntityWorld<'_, '_> {
                     .made_entity(entity)
                     .map(|made| made.position)
             })
+    }
+
+    fn track(&self, _site: Site, entity: u32) -> Option<Arc<Track>> {
+        self.shared.tracks.get(&entity).cloned()
+    }
+
+    fn track_distance(&self, _site: Site, entity: u32) -> Option<f64> {
+        (entity == self.entity)
+            .then_some(*self.track_distance)
+            .flatten()
+    }
+
+    fn place_on_track(&mut self, _site: Site, entity: u32, distance: f64) -> bool {
+        let Some(track) = self
+            .shared
+            .tracks
+            .get(&entity)
+            .filter(|_| entity == self.entity)
+        else {
+            return false;
+        };
+        *self.position = track.position(distance);
+        *self.track_distance = Some(distance);
+        true
     }
 
     /// A tagged placeable faces its placement's forward axis
@@ -789,7 +822,7 @@ impl World for EntityWorld<'_, '_> {
         out.unstarted.push(MadeEntity {
             entity,
             definition: creation.definition,
-            position: creation.position.unwrap_or(self.position),
+            position: creation.position.unwrap_or(*self.position),
             maker: self.entity,
         });
         Some(entity)
@@ -833,6 +866,7 @@ pub struct MapEntityWorld {
     /// The map's collision the scripts' ray casts meet.
     map_rays: Option<Arc<dyn MapRays>>,
     volumes: Option<Arc<dyn EntityVolumes>>,
+    tracks: Tracks,
     /// Whether the graphs may make entities ([`Self::make_entities`]).
     makes: bool,
     out: Outputs,
@@ -872,6 +906,7 @@ impl MapEntityWorld {
             map_tags,
             map_rays,
             volumes,
+            tracks: Tracks::new(),
             makes: false,
             out: Outputs::default(),
             entities: Vec::new(),
@@ -927,6 +962,12 @@ impl MapEntityWorld {
     /// none. The match whose clients get them turns it on.
     pub fn make_entities(&mut self) {
         self.makes = true;
+    }
+
+    /// Set before starting placements: their graphs read their tracks at
+    /// once. This does not enable payload tracks or change mode flow.
+    pub fn set_tracks(&mut self, tracks: Tracks) {
+        self.tracks = tracks;
     }
 
     /// Start more placements at the world's frame, in order, as
@@ -1046,6 +1087,7 @@ impl MapEntityWorld {
             map_tags,
             map_rays,
             volumes,
+            tracks,
             makes,
             out,
             entities,
@@ -1062,6 +1104,7 @@ impl MapEntityWorld {
             map_tags: map_tags.as_deref(),
             map_rays: map_rays.as_deref(),
             volumes: volumes.as_deref(),
+            tracks,
             makes: *makes,
             out,
         };
@@ -1072,7 +1115,7 @@ impl MapEntityWorld {
     fn start_entity(
         &mut self,
         entity: u32,
-        position: [f64; 3],
+        mut position: [f64; 3],
         roots: Result<Vec<Root>, InitFault>,
         owner: Option<u32>,
         shooter: Option<ProjectileShooter>,
@@ -1083,6 +1126,7 @@ impl MapEntityWorld {
                 self.entities.push(PlacedEntity {
                     entity,
                     position,
+                    track_distance: None,
                     component: None,
                     fault: Some(error.to_string()),
                     team: None,
@@ -1097,13 +1141,15 @@ impl MapEntityWorld {
         let frame = self.frame;
         let graphs = Arc::clone(&self.graphs);
         let (mut shared, entities) = self.split();
+        let mut track_distance = None;
         let mut team = None;
         let mut target_tags = TargetTags::default();
         let mut speed_scale = 1.0;
         let mut entity_world = EntityWorld {
             shared: &mut shared,
             entity,
-            position,
+            position: &mut position,
+            track_distance: &mut track_distance,
             team: &mut team,
             target_tags: &mut target_tags,
             owner,
@@ -1130,6 +1176,7 @@ impl MapEntityWorld {
         entities.push(PlacedEntity {
             entity,
             position,
+            track_distance,
             component,
             fault,
             team,
@@ -1309,7 +1356,8 @@ impl MapEntityWorld {
             let mut world = EntityWorld {
                 shared: &mut shared,
                 entity: placed.entity,
-                position: placed.position,
+                position: &mut placed.position,
+                track_distance: &mut placed.track_distance,
                 team: &mut placed.team,
                 target_tags: &mut placed.target_tags,
                 owner: placed.owner,
@@ -1375,7 +1423,8 @@ impl MapEntityWorld {
         let mut world = EntityWorld {
             shared: &mut shared,
             entity: placed.entity,
-            position: placed.position,
+            position: &mut placed.position,
+            track_distance: &mut placed.track_distance,
             team: &mut placed.team,
             target_tags: &mut placed.target_tags,
             owner: placed.owner,

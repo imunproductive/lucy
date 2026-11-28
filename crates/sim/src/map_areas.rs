@@ -181,7 +181,7 @@
 //! Anubis (Practice vs AI): no wall on in assemble, setup or the round.
 
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap, VecDeque},
     fs, io,
     path::Path,
     sync::Arc,
@@ -205,6 +205,7 @@ use lucy_script::{
     graph::{GraphBinding, GraphStore},
     map_tags::{MapTags, TaggedEntity},
     placed::{EntityVolumes, PlacedEntity, Placement},
+    track::{Track, TrackPoint},
     wire::{Value as ScriptValue, Variables},
 };
 use serde::Deserialize;
@@ -421,6 +422,8 @@ pub struct PlacedScript {
     /// lifts of graph `2ABA`): its create carries this place
     /// ([`StatePlace`]).
     pub state_place: Option<StatePlace>,
+    /// The parametric track read by the placeable's own graph.
+    pub track: Option<Arc<Track>>,
 }
 
 impl PlacedScript {
@@ -501,6 +504,7 @@ pub struct PlaceableBody {
     /// model goes where the path puts it, its animated parts then on their
     /// bones.
     path: Option<Arc<PathFollower>>,
+    track: bool,
     /// The share of its velocity a mover standing on it takes, when it is
     /// a platform the mover rides (component 77 and any of components 28,
     /// 39, 27 or 98; `lucy_physics` `Platform`).
@@ -596,6 +600,50 @@ pub struct MovingBody {
     motion: Option<IdleMotion>,
     path: Option<Arc<PathFollower>>,
     parts: Vec<(u32, Option<usize>, u32)>,
+    /// Server-driven movement records sampled at world time. Kept for
+    /// posing at a rider's delayed view time and one tick before it.
+    track: Option<Arc<std::sync::Mutex<TrackMotion>>>,
+}
+
+/// A bounded history of the exact grid positions sent to clients.
+#[derive(Debug)]
+struct TrackMotion {
+    positions: VecDeque<(f64, [f32; 3])>,
+}
+
+impl TrackMotion {
+    const CAPACITY: usize = 256;
+
+    fn new(position: [f32; 3]) -> Self {
+        let mut positions = VecDeque::with_capacity(Self::CAPACITY);
+        positions.push_back((0.0, position));
+        Self { positions }
+    }
+
+    fn record(&mut self, time: f64, position: [f32; 3]) {
+        if self.positions.back().is_some_and(|&(last, _)| last >= time) {
+            return;
+        }
+        if self.positions.len() == Self::CAPACITY {
+            self.positions.pop_front();
+        }
+        self.positions.push_back((time, position));
+    }
+
+    fn at(&self, time: f64) -> [f32; 3] {
+        let &(mut before, mut position) = self.positions.front().expect("initial position");
+        for &(after, next) in self.positions.iter().skip(1) {
+            if time <= after {
+                let share = ((time - before) / (after - before)).clamp(0.0, 1.0) as f32;
+                return std::array::from_fn(|axis| {
+                    position[axis] + (next[axis] - position[axis]) * share
+                });
+            }
+            before = after;
+            position = next;
+        }
+        position
+    }
 }
 
 impl MovingBody {
@@ -606,11 +654,17 @@ impl MovingBody {
     /// notes of [`crate::idle_animation`] and [`crate::path_follower`]).
     pub fn frames(&self, idle_time: f32, path_time: f64) -> Vec<(u32, ContactFrame)> {
         let moves = self.motion.as_ref().map(|motion| motion.moves(idle_time));
-        let (translation, rotation) = self
+        let (mut translation, rotation) = self
             .path
             .as_ref()
             .and_then(|path| path.place(path_time, self.frame.rotation))
             .unwrap_or((self.frame.translation, self.frame.rotation));
+        if let Some(track) = &self.track {
+            translation = track
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .at(path_time);
+        }
         let base = ContactFrame {
             translation,
             rotation,
@@ -657,6 +711,27 @@ impl MovingBodies {
 
     pub fn is_empty(&self) -> bool {
         self.bodies.is_empty()
+    }
+
+    /// Keep the positions that the next movement packets carry. Paths
+    /// and idle animations keep their existing independent clocks.
+    pub fn record_tracks(&self, world: Option<&lucy_script::placed::MapEntityWorld>, time: f64) {
+        let Some(world) = world else {
+            return;
+        };
+        for (_, body) in &self.bodies {
+            if let Some(track) = &body.track
+                && let Some(placed) = world.entity(body.entity)
+            {
+                let position = placed
+                    .position
+                    .map(|axis| ((axis * 1024.0).round_ties_even() / 1024.0) as f32);
+                track
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .record(time, position);
+            }
+        }
     }
 
     /// Each body's group and its moving shapes' indexes and frames at the
@@ -711,9 +786,12 @@ impl PlaceableBody {
     /// Each of its shapes the client places, with where.
     fn placed(&self) -> impl Iterator<Item = (&ModelShape, ShapePlace)> + '_ {
         self.model.iter().filter_map(|shape| {
-            let place = self
-                .pose
-                .place(shape, self.frame, self.scale, self.path.is_some())?;
+            let place = self.pose.place(
+                shape,
+                self.frame,
+                self.scale,
+                self.path.is_some() || self.track,
+            )?;
             Some((shape, place))
         })
     }
@@ -791,6 +869,11 @@ impl PlaceableBody {
             scale: self.scale,
             motion,
             path: self.path.clone(),
+            track: self.track.then(|| {
+                Arc::new(std::sync::Mutex::new(TrackMotion::new(
+                    self.frame.translation,
+                )))
+            }),
             parts,
         })
     }
@@ -995,6 +1078,9 @@ struct RawServerPlaceable {
     /// one ([`PathFollower`]).
     #[serde(default)]
     path: Option<RawPath>,
+    /// Native parametric movement, not a client path follower.
+    #[serde(default)]
+    track: Option<Vec<crate::objective_data::WaypointData>>,
     /// The share of its velocity a mover standing on it takes, when it is
     /// a platform ([`PlaceableBody`]).
     #[serde(default)]
@@ -1327,6 +1413,29 @@ impl MapAreaData {
                         )));
                     }
                 };
+                let track = raw
+                    .track
+                    .take()
+                    .map(|points| {
+                        let points: Vec<_> = points
+                            .into_iter()
+                            .map(|point| TrackPoint {
+                                entity: 0x8000_0000 | point.placeable,
+                                position: point.position,
+                                curve: point.curve,
+                                length: point.length,
+                                barrier: point.barrier,
+                                objective: None,
+                            })
+                            .collect();
+                        Track::new(&points).map(Arc::new).map_err(|error| {
+                            invalid(format!(
+                                "{FILE}: map {key}: placeable {}: {error}",
+                                placeable.placeable
+                            ))
+                        })
+                    })
+                    .transpose()?;
                 if let Some(model) = models.get(&definition) {
                     let (Some(rotation), Some(scale)) = (raw.rotation, raw.scale) else {
                         return Err(invalid(format!(
@@ -1385,6 +1494,7 @@ impl MapAreaData {
                             None => ModelPose::Placed,
                         },
                         path,
+                        track: track.is_some(),
                         platform: raw.platform,
                     });
                 }
@@ -1397,6 +1507,7 @@ impl MapAreaData {
                     moving: raw.moving,
                     second_identifier,
                     state_place,
+                    track,
                 }));
                 server_placeables.push(placeable);
             }

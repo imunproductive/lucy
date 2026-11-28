@@ -534,6 +534,11 @@ fn verified_body_starts_fresh_instances_and_advances_only_its_own_retail_clock()
         )
         .unwrap();
     assert_eq!(first.world.movement, posed);
+    // Timer-only advances retain the pose sample, not a stale native parent.
+    first.world.movement.parent = Some(lucy_wire::entity::MovementParent {
+        entity: 0x8000_0001,
+        node: 0,
+    });
     first
         .advance(
             Command {
@@ -2050,6 +2055,7 @@ fn a_dead_body_counts_its_respawn_down_in_the_mode_body_script() {
         health: None,
         hardpoints: None,
         spawned: Vec::new(),
+        movement_parent: None,
     }]);
     let total = runtime.vitals().unwrap().total();
     runtime.vitals_mut().unwrap().damage(
@@ -2423,6 +2429,7 @@ fn the_charge_graph_charges_soldier_s_ultimate() {
         health: None,
         hardpoints: None,
         spawned: Vec::new(),
+        movement_parent: None,
     };
     runtime.set_target_candidates(&[body(ENEMY, 1), body(ALLY, 0)]);
     let deal = |runtime: &mut PlayerBodyRuntime, target, amount, heal, drained: &[(u64, f64)]| {
@@ -2510,6 +2517,7 @@ fn doomfists_passive_grants_temporary_shields_that_drain() {
         tags: None,
         health: None,
         spawned: Vec::new(),
+        movement_parent: None,
         hardpoints: None,
     }]);
     let mover = Mover::new(
@@ -2729,6 +2737,7 @@ fn standing(entity: u32, team: u8, controller: u32, feet: [f64; 3]) -> TargetCan
         health: None,
         hardpoints: None,
         spawned: Vec::new(),
+        movement_parent: None,
     }
 }
 
@@ -2889,6 +2898,7 @@ fn the_biotic_field_aura_heals_the_body_through_its_own_graph() {
         tags: None,
         health: None,
         hardpoints: None,
+        movement_parent: None,
         spawned: vec![lucy_script::vm::OwnedEntity {
             entity: FIELD,
             projectile: false,
@@ -2966,6 +2976,7 @@ fn the_healing_orbs_aura_heals_an_ally_for_its_thrower() {
         health: None,
         hardpoints: None,
         spawned,
+        movement_parent: None,
     };
     runtime.set_target_candidates(&[
         body(spawn.entity, spawn.controller, Vec::new()),

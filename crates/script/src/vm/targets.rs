@@ -134,8 +134,7 @@
 //!   state ends (quick melee: each body struck once a swing).
 //! - `m_93AB8C13`: a dropped body stays a target for that many seconds;
 //!   those waiting bodies, with the milliseconds since they were dropped,
-//!   are the frame's `targets` list, so it is empty without it. Not
-//!   modelled (finds nothing when set).
+//!   are the frame's `targets` list, so it is empty without it.
 //! - `m_43478CAD`: the targets' order without a scoring (`0x7FF789BB9570`
 //!   reads it only then): 0 keeps them in the order found, 1 puts the
 //!   nearest to the centre first and 2 the nearest to the searcher's own
@@ -233,7 +232,6 @@ const UNMODELLED: &[&str] = &[
     "m_9E1426F6",
     "m_E8474EE8",
     "m_C1B724B2",
-    "m_93AB8C13",
     "m_2A0FB8BB",
 ];
 
@@ -673,15 +671,48 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
         let keep = !is_set(field(&node.fields, RECHECK));
         let listed = !field(&node.fields, FOUND).is_null();
         let limit = limit.unwrap_or(usize::MAX);
+        let grace = field(&node.fields, "m_93AB8C13");
+        let grace_ms = if grace.is_null() {
+            0
+        } else {
+            let Some(value) = self.evaluate(key.instance, node, grace, None) else {
+                return Ok(false);
+            };
+            (expr::to_float(&value).max(0.0) * 1000.0).round() as u64
+        };
         let now = self.machine.now_ms;
         let state = self.state_mut(key).expect("active TrackTargets");
         let before: Vec<u32> = state.tracked.iter().map(|target| target.entity).collect();
         if !listed {
             state.tracked.clear();
+            state.dropped_targets.clear();
         } else if !keep {
             state
-                .tracked
-                .retain(|target| found.entities.contains(&target.entity));
+                .dropped_targets
+                .retain(|target| !found.entities.contains(&target.entity));
+            let dropped = &mut state.dropped_targets;
+            state.tracked.retain(|target| {
+                if found.entities.contains(&target.entity) {
+                    return true;
+                }
+                if grace_ms == 0 {
+                    return false;
+                }
+                let since = match dropped.iter().find(|held| held.entity == target.entity) {
+                    Some(held) => held.since_ms,
+                    None => {
+                        dropped.push(TrackedTarget {
+                            entity: target.entity,
+                            since_ms: now,
+                        });
+                        now
+                    }
+                };
+                now.saturating_sub(since) < grace_ms
+            });
+            state
+                .dropped_targets
+                .retain(|target| now.saturating_sub(target.since_ms) < grace_ms);
         }
         let new: Vec<u32> = found
             .entities

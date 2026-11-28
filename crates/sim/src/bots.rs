@@ -1004,6 +1004,16 @@ impl Bot {
             ..Movement::default()
         }
     }
+
+    /// The native mover's actual parent, for `STU_42259244`.
+    pub fn movement_parent(&self) -> Option<u32> {
+        self.flight
+            .as_ref()?
+            .mover
+            .record()
+            .parent
+            .map(|parent| parent.entity)
+    }
 }
 
 #[cfg(test)]

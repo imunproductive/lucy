@@ -1168,6 +1168,10 @@ impl PreparedScene {
     /// ([`Self::switch_placeable_bodies`]).
     pub fn advance_placed(&mut self, tick: u32, holds: &[(u32, Option<u8>)]) {
         self.placed_scripts.advance(tick, holds);
+        self.moving_bodies.record_tracks(
+            self.placed_scripts.world(),
+            f64::from(tick) * TICK_PERIOD.as_secs_f64(),
+        );
         let removed = self.placed_scripts.take_removed();
         if !removed.is_empty() {
             self.server_placeables
@@ -2230,6 +2234,7 @@ mod tests {
             health: None,
             hardpoints: None,
             spawned: Vec::new(),
+            movement_parent: None,
         };
         let count = |candidates: &[TargetCandidate]| {
             let mut runtime = scene.owner_body_runtime(hero, spawn).unwrap().unwrap();
@@ -2338,6 +2343,7 @@ mod tests {
             health: None,
             hardpoints: None,
             spawned: Vec::new(),
+            movement_parent: None,
         };
         let swing = |candidates: &[TargetCandidate]| {
             let mut runtime = scene.owner_body_runtime(hero, spawn).unwrap().unwrap();
@@ -2452,6 +2458,7 @@ mod tests {
             tags: None,
             ai: None,
             dealt: Vec::new(),
+            movement_parent: None,
         };
         // Yaw 0 looks along +z.
         let players = |frame: u32| {
@@ -2746,6 +2753,7 @@ mod tests {
             tags: scene.body_tags(hero.body),
             ai: None,
             dealt: Vec::new(),
+            movement_parent: None,
         };
         // The visor's search begins about 1.2 s after the press.
         for frame in spawn.frame + 1..spawn.frame + 120 {

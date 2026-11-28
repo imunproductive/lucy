@@ -4699,6 +4699,7 @@ impl WorldDelivery {
         };
         Some(PlayerTarget {
             body: body.id.entity,
+            movement_parent: mover.record().parent.map(|parent| parent.entity),
             team,
             pose: {
                 let pose = mover.pose();
@@ -6943,6 +6944,27 @@ impl WorldDelivery {
                         ..EntityUpdate::default()
                     }),
             );
+        }
+        if let Some(world) = scene.placed_scripts().world() {
+            records.extend(scene.server_placeables().iter().filter_map(|placed| {
+                placed.track.as_ref()?;
+                let native = world.entity(placed.entity())?;
+                native.track_distance()?;
+                let place = placed.state_place?;
+                self.created
+                    .contains(&placed.entity())
+                    .then(|| EntityUpdate {
+                        entity: placed.entity(),
+                        movement: Some(Movement {
+                            position: native.position,
+                            yaw: place.yaw,
+                            input_frame: Some(lucy_wire::entity::NO_INPUT),
+                            frame: None,
+                            ..Movement::default()
+                        }),
+                        ..EntityUpdate::default()
+                    })
+            }));
         }
         records
     }

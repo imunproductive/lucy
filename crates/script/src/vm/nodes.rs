@@ -541,6 +541,7 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
             "STU_FC3921B1" => self.create_dummy_bot(id, node, depth),
             "STUStatescriptActionCreateEntity" => self.create_entity(id, node, depth),
             "STU_C1561031" => self.remove_dummy_bot(id, node, depth),
+            "STU_4A4BEDAA" => self.place_on_track(id, node, depth),
             "STU_5E019216" => self.start_game_mode(id, node, depth),
             "STU_CFCE55DC" => self.move_body(id, node, depth),
             "STU_545AB3B8" => self.credit_environment(id, node, depth),
@@ -1300,6 +1301,7 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
             // (`STU_550D0C5C`) or per listed value (`STU_77E13026`), or
             // the played graph on each target (`STU_CB4905E9`).
             "STU_550D0C5C" | "STU_77E13026" | "STU_CB4905E9" => StateKind::Scope,
+            "STU_49FE0019" => StateKind::TrackMove { last_ms: 0 },
             "STUStatescriptStateWeaponVolley" => StateKind::WeaponVolley {
                 volleys: 1,
                 offset_ms: 0,
@@ -1440,6 +1442,7 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
             StateKind::Presenter => self.begin_presenter(key, node),
             StateKind::ScaleTime { .. } => self.begin_scale_time(key, node),
             StateKind::Scope => self.begin_scope(key, node, depth)?,
+            StateKind::TrackMove { .. } => self.begin_track_move(key, node)?,
             StateKind::CreateEntity { .. } => self.begin_create_entity(key, node)?,
             StateKind::Pickup => self.begin_pickup(key, node),
             StateKind::PickupSearch { .. } => {

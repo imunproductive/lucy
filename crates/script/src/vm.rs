@@ -37,6 +37,7 @@ mod switches;
 mod targets;
 mod time_scale;
 mod timers;
+mod track;
 mod turn;
 mod view_limits;
 mod volleys;
@@ -75,6 +76,7 @@ use crate::{
     },
     graph::{Body, Graph, GraphStore, Node, asset_guid, member},
     timeline::{ButtonEdge, FRAME_MS, QueueFull, Timeline, button_edges, frame_start},
+    track::Track,
     vitals::PoolKind,
     wheel,
     wire::{Value, Variables},
@@ -288,6 +290,8 @@ pub struct TargetTagEffect {
 #[derive(Clone, Debug, PartialEq)]
 pub struct TargetCandidate {
     pub entity: u32,
+    /// The actual native movement parent, not the entity's owner.
+    pub movement_parent: Option<u32>,
     /// Its team; none in a free-for-all, where a body is only its own ally.
     pub team: Option<u8>,
     pub dead: bool,
@@ -510,6 +514,13 @@ pub fn listed_relation(
         })
     };
     match relation {
+        EntityRelation::MovementParent => Some(
+            bodies
+                .iter()
+                .find(|body| body.entity == entity)
+                .and_then(|body| body.movement_parent)
+                .unwrap_or(0),
+        ),
         EntityRelation::Controller => bodies
             .iter()
             .find(|body| body.entity == entity)
@@ -871,6 +882,22 @@ pub trait World {
     /// (`STU_F7FD94F9`). None: unknown here.
     fn body_radius(&self, _site: Site, _entity: u32) -> Option<f64> {
         None
+    }
+
+    /// The immutable parametric track belonging to this entity.
+    fn track(&self, _site: Site, _entity: u32) -> Option<Arc<Track>> {
+        None
+    }
+
+    /// Its native distance along that track, including when the graph
+    /// binds no distance output (`2ABA`).
+    fn track_distance(&self, _site: Site, _entity: u32) -> Option<f64> {
+        None
+    }
+
+    /// Place an entity at a distance along its parametric track.
+    fn place_on_track(&mut self, _site: Site, _entity: u32, _distance: f64) -> bool {
+        false
     }
 
     /// The rate (radians a second, movement state `+0xD0`) of the turn
@@ -1669,6 +1696,10 @@ pub enum StateKind {
     /// listed value (`STU_77E13026`) or a played graph per target
     /// (`STU_CB4905E9`); its scope instances are [`State::scopes`].
     Scope,
+    /// A parametric mover (`STU_49FE0019`), last advanced at this time.
+    TrackMove {
+        last_ms: u64,
+    },
     /// A UX presenter (`STU_4BD2E886`, `vm/presenter.rs`): its fades and
     /// bit are [`State::presenter`].
     Presenter,
@@ -1735,6 +1766,9 @@ pub struct State {
     /// A target search's bodies, in the order they came in, while it runs
     /// (`vm/targets.rs`).
     pub tracked: Vec<TrackedTarget>,
+    /// TrackTargets' dropped bodies waiting out `m_93AB8C13`; timestamps
+    /// are when each body stopped passing the search.
+    pub dropped_targets: Vec<TrackedTarget>,
     watch_seen: Option<Value>,
     ending: bool,
     pending_change: bool,
@@ -1761,6 +1795,7 @@ impl State {
             chase: None,
             ability_cooldown: None,
             tracked: Vec::new(),
+            dropped_targets: Vec::new(),
             watch_seen: None,
             ending: false,
             pending_change: false,
