@@ -5636,9 +5636,13 @@ impl WorldDelivery {
         Ok(true)
     }
 
-    /// A new round returns the possessed body to its team's spawn room.
-    /// Only a pending different hero creates a new body. With `select`, hero
-    /// select opens and stays open while the heroes assemble.
+    /// A new round puts the player back in his team's spawn room: a new
+    /// body of his hero there, dead or alive. With `select` hero select
+    /// opens too, as before the second side of an Assault, Escort or Hybrid
+    /// match (game-rules.md 2), and stays open while the heroes assemble. A
+    /// player without a hero keeps waiting in hero select. True when he got
+    /// a new body. Retail's round/side-swap body and charge lifecycle is
+    /// unverified; this path is deliberately separate from a death's revive.
     pub fn spawn_again(
         &mut self,
         scene: &PreparedScene,
@@ -5654,21 +5658,16 @@ impl WorldDelivery {
         let Some(body) = self.body else {
             return Ok(false);
         };
+        let Some(entity) = self.next_body(now) else {
+            return Ok(false);
+        };
         let (guid, skin) = self.respawn_hero.unwrap_or((body.hero, body.skin));
-        if guid != body.hero {
-            let Some(entity) = self.next_body(now) else {
-                return Ok(false);
-            };
-            let hero = scene
-                .heroes()
-                .get(guid)
-                .ok_or_else(|| invalid("the body's hero is unknown"))?;
-            self.switch(scene, viewer, tick, quanta, entity, (hero, skin), false)?;
-            self.revived(true);
-        } else {
-            let placement = self.spawn_placement(scene, viewer)?;
-            self.revive_current(Some(placement), true);
-        }
+        let hero = scene
+            .heroes()
+            .get(guid)
+            .ok_or_else(|| invalid("the body's hero is unknown"))?;
+        self.switch(scene, viewer, tick, quanta, entity, (hero, skin), false)?;
+        self.revived(true);
         if select && self.can_handle_game_message() {
             // `288B` opens as on the client's H; it stays shown open while
             // the heroes assemble.
