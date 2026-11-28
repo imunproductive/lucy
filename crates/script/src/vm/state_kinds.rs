@@ -528,7 +528,7 @@ impl<'graph, 'world, 'machine, W: World + ?Sized> Vm<'graph, 'world, 'machine, W
                 // `f32(f32(dt) * 0.001) * rate`; it arrives when the
                 // distance left is at most the step plus a float's epsilon,
                 // and else moves by the step alone.
-                let seconds = (f64::from(elapsed as f32) * 0.001) as f32;
+                let seconds = elapsed as f32 * 0.001;
                 let step = f64::from(seconds * rate as f32);
                 (next.current, next.reached) =
                     if chase_distance(&next.current, &destination) > step + expr::EPSILON {

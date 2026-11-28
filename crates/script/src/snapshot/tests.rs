@@ -2149,7 +2149,8 @@ fn a_delta_lists_a_variable_that_went_from_unset_to_false_or_zero() {
 /// instance's variable out of frames, not the entity variable of the same
 /// identifier: 104319's lists name instance variables only, and `01D8`'s
 /// #417 left out Doomfist's airborne flag #417e (refs report
-/// `Doomfist.md` §13). The owner's health (#253) stays out.
+/// `Doomfist.md` §13). Health #253e must also reach client-only readers:
+/// Storm Bow `00B9` st41 gates its custom reticle on #253e > 0.
 #[test]
 fn a_graphs_server_only_variables_leave_out_its_instance_variables_only() {
     let (graphs, mut snapshot) = fixture();
@@ -2162,7 +2163,10 @@ fn a_graphs_server_only_variables_leave_out_its_instance_variables_only() {
             projected.variables.values.get(&420),
             Some(&Value::Integer(666))
         );
-        assert!(!projected.variables.values.contains_key(&OWNER_HEALTH));
+        assert_eq!(
+            projected.variables.values.get(&253),
+            Some(&Value::Float(200.0))
+        );
         assert!(!projected.instances[&1].variables.values.contains_key(&420));
     }
 }

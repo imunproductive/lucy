@@ -1842,7 +1842,9 @@ impl ChasePayload {
             let share = f64::from((elapsed as f64 / remaining as f64) as f32);
             return chase_lerp(self.current.clone(), timed.destination.clone(), share);
         }
-        let seconds = (f64::from(elapsed as f32) * 0.001) as f32;
+        // `0x7FF78AAAFD57` / `0x7FF78AAAFD5C`: cvtsi2ss, then mulss
+        // by the f32 0.001 at `0x7FF78B4F1868`, not an f64 intermediate.
+        let seconds = elapsed as f32 * 0.001;
         let step = f64::from(seconds * timed.rate as f32);
         if chase_distance(&self.current, &timed.destination) > step + expr::EPSILON {
             chase_step(self.current.clone(), timed.destination.clone(), step).0

@@ -2303,19 +2303,22 @@ fn run_frames(runtime: &mut PlayerBodyRuntime, spawn: OwnerBodySpawn, frames: u3
 #[ignore = "requires the derived 104319 statescript catalog"]
 fn hanzos_storm_bow_arrow_speed_follows_the_authored_draw_charge() {
     const HANZO: u64 = 0x02e0_0000_0000_0005;
+    let (mut runtime, spawn) = charge_body(HANZO, None);
+    let mover = Mover::new(
+        MoverSettings::default(),
+        Arc::new(ContactWorld::new(Vec::new()).unwrap()),
+        spawn.pose.position,
+        0,
+        0x18,
+    )
+    .unwrap();
+    let mut last_frame = spawn.frame;
     for held_frames in [13, 38, 63] {
-        let (mut runtime, spawn) = charge_body(HANZO, None);
-        let mover = Mover::new(
-            MoverSettings::default(),
-            Arc::new(ContactWorld::new(Vec::new()).unwrap()),
-            spawn.pose.position,
-            0,
-            0x18,
-        )
-        .unwrap();
-        // Finish the initial weapon raise before beginning each independent draw.
-        run_frames(&mut runtime, spawn, 64);
-        let first = spawn.frame + 65;
+        // Let the initial raise or the preceding shot recover. Reuse the
+        // same body so a previous draw cannot silently seed the next one.
+        run_frames(&mut runtime, OwnerBodySpawn { frame: last_frame, ..spawn }, 64);
+        let first = last_frame + 65;
+        last_frame = first + held_frames;
         for frame in first..first + held_frames {
             let command = Command {
                 frame,
@@ -2326,7 +2329,7 @@ fn hanzos_storm_bow_arrow_speed_follows_the_authored_draw_charge() {
             assert!(runtime.take_shots(Some(command), &mover).is_empty());
         }
         let release = Command {
-            frame: first + held_frames,
+            frame: last_frame,
             ..Command::default()
         };
         runtime.advance(release, &mover, BodyStep::Posed).unwrap();
@@ -2336,20 +2339,20 @@ fn hanzos_storm_bow_arrow_speed_follows_the_authored_draw_charge() {
             .iter()
             .find(|(_, instance)| instance.graph == 0x00b9)
             .expect("Storm Bow");
-        eprintln!(
-            "hold={held_frames} bow={bow_id} vars={:?} states={:?} diagnostics={:?}",
-            bow.variables,
-            bow.states,
-            snapshot.diagnostics
-        );
+        let charge = ((held_frames * FRAME_MS as u32) as f32 * 0.001 * 1.375).min(1.0);
+        assert_eq!(bow.variables.get(&677), Some(&Value::Float(f64::from(charge))));
+        assert_eq!(bow.variables.get(&18954), Some(&Value::Float(f64::from(charge))));
+        let owner = runtime.encoder().project(snapshot, View::Owner).unwrap();
+        // The owner must retain the controller that starts its local reticle.
+        assert!(owner.state(bow_id, 78).is_some());
+        assert_eq!(owner.entity_variable(253), Some(&Value::Float(200.0)));
         let shots = runtime.take_shots(Some(release), &mover);
         let [PosedShot::Projectile(arrow)] = shots.as_slice() else {
-            panic!("hold={held_frames}: expected one arrow, got {shots:?}");
+            panic!("hold={held_frames}: expected one arrow, got {} shots", shots.len());
         };
-        let charge = ((held_frames * FRAME_MS as u32) as f32 * 0.001 * 1.375).min(1.0);
         assert_eq!(
             arrow.ballistics.speed,
-            25.0 + 85.0 * f64::from(charge),
+            f64::from(25.0_f32 + 85.0_f32 * charge),
             "hold={held_frames}"
         );
     }
